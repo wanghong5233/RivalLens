@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Change Control"
+  short_description: "Protect dirty worktrees and keep commits scoped."
+  default_prompt: "Use the git change control rules before staging or committing."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Env and Secrets"
+  short_description: "Handle env vars, tokens, keys, and local service URLs safely."
+  default_prompt: "Use the env and secrets rules for this configuration change."

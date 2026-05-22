@@ -1,0 +1,21 @@
+# Codex Rules — Git and filesystem safety for RivalLens
+#
+# Codex Rules are experimental and the schema is evolving. The authoritative
+# enforcement lives in .codex/hooks/safety_guard.py, which blocks the
+# following operations at the PreToolUse stage:
+#
+#   git add .
+#   git add -A
+#   git add --all
+#   git reset --hard
+#   git clean -f*  (e.g. -fd, -fdx)
+#   rm -r*f*       (recursive forced delete)
+#   Remove-Item ... -Recurse -Force
+#
+# Rationale:
+#   - Broad staging hides unrelated dirty files in a monorepo.
+#   - Destructive resets/cleans can lose uncommitted local work.
+#   - Recursive forced deletes can wipe data/ or .env files unintentionally.
+#
+# If you need any of the above, ask the user for explicit approval first
+# and pass concrete paths rather than wildcards.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testing and Debugging"
+  short_description: "Choose focused verification and safe debug logging."
+  default_prompt: "Use the testing and debugging rules for this failure or test task."

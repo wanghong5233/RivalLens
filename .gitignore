@@ -84,7 +84,10 @@ ehthumbs.db
 *.ipynb_checkpoints
 
 # ==== AI tool caches ====
-.cursor/
-.trae/
-.claude/
+# IDE config (.cursor/, .claude/, .codex/, .trae/, .agents/) is committed
+# as shared team rules/hooks/skills. Only cache subdirectories below.
+.cursor/chats/
+.cursor/conversations/
+.claude/projects/
+.claude/cache/
 .aider*

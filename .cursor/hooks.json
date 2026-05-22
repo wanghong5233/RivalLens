@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeReadFile": [
+      {
+        "command": "python .cursor/hooks/safety_guard.py"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "python .cursor/hooks/safety_guard.py"
+      }
+    ]
+  }
+}

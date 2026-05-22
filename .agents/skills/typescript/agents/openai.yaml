@@ -1,0 +1,4 @@
+interface:
+  display_name: "TypeScript"
+  short_description: "Apply TypeScript type, import, async, and logging rules."
+  default_prompt: "Use the root TypeScript rules before editing TS/TSX/MTS files."

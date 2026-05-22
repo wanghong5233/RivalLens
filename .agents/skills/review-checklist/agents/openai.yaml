@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Checklist"
+  short_description: "Check correctness, security, UI, data, DB, and git risks before merge."
+  default_prompt: "Use the root review checklist before finalizing."

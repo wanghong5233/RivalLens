@@ -1,0 +1,4 @@
+interface:
+  display_name: "React"
+  short_description: "Apply React, UI, styling, routing, and modal patterns."
+  default_prompt: "Use the root React rules before editing UI components."

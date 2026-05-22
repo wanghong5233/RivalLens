@@ -1,0 +1,4 @@
+interface:
+  display_name: "Engineering Quality"
+  short_description: "Apply shared code quality and service-boundary rules."
+  default_prompt: "Use the engineering quality rules before making code changes."
