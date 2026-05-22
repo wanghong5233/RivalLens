@@ -30,16 +30,46 @@ Single-repository monorepo. Top-level packages:
 
 ## Skills
 
-Reusable procedures live under `.agents/skills/`:
+Reusable procedures live under `.agents/skills/`. Each skill has a YAML `description` that controls when it auto-loads.
+
+**Agent engineering (cross-project, from `agent-engineering-kit`):**
+
+- `agent-debugging` — system-level debugging across UI / API / retrieval / tool / provider / async / persistence layers
+- `llm-observability-and-evals` — trace contracts, decision logs, golden eval sets, pass gates
+- `tool-and-mcp-design` — tool/MCP schema, permission model, error semantics, idempotency
+- `llm-cost-optimizer` — per-feature cost logging, model routing, prompt cache, output control
+- `bootstrap-cursor-package` — when starting a new agent project's `.cursor/`
+
+**Writing & documentation:**
+
+- `writing-architecture-docs` — current-state + first-principles, no narrative / no AI filler
+- `writing-readme` — 10-second-scannable READMEs
+- `writing-tech-article` — high-density technical writing
+- `writing-pitfall-archive` — postmortem archive, prevent recurring failures
+- `writing-issue-backlog` — evidence-first issue records
+- `writing-engineering-playbook` — cross-project engineering intuition
+- `writing-skill` — meta: how to write a good SKILL.md
+
+**Project workflow:**
 
 - `engineering-quality` — general code quality
-- `env-secrets` — env and secret hygiene
+- `env-secrets` — env / secret / token hygiene
 - `git-change-control` — safe Git workflow
-- `pr` — pull request and branch workflow
+- `pr` — branch and PR conventions
 - `review-checklist` — pre-merge review bias
 - `testing` / `testing-debugging` — verification
 - `debug` — debug logging
-- `typescript` / `react` — frontend conventions
+
+**Tech-stack (frontend, will trigger only on .ts/.tsx):**
+
+- `typescript` / `react`
+
+## Commands
+
+Manual workflows under `.cursor/commands/`:
+
+- `/review` — risk-focused code review
+- `/retro` — session retrospective and learning capture
 
 ## Review Bias
 

@@ -8,10 +8,16 @@ Index of the agent guardrails configured in this repository.
 
 ## Cursor
 
-- `.cursor/rules/engineering.mdc` — always-on rules for repository model, Git safety, env safety, engineering discipline.
+- `.cursor/rules/engineering.mdc` — always-on RivalLens repository model, Git safety, env safety.
 - `.cursor/rules/env-secrets.mdc` — scoped rules for env/config files.
+- `.cursor/rules/core-principles.mdc` — cross-project engineering invariants (from `agent-engineering-kit`).
+- `.cursor/rules/cursor-package-boundaries.mdc` — how `.cursor/` rules/skills/commands/hooks divide responsibility.
+- `.cursor/rules/configuration-management.mdc` — config centralization, typed validation, no magic numbers.
+- `.cursor/rules/agent-runtime-contracts.mdc` — LLM / RAG / tool / async durability and failure contracts.
+- `.cursor/commands/review.md`, `.cursor/commands/retro.md` — manual review and retrospective workflows.
 - `.cursor/hooks.json` — project-level hook configuration.
-- `.cursor/hooks/safety_guard.py` — blocks broad/destructive shell commands and reads of real env files.
+- `.cursor/hooks/safety_guard.py` — blocks `git add .` patterns and reads of real env files.
+- `.cursor/hooks/block-dangerous-shell.py` — blocks force-push / hard reset / branch -D / commit --amend / rm -rf / Remove-Item -Recurse -Force and similar (10 patterns, cross-platform, `failClosed: true`).
 
 ## Codex
 

@@ -1,12 +1,21 @@
 {
   "version": 1,
   "hooks": {
-    "beforeReadFile": [
+    "preToolUse": [
       {
-        "command": "python .cursor/hooks/safety_guard.py"
+        "command": "python .cursor/hooks/block-dangerous-shell.py",
+        "matcher": "Shell",
+        "timeout": 5,
+        "failClosed": true
+      },
+      {
+        "command": "python .cursor/hooks/safety_guard.py",
+        "matcher": "Shell",
+        "timeout": 5,
+        "failClosed": true
       }
     ],
-    "beforeShellExecution": [
+    "beforeReadFile": [
       {
         "command": "python .cursor/hooks/safety_guard.py"
       }
