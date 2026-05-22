@@ -1,0 +1,90 @@
+# ==== Secrets (must never be committed) ====
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+
+# ==== Python ====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+*.egg-info/
+*.egg
+dist/
+build/
+pip-wheel-metadata/
+
+# ==== Node / Frontend ====
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+yarn-error.log*
+npm-debug.log*
+pnpm-debug.log*
+.vite/
+.next/
+.turbo/
+*.local
+
+# ==== Frontend build artifacts ====
+frontend/dist/
+frontend/build/
+
+# ==== Database / Artifacts (runtime, not source) ====
+*.sqlite
+*.sqlite3
+*.db
+data/artifacts/
+data/runs/
+data/checkpoints/
+data/tmp/
+*.parquet
+*.arrow
+
+# ==== Logs ====
+*.log
+logs/
+log/
+
+# ==== Docker volumes (if mounted to repo) ====
+.postgres-data/
+.docker-volumes/
+
+# ==== IDE / Editor ====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+
+# ==== OS ====
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# ==== Jupyter / Notebooks ====
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ==== AI tool caches ====
+.cursor/
+.trae/
+.claude/
+.aider*
