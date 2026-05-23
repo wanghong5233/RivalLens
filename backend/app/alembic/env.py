@@ -6,13 +6,15 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from core.config import settings
+import models  # noqa: F401
+from models.base import Base
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = None
+target_metadata = Base.metadata
 
 
 def get_url() -> str:

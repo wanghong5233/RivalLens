@@ -1,12 +1,43 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
 
+from core.config import settings
 from schemas.agent_message import AgentMessage
 from schemas.business import Evidence
 from schemas.qa import Rejection, RetryPolicy
 from schemas.skill import SkillCandidate
 from schemas.supervisor import SupervisorDecision
+
+
+def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str]:
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            run_row = connection.execute(
+                text("SELECT status FROM runs WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            ).mappings().first()
+            step_count = connection.execute(
+                text("SELECT COUNT(*) AS count FROM steps WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            ).scalar_one()
+            decision_row = connection.execute(
+                text(
+                    "SELECT chosen_tool FROM supervisor_decisions "
+                    "WHERE run_id = :run_id ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"run_id": run_id},
+            ).mappings().first()
+    finally:
+        engine.dispose()
+
+    return {
+        "run_status": run_row["status"] if run_row else "missing",
+        "step_count": int(step_count),
+        "latest_tool": decision_row["chosen_tool"] if decision_row else "missing",
+    }
 
 
 def test_health_endpoint(test_client: TestClient) -> None:
@@ -16,7 +47,7 @@ def test_health_endpoint(test_client: TestClient) -> None:
     assert payload["status"] == "ok"
 
 
-def test_create_run_stub(test_client: TestClient) -> None:
+def test_create_run_persists_rows(test_client: TestClient) -> None:
     response = test_client.post(
         "/api/runs",
         json={
@@ -27,8 +58,13 @@ def test_create_run_stub(test_client: TestClient) -> None:
     )
     payload = response.json()
     assert response.status_code == 200
-    assert payload["status"] == "stub"
+    assert payload["status"] == "completed"
     assert payload["run_id"].startswith("run_")
+
+    snapshot = _fetch_persisted_snapshot(payload["run_id"])
+    assert snapshot["run_status"] == "completed"
+    assert snapshot["step_count"] >= 1
+    assert snapshot["latest_tool"] == "Finalize"
 
 
 def test_schema_models_instantiation() -> None:

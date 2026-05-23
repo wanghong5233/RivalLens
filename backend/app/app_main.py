@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.config import settings
+from db.engine import dispose_engine, init_engine
 from exceptions.base import APIException
 from router import health_rt, run_rt
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
@@ -19,8 +20,10 @@ log = get_logger("app_main")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    init_engine()
     log.info("service_start", service=settings.SERVICE_NAME, environment=settings.ENVIRONMENT)
     yield
+    await dispose_engine()
     log.info("service_stop", service=settings.SERVICE_NAME)
 
 
