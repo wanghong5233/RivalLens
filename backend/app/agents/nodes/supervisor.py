@@ -22,13 +22,22 @@ TriggerSource = Literal[
     "researcher_completion",
     "analyst_completion",
     "writer_completion",
+    "qa_approval",
+    "qa_rejection",
     "iteration_advance",
 ]
 
 
 def _resolve_triggered_by(
-    *, iteration: int, last_completed_node: Literal["researcher", "analyst", "writer"] | None
+    *,
+    iteration: int,
+    last_completed_node: Literal["researcher", "analyst", "writer"] | None,
+    qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
 ) -> TriggerSource:
+    if qa_outcome == "approved":
+        return "qa_approval"
+    if qa_outcome in {"rejected", "force_degraded"}:
+        return "qa_rejection"
     if iteration == 1:
         return "user_query"
     if last_completed_node == "researcher":
@@ -137,6 +146,91 @@ def _fallback_decision(
         created_at=now,
     )
     return decision
+
+
+def _decision_from_qa_feedback(
+    *,
+    run_id: str,
+    iteration: int,
+    triggered_by: TriggerSource,
+    qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
+    qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
+    qa_reasons: list[str],
+) -> tuple[SupervisorDecision, dict[str, Any], bool] | None:
+    if qa_outcome is None or qa_outcome == "approved":
+        return None
+
+    now = _now_iso()
+    if qa_outcome == "force_degraded":
+        note = "QA max retries hit; force finalize in degraded mode."
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="Finalize",
+            tool_args=Finalize(
+                completion_reason="fallback_path",
+                notes=note,
+            ).model_dump(),
+            reasoning_summary=note,
+            triggered_by=triggered_by,
+            outcome="succeeded",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+        return (
+            decision,
+            {"provider": "qa_guardrail", "prompt_preview": "qa_force_degraded"},
+            True,
+        )
+
+    if qa_reject_to == "writer":
+        qa_reason_summary = "; ".join(qa_reasons[:3]) or "QA blocking rules failed."
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="Write",
+            tool_args=Write(
+                template_id="battlecard_default",
+                sections=DEFAULT_WRITE_SECTIONS,
+            ).model_dump(),
+            reasoning_summary=f"QA rejected writer output and requests rewrite: {qa_reason_summary}",
+            triggered_by=triggered_by,
+            outcome="dispatched",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+        return (
+            decision,
+            {"provider": "qa_guardrail", "prompt_preview": "qa_rejected_to_writer"},
+            False,
+        )
+
+    note = (
+        f"QA rejected output to `{qa_reject_to}` but this path is not implemented in fast-path slice; "
+        "fallback to finalize degraded."
+    )
+    decision = SupervisorDecision(
+        id=make_id("decision_"),
+        run_id=run_id,
+        iteration=iteration,
+        chosen_tool="Finalize",
+        tool_args=Finalize(
+            completion_reason="fallback_path",
+            notes=note,
+        ).model_dump(),
+        reasoning_summary=note,
+        triggered_by=triggered_by,
+        outcome="succeeded",
+        outcome_recorded_at=now,
+        created_at=now,
+    )
+    return (
+        decision,
+        {"provider": "qa_guardrail", "prompt_preview": "qa_rejected_unimplemented_target"},
+        True,
+    )
 
 
 def _try_llm_decision(
@@ -264,14 +358,29 @@ async def supervisor_node(state: AgentState) -> AgentState:
     researched_competitors = list(state.get("researched_competitors", []))
     analysis_done = bool(state.get("analysis_done", False))
     report_draft_done = bool(state.get("report_draft_done", False))
+    qa_outcome = state.get("qa_outcome")
+    qa_reject_to = state.get("qa_reject_to")
+    qa_reasons = list(state.get("qa_reasons", []))
     iteration = int(state.get("current_iteration", 0)) + 1
     last_completed_node = state.get("last_completed_node")
     triggered_by = _resolve_triggered_by(
         iteration=iteration,
         last_completed_node=last_completed_node,
+        qa_outcome=qa_outcome,
     )
 
-    if iteration > MAX_SUPERVISOR_ITERATIONS:
+    forced_degraded_by_qa = False
+    qa_driven_decision = _decision_from_qa_feedback(
+        run_id=run_id,
+        iteration=iteration,
+        triggered_by=triggered_by,
+        qa_outcome=qa_outcome,
+        qa_reject_to=qa_reject_to,
+        qa_reasons=qa_reasons,
+    )
+    if qa_driven_decision is not None:
+        decision, llm_response, forced_degraded_by_qa = qa_driven_decision
+    elif iteration > MAX_SUPERVISOR_ITERATIONS:
         forced_now = _now_iso()
         decision = SupervisorDecision(
             id=make_id("decision_"),
@@ -329,10 +438,11 @@ async def supervisor_node(state: AgentState) -> AgentState:
 
     next_action = _map_next_action(decision.chosen_tool)
     completion_reason = str(decision.tool_args.get("completion_reason", ""))
-    if decision.chosen_tool == "Finalize" and completion_reason == "max_iterations_hit":
-        status = "degraded"
-    elif decision.chosen_tool == "Finalize":
-        status = "completed"
+    if decision.chosen_tool == "Finalize":
+        if completion_reason == "max_iterations_hit" or forced_degraded_by_qa:
+            status = "degraded"
+        else:
+            status = "completed"
     else:
         status = "running"
 
@@ -347,5 +457,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
         "researched_competitors": researched_competitors,
         "analysis_done": analysis_done,
         "report_draft_done": report_draft_done,
+        "qa_outcome": None,
+        "qa_reject_to": None,
+        "qa_reasons": [],
         "status": status,
     }

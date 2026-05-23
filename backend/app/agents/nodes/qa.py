@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from agents.state import AgentState
+from models.report import Report
+from models.step import Step
+from schemas.ids import make_id
+from schemas.qa import Approval, Rejection
+from service.qa.engine import MAX_QA_REJECTIONS, evaluate_report
+
+
+def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
+    session_factory = state.get("session_factory")
+    if session_factory is None:
+        raise RuntimeError("AgentState.session_factory is required for qa node.")
+    return session_factory
+
+
+async def _load_review_targets(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    run_id: str,
+    pending_review_target_step_id: str | None,
+) -> tuple[Step, Report]:
+    async with session_factory() as session:
+        if pending_review_target_step_id is not None:
+            writer_step = await session.get(Step, pending_review_target_step_id)
+            if (
+                writer_step is not None
+                and writer_step.run_id == run_id
+                and writer_step.agent_name == "writer"
+            ):
+                pass
+            else:
+                writer_step = None
+        else:
+            writer_step = None
+
+        if writer_step is None:
+            writer_step = (
+                await session.execute(
+                    select(Step)
+                    .where(Step.run_id == run_id, Step.agent_name == "writer")
+                    .order_by(Step.created_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+        if writer_step is None:
+            raise RuntimeError(f"No writer step found for run_id={run_id} before QA review.")
+
+        report = (
+            await session.execute(
+                select(Report)
+                .where(Report.run_id == run_id)
+                .order_by(Report.created_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if report is None:
+            raise RuntimeError(f"No report found for run_id={run_id} before QA review.")
+
+        return writer_step, report
+
+
+def _make_qa_payload(
+    *,
+    target_step_id: str,
+    report_id: str,
+    review_result: Approval | Rejection,
+) -> dict[str, object]:
+    if isinstance(review_result, Approval):
+        return {
+            "target_step_id": target_step_id,
+            "report_id": report_id,
+            "qa_outcome": "approved",
+            "passed_rule_ids": review_result.passed_rule_ids,
+        }
+    return {
+        "target_step_id": target_step_id,
+        "report_id": report_id,
+        "qa_outcome": "rejected",
+        "failed_rule_ids": review_result.failed_rule_ids,
+        "reject_to": review_result.reject_to,
+    }
+
+
+def _to_qa_reasons(rejection: Rejection) -> list[str]:
+    reasons = [item for item in rejection.semantic_findings if item]
+    if reasons:
+        return reasons
+    return list(rejection.failed_rule_ids)
+
+
+async def qa_node(state: AgentState) -> AgentState:
+    run_id = state.get("run_id")
+    if run_id is None:
+        raise RuntimeError("AgentState.run_id is required for qa node.")
+
+    session_factory = _require_session_factory(state)
+    pending_review_target_step_id = state.get("pending_review_target_step_id")
+    qa_rejection_count = int(state.get("qa_rejection_count", 0))
+    qa_step_id = make_id("step_")
+
+    writer_step, report = await _load_review_targets(
+        session_factory=session_factory,
+        run_id=run_id,
+        pending_review_target_step_id=pending_review_target_step_id,
+    )
+    review_result = await evaluate_report(
+        run_id=run_id,
+        report_id=report.report_id,
+        target_step_id=writer_step.step_id,
+        reviewer_step_id=qa_step_id,
+        session_factory=session_factory,
+        qa_rejection_count=qa_rejection_count,
+    )
+
+    async with session_factory() as session:
+        step = Step(
+            step_id=qa_step_id,
+            run_id=run_id,
+            agent_name="qa",
+            status="running",
+            retry_count=0,
+            payload=_make_qa_payload(
+                target_step_id=writer_step.step_id,
+                report_id=report.report_id,
+                review_result=review_result,
+            ),
+            rejection_reason=(
+                review_result.model_dump()
+                if isinstance(review_result, Rejection)
+                else None
+            ),
+        )
+        session.add(step)
+        step.status = "completed"
+        step.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    if isinstance(review_result, Approval):
+        return {
+            **state,
+            "last_completed_node": "writer",
+            "pending_review_target_step_id": None,
+            "qa_outcome": "approved",
+            "qa_reject_to": None,
+            "qa_rejection_count": qa_rejection_count,
+            "qa_reasons": [],
+            "status": "running",
+        }
+
+    updated_rejection_count = qa_rejection_count + 1
+    is_force_degraded = updated_rejection_count > MAX_QA_REJECTIONS
+    return {
+        **state,
+        "last_completed_node": "writer",
+        "pending_review_target_step_id": None,
+        "qa_outcome": "force_degraded" if is_force_degraded else "rejected",
+        "qa_reject_to": "supervisor" if is_force_degraded else review_result.reject_to,
+        "qa_rejection_count": updated_rejection_count,
+        "qa_reasons": _to_qa_reasons(review_result),
+        "status": "running",
+    }

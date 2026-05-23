@@ -123,6 +123,11 @@ async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
             "report_draft_done": False,
             "current_iteration": 0,
             "pending_tool_args": {},
+            "qa_outcome": None,
+            "qa_reject_to": None,
+            "qa_rejection_count": 0,
+            "pending_review_target_step_id": None,
+            "qa_reasons": [],
             "status": "running",
             "session_factory": session_factory,
         }

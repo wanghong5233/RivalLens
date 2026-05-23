@@ -11,7 +11,7 @@ from schemas.skill import SkillCandidate
 from schemas.supervisor import SupervisorDecision
 
 
-def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str]:
+def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
     engine = create_engine(settings.DATABASE_URL_SYNC)
     try:
         with engine.connect() as connection:
@@ -30,6 +30,21 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str]:
                 ),
                 {"run_id": run_id},
             ).mappings().first()
+            qa_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'qa'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            qa_rejection_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'qa' "
+                    "AND rejection_reason IS NOT NULL"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
     finally:
         engine.dispose()
 
@@ -37,6 +52,8 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str]:
         "run_status": run_row["status"] if run_row else "missing",
         "step_count": int(step_count),
         "latest_tool": decision_row["chosen_tool"] if decision_row else "missing",
+        "qa_step_count": int(qa_step_count),
+        "qa_rejection_count": int(qa_rejection_count),
     }
 
 
@@ -64,8 +81,10 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
 
     snapshot = _fetch_persisted_snapshot(payload["run_id"])
     assert snapshot["run_status"] == "completed"
-    assert snapshot["step_count"] >= 4
+    assert snapshot["step_count"] >= 5
     assert snapshot["latest_tool"] == "Finalize"
+    assert snapshot["qa_step_count"] >= 1
+    assert snapshot["qa_rejection_count"] == 0
 
 
 def test_get_run_detail_and_trace(test_client: TestClient) -> None:
@@ -104,6 +123,7 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     assert "researcher" in step_agents
     assert "analyst" in step_agents
     assert "writer" in step_agents
+    assert "qa" in step_agents
 
     not_found_response = test_client.get("/api/runs/run_not_exists")
     assert not_found_response.status_code == 404

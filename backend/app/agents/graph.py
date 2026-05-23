@@ -6,6 +6,7 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from agents.nodes.analyst import analyst_node
+from agents.nodes.qa import qa_node
 from agents.nodes.researcher import researcher_node
 from agents.nodes.supervisor import supervisor_node
 from agents.nodes.writer import writer_node
@@ -27,6 +28,7 @@ def build_graph():
     graph.add_node("researcher", researcher_node)
     graph.add_node("analyst", analyst_node)
     graph.add_node("writer", writer_node)
+    graph.add_node("qa", qa_node)
     graph.set_entry_point("supervisor")
     graph.add_conditional_edges(
         "supervisor",
@@ -40,7 +42,8 @@ def build_graph():
     )
     graph.add_edge("researcher", "supervisor")
     graph.add_edge("analyst", "supervisor")
-    graph.add_edge("writer", "supervisor")
+    graph.add_edge("writer", "qa")
+    graph.add_edge("qa", "supervisor")
     return graph.compile()
 
 

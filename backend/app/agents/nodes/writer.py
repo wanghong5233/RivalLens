@@ -76,6 +76,6 @@ async def writer_node(state: AgentState) -> AgentState:
         **state,
         "report_draft_done": True,
         "pending_tool_args": {},
-        "last_completed_node": "writer",
+        "pending_review_target_step_id": step_id,
         "status": "running",
     }

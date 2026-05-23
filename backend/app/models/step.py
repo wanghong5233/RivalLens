@@ -23,6 +23,10 @@ class Step(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict)
+    rejection_reason: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
