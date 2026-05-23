@@ -40,6 +40,19 @@ def test_resolve_slot_respects_override_model(monkeypatch: pytest.MonkeyPatch) -
     assert model_name == "gpt-4o"
 
 
+def test_resolve_slot_supports_qwen_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LLM_PROVIDER_QA", "qwen")
+    monkeypatch.setattr(settings, "LLM_MODEL_QA", None)
+
+    provider_name, model_name = resolve_slot(
+        slot="qa",
+        providers={"qwen": _DummyProvider(default_model="qwen-plus")},
+    )
+
+    assert provider_name == "qwen"
+    assert model_name == "qwen-plus"
+
+
 def test_resolve_slot_rejects_unsupported_slot() -> None:
     with pytest.raises(LLMRequestError):
         resolve_slot(

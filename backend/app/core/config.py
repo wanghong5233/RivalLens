@@ -31,12 +31,15 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = None
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_DEFAULT_MODEL: str = "gpt-4o-mini"
+    QWEN_API_KEY: str | None = None
+    QWEN_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    QWEN_DEFAULT_MODEL: str = "qwen-plus"
 
-    LLM_PROVIDER_SUMMARIZATION: Literal["doubao", "openai"] = "doubao"
-    LLM_PROVIDER_RESEARCH: Literal["doubao", "openai"] = "doubao"
-    LLM_PROVIDER_COMPRESSION: Literal["doubao", "openai"] = "doubao"
-    LLM_PROVIDER_QA: Literal["doubao", "openai"] = "doubao"
-    LLM_PROVIDER_WRITER: Literal["doubao", "openai"] = "doubao"
+    LLM_PROVIDER_SUMMARIZATION: Literal["doubao", "openai", "qwen"] = "doubao"
+    LLM_PROVIDER_RESEARCH: Literal["doubao", "openai", "qwen"] = "doubao"
+    LLM_PROVIDER_COMPRESSION: Literal["doubao", "openai", "qwen"] = "doubao"
+    LLM_PROVIDER_QA: Literal["doubao", "openai", "qwen"] = "doubao"
+    LLM_PROVIDER_WRITER: Literal["doubao", "openai", "qwen"] = "doubao"
 
     LLM_MODEL_SUMMARIZATION: str | None = None
     LLM_MODEL_RESEARCH: str | None = None
@@ -76,6 +79,7 @@ class Settings(BaseSettings):
         )
         use_doubao = any(item == "doubao" for item in providers)
         use_openai = any(item == "openai" for item in providers)
+        use_qwen = any(item == "qwen" for item in providers)
 
         if use_doubao:
             if not self.DOUBAO_API_KEY:
@@ -92,6 +96,14 @@ class Settings(BaseSettings):
                 raise ValueError("OPENAI_DEFAULT_MODEL cannot be empty.")
             if not self.OPENAI_BASE_URL.strip():
                 raise ValueError("OPENAI_BASE_URL cannot be empty.")
+
+        if use_qwen:
+            if not self.QWEN_API_KEY:
+                raise ValueError("QWEN_API_KEY is required when any LLM slot uses qwen.")
+            if not self.QWEN_DEFAULT_MODEL.strip():
+                raise ValueError("QWEN_DEFAULT_MODEL cannot be empty.")
+            if not self.QWEN_BASE_URL.strip():
+                raise ValueError("QWEN_BASE_URL cannot be empty.")
 
         if self.LLM_TIMEOUT_SECONDS <= 0:
             raise ValueError("LLM_TIMEOUT_SECONDS must be positive.")

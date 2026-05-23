@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from json import JSONDecodeError
 from time import perf_counter
 
@@ -32,14 +33,34 @@ def _prompt_preview(*, system_prompt: str, user_prompt: str) -> str:
 
 
 def _parse_json_object(content_raw: str) -> dict[str, object]:
-    try:
-        parsed = json.loads(content_raw)
-    except JSONDecodeError as exc:
-        raise LLMResponseFormatError("Provider returned invalid JSON content.") from exc
+    candidates: list[str] = [content_raw.strip()]
+    fenced_match = re.search(
+        r"```(?:json)?\s*(\{.*?\})\s*```",
+        content_raw,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if fenced_match:
+        candidates.append(fenced_match.group(1).strip())
 
-    if not isinstance(parsed, dict):
-        raise LLMResponseFormatError("Provider returned non-object JSON.")
-    return parsed
+    first_brace = content_raw.find("{")
+    last_brace = content_raw.rfind("}")
+    if first_brace >= 0 and last_brace > first_brace:
+        candidates.append(content_raw[first_brace : last_brace + 1].strip())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed = json.loads(candidate)
+        except JSONDecodeError:
+            continue
+
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise LLMResponseFormatError("Provider returned invalid JSON object content.")
 
 
 class LLMClient:
