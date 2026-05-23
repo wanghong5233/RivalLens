@@ -11,7 +11,11 @@ from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
-from service.llm import SUPERVISOR_SYSTEM_PROMPT, build_supervisor_user_prompt
+from service.llm import (
+    SUPERVISOR_SYSTEM_PROMPT,
+    build_supervisor_fallback_user_prompt,
+    build_supervisor_user_prompt,
+)
 from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
 from schemas.ids import make_id
@@ -360,6 +364,8 @@ async def _persist_iteration(
                 "tool_args": decision.tool_args,
                 "llm_provider": llm_response.provider,
                 "llm_prompt_preview": llm_response.prompt_preview,
+                "llm_fallback_used": llm_response.fallback_used,
+                "llm_fallback_reason": llm_response.fallback_reason,
             },
         )
         session.add(step)
@@ -479,6 +485,14 @@ async def supervisor_node(state: AgentState) -> AgentState:
             model_slot="research",
             system_prompt=SUPERVISOR_SYSTEM_PROMPT,
             user_prompt=user_prompt,
+            fallback_system_prompt=SUPERVISOR_SYSTEM_PROMPT,
+            fallback_user_prompt=build_supervisor_fallback_user_prompt(
+                user_query=user_query,
+                competitors=competitors,
+                researched_competitors=researched_competitors,
+                analysis_done=analysis_done,
+                report_draft_done=report_draft_done,
+            ),
         )
         decision = _try_llm_decision(
             run_id=run_id,

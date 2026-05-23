@@ -24,6 +24,8 @@ class LLMResponse:
     completion_tokens: int | None
     latency_ms: int | None
     error: str | None
+    fallback_used: bool = False
+    fallback_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -37,6 +39,8 @@ class LLMResponse:
             "completion_tokens": self.completion_tokens,
             "latency_ms": self.latency_ms,
             "error": self.error,
+            "fallback_used": self.fallback_used,
+            "fallback_reason": self.fallback_reason,
         }
 
     def get(self, key: str, default: Any = None) -> Any:

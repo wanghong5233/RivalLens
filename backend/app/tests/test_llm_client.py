@@ -154,6 +154,72 @@ async def test_llm_client_retries_on_request_error(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_llm_client_uses_fallback_prompt_after_primary_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_research_slot(monkeypatch)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[
+            ProviderRawResponse(
+                content_raw='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"fallback"}',
+                model_name="ep-default",
+                prompt_tokens=7,
+                completion_tokens=2,
+            )
+        ],
+        request_errors=[
+            LLMRequestError("primary failed once"),
+            LLMRequestError("primary failed twice"),
+        ],
+    )
+    client = _make_client(provider, max_retries=1)
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+        fallback_system_prompt="fallback-system",
+        fallback_user_prompt="fallback-user",
+    )
+
+    assert provider.call_count == 3
+    assert response.error is None
+    assert response.fallback_used is True
+    assert response.fallback_reason is not None
+    assert response.content["chosen_tool"] == "Finalize"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_returns_error_when_fallback_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_research_slot(monkeypatch)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[],
+        request_errors=[
+            LLMRequestError("primary failed once"),
+            LLMRequestError("primary failed twice"),
+            LLMRequestError("fallback failed"),
+        ],
+    )
+    client = _make_client(provider, max_retries=1)
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+        fallback_system_prompt="fallback-system",
+        fallback_user_prompt="fallback-user",
+    )
+
+    assert provider.call_count == 3
+    assert response.error is not None
+    assert "primary=" in response.error
+    assert "fallback=" in response.error
+    assert response.fallback_used is True
+
+
+@pytest.mark.asyncio
 async def test_llm_client_prompt_hash_stable(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_research_slot(monkeypatch)
     provider = _SequencedProvider(

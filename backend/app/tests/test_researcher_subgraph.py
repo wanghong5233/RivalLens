@@ -24,8 +24,10 @@ class _FakeSequentialLLMClient:
         system_prompt: str | None = None,
         user_prompt: str | None = None,
         prompt: str | None = None,
+        fallback_system_prompt: str | None = None,
+        fallback_user_prompt: str | None = None,
     ) -> LLMResponse:
-        del system_prompt, user_prompt, prompt
+        del system_prompt, user_prompt, prompt, fallback_system_prompt, fallback_user_prompt
         queue = self.responses_by_slot.get(model_slot, [])
         if queue:
             return queue.pop(0)

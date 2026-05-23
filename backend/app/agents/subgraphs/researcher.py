@@ -10,7 +10,9 @@ from schemas.supervisor import FocusDimension
 from service.llm import (
     RESEARCHER_COMPRESSION_PROMPT,
     RESEARCHER_SYSTEM_PROMPT,
+    build_compression_fallback_user_prompt,
     build_compression_user_prompt,
+    build_researcher_fallback_user_prompt,
     build_researcher_user_prompt,
 )
 from service.llm.client import get_llm_client
@@ -126,6 +128,14 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         model_slot="research",
         system_prompt=RESEARCHER_SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        fallback_system_prompt=RESEARCHER_SYSTEM_PROMPT,
+        fallback_user_prompt=build_researcher_fallback_user_prompt(
+            competitor_id=state["competitor_id"],
+            pending_dimensions=list(state.get("pending_dimensions", [])),
+            queried_dimensions=list(state.get("queried_dimensions", [])),
+            turn_count=int(state.get("turn_count", 0)),
+            max_turns=max_turns,
+        ),
     )
 
     llm_calls = list(state.get("llm_calls", []))
@@ -257,6 +267,11 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
         model_slot="compression",
         system_prompt=RESEARCHER_COMPRESSION_PROMPT,
         user_prompt=user_prompt,
+        fallback_system_prompt=RESEARCHER_COMPRESSION_PROMPT,
+        fallback_user_prompt=build_compression_fallback_user_prompt(
+            observations_log=list(state.get("observations_log", [])),
+            evidence_drafts=list(state.get("evidence_drafts", [])),
+        ),
     )
 
     llm_calls = list(state.get("llm_calls", []))

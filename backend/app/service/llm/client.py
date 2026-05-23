@@ -32,6 +32,14 @@ def _prompt_preview(*, system_prompt: str, user_prompt: str) -> str:
     return preview[:256]
 
 
+def _merge_request_errors(*, primary_error: Exception, fallback_error: Exception | None) -> str:
+    primary = _format_error(LLMRequestError(str(primary_error)))
+    if fallback_error is None:
+        return primary
+    fallback = _format_error(LLMRequestError(str(fallback_error)))
+    return f"primary={primary}; fallback={fallback}"
+
+
 def _parse_json_object(content_raw: str) -> dict[str, object]:
     candidates: list[str] = [content_raw.strip()]
     fenced_match = re.search(
@@ -84,6 +92,8 @@ class LLMClient:
         system_prompt: str | None = None,
         user_prompt: str | None = None,
         prompt: str | None = None,
+        fallback_system_prompt: str | None = None,
+        fallback_user_prompt: str | None = None,
     ) -> LLMResponse:
         if prompt is not None and system_prompt is None and user_prompt is None:
             # Keep old supervisor path stable until all callers are migrated.
@@ -106,6 +116,11 @@ class LLMClient:
             raise ValueError(
                 "LLMClient.complete_json requires both system_prompt and user_prompt for provider mode."
             )
+        if (fallback_system_prompt is None) ^ (fallback_user_prompt is None):
+            raise ValueError(
+                "LLMClient.complete_json requires fallback_system_prompt and fallback_user_prompt "
+                "to be set together."
+            )
 
         prompt_hash = _prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt)
         prompt_preview = _prompt_preview(system_prompt=system_prompt, user_prompt=user_prompt)
@@ -113,6 +128,7 @@ class LLMClient:
         provider = self._providers[provider_name]
 
         request_error: LLMRequestError | None = None
+        elapsed_ms: int | None = None
         for attempt_index in range(self._max_retries + 1):
             started_at = perf_counter()
             try:
@@ -125,22 +141,11 @@ class LLMClient:
                     )
             except LLMRequestError as exc:
                 request_error = exc
+                elapsed_ms = int((perf_counter() - started_at) * 1000)
                 if attempt_index < self._max_retries:
                     await asyncio.sleep(0.2 * (2**attempt_index))
                     continue
-                elapsed_ms = int((perf_counter() - started_at) * 1000)
-                return LLMResponse(
-                    model_slot=model_slot,
-                    provider=provider_name,
-                    model_name=model_name,
-                    prompt_preview=prompt_preview,
-                    prompt_hash=prompt_hash,
-                    content={},
-                    prompt_tokens=None,
-                    completion_tokens=None,
-                    latency_ms=elapsed_ms,
-                    error=_format_error(exc),
-                )
+                break
 
             elapsed_ms = int((perf_counter() - started_at) * 1000)
             try:
@@ -172,6 +177,78 @@ class LLMClient:
                 error=None,
             )
 
+        if request_error is not None and fallback_system_prompt is not None and fallback_user_prompt is not None:
+            fallback_prompt_hash = _prompt_hash(
+                system_prompt=fallback_system_prompt,
+                user_prompt=fallback_user_prompt,
+            )
+            fallback_prompt_preview = _prompt_preview(
+                system_prompt=fallback_system_prompt,
+                user_prompt=fallback_user_prompt,
+            )
+            started_at = perf_counter()
+            try:
+                async with self._semaphore:
+                    raw_response = await provider.complete_json(
+                        system_prompt=fallback_system_prompt,
+                        user_prompt=fallback_user_prompt,
+                        model=model_name,
+                        timeout_seconds=self._timeout_seconds,
+                    )
+            except LLMRequestError as fallback_exc:
+                fallback_elapsed_ms = int((perf_counter() - started_at) * 1000)
+                return LLMResponse(
+                    model_slot=model_slot,
+                    provider=provider_name,
+                    model_name=model_name,
+                    prompt_preview=fallback_prompt_preview,
+                    prompt_hash=fallback_prompt_hash,
+                    content={},
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    latency_ms=fallback_elapsed_ms,
+                    error=_merge_request_errors(
+                        primary_error=request_error,
+                        fallback_error=fallback_exc,
+                    ),
+                    fallback_used=True,
+                    fallback_reason=_format_error(request_error),
+                )
+
+            fallback_elapsed_ms = int((perf_counter() - started_at) * 1000)
+            try:
+                content = _parse_json_object(raw_response.content_raw)
+            except LLMResponseFormatError as exc:
+                return LLMResponse(
+                    model_slot=model_slot,
+                    provider=provider_name,
+                    model_name=raw_response.model_name,
+                    prompt_preview=fallback_prompt_preview,
+                    prompt_hash=fallback_prompt_hash,
+                    content={},
+                    prompt_tokens=raw_response.prompt_tokens,
+                    completion_tokens=raw_response.completion_tokens,
+                    latency_ms=fallback_elapsed_ms,
+                    error=_format_error(exc),
+                    fallback_used=True,
+                    fallback_reason=_format_error(request_error),
+                )
+
+            return LLMResponse(
+                model_slot=model_slot,
+                provider=provider_name,
+                model_name=raw_response.model_name,
+                prompt_preview=fallback_prompt_preview,
+                prompt_hash=fallback_prompt_hash,
+                content=content,
+                prompt_tokens=raw_response.prompt_tokens,
+                completion_tokens=raw_response.completion_tokens,
+                latency_ms=fallback_elapsed_ms,
+                error=None,
+                fallback_used=True,
+                fallback_reason=_format_error(request_error),
+            )
+
         if request_error is None:
             raise RuntimeError("LLM request retry loop reached unreachable state.")
 
@@ -184,7 +261,7 @@ class LLMClient:
             content={},
             prompt_tokens=None,
             completion_tokens=None,
-            latency_ms=None,
+            latency_ms=elapsed_ms,
             error=_format_error(request_error),
         )
 

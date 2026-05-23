@@ -52,6 +52,13 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                 ),
                 {"run_id": run_id},
             ).scalar_one()
+            analyst_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'analyst'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
             supervisor_llm_call_count = connection.execute(
                 text(
                     "SELECT COUNT(*) AS count FROM llm_calls l "
@@ -75,6 +82,48 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                     "JOIN steps s ON s.step_id = l.step_id "
                     "WHERE s.run_id = :run_id AND s.agent_name = 'supervisor' "
                     "AND l.prompt_hash IS NOT NULL"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            analyst_llm_call_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'analyst'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            analyst_llm_summarization_slot_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'analyst' "
+                    "AND l.model_slot = 'summarization'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            analyst_fallback_mode_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'analyst' "
+                    "AND payload ->> 'analysis_mode' = 'fallback'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            qa_llm_call_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'qa' "
+                    "AND l.model_slot = 'qa'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            qa_semantic_degraded_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'qa' "
+                    "AND payload ->> 'qa_semantic_mode' = 'degraded_rule_only'"
                 ),
                 {"run_id": run_id},
             ).scalar_one()
@@ -149,9 +198,15 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
         "qa_step_count": int(qa_step_count),
         "qa_rejection_count": int(qa_rejection_count),
         "supervisor_step_count": int(supervisor_step_count),
+        "analyst_step_count": int(analyst_step_count),
         "supervisor_llm_call_count": int(supervisor_llm_call_count),
         "supervisor_llm_success_count": int(supervisor_llm_success_count),
         "supervisor_llm_prompt_hash_count": int(supervisor_llm_prompt_hash_count),
+        "analyst_llm_call_count": int(analyst_llm_call_count),
+        "analyst_llm_summarization_slot_count": int(analyst_llm_summarization_slot_count),
+        "analyst_fallback_mode_count": int(analyst_fallback_mode_count),
+        "qa_llm_call_count": int(qa_llm_call_count),
+        "qa_semantic_degraded_count": int(qa_semantic_degraded_count),
         "researcher_llm_call_count": int(researcher_llm_call_count),
         "researcher_llm_research_slot_count": int(researcher_llm_research_slot_count),
         "checkpoint_row_count": int(checkpoint_row_count),
@@ -194,6 +249,12 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["supervisor_llm_call_count"] >= snapshot["supervisor_step_count"]
     assert snapshot["supervisor_llm_success_count"] >= 1
     assert snapshot["supervisor_llm_prompt_hash_count"] >= 1
+    assert snapshot["analyst_step_count"] >= 1
+    assert snapshot["analyst_llm_call_count"] >= 1
+    assert snapshot["analyst_llm_summarization_slot_count"] >= 1
+    assert snapshot["analyst_fallback_mode_count"] >= 1
+    assert snapshot["qa_llm_call_count"] >= 1
+    assert snapshot["qa_semantic_degraded_count"] >= 1
     assert snapshot["researcher_llm_call_count"] >= 1
     assert snapshot["researcher_llm_research_slot_count"] >= 1
     assert snapshot["checkpoint_row_count"] >= 1

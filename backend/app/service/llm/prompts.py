@@ -10,6 +10,12 @@ SUPERVISOR_ALLOWED_DIMENSIONS: tuple[str, ...] = (
     "positioning",
     "tech_stack",
 )
+QA_SEMANTIC_ALLOWED_REJECT_TO: tuple[str, ...] = (
+    "supervisor",
+    "researcher",
+    "analyst",
+    "writer",
+)
 
 SUPERVISOR_SYSTEM_PROMPT = """You are the RivalLens Supervisor planner.
 You must choose exactly one tool in each iteration and return STRICT JSON.
@@ -100,6 +106,48 @@ Rules:
 - Do not invent new facts.
 """
 
+ANALYST_SYSTEM_PROMPT = """You are RivalLens Analyst.
+You must produce cross-competitor analysis in STRICT JSON.
+
+Output JSON schema:
+{
+  "summary": str,
+  "insights": [
+    {
+      "dimension": "feature" | "pricing" | "user_feedback" | "positioning" | "tech_stack",
+      "finding": str,
+      "evidence_ids": list[str],
+      "confidence": "high" | "medium" | "low"
+    }
+  ],
+  "risk_flags": list[str],
+  "recommended_sections": list[str]
+}
+
+Rules:
+- Every insight must reference existing evidence_ids from user prompt.
+- Do not fabricate competitor facts.
+- Return JSON object only.
+"""
+
+QA_SEMANTIC_SYSTEM_PROMPT = """You are RivalLens QA semantic auditor.
+You review report coherence and evidence consistency in STRICT JSON.
+
+Output JSON schema:
+{
+  "semantic_audit_passed": bool,
+  "reject_to": "supervisor" | "researcher" | "analyst" | "writer",
+  "severity": "blocking" | "warning",
+  "finding": str,
+  "required_fields": list[str]
+}
+
+Rules:
+- If semantic_audit_passed is true, finding should still be concise.
+- If false, reject_to must be actionable and required_fields must be specific.
+- Return JSON object only.
+"""
+
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
@@ -138,6 +186,26 @@ def build_supervisor_user_prompt(
     )
 
 
+def build_supervisor_fallback_user_prompt(
+    *,
+    user_query: str,
+    competitors: Sequence[str],
+    researched_competitors: Sequence[str],
+    analysis_done: bool,
+    report_draft_done: bool,
+) -> str:
+    pending_competitors = [item for item in competitors if item not in researched_competitors]
+    return (
+        "Fallback planning context:\n"
+        f"- user_query: {user_query}\n"
+        f"- competitors: {_json(list(competitors))}\n"
+        f"- pending_competitors: {_json(pending_competitors)}\n"
+        f"- analysis_done: {analysis_done}\n"
+        f"- report_draft_done: {report_draft_done}\n\n"
+        "Pick exactly one next tool and keep tool_args minimal but valid."
+    )
+
+
 def build_researcher_user_prompt(
     *,
     research_topic: str,
@@ -166,6 +234,25 @@ def build_researcher_user_prompt(
     )
 
 
+def build_researcher_fallback_user_prompt(
+    *,
+    competitor_id: str,
+    pending_dimensions: Sequence[str],
+    queried_dimensions: Sequence[str],
+    turn_count: int,
+    max_turns: int,
+) -> str:
+    return (
+        "Fallback researcher action request:\n"
+        f"- competitor_id: {competitor_id}\n"
+        f"- pending_dimensions: {_json(list(pending_dimensions))}\n"
+        f"- queried_dimensions: {_json(list(queried_dimensions))}\n"
+        f"- turn_count: {turn_count}\n"
+        f"- max_turns: {max_turns}\n\n"
+        "Return one action with valid action_args. Prefer pack_lookup on pending dimensions."
+    )
+
+
 def build_compression_user_prompt(
     *,
     messages: Sequence[dict[str, str]],
@@ -177,4 +264,79 @@ def build_compression_user_prompt(
         f"- messages_tail: {_json(list(messages)[-10:])}\n"
         f"- observations_tail: {_json(list(observations_log)[-8:])}\n"
         f"- evidence_drafts_tail: {_json(list(evidence_drafts)[-8:])}\n"
+    )
+
+
+def build_compression_fallback_user_prompt(
+    *,
+    observations_log: Sequence[dict[str, object]],
+    evidence_drafts: Sequence[dict[str, object]],
+) -> str:
+    return (
+        "Fallback compression request:\n"
+        f"- observations_count: {len(list(observations_log))}\n"
+        f"- evidence_count: {len(list(evidence_drafts))}\n\n"
+        "Return a compact compressed_summary with key findings only."
+    )
+
+
+def build_analyst_user_prompt(
+    *,
+    user_query: str,
+    competitors: Sequence[str],
+    focus_dimensions: Sequence[str],
+    evidence_briefs: Sequence[dict[str, object]],
+) -> str:
+    return (
+        "Analysis context:\n"
+        f"- user_query: {user_query}\n"
+        f"- competitors: {_json(list(competitors))}\n"
+        f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n\n"
+        "Produce cross-competitor insights with explicit evidence_ids."
+    )
+
+
+def build_analyst_fallback_user_prompt(
+    *,
+    competitors: Sequence[str],
+    focus_dimensions: Sequence[str],
+    evidence_ids: Sequence[str],
+) -> str:
+    return (
+        "Fallback analysis request:\n"
+        f"- competitors: {_json(list(competitors))}\n"
+        f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
+        "Return minimal valid JSON with at least one insight."
+    )
+
+
+def build_qa_semantic_user_prompt(
+    *,
+    report_markdown: str,
+    report_json: dict[str, object],
+    failed_rule_ids: Sequence[str],
+    evidence_briefs: Sequence[dict[str, object]],
+) -> str:
+    return (
+        "QA semantic audit context:\n"
+        f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n"
+        f"- report_json: {_json(report_json)}\n"
+        f"- report_markdown_preview: {_json(report_markdown[:600])}\n"
+        f"- evidence_briefs: {_json(list(evidence_briefs)[-20:])}\n\n"
+        f"reject_to must be one of {_json(list(QA_SEMANTIC_ALLOWED_REJECT_TO))}."
+    )
+
+
+def build_qa_semantic_fallback_user_prompt(
+    *,
+    failed_rule_ids: Sequence[str],
+    evidence_count: int,
+) -> str:
+    return (
+        "Fallback QA semantic audit request:\n"
+        f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n"
+        f"- evidence_count: {evidence_count}\n\n"
+        "Return minimal valid JSON for semantic_audit_passed/reject_to/severity/finding/required_fields."
     )
