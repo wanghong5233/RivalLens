@@ -221,6 +221,26 @@ class _FakeLLMClient:
         }
         return self._build_response(model_slot="writer", content=content)
 
+    def _build_skill_curator_response(self, user_prompt: str) -> LLMResponse:
+        run_id_match = re.search(r"- run_id: ([^\n]+)", user_prompt)
+        run_id = run_id_match.group(1).strip() if run_id_match is not None else "run_fake"
+        content = {
+            "candidates": [
+                {
+                    "candidate_type": "qa_rule",
+                    "payload": {
+                        "rule_yaml": "id: rule_pricing_requires_recent_source",
+                        "triggered_failures_count": 1,
+                        "similar_existing_rules": [],
+                    },
+                    "rationale": "Pricing evidence freshness should be enforced for recurring review reliability.",
+                    "confidence": "medium",
+                    "supporting_run_ids": [run_id],
+                }
+            ]
+        }
+        return self._build_response(model_slot="qa", content=content)
+
     async def complete_json(
         self,
         *,
@@ -266,6 +286,14 @@ class _FakeLLMClient:
             and "Writer context" in user_prompt
         ):
             return self._build_writer_response(user_prompt)
+        if (
+            model_slot == "qa"
+            and isinstance(system_prompt, str)
+            and "RivalLens Skill Curator" in system_prompt
+            and isinstance(user_prompt, str)
+            and "Curator context" in user_prompt
+        ):
+            return self._build_skill_curator_response(user_prompt)
 
         if self._response.model_slot == model_slot:
             return self._response
@@ -304,6 +332,7 @@ def fake_llm_client(
     monkeypatch.setattr("agents.nodes.writer.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("service.qa.engine.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("service.skill_curator.engine.get_llm_client", lambda: fake_client)
     return fake_client
 
 

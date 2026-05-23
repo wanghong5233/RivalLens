@@ -225,6 +225,22 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
                 ),
                 {"run_id": run_id},
             ).mappings().first()
+            skill_candidate_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM skill_candidates "
+                    "WHERE industry_pack = 'ai_coding_tools' "
+                    "AND supporting_run_ids @> CAST(:supporting_run_ids AS jsonb)"
+                ),
+                {"supporting_run_ids": f'["{run_id}"]'},
+            ).scalar_one()
+            skill_candidate_staging_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM skill_candidates "
+                    "WHERE industry_pack = 'ai_coding_tools' AND status = 'staging' "
+                    "AND supporting_run_ids @> CAST(:supporting_run_ids AS jsonb)"
+                ),
+                {"supporting_run_ids": f'["{run_id}"]'},
+            ).scalar_one()
     finally:
         engine.dispose()
 
@@ -285,6 +301,8 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
         "expected_phrase_count": int(expected_phrase_count),
         "report_sections_content_count": int(report_sections_content_count),
         "report_has_evidence_citation": report_has_evidence_citation,
+        "skill_candidate_count": int(skill_candidate_count),
+        "skill_candidate_staging_count": int(skill_candidate_staging_count),
     }
 
 
@@ -314,7 +332,7 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["run_status"] == "completed"
     assert snapshot["step_count"] >= 5
     assert snapshot["first_tool"] == "ConductResearchBatch"
-    assert snapshot["latest_tool"] == "Finalize"
+    assert snapshot["latest_tool"] == "Write"
     assert snapshot["qa_step_count"] >= 1
     assert snapshot["qa_rejection_count"] == 0
     assert snapshot["supervisor_llm_call_count"] >= snapshot["supervisor_step_count"]
@@ -339,6 +357,8 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["expected_phrase_count"] >= 1
     assert snapshot["report_sections_content_count"] >= 3
     assert snapshot["report_has_evidence_citation"] is True
+    assert snapshot["skill_candidate_count"] >= 1
+    assert snapshot["skill_candidate_staging_count"] >= 1
 
 
 def test_get_run_detail_and_trace(test_client: TestClient) -> None:
@@ -367,10 +387,10 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     trace_payload = trace_response.json()
     assert trace_payload["run"]["run_id"] == run_id
     assert len(trace_payload["steps"]) >= 4
-    assert len(trace_payload["supervisor_decisions"]) >= 4
+    assert len(trace_payload["supervisor_decisions"]) >= 3
     decision_tools = [item["chosen_tool"] for item in trace_payload["supervisor_decisions"]]
     step_agents = [item["agent_name"] for item in trace_payload["steps"]]
-    assert decision_tools[-1] == "Finalize"
+    assert decision_tools[-1] == "Write"
     assert "ConductResearch" in decision_tools
     assert "Analyze" in decision_tools
     assert "Write" in decision_tools
@@ -378,6 +398,7 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     assert "analyst" in step_agents
     assert "writer" in step_agents
     assert "qa" in step_agents
+    assert "skill_curator" in step_agents
 
     not_found_response = test_client.get("/api/runs/run_not_exists")
     assert not_found_response.status_code == 404
