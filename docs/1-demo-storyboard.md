@@ -1,199 +1,434 @@
-# RivalLens 答辩演示剧本
+# RivalLens 产品形态与前端业务设计
 
-> 本文定义 RivalLens 第一版的答辩演示主线。架构、Schema、分工和开发优先级都从这份剧本反推。
+> 本文回答：**产品有哪些页面、每个页面长什么样、用户怎么操作、业务对象在 UI 上如何呈现**。
+>
+> 后端架构见 `docs/2` / `docs/2.5`；Schema 字段定义见 `docs/3`；本文不重复字段细节。
+>
+> **形态参考**（仅借鉴产品形态，自研视觉风格，不抄像素）：
+>
+> - Klue Compete Agent（`klue.com/compete-agent`、`klue.com/topics/good-sales-battlecard-examples`）：6 类 Battlecard 结构、点击 claim 抽屉式溯源、24h 自动刷新视觉提示、HITL 校验状态。
+> - Crayon Sparks（`crayon.co/sparks`）：AI importance scoring 标签、cron-driven 自动更新提示。
 
-## 1. 演示定位
+## 1. 产品定位
 
-### 主演示行业
+- **赛道**：AI Coding 工具（Cursor / Windsurf / TRAE / Claude Code）
+- **用户角色**：
+  - **PM / 产品负责人**：关注功能树、差异化、定价、用户反馈、可借鉴点
+  - **创业者 / CEO**：关注市场机会、定位、商业模式、SWOT、风险
+- **核心交付物**：每竞品一张 Battlecard + 跨竞品分析 + evidence-grounded 溯源
 
-RivalLens 第一版锁定 **AI Agent 产品赛道**，主演示子集为 **AI Coding 工具**。
+## 2. 信息架构
 
-主演示竞品：
+```mermaid
+flowchart LR
+    Home([Home<br/>任务列表/历史]) --> NewRun[新建分析任务]
+    NewRun --> Running[任务运行中]
+    Running --> Report[Battlecard 报告页]
+    Home -.直接打开历史.-> Report
+    Report -.点击 claim.-> Evidence[/Evidence Drawer<br/>右侧抽屉/]
+    Report --> Compare[对比矩阵视图]
+    Report --> Voice[Prospect Voice 视图]
+    Home --> Skill[Skill Staging Console]
+    Report -.调试模式.-> Trace[Trace 详情<br/>给评委的可观测视图]
 
-- Cursor
-- Windsurf
-- TRAE
-- Claude Code
-
-选择理由：
-
-- 与导师举例的“通用类型的 Agent 有哪些产品”高度贴合，降低评委理解成本。
-- 竞品官网、文档、定价页、用户评论和产品讨论公开资料丰富。
-- 评委大概率熟悉 AI Coding 工具，可以现场判断分析结论是否可信。
-- 与比赛要求使用 TRAE 等 AI 编程工具形成叙事闭环：RivalLens 分析的对象之一就是 AI Coding 工具。
-
-### 目标用户
-
-第一版只服务两类用户：
-
-- 产品经理 / 产品负责人：关注功能树、差异化、定价、用户反馈、可借鉴点。
-- 创业者 / CEO / 项目负责人：关注市场机会、定位、商业模式、风险和 SWOT。
-
-暂不进入主演示：
-
-- 销售话术型竞品分析。
-- 投资研究型深度报告。
-- UX 标杆拆解。
-- 增长投放素材分析。
-
-## 2. 演示数据集策略
-
-录屏和答辩演示使用 **预置数据集 + 可选在线刷新** 的方式。
-
-### 数据来源类型
-
-- 官方来源：官网首页、产品文档、定价页、功能介绍页、更新日志。
-- 公开评论：Product Hunt、G2、Reddit、X 等公开讨论。
-- 补充材料：公开访谈、公开测评、开发者博客。
-
-### 数据处理规则
-
-- 不使用公司内部、私域群聊、非授权访谈内容。
-- 公开评论进入 evidence 表前必须脱敏，去除用户名、头像、邮箱、手机号等可识别信息。
-- 录屏时优先读取本地预置数据，避免外网抖动影响演示。
-- 每条报告结论必须可追溯到 evidence 记录，evidence 记录必须包含来源 URL 或本地文档引用。
-
-### 数据集目录建议
-
-```text
-data/demo/ai_coding/
-  sources.yaml
-  raw/
-  sanitized/
-  seeds/
-  expected_failures/
+    classDef main fill:#e3f2fd,stroke:#1976d2,stroke-width:2px
+    classDef drawer fill:#fff3e0,stroke:#f57c00,stroke-width:1.5px,stroke-dasharray: 4 3
+    classDef admin fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px
+    class Home,NewRun,Running,Report main
+    class Evidence drawer
+    class Skill,Trace admin
 ```
 
-## 3. 录屏时间轴
+**路由约定**：
 
-目标录屏长度：7 到 8 分钟。
-
-| 时间 | 画面 | 要证明的能力 |
+| 路径 | 页面 | 入口 |
 |---|---|---|
-| 0:00-0:30 | 首页输入任务：“分析 AI Coding 工具赛道，竞品 Cursor / Windsurf / TRAE / Claude Code，目标用户为产品经理和创业者” | 范围收敛，贴合真实业务场景 |
-| 0:30-1:20 | 创建 run，DAG 视图展开：4 个并行 Collector 子节点（按竞品 fan-out）+ Extractor（按竞品并行）+ Analyst（按 feature 维度并行）+ Writer + QA | 多 Agent 角色清晰，DAG 可视化，节点级并行结构一眼可见 |
-| 1:20-2:30 | 4 个 Collector 子节点同时点亮并完成，evidence 数量随抓取实时累加，左侧来源清单滚动刷新 | 节点级并行采集，来源可查 |
-| 2:30-3:30 | Extractor 按竞品并行 fan-out，逐个产出 feature tree / pricing / persona / feedback 结构化分片 | 竞品知识 Schema，结构化输出，并行抽取 |
-| 3:30-4:30 | Analyst 按 feature 维度并行差异分析，merge 节点聚合 SWOT，右侧 evidence refs 同步绑定 | 分析结论与证据绑定，并行收敛 |
-| 4:30-5:30 | QA 节点变红，打回 Analyst：pricing 结论缺少证据 | 真实反馈闭环，非伪闭环 |
-| 5:30-6:20 | Analyst 重跑补齐 pricing evidence，QA 变绿，Writer 生成报告 | 打回后输出有改善 |
-| 6:20-7:10 | 报告页点击任意结论，展开证据链、原文片段、来源 URL | 结论级溯源 |
-| 7:10-7:50 | Trace 时间线展示 Prompt、输入、输出、token、latency、错误重试 | 可观测性 |
-| 7:50-8:00 | 切换行业包配置，展示同一 DAG 可迁移到通用 Agent 产品分析 | 通用核心 + 场景配置 |
+| `/` | Home（任务列表） | 默认 |
+| `/runs/new` | 新建任务 wizard | Home 顶栏按钮 |
+| `/runs/:run_id` | 任务运行中 / 已完成报告 | Home 列表点击 |
+| `/runs/:run_id/competitors/:competitor_id` | 单竞品 Battlecard 详情 | 报告页竞品卡片点击 |
+| `/runs/:run_id/voice` | Prospect Voice 主题视图 | 报告页 tab |
+| `/runs/:run_id/compare` | 跨竞品对比矩阵 | 报告页 tab |
+| `/runs/:run_id/trace` | Agent Trace 详情 | 报告页右上角"开发者视图"按钮 |
+| `/skills/staging` | Skill 审核台 | Home 侧边栏 |
 
-## 4. QA 打回主线
+## 3. 关键页面规格
 
-主演示采用 **证据缺失型打回**。
+### 3.1 新建分析任务页（`/runs/new`）
 
-选择理由：
-
-- 与评分项“每条分析结论可定位到原始数据源”直接对齐。
-- 失败条件可控，录屏稳定。
-- 打回前后差异清晰，评委容易判断不是伪闭环。
-
-### 预埋失败案例
-
-第一次 Analyst 输出中故意包含如下问题：
+**目标**：让用户在 30 秒内启动一次分析。参考 Klue "Explore Insights" 单输入框 + 一键启动。
 
 ```text
-结论：Windsurf 在团队协作定价上比 Cursor 更适合企业团队。
-问题：没有绑定 pricing page 或公开报价证据。
+┌───────────────────────────────────────────────────────────┐
+│  ← 返回             新建竞品分析                            │
+├───────────────────────────────────────────────────────────┤
+│                                                           │
+│   分析什么？                                                │
+│   ┌───────────────────────────────────────────────────┐   │
+│   │ 输入赛道名或粘贴竞品列表（每行一个）                  │   │
+│   │  AI Coding 工具                                    │   │
+│   │  Cursor                                            │   │
+│   │  Windsurf                                          │   │
+│   │  TRAE                                              │   │
+│   │  Claude Code                                       │   │
+│   └───────────────────────────────────────────────────┘   │
+│                                                           │
+│   行业包                                                    │
+│   [ai_coding_tools ▼]   ⓘ 决定 evidence 来源 / 报告模板    │
+│                                                           │
+│   关注角色（多选）                                          │
+│   ☑ 产品经理   ☑ 创业者   ☐ 销售   ☐ 投资人               │
+│                                                           │
+│   ▷ 高级选项（折叠）                                        │
+│       • 关注维度 [功能, 定价, 用户反馈, 差异化, SWOT]       │
+│       • 数据集模式 [预置 / 在线刷新]                        │
+│                                                           │
+│             ┌──────────────────┐                          │
+│             │   启动分析 →     │                          │
+│             └──────────────────┘                          │
+└───────────────────────────────────────────────────────────┘
 ```
 
-QA Agent 输出结构化 rejection message：
+**交互要点**：
 
-```json
-{
-  "status": "rejected",
-  "target": "analyst",
-  "reason": "pricing conclusion lacks evidence",
-  "required_fields": ["pricing_model", "source_url", "quote"],
-  "evidence_refs": [],
-  "retry_policy": {
-    "max_retry": 1,
-    "next_agent": "analyst"
-  }
-}
+- 默认填充上次的行业包和关注角色，降低重复输入成本
+- 行业包下拉显示每个 pack 的简介与可分析维度（hover）
+- "启动分析"后立即跳转 `/runs/:run_id`，**不**让用户在新建页等待
+- 数据集模式默认"预置"，避免演示外网抖动
+
+### 3.2 任务运行中页（`/runs/:run_id` 进行中态）
+
+**目标**：让用户**以业务进度视角**看到 Agent 在做什么，而不是 DAG 技术过程。DAG 视图在"开发者视图"里。
+
+```text
+┌───────────────────────────────────────────────────────────┐
+│  AI Coding 工具分析  · run_abc123  · 进行中  · 已 02:34   │
+│  4 竞品 · 87 evidence · 0 conclusion · 0 battlecard       │
+│                                            [开发者视图 →] │
+├───────────────────────────────────────────────────────────┤
+│  当前进度                                                  │
+│                                                           │
+│  ●─── 调研竞品 ────●─── 跨竞品分析 ───○─── 撰写报告 ───○  │
+│       已完成         进行中           等待              │
+│                                                           │
+├───────────────────────────────────────────────────────────┤
+│  竞品调研状态                                              │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌──────┐│
+│  │ Cursor      │ │ Windsurf    │ │ TRAE        │ │ Claude││
+│  │ ✓ 完成      │ │ ⏳ 抓取中   │ │ ✓ 完成      │ │ ⏳    ││
+│  │ 23 evidence │ │ 12 evidence │ │ 19 evidence │ │ 8 ev  ││
+│  │ 5 来源      │ │ 3/5 来源    │ │ 4 来源      │ │ 2/4   ││
+│  └─────────────┘ └─────────────┘ └─────────────┘ └──────┘│
+│                                                           │
+├───────────────────────────────────────────────────────────┤
+│  最新事件（滚动）                                          │
+│  • 03:21  Researcher(Cursor) 抓取 pricing page 完成        │
+│  • 03:18  Researcher(Windsurf) 抓取 G2 reviews（17 条）   │
+│  • 03:15  Researcher(TRAE) 完成，输出 19 evidence         │
+│  • ...                                                    │
+└───────────────────────────────────────────────────────────┘
 ```
 
-重跑后 Analyst 必须补齐：
+**交互要点**：
 
-- pricing_model
-- source_url
-- quote 或 sanitized_text
-- evidence_id
+- 顶部业务进度条（3 段：调研 / 分析 / 撰写），不暴露 Supervisor / Researcher 等技术名词
+- 中间竞品卡按"业务实体"组织（而非按 Agent），用户看到的是"Cursor 在调研中"而非"researcher_subgraph_007 在跑"
+- 右上角"开发者视图"才是 DAG / Trace / Supervisor 决策 JSON（评委专用 tab）
+- 实时事件流用人话描述，把 Agent 内部消息翻译成业务事件
 
-QA 再次检查通过：
+### 3.3 Battlecard 报告页（核心交付物）
 
-```json
-{
-  "status": "approved",
-  "target": "writer",
-  "reason": "pricing conclusion now has traceable evidence",
-  "evidence_refs": ["ev_pricing_windsurf_001"]
-}
+**目标**：核心产出页。第一版做 **2 类 Battlecard**（参考 Klue 6 类，砍掉 4 类作为 v2 候选）。
+
+#### 3.3.1 页面框架
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│  AI Coding 工具分析报告  · 24h 前刷新  · 状态: 已通过 QA   │
+├─[竞品概览]──[对比矩阵]──[Prospect Voice]──[开发者视图]────┤
+│                                                            │
+│  竞品概览（4 张 Competitor Battlecard 网格布局）           │
+│                                                            │
+│   ┌──────────────────┐  ┌──────────────────┐               │
+│   │ Cursor      🔴HIGH│  │ Windsurf    🟡MED│              │
+│   │ ─────────────────│  │ ─────────────────│              │
+│   │ Why We Win:      │  │ Why We Win:      │              │
+│   │ • 协作成熟       │  │ • Pricing 灵活   │              │
+│   │ • IDE 集成深     │  │ • 团队功能强     │              │
+│   │ Recent News:     │  │ Recent News:     │              │
+│   │ • 上线 Agent v2  │  │ • 改价 $35/seat  │              │
+│   │ Pricing: $20/mo  │  │ Pricing: $35/seat│              │
+│   │ [展开 →]         │  │ [展开 →]         │              │
+│   └──────────────────┘  └──────────────────┘              │
+│   ┌──────────────────┐  ┌──────────────────┐               │
+│   │ TRAE        🟢LOW│  │ Claude Code 🟡MED│              │
+│   │ ...              │  │ ...              │              │
+│   └──────────────────┘  └──────────────────┘              │
+└────────────────────────────────────────────────────────────┘
 ```
 
-### 扩展打回类型
+#### 3.3.2 Competitor Battlecard 详情（点击单张卡进入）
 
-第二优先级，可在系统里保留但不作为主演示：
+字段对齐 Klue 真实战卡结构（来自 `klue.com/topics/good-sales-battlecard-examples`）：
 
-- 跨竞品冲突型：同一字段在不同来源中互相冲突，需要降级为“不确定”并要求补采。
-- 幻觉抑制型：模型生成了 evidence 中不存在的功能点，QA 拒绝并要求删除或补证据。
+| 区块 | 内容 | 数据源 | 第一版 |
+|---|---|---|---|
+| Header | 竞品 logo / 名称 / **24h 前刷新** 标签 / importance | competitor 表 | ✅ |
+| Recent News | 最近 30 天 release / 博客 / pricing change | evidence (source_type=release_note/official_blog) | ✅ |
+| Why We Win | 2-5 条 conclusion，每条带 importance 标签 + evidence 角标 | Analyst Conclusion | ✅ |
+| Pricing | tier 表 + 模型（freemium / per_seat / usage_based）| evidence (source_type=pricing_page) | ✅ |
+| Product Overview | 核心功能 / positioning / 集成 / 安全合规 | Analyst Conclusion + Feature 表 | ✅ |
+| Objection Handling | 常见 pushback + 应对 | — | ⏸ v2（需要 sales call 数据） |
+| Talk Tracks | "当对方说 X，你说 Y" | — | ⏸ v2 字段占位 |
 
-## 5. 评分项映射
+**核心交互**：
 
-| 评分维度 | 演示画面 |
-|---|---|
-| 多 Agent 协作与输出可信度 35% | DAG 节点、结构化 AgentMessage、QA 打回、Schema 输出、结论溯源 |
-| 技术深度与工程完整度 25% | FastAPI 后端、LangGraph 编排、Trace 时间线、token/latency、错误重试 |
-| 业务价值与产品体验 20% | 报告页、证据跳转、产品经理 / 创业者视角、可迁移行业包 |
-| 代码质量与文档 10% | README、架构文档、Schema 文档、TRAE / Cursor 协作记录 |
-| 合规、材料与答辩 10% | 数据来源清单、脱敏记录、许可证清单、本地部署录屏 |
+- 每条 claim 右侧有 `[N 条 evidence]` 角标，点击 → 触发 Evidence Drawer
+- importance 标签（🔴 HIGH / 🟡 MEDIUM / 🟢 LOW）由 Analyst 输出，可在右上角按 importance 筛选
+- "24h 前刷新" 是视觉提示，对齐 Klue "自动刷新"产品感（第一版**手动**点击"重新分析"触发，cron 留 v2）
 
-## 6. 任务级并发加分镜头（可选）
+#### 3.3.3 What Prospects Are Saying（`/runs/:run_id/voice`）
 
-如时间允许，在主线录屏外加一段 30 秒"任务级并发"加分镜头：
+参考 Klue "What Prospects Are Saying" 战卡：按主题分组的真实买家声音。
 
-- 同时启动两个不同 run：一个分析 AI Coding 工具赛道，一个分析企业 Agent 平台赛道。
-- Run List 页面并排展示两个进行中的 DAG，状态条同步推进。
-- 旁白说明："每个 run 拥有独立 run_id、artifact 目录与 Trace 上下文，PostgreSQL 行级锁与 LangGraph PostgreSQL checkpoint 支撑多任务隔离。"
-- 答辩口径：用"基于 LangGraph 的并行子图编排，节点级 + 任务级双层并发"描述，不用"高并发"包装。
-
-该镜头直接吃下 Q&A 信号"导师说支持并发更好"的加分项。
-
-## 7. 可迁移性镜头
-
-演示最后不再跑完整第二行业，只展示“行业包配置”切换。
-
-示例：
-
-```yaml
-industry_pack: ai_agent_products
-focus_roles:
-  - product_manager
-  - founder
-schema_extensions:
-  - agent_autonomy_level
-  - tool_ecosystem
-  - enterprise_security
-data_source_templates:
-  - official_docs
-  - pricing_page
-  - public_reviews
-qa_rules:
-  - conclusion_requires_evidence
-  - pricing_requires_source_url
+```text
+┌────────────────────────────────────────────────────────────┐
+│  Prospect Voice · 来自 G2 / Reddit / HackerNews            │
+│                                                            │
+│  主题筛选: [全部] [性能] [AI 质量] [定价] [上手成本]        │
+│  情感筛选: [全部 ▼]   竞品: [Cursor ▼]                     │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  📂 性能 & 速度（12 条 quote · 9 正向 / 2 中性 / 1 负向）  │
+│   ┌──────────────────────────────────────────────────────┐│
+│   │ ⭐⭐⭐⭐⭐ "Best autocomplete I've used in 5 years"     ││
+│   │ — Senior Engineer @ mid-market SaaS · G2 · 2026-04   ││
+│   │ [查看原文 ↗]                                          ││
+│   └──────────────────────────────────────────────────────┘│
+│   ┌──────────────────────────────────────────────────────┐│
+│   │ ⭐⭐⭐ "Sometimes laggy on large repos"                ││
+│   │ — Tech Lead @ enterprise · Reddit · 2026-03          ││
+│   │ [查看原文 ↗]                                          ││
+│   └──────────────────────────────────────────────────────┘│
+│                                                            │
+│  📂 AI 质量（24 条 quote · 18 正向 / 4 中性 / 2 负向）     │
+│   ...                                                      │
+└────────────────────────────────────────────────────────────┘
 ```
 
-说明口径：
+**交互要点**：
 
-> RivalLens 的 DAG、Agent 协议、Evidence 模型、Trace 和 QA 规则引擎是通用核心。行业包只替换数据源模板、扩展字段、报告章节和质检参数。
+- 按主题（来自行业包 `prospect_themes`）自动分组
+- 每条 quote 必带：评分（如来源是 G2）+ buyer_persona + 来源 + 时间 + 跳转原文
+- 顶部 sentiment 概览条形图（正向 / 中性 / 负向 占比）
 
-## 8. 录屏底线
+### 3.4 Evidence Drawer（右侧抽屉，全站复用）
 
-- 录屏前必须有完整预置数据，不依赖实时外网。
-- 所有 loading 状态必须有进度反馈。
-- QA 打回必须真实触发，并在数据库中留下 rejected step。
-- 点击任一报告结论必须能看到 evidence。
-- 录屏粗剪不晚于 2026-06-05 完成。
+**目标**：让"点击任意 claim → 看到原文"成为一致体验。这是评分项"结论级溯源"的视觉锚点。
+
+```text
+                              ┌─────────────────────────────┐
+   Battlecard 页              │  Evidence · 3 条引用         │
+                              │  关于："Windsurf 团队定价"   │
+   • Windsurf 团队定价        │  ─────────────────────────  │
+     更适合企业  ←─[3 条]──→  │  ① pricing_page · 2026-05   │
+                              │     "Teams plan: $35/seat"   │
+                              │     [打开原页面 ↗]           │
+                              │  ─────────────────────────  │
+                              │  ② g2_review · 2026-04       │
+                              │     "Pricing scales nicely   │
+                              │      for our 30-person team" │
+                              │     — DevOps Lead, SaaS      │
+                              │     [打开 G2 ↗]              │
+                              │  ─────────────────────────  │
+                              │  ③ hn_thread · 2026-05       │
+                              │     "...团队版有共享上下文" │
+                              │     [打开讨论 ↗]             │
+                              │                              │
+                              │  [关闭]                      │
+                              └─────────────────────────────┘
+```
+
+**交互要点**：
+
+- 抽屉从右侧滑入，背景半透明遮罩
+- 多条 evidence 按时间倒序，最新优先
+- 每条卡片显示 source_type 图标（pricing_page 📄 / g2_review ⭐ / reddit 💬 / hn_thread 🟧）
+- 每条 evidence 都有"打开原页面"外链（在新 tab 打开，不离开报告页）
+
+### 3.5 任务列表与历史页（Home `/`）
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│  RivalLens                                  [+ 新建分析]   │
+├────────────────────────────────────────────────────────────┤
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ ⏳ AI Coding 工具分析 · 进行中 · 02:34             │    │
+│  │ 4 竞品 · 87 evidence · 已完成调研阶段              │    │
+│  └────────────────────────────────────────────────────┘    │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ ✓ Enterprise Agent 平台 · 完成 · 2 小时前         │    │
+│  │ 3 竞品 · 142 evidence · 18 conclusion · QA 通过   │    │
+│  └────────────────────────────────────────────────────┘    │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ ⚠ SaaS CRM 赛道 · 降级完成 · 昨天                  │    │
+│  │ 5 竞品 · 213 evidence · 14 conclusion · 3 条降级   │    │
+│  └────────────────────────────────────────────────────┘    │
+│                                                            │
+│  [显示更多 ↓]                                              │
+└────────────────────────────────────────────────────────────┘
+```
+
+**状态图标语义**：
+
+- ⏳ 进行中
+- ✓ 完成（QA 全部通过）
+- ⚠ 降级完成（部分 claim 超过 QA 重试上限，标记为 degraded）
+- ✗ 失败（致命错误）
+
+### 3.6 Skill Staging Console（`/skills/staging`）
+
+**目标**：Skill Curator 沉淀的候选需要人工 approve 才会写入 industry pack。这是 RivalLens 自进化闭环的人机接口。
+
+```text
+┌────────────────────────────────────────────────────────────┐
+│  Skill 审核台 · 行业包: ai_coding_tools · 待审 5 条        │
+├────────────────────────────────────────────────────────────┤
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ 类型: QA 规则候选                                    │  │
+│  │ 来源: 最近 3 个 run 中 pricing claim 反复缺 source   │  │
+│  │ 建议规则:                                            │  │
+│  │   "pricing 类 conclusion 必须引用 90 天内             │  │
+│  │    source_type=pricing_page 的 evidence"             │  │
+│  │ 预期影响: rejection 率 −12%, false-reject 风险 低    │  │
+│  │ 触发证据: [run_001, run_005, run_009 →]              │  │
+│  │                          [拒绝]    [通过并生效 →]    │  │
+│  └──────────────────────────────────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │ 类型: 来源优先级候选                                  │  │
+│  │ 建议: AI Coding 行业，G2 reviews 在协作维度证据       │  │
+│  │       质量高于 Reddit thread, 建议提升至 source       │  │
+│  │       优先级 P1                                       │  │
+│  │ ...                                                  │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
+
+**交互要点**：
+
+- 每条候选必须显示：类型 / 触发条件 / 建议内容 / 预期影响 / 触发证据链接
+- 通过的候选立即写入 `industry_packs/<pack>/skills/<file>.yaml`（带 Git 友好的 diff 提示）
+- 拒绝的候选保留 `status=rejected`，避免下次 Curator 重复推荐
+
+### 3.7 Trace 详情（`/runs/:run_id/trace`，开发者视图）
+
+**目标**：评委 / 答辩用。包含 DAG 可视化、Supervisor 决策 JSON、每步 LLM call。**不进 PM / 创业者主用户流**，从报告页右上角"开发者视图"进入。
+
+第一版内容：
+
+- DAG 视图（mermaid 渲染当次 run 的 Supervisor → Researcher × N → Analyst → Writer → QA 实际拓扑）
+- Supervisor 决策时间线（每次 tool call 的 selected_tool / args / rationale）
+- LLM 调用列表（步骤 / 模型 / token in/out / latency / 错误重试）
+- QA rejection 记录（reject_to 路由可视化）
+
+视觉上**克制**：黑底白字 monospace 风格，明确"开发者视角"。
+
+## 4. 关键交互流程
+
+### 4.1 主流程：新建任务 → 看结果 → 看证据
+
+```mermaid
+sequenceDiagram
+    actor U as 用户
+    participant H as Home
+    participant N as 新建页
+    participant R as Run 页
+    participant B as Battlecard
+    participant D as Evidence Drawer
+
+    U->>H: 打开 Home
+    U->>N: 点击"新建分析"
+    U->>N: 填入竞品列表 + 选行业包
+    U->>R: 点击"启动分析"
+    Note over R: 实时显示业务进度<br/>（不暴露 DAG）
+    R-->>U: 完成通知
+    U->>B: 进入 Battlecard 页
+    U->>B: 浏览 4 张竞品概览
+    U->>B: 点击单张"展开"
+    U->>D: 点击某条 claim 的[N 条 evidence]
+    D-->>U: 右侧抽屉显示 quote + source_url
+    U->>D: 点击"打开原页面"
+    Note over U: 新 tab 打开 G2/官网原文
+```
+
+### 4.2 QA Rejection 用户视角（不暴露 JSON）
+
+用户在任务运行中页看到的是**人话**：
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  ⚠ 质量校验发现问题，正在补充                            │
+│                                                         │
+│  Windsurf 的"团队定价更适合企业"结论缺少官方定价证据，  │
+│  正在重新调研 pricing page...                           │
+│                                                         │
+│  预计 30 秒后完成                          [查看详情]   │
+└─────────────────────────────────────────────────────────┘
+```
+
+点击"查看详情"才进入开发者视图看 Rejection JSON。
+
+### 4.3 Skill 审核流
+
+```mermaid
+sequenceDiagram
+    actor U as 用户（PM 或运维）
+    participant H as Home
+    participant S as Skill Staging
+    participant P as industry_packs/
+
+    Note over S: Skill Curator 异步 run 完后<br/>Home 侧边栏出现红点"5 条待审"
+    U->>H: 看到红点
+    U->>S: 打开 Skill Staging
+    U->>S: 浏览候选（类型 / 影响 / 证据）
+    U->>S: 点击"通过并生效"
+    S->>P: 写入 industry_packs/ai_coding_tools/skills/qa_rules.yaml
+    S-->>U: "已生效，下次 run 自动加载"
+```
+
+## 5. 视觉风格基调
+
+**不抄 Klue / Crayon 像素，自研视觉语言**。基调：
+
+- **冷静专业**：Klue 偏蓝绿企业风，Crayon 偏橙黄活力感。RivalLens 用**深灰 + 单色强调色**（如 indigo），更接近工程工具感而非销售工具感（贴合 PM / 创业者用户）。
+- **信息密度高**：Battlecard 一屏内尽可能多展示有效字段，但每个 claim 都有"展开 evidence"的减压出口。
+- **状态可见**：每个数据点都明示 freshness（"24h 前刷新"）、importance、confidence、source_count。
+- **不堆叠装饰**：禁止渐变、玻璃拟态等装饰性 UI，所有像素服务于信息呈现。
+- **可达性**：importance 颜色（🔴🟡🟢）必须同时有图标或文字，不依赖纯色觉。
+
+具体组件库：第一版用 `shadcn/ui` + `tailwindcss`，自定义主题色（详见前端 README）。
+
+## 6. 第一版不做的（YAGNI 边界，明确推迟到 v2）
+
+| 功能 | 为什么不做 | v2 触发条件 |
+|---|---|---|
+| Objection Handling Battlecard | 需要 sales call 数据，第一版无来源 | 接入第一个客户的 call recording |
+| Talk Tracks 自动生成 | 同上 | 同上 |
+| Slack / Salesforce / Gong 集成 | 工程量大，与核心评分项无关 | 用户增长到需要嵌入工作流 |
+| 私域 Win-Loss 访谈采集 | 数据合规复杂 | 客户主动提供 |
+| Cron 定时自动刷新 | 第一版手动 trigger 足够覆盖演示 | 单用户出现 ≥3 个长期跟踪赛道 |
+| 自然语言问询（Ask Klue 形态） | LLM 接入成本 + 需要稳定的 RAG 层 | 报告库累积到 50+ run |
+| 销售排行榜 / 客户管理 | 不是 PM / 创业者用户需要的 | 引入销售用户角色后 |
+| 移动端适配 | 答辩用桌面端足够 | 用户主动反馈 |
+
+## 7. 数据需求（前端 mock 用，详细 schema 见 docs/3）
+
+前端开发期间需要的 mock 数据最小集：
+
+- `data/demo/ai_coding/seeds/runs.json`：3 个 run（完成 / 进行中 / 降级各 1 个）
+- `data/demo/ai_coding/seeds/competitors.json`：4 个竞品基础信息
+- `data/demo/ai_coding/seeds/evidence.json`：≥80 条 evidence，含全部 source_type
+- `data/demo/ai_coding/seeds/conclusions.json`：≥16 条 conclusion，含 high/medium/low importance 各 ≥3 条
+- `data/demo/ai_coding/seeds/skill_candidates.json`：5 条候选，覆盖三种类型
+
+字段细节统一从 `docs/3-schema-and-protocol.md` 引用，本文不重复。

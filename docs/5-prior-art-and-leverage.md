@@ -138,7 +138,7 @@ LangGraph Supervisor Agent
 | Evidence 与 Conclusion 多对多结论级溯源 | 35% 多 Agent 可信度 + 业务体验 20% | `docs/3-schema-and-protocol.md` 第 5 节 |
 | 结构化 QA rejection 协议 + 轻量规则 DSL | 35% "非伪闭环"杀手锏 | `docs/3-schema-and-protocol.md` 第 4、6 节 |
 | 数据脱敏架构 | 10% 合规 | `docs/2-architecture-decision.md` 第 7 节 |
-| TRAE / Cursor 协作工程化痕迹 | 10% 代码质量 | `docs/4-team-ownership.md` 第 5 节 |
+| TRAE / Cursor 协作工程化痕迹 | 10% 代码质量 | `docs/4-team-ownership.md` 第 6 节 |
 | 节点级并行 + 任务级并发设计 | 25% 工程完整度 + 35% 可视化 | `docs/2-architecture-decision.md` 第 9 节 |
 
 ## 6. 许可证记录与合规
