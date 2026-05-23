@@ -45,6 +45,36 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                 ),
                 {"run_id": run_id},
             ).scalar_one()
+            evidence_count = connection.execute(
+                text("SELECT COUNT(*) AS count FROM evidence WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            ).scalar_one()
+            industry_pack_evidence_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM evidence "
+                    "WHERE run_id = :run_id AND source_type = 'industry_pack_snapshot'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            evidence_url_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM evidence "
+                    "WHERE run_id = :run_id AND source_url IS NOT NULL"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            expected_phrase_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM evidence "
+                    "WHERE run_id = :run_id AND "
+                    "(sanitized_text ILIKE :cursor_phrase OR sanitized_text ILIKE :windsurf_phrase)"
+                ),
+                {
+                    "run_id": run_id,
+                    "cursor_phrase": "%repository-level context indexing%",
+                    "windsurf_phrase": "%inline AI pair programming%",
+                },
+            ).scalar_one()
     finally:
         engine.dispose()
 
@@ -54,6 +84,10 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
         "latest_tool": decision_row["chosen_tool"] if decision_row else "missing",
         "qa_step_count": int(qa_step_count),
         "qa_rejection_count": int(qa_rejection_count),
+        "evidence_count": int(evidence_count),
+        "industry_pack_evidence_count": int(industry_pack_evidence_count),
+        "evidence_url_count": int(evidence_url_count),
+        "expected_phrase_count": int(expected_phrase_count),
     }
 
 
@@ -85,6 +119,10 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["latest_tool"] == "Finalize"
     assert snapshot["qa_step_count"] >= 1
     assert snapshot["qa_rejection_count"] == 0
+    assert snapshot["evidence_count"] >= 1
+    assert snapshot["industry_pack_evidence_count"] >= 1
+    assert snapshot["evidence_url_count"] >= 1
+    assert snapshot["expected_phrase_count"] >= 1
 
 
 def test_get_run_detail_and_trace(test_client: TestClient) -> None:
@@ -203,3 +241,33 @@ def test_schema_models_instantiation() -> None:
         created_at=now,
     )
     assert candidate.status == "staging"
+
+
+def test_create_run_rejects_missing_industry_pack(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "invalid industry pack",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "not_existing_pack",
+            "target_roles": ["pm"],
+        },
+    )
+    payload = response.json()
+    assert response.status_code == 400
+    assert payload["error_code"] == "INDUSTRY_PACK_NOT_FOUND"
+
+
+def test_create_run_rejects_missing_competitor_in_pack(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "invalid competitor",
+            "competitors": ["comp_unknown"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    payload = response.json()
+    assert response.status_code == 400
+    assert payload["error_code"] == "COMPETITOR_NOT_IN_PACK"

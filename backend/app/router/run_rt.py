@@ -13,6 +13,7 @@ from models.run import Run
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
+from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 
 router = APIRouter()
 
@@ -93,8 +94,37 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
     )
 
 
+def _validate_pack_and_competitors(payload: RunCreateRequest) -> None:
+    pack_registry = get_industry_pack_registry()
+    if not pack_registry.has(payload.industry_pack):
+        raise APIException(
+            status_code=400,
+            error_code="INDUSTRY_PACK_NOT_FOUND",
+            message=f"industry_pack={payload.industry_pack} is not loaded.",
+        )
+
+    try:
+        pack = pack_registry.get(payload.industry_pack)
+    except IndustryPackNotFound as exc:
+        raise APIException(
+            status_code=400,
+            error_code="INDUSTRY_PACK_NOT_FOUND",
+            message=f"industry_pack={payload.industry_pack} is not loaded.",
+        ) from exc
+
+    missing_competitors = [item for item in payload.competitors if item not in pack.competitors]
+    if missing_competitors:
+        missing_joined = ",".join(missing_competitors)
+        raise APIException(
+            status_code=400,
+            error_code="COMPETITOR_NOT_IN_PACK",
+            message=f"competitor(s) {missing_joined} not found in pack {payload.industry_pack}.",
+        )
+
+
 @router.post("/api/runs", response_model=RunCreateResponse)
 async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
+    _validate_pack_and_competitors(payload)
     run_id = make_id("run_")
     session_factory = get_session_factory()
 

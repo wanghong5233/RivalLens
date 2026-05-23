@@ -9,7 +9,9 @@ from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.step import Step
 from schemas.ids import make_id
-from schemas.supervisor import ConductResearch
+from schemas.supervisor import ConductResearch, FocusDimension
+from service.industry_pack.models import CompetitorSnapshot, IndustryPack
+from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -19,20 +21,113 @@ def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
     return session_factory
 
 
+def _require_industry_pack_id(state: AgentState) -> str:
+    industry_pack_id = state.get("industry_pack")
+    if industry_pack_id is None:
+        raise RuntimeError("AgentState.industry_pack is required for researcher node.")
+    return industry_pack_id
+
+
+def _resolve_competitor_snapshot(
+    *,
+    pack: IndustryPack,
+    competitor_id: str,
+) -> CompetitorSnapshot:
+    competitor = pack.competitors.get(competitor_id)
+    if competitor is None:
+        raise RuntimeError(
+            f"competitor_id={competitor_id} not found in industry_pack={pack.id}."
+        )
+    return competitor
+
+
+def _resolve_focus_dimensions(
+    *,
+    request: ConductResearch,
+    pack: IndustryPack,
+) -> list[FocusDimension]:
+    focus_dimensions = list(request.focus_dimensions or pack.default_focus_dimensions)
+    if not focus_dimensions:
+        raise RuntimeError(
+            f"No focus_dimensions available for industry_pack={pack.id} and competitor_id={request.competitor_id}."
+        )
+    return focus_dimensions
+
+
+def _build_evidence_rows(
+    *,
+    run_id: str,
+    step_id: str,
+    collected_at: datetime,
+    pack_id: str,
+    competitor: CompetitorSnapshot,
+    focus_dimensions: list[FocusDimension],
+) -> tuple[list[EvidenceRecord], list[str]]:
+    evidence_rows: list[EvidenceRecord] = []
+    evidence_ids: list[str] = []
+    for dimension in focus_dimensions:
+        snippets = competitor.snapshots.get(dimension, [])
+        if not snippets:
+            raise RuntimeError(
+                f"No snapshot snippet for dimension={dimension} in competitor={competitor.id}."
+            )
+        for snippet in snippets:
+            evidence_id = make_id("ev_")
+            evidence_ids.append(evidence_id)
+            evidence_rows.append(
+                EvidenceRecord(
+                    id=evidence_id,
+                    run_id=run_id,
+                    source_type="industry_pack_snapshot",
+                    source_url=snippet.source_url,
+                    source_title=snippet.source_title,
+                    quote=snippet.quote,
+                    sanitized_text=snippet.quote,
+                    span={
+                        "dimension": dimension,
+                        "competitor_id": competitor.id,
+                        "pack_id": pack_id,
+                    },
+                    collected_by=step_id,
+                    collected_at=collected_at,
+                    desensitized=snippet.desensitized,
+                )
+            )
+    return evidence_rows, evidence_ids
+
+
 async def researcher_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     if run_id is None:
         raise RuntimeError("AgentState.run_id is required for researcher node.")
 
+    industry_pack_id = _require_industry_pack_id(state)
     session_factory = _require_session_factory(state)
     request = ConductResearch.model_validate(state.get("pending_tool_args", {}))
+    pack_registry = get_industry_pack_registry()
+    try:
+        pack = pack_registry.get(industry_pack_id)
+    except IndustryPackNotFound as exc:
+        raise RuntimeError(f"industry_pack={industry_pack_id} is not loaded.") from exc
+
+    competitor = _resolve_competitor_snapshot(pack=pack, competitor_id=request.competitor_id)
+    focus_dimensions = _resolve_focus_dimensions(request=request, pack=pack)
     step_id = make_id("step_")
     collected_at = datetime.now(timezone.utc)
-
-    evidence_text = (
-        f"Skeleton research fragment for {request.competitor_id} on "
-        f"dimensions={','.join(request.focus_dimensions or ['feature'])}."
+    evidence_rows, evidence_ids = _build_evidence_rows(
+        run_id=run_id,
+        step_id=step_id,
+        collected_at=collected_at,
+        pack_id=pack.id,
+        competitor=competitor,
+        focus_dimensions=focus_dimensions,
     )
+    step_payload = {
+        **request.model_dump(),
+        "pack_id": pack.id,
+        "focus_dimensions": focus_dimensions,
+        "evidence_ids": evidence_ids,
+    }
 
     async with session_factory() as session:
         step = Step(
@@ -41,31 +136,18 @@ async def researcher_node(state: AgentState) -> AgentState:
             agent_name="researcher",
             status="running",
             retry_count=0,
-            payload=request.model_dump(),
+            payload=step_payload,
         )
         session.add(step)
         await session.flush()
-        session.add(
-            EvidenceRecord(
-                id=make_id("ev_"),
-                run_id=run_id,
-                source_type="offline_snapshot",
-                source_url=None,
-                source_title=f"{request.competitor_id} skeleton snapshot",
-                quote=evidence_text,
-                sanitized_text=evidence_text,
-                span={"mode": "skeleton"},
-                collected_by=step_id,
-                collected_at=collected_at,
-                desensitized=True,
-            )
-        )
+        for evidence_row in evidence_rows:
+            session.add(evidence_row)
         session.add(
             Artifact(
                 artifact_id=make_id("artifact_"),
                 step_id=step_id,
                 kind="research_fragment",
-                uri=f"memory://research/{run_id}/{request.competitor_id}",
+                uri=f"memory://research/{run_id}/{competitor.id}",
                 sha256=None,
                 size_bytes=None,
             )
