@@ -5,8 +5,6 @@ Blocks broad/destructive shell commands and reads/edits of real .env files
 to prevent secret leakage and accidental working-tree corruption.
 """
 
-from __future__ import annotations
-
 import json
 import re
 import sys
