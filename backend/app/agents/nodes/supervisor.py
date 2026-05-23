@@ -17,7 +17,27 @@ MAX_SUPERVISOR_ITERATIONS = 10
 DEFAULT_RESEARCH_DIMENSIONS = ["feature", "pricing", "user_feedback"]
 DEFAULT_WRITE_SECTIONS = ["feature", "pricing", "user_feedback", "differentiation", "swot"]
 VALID_TOOLS = {"ConductResearch", "Analyze", "Write", "Finalize"}
-TriggerSource = Literal["user_query", "iteration_advance"]
+TriggerSource = Literal[
+    "user_query",
+    "researcher_completion",
+    "analyst_completion",
+    "writer_completion",
+    "iteration_advance",
+]
+
+
+def _resolve_triggered_by(
+    *, iteration: int, last_completed_node: Literal["researcher", "analyst", "writer"] | None
+) -> TriggerSource:
+    if iteration == 1:
+        return "user_query"
+    if last_completed_node == "researcher":
+        return "researcher_completion"
+    if last_completed_node == "analyst":
+        return "analyst_completion"
+    if last_completed_node == "writer":
+        return "writer_completion"
+    return "iteration_advance"
 
 
 def _now_iso() -> str:
@@ -34,7 +54,7 @@ def _fallback_decision(
     report_draft_done: bool,
     triggered_by: TriggerSource,
     user_query: str,
-) -> tuple[SupervisorDecision, dict[str, Any]]:
+) -> SupervisorDecision:
     pending_competitors = [c for c in competitors if c not in researched_competitors]
     now = _now_iso()
 
@@ -59,7 +79,7 @@ def _fallback_decision(
             outcome_recorded_at=now,
             created_at=now,
         )
-        return decision, {"researched_competitors": [*researched_competitors, competitor_id]}
+        return decision
 
     if not analysis_done:
         args = Analyze(
@@ -79,7 +99,7 @@ def _fallback_decision(
             outcome_recorded_at=now,
             created_at=now,
         )
-        return decision, {"analysis_done": True}
+        return decision
 
     if not report_draft_done:
         args = Write(
@@ -98,7 +118,7 @@ def _fallback_decision(
             outcome_recorded_at=now,
             created_at=now,
         )
-        return decision, {"report_draft_done": True}
+        return decision
 
     args = Finalize(
         completion_reason="all_dimensions_covered",
@@ -116,7 +136,7 @@ def _fallback_decision(
         outcome_recorded_at=now,
         created_at=now,
     )
-    return decision, {}
+    return decision
 
 
 def _try_llm_decision(
@@ -222,6 +242,16 @@ async def _persist_iteration(
         await session.commit()
 
 
+def _map_next_action(chosen_tool: str) -> Literal["researcher", "analyst", "writer", "finalize"]:
+    if chosen_tool == "ConductResearch":
+        return "researcher"
+    if chosen_tool == "Analyze":
+        return "analyst"
+    if chosen_tool == "Write":
+        return "writer"
+    return "finalize"
+
+
 async def supervisor_node(state: AgentState) -> AgentState:
     session_factory = state.get("session_factory")
     if session_factory is None:
@@ -234,10 +264,32 @@ async def supervisor_node(state: AgentState) -> AgentState:
     researched_competitors = list(state.get("researched_competitors", []))
     analysis_done = bool(state.get("analysis_done", False))
     report_draft_done = bool(state.get("report_draft_done", False))
-    final_status = "completed"
+    iteration = int(state.get("current_iteration", 0)) + 1
+    last_completed_node = state.get("last_completed_node")
+    triggered_by = _resolve_triggered_by(
+        iteration=iteration,
+        last_completed_node=last_completed_node,
+    )
 
-    for iteration in range(1, MAX_SUPERVISOR_ITERATIONS + 1):
-        triggered_by = "user_query" if iteration == 1 else "iteration_advance"
+    if iteration > MAX_SUPERVISOR_ITERATIONS:
+        forced_now = _now_iso()
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="Finalize",
+            tool_args=Finalize(
+                completion_reason="max_iterations_hit",
+                notes="Supervisor reached max iterations and forced finalize.",
+            ).model_dump(),
+            reasoning_summary="Forced finalize due to supervisor max iteration guardrail.",
+            triggered_by="iteration_advance",
+            outcome="succeeded",
+            outcome_recorded_at=forced_now,
+            created_at=forced_now,
+        )
+        llm_response = {"provider": "guardrail", "prompt_preview": "max_iterations_hit"}
+    else:
         llm_prompt = (
             f"user_query={user_query}\n"
             f"iteration={iteration}\n"
@@ -254,9 +306,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
             llm_response=llm_response,
             triggered_by=triggered_by,
         )
-        state_updates: dict[str, Any] = {}
         if decision is None:
-            decision, state_updates = _fallback_decision(
+            decision = _fallback_decision(
                 run_id=run_id,
                 iteration=iteration,
                 competitors=competitors,
@@ -267,54 +318,34 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 user_query=user_query,
             )
 
-        await _persist_iteration(
-            session_factory=session_factory,
-            run_id=run_id,
-            iteration=iteration,
-            decision=decision,
-            llm_response=llm_response,
-        )
-        decisions.append(decision)
+    await _persist_iteration(
+        session_factory=session_factory,
+        run_id=run_id,
+        iteration=iteration,
+        decision=decision,
+        llm_response=llm_response,
+    )
+    decisions.append(decision)
 
-        researched_competitors = list(state_updates.get("researched_competitors", researched_competitors))
-        analysis_done = bool(state_updates.get("analysis_done", analysis_done))
-        report_draft_done = bool(state_updates.get("report_draft_done", report_draft_done))
-
-        if decision.chosen_tool == "Finalize":
-            break
+    next_action = _map_next_action(decision.chosen_tool)
+    completion_reason = str(decision.tool_args.get("completion_reason", ""))
+    if decision.chosen_tool == "Finalize" and completion_reason == "max_iterations_hit":
+        status = "degraded"
+    elif decision.chosen_tool == "Finalize":
+        status = "completed"
     else:
-        forced_now = _now_iso()
-        forced_finalize = SupervisorDecision(
-            id=make_id("decision_"),
-            run_id=run_id,
-            iteration=MAX_SUPERVISOR_ITERATIONS + 1,
-            chosen_tool="Finalize",
-            tool_args=Finalize(
-                completion_reason="max_iterations_hit",
-                notes="Supervisor reached max iterations and forced finalize.",
-            ).model_dump(),
-            reasoning_summary="Forced finalize due to supervisor max iteration guardrail.",
-            triggered_by="iteration_advance",
-            outcome="succeeded",
-            outcome_recorded_at=forced_now,
-            created_at=forced_now,
-        )
-        await _persist_iteration(
-            session_factory=session_factory,
-            run_id=run_id,
-            iteration=MAX_SUPERVISOR_ITERATIONS + 1,
-            decision=forced_finalize,
-            llm_response={"provider": "guardrail", "prompt_preview": "max_iterations_hit"},
-        )
-        decisions.append(forced_finalize)
-        final_status = "degraded"
+        status = "running"
 
     return {
         **state,
         "run_id": run_id,
         "decisions": decisions,
+        "current_iteration": iteration,
+        "pending_tool_args": decision.tool_args,
+        "next_action": next_action,
+        "last_completed_node": None,
         "researched_competitors": researched_competitors,
         "analysis_done": analysis_done,
         "report_draft_done": report_draft_done,
-        "status": final_status,
+        "status": status,
     }

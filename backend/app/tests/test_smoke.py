@@ -96,10 +96,14 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     assert len(trace_payload["steps"]) >= 4
     assert len(trace_payload["supervisor_decisions"]) >= 4
     decision_tools = [item["chosen_tool"] for item in trace_payload["supervisor_decisions"]]
+    step_agents = [item["agent_name"] for item in trace_payload["steps"]]
     assert decision_tools[-1] == "Finalize"
     assert "ConductResearch" in decision_tools
     assert "Analyze" in decision_tools
     assert "Write" in decision_tools
+    assert "researcher" in step_agents
+    assert "analyst" in step_agents
+    assert "writer" in step_agents
 
     not_found_response = test_client.get("/api/runs/run_not_exists")
     assert not_found_response.status_code == 404

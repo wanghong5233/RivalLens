@@ -11,13 +11,16 @@
 - 保留 LLM 调用入口（当前为 stub），并提供强约束 fallback 规划器
 - 触发最大迭代护栏时强制 `Finalize(max_iterations_hit)`
 
-## 2. 决策循环时序
+## 2. 决策循环时序（含真实子节点）
 
 ```mermaid
 sequenceDiagram
   participant RT as run_rt
   participant LG as LangGraph
   participant SN as supervisor_node
+  participant RN as researcher_node
+  participant AN as analyst_node
+  participant WN as writer_node
   participant LLM as llm_client(stub)
   participant DB as PostgreSQL
 
@@ -30,15 +33,28 @@ sequenceDiagram
     else fallback
       SN->>SN: deterministic planner pick next tool
     end
-    SN->>DB: INSERT steps
+    SN->>DB: INSERT supervisor_step
     SN->>DB: INSERT supervisor_decisions
-    SN->>DB: UPDATE steps(status=completed)
-    alt chosen_tool == Finalize
-      SN-->>LG: status=completed
+    alt chosen_tool == ConductResearch
+      SN-->>RN: route to researcher
+      RN->>DB: INSERT researcher_step
+      RN->>DB: INSERT evidence + artifact
+      RN-->>SN: last_completed_node=researcher
+    else chosen_tool == Analyze
+      SN-->>AN: route to analyst
+      AN->>DB: INSERT analyst_step
+      AN->>DB: INSERT analysis artifact
+      AN-->>SN: last_completed_node=analyst
+    else chosen_tool == Write
+      SN-->>WN: route to writer
+      WN->>DB: INSERT writer_step
+      WN->>DB: INSERT report + artifact
+      WN-->>SN: last_completed_node=writer
+    else chosen_tool == Finalize
+      SN-->>LG: route finalize to END
     end
   end
-  SN->>SN: guardrail if no finalize by max iterations
-  SN->>DB: INSERT forced Finalize(max_iterations_hit)
+  SN->>SN: guardrail forces Finalize(max_iterations_hit) when needed
 ```
 
 ## 3. 规划策略（fallback planner）
@@ -52,7 +68,8 @@ sequenceDiagram
 
 ## 4. 事务与可观测性约束
 
-- 每轮迭代开启一次短事务写入 `steps + supervisor_decisions`
+- Supervisor 每轮迭代写入 `supervisor step + supervisor_decision`
+- Researcher / Analyst / Writer 分别在各自节点内写入各自 `step` 与对应产物
 - `step.payload` 记录：
   - `iteration`
   - `chosen_tool`
@@ -75,6 +92,7 @@ sequenceDiagram
 - `test_get_run_detail_and_trace`：
   - `GET /api/runs/{run_id}` 返回原始 `user_query`
   - `GET /api/runs/{run_id}/trace` 决策链包含 `ConductResearch`、`Analyze`、`Write`、`Finalize`
+  - `GET /api/runs/{run_id}/trace` 的 `steps.agent_name` 至少包含 `researcher`、`analyst`、`writer`
 
 ## 7. 后续演进位
 

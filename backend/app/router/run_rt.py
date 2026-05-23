@@ -118,6 +118,12 @@ async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
             "industry_pack": payload.industry_pack,
             "competitors": payload.competitors,
             "user_query": payload.user_query,
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "pending_tool_args": {},
+            "status": "running",
             "session_factory": session_factory,
         }
     )
