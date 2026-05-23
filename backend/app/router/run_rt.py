@@ -18,6 +18,7 @@ router = APIRouter()
 
 
 class RunCreateRequest(BaseModel):
+    user_query: str = "skeleton"
     competitors: list[str] = Field(default_factory=list)
     industry_pack: str
     target_roles: list[str] = Field(default_factory=list)
@@ -101,7 +102,7 @@ async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
         session.add(
             Run(
                 run_id=run_id,
-                user_query="skeleton",
+                user_query=payload.user_query,
                 industry_pack=payload.industry_pack,
                 status="running",
                 target_roles=payload.target_roles,
@@ -111,12 +112,12 @@ async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
         await session.commit()
 
     graph = get_graph()
-    await graph.ainvoke(
+    graph_state = await graph.ainvoke(
         {
             "run_id": run_id,
             "industry_pack": payload.industry_pack,
             "competitors": payload.competitors,
-            "user_query": "skeleton",
+            "user_query": payload.user_query,
             "session_factory": session_factory,
         }
     )
@@ -129,14 +130,15 @@ async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
                 error_code="RUN_NOT_FOUND",
                 message=f"run_id={run_id} should exist after creation",
             )
-        run.status = "completed"
+        run_status = str(graph_state.get("status", "completed"))
+        run.status = run_status if run_status in {"completed", "degraded"} else "completed"
         run.finished_at = datetime.now(timezone.utc)
         await session.commit()
 
     return RunCreateResponse(
         run_id=run_id,
-        status="completed",
-        message="Walking skeleton run persisted.",
+        status=run.status,
+        message="Supervisor loop run persisted.",
     )
 
 

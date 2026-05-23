@@ -12,6 +12,9 @@ class AgentState(TypedDict, total=False):
     user_query: str
     industry_pack: str
     competitors: list[str]
+    researched_competitors: list[str]
+    analysis_done: bool
+    report_draft_done: bool
     decisions: list[SupervisorDecision]
     status: str
     session_factory: async_sessionmaker[AsyncSession]

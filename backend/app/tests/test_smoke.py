@@ -51,6 +51,7 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     response = test_client.post(
         "/api/runs",
         json={
+            "user_query": "compare cursor and windsurf for founders",
             "competitors": ["comp_cursor", "comp_windsurf"],
             "industry_pack": "ai_coding_tools",
             "target_roles": ["pm", "founder"],
@@ -63,7 +64,7 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
 
     snapshot = _fetch_persisted_snapshot(payload["run_id"])
     assert snapshot["run_status"] == "completed"
-    assert snapshot["step_count"] >= 1
+    assert snapshot["step_count"] >= 4
     assert snapshot["latest_tool"] == "Finalize"
 
 
@@ -71,6 +72,7 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     create_response = test_client.post(
         "/api/runs",
         json={
+            "user_query": "what is the pricing differentiation",
             "competitors": ["comp_cursor"],
             "industry_pack": "ai_coding_tools",
             "target_roles": ["pm"],
@@ -85,14 +87,19 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     assert detail_payload["run_id"] == run_id
     assert detail_payload["status"] == "completed"
     assert detail_payload["industry_pack"] == "ai_coding_tools"
+    assert detail_payload["user_query"] == "what is the pricing differentiation"
 
     trace_response = test_client.get(f"/api/runs/{run_id}/trace")
     assert trace_response.status_code == 200
     trace_payload = trace_response.json()
     assert trace_payload["run"]["run_id"] == run_id
-    assert len(trace_payload["steps"]) >= 1
-    assert len(trace_payload["supervisor_decisions"]) >= 1
-    assert trace_payload["supervisor_decisions"][-1]["chosen_tool"] == "Finalize"
+    assert len(trace_payload["steps"]) >= 4
+    assert len(trace_payload["supervisor_decisions"]) >= 4
+    decision_tools = [item["chosen_tool"] for item in trace_payload["supervisor_decisions"]]
+    assert decision_tools[-1] == "Finalize"
+    assert "ConductResearch" in decision_tools
+    assert "Analyze" in decision_tools
+    assert "Write" in decision_tools
 
     not_found_response = test_client.get("/api/runs/run_not_exists")
     assert not_found_response.status_code == 404
