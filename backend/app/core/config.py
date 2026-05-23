@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
     DATABASE_URL_SYNC: str
+    LANGGRAPH_CHECKPOINT_DSN: str | None = None
 
     DOUBAO_EP: str | None = None
     DOUBAO_API_KEY: str | None = None
@@ -54,6 +55,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_llm_provider_credentials(self) -> Settings:
+        if not self.LANGGRAPH_CHECKPOINT_DSN:
+            self.LANGGRAPH_CHECKPOINT_DSN = self.DATABASE_URL_SYNC.replace(
+                "postgresql+psycopg2://",
+                "postgresql://",
+            ).replace(
+                "postgresql+psycopg://",
+                "postgresql://",
+            )
+
+        if not self.LANGGRAPH_CHECKPOINT_DSN.startswith("postgresql://"):
+            raise ValueError("LANGGRAPH_CHECKPOINT_DSN must use postgresql:// DSN format.")
+
         providers = (
             self.LLM_PROVIDER_SUMMARIZATION,
             self.LLM_PROVIDER_RESEARCH,

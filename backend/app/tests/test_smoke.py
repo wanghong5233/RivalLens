@@ -95,6 +95,20 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                 ),
                 {"run_id": run_id},
             ).scalar_one()
+            checkpoint_row_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM checkpoints "
+                    "WHERE thread_id = :run_id"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            checkpoint_writes_row_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM checkpoint_writes "
+                    "WHERE thread_id = :run_id"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
             evidence_count = connection.execute(
                 text("SELECT COUNT(*) AS count FROM evidence WHERE run_id = :run_id"),
                 {"run_id": run_id},
@@ -140,6 +154,8 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
         "supervisor_llm_prompt_hash_count": int(supervisor_llm_prompt_hash_count),
         "researcher_llm_call_count": int(researcher_llm_call_count),
         "researcher_llm_research_slot_count": int(researcher_llm_research_slot_count),
+        "checkpoint_row_count": int(checkpoint_row_count),
+        "checkpoint_writes_row_count": int(checkpoint_writes_row_count),
         "evidence_count": int(evidence_count),
         "industry_pack_evidence_count": int(industry_pack_evidence_count),
         "evidence_url_count": int(evidence_url_count),
@@ -180,6 +196,8 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["supervisor_llm_prompt_hash_count"] >= 1
     assert snapshot["researcher_llm_call_count"] >= 1
     assert snapshot["researcher_llm_research_slot_count"] >= 1
+    assert snapshot["checkpoint_row_count"] >= 1
+    assert snapshot["checkpoint_writes_row_count"] >= 1
     assert snapshot["evidence_count"] >= 1
     assert snapshot["industry_pack_evidence_count"] >= 1
     assert snapshot["evidence_url_count"] >= 1

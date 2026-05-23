@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from db.engine import get_session_factory
 from models.report import Report
 from models.step import Step
 from schemas.ids import make_id
@@ -15,9 +16,9 @@ from service.qa.engine import MAX_QA_REJECTIONS, evaluate_report
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
     session_factory = state.get("session_factory")
-    if session_factory is None:
-        raise RuntimeError("AgentState.session_factory is required for qa node.")
-    return session_factory
+    if session_factory is not None:
+        return session_factory
+    return get_session_factory()
 
 
 async def _load_review_targets(

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
 from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph
+from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
@@ -18,9 +19,9 @@ from service.industry_pack.registry import IndustryPackNotFound, get_industry_pa
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
     session_factory = state.get("session_factory")
-    if session_factory is None:
-        raise RuntimeError("AgentState.session_factory is required for researcher node.")
-    return session_factory
+    if session_factory is not None:
+        return session_factory
+    return get_session_factory()
 
 
 def _require_industry_pack_id(state: AgentState) -> str:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
 
@@ -22,7 +21,7 @@ def _route_after_supervisor(
     return "finalize"
 
 
-def build_graph():
+def build_graph_uncompiled() -> StateGraph:
     graph = StateGraph(AgentState)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("researcher", researcher_node)
@@ -44,9 +43,11 @@ def build_graph():
     graph.add_edge("analyst", "supervisor")
     graph.add_edge("writer", "qa")
     graph.add_edge("qa", "supervisor")
-    return graph.compile()
+    return graph
 
 
-@lru_cache
-def get_graph():
-    return build_graph()
+def compile_graph(*, checkpointer: Any | None = None):
+    graph = build_graph_uncompiled()
+    if checkpointer is None:
+        return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

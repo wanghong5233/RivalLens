@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import inspect
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from agents.graph import compile_graph
 from core.config import settings
 from db.engine import dispose_engine, init_engine
 from exceptions.base import APIException
@@ -21,12 +24,24 @@ log = get_logger("app_main")
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     init_engine()
     pack_registry = get_industry_pack_registry()
     pack_registry.load_all(Path(settings.INDUSTRY_PACKS_DIR))
-    log.info("service_start", service=settings.SERVICE_NAME, environment=settings.ENVIRONMENT)
-    yield
+    checkpoint_dsn = settings.LANGGRAPH_CHECKPOINT_DSN
+    if checkpoint_dsn is None:
+        raise RuntimeError("LANGGRAPH_CHECKPOINT_DSN must be configured before service startup.")
+
+    async with AsyncPostgresSaver.from_conn_string(checkpoint_dsn) as checkpointer:
+        setup_result = checkpointer.setup()
+        if inspect.isawaitable(setup_result):
+            await setup_result
+
+        app.state.checkpointer = checkpointer
+        app.state.compiled_graph = compile_graph(checkpointer=checkpointer)
+        log.info("service_start", service=settings.SERVICE_NAME, environment=settings.ENVIRONMENT)
+        yield
+
     await dispose_engine()
     log.info("service_stop", service=settings.SERVICE_NAME)
 

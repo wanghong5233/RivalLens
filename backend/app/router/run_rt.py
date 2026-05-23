@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from agents.graph import get_graph
 from db.engine import get_session_factory
 from exceptions.base import APIException
 from models.run import Run
@@ -123,7 +122,7 @@ def _validate_pack_and_competitors(payload: RunCreateRequest) -> None:
 
 
 @router.post("/api/runs", response_model=RunCreateResponse)
-async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
+async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateResponse:
     _validate_pack_and_competitors(payload)
     run_id = make_id("run_")
     session_factory = get_session_factory()
@@ -141,7 +140,13 @@ async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
         )
         await session.commit()
 
-    graph = get_graph()
+    graph = getattr(request.app.state, "compiled_graph", None)
+    if graph is None:
+        raise APIException(
+            status_code=500,
+            error_code="GRAPH_NOT_INITIALIZED",
+            message="Compiled LangGraph instance is not initialized.",
+        )
     graph_state = await graph.ainvoke(
         {
             "run_id": run_id,
@@ -159,8 +164,8 @@ async def create_run(payload: RunCreateRequest) -> RunCreateResponse:
             "pending_review_target_step_id": None,
             "qa_reasons": [],
             "status": "running",
-            "session_factory": session_factory,
-        }
+        },
+        config={"configurable": {"thread_id": run_id}},
     )
 
     async with session_factory() as session:

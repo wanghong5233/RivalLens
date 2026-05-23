@@ -15,7 +15,9 @@ alembic==1.14.0
 # LangGraph
 langgraph==0.2.50
 langchain-core==0.3.20
-langgraph-checkpoint-postgres==2.0.10
+langgraph-checkpoint-postgres==2.0.13
+psycopg[binary]>=3.2.0
+psycopg-pool>=3.2.0
 
 # LLM client
 openai>=1.50.0

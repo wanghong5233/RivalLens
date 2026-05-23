@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
@@ -54,6 +55,13 @@ def _resolve_triggered_by(
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
+    session_factory = state.get("session_factory")
+    if session_factory is not None:
+        return session_factory
+    return get_session_factory()
 
 
 def _pseudo_llm_response(
@@ -401,9 +409,7 @@ def _map_next_action(chosen_tool: str) -> Literal["researcher", "analyst", "writ
 
 
 async def supervisor_node(state: AgentState) -> AgentState:
-    session_factory = state.get("session_factory")
-    if session_factory is None:
-        raise RuntimeError("AgentState.session_factory is required for supervisor persistence.")
+    session_factory = _resolve_session_factory(state)
 
     run_id = state.get("run_id", make_id("run_"))
     decisions = list(state.get("decisions", []))
