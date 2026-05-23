@@ -39,6 +39,7 @@ services:
       - "8010:8010"
     volumes:
       - ./app:/app
+      - ../industry_packs:/app/industry_packs
       - ../data/artifacts:/app/artifacts
     command:
       [

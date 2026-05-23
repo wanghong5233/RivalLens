@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     LLM_GLOBAL_CONCURRENCY: int = 4
     COLLECTOR_PER_HOST_QPS: int = 1
     COLLECTOR_USER_AGENT: str = "RivalLens-Researcher/0.1"
+    INDUSTRY_PACKS_DIR: str = "/app/industry_packs"
 
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
 

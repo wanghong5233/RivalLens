@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from core.config import settings
 from db.engine import dispose_engine, init_engine
 from exceptions.base import APIException
 from router import health_rt, run_rt
+from service.industry_pack.registry import get_industry_pack_registry
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
 from utils.request_id import new_request_id, request_id_ctx
 
@@ -21,6 +23,8 @@ log = get_logger("app_main")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_engine()
+    pack_registry = get_industry_pack_registry()
+    pack_registry.load_all(Path(settings.INDUSTRY_PACKS_DIR))
     log.info("service_start", service=settings.SERVICE_NAME, environment=settings.ENVIRONMENT)
     yield
     await dispose_engine()

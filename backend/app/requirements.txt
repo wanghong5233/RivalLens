@@ -19,6 +19,7 @@ langgraph-checkpoint-postgres==2.0.10
 
 # LLM client
 openai>=1.50.0
+pyyaml==6.0.2
 
 # Observability
 structlog==24.4.0
