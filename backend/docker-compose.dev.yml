@@ -1,0 +1,79 @@
+name: rivallens
+
+services:
+  rivallens_db:
+    image: postgres:16
+    container_name: rivallens_db_dev
+    hostname: rivallens_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: pg123456
+      POSTGRES_DB: rivallens_dev
+    ports:
+      - "35432:5432"
+    volumes:
+      - rivallens_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rivallens_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - rivallens_net
+
+  rivallens_api:
+    build:
+      context: .
+      dockerfile: ./app/Dockerfile
+    container_name: rivallens_api_dev
+    hostname: rivallens_api
+    env_file:
+      - .env.dev.example
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:pg123456@rivallens_db:5432/rivallens_dev
+      DATABASE_URL_SYNC: postgresql+psycopg2://postgres:pg123456@rivallens_db:5432/rivallens_dev
+      PYTHONPATH: /app
+      LOG_LEVEL: DEBUG
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./app:/app
+      - ../data/artifacts:/app/artifacts
+    command:
+      [
+        "uvicorn",
+        "app_main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8010",
+        "--reload",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request as u; u.urlopen('http://localhost:8010/health', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      rivallens_db:
+        condition: service_healthy
+    networks:
+      - rivallens_net
+
+volumes:
+  rivallens_pg_data:
+    name: rivallens_dev_pg_data
+
+networks:
+  rivallens_net:
+    name: rivallens_dev_net
+    driver: bridge
