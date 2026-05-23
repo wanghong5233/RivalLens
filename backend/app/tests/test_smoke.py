@@ -78,6 +78,23 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                 ),
                 {"run_id": run_id},
             ).scalar_one()
+            researcher_llm_call_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'researcher'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            researcher_llm_research_slot_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'researcher' "
+                    "AND l.model_slot = 'research'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
             evidence_count = connection.execute(
                 text("SELECT COUNT(*) AS count FROM evidence WHERE run_id = :run_id"),
                 {"run_id": run_id},
@@ -121,6 +138,8 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
         "supervisor_llm_call_count": int(supervisor_llm_call_count),
         "supervisor_llm_success_count": int(supervisor_llm_success_count),
         "supervisor_llm_prompt_hash_count": int(supervisor_llm_prompt_hash_count),
+        "researcher_llm_call_count": int(researcher_llm_call_count),
+        "researcher_llm_research_slot_count": int(researcher_llm_research_slot_count),
         "evidence_count": int(evidence_count),
         "industry_pack_evidence_count": int(industry_pack_evidence_count),
         "evidence_url_count": int(evidence_url_count),
@@ -159,6 +178,8 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["supervisor_llm_call_count"] >= snapshot["supervisor_step_count"]
     assert snapshot["supervisor_llm_success_count"] >= 1
     assert snapshot["supervisor_llm_prompt_hash_count"] >= 1
+    assert snapshot["researcher_llm_call_count"] >= 1
+    assert snapshot["researcher_llm_research_slot_count"] >= 1
     assert snapshot["evidence_count"] >= 1
     assert snapshot["industry_pack_evidence_count"] >= 1
     assert snapshot["evidence_url_count"] >= 1
