@@ -19,6 +19,7 @@ class LLMCall(Base):
         index=True,
     )
     model_slot: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

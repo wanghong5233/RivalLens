@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from models.llm_call import LLMCall
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
-from service.llm.client import llm_client
+from service.llm import SUPERVISOR_SYSTEM_PROMPT, build_supervisor_user_prompt
+from service.llm.client import get_llm_client
+from service.llm.response import LLMResponse
 from schemas.ids import make_id
 from schemas.supervisor import Analyze, ConductResearch, Finalize, SupervisorDecision, Write
 
@@ -51,6 +54,27 @@ def _resolve_triggered_by(
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _pseudo_llm_response(
+    *,
+    provider: str,
+    model_name: str,
+    prompt_preview: str,
+    error: str | None,
+) -> LLMResponse:
+    return LLMResponse(
+        model_slot="research",
+        provider=provider,
+        model_name=model_name,
+        prompt_preview=prompt_preview,
+        prompt_hash="pseudo_response",
+        content={},
+        prompt_tokens=None,
+        completion_tokens=None,
+        latency_ms=0,
+        error=error,
+    )
 
 
 def _fallback_decision(
@@ -156,7 +180,7 @@ def _decision_from_qa_feedback(
     qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
     qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
     qa_reasons: list[str],
-) -> tuple[SupervisorDecision, dict[str, Any], bool] | None:
+) -> tuple[SupervisorDecision, LLMResponse, bool] | None:
     if qa_outcome is None or qa_outcome == "approved":
         return None
 
@@ -180,7 +204,12 @@ def _decision_from_qa_feedback(
         )
         return (
             decision,
-            {"provider": "qa_guardrail", "prompt_preview": "qa_force_degraded"},
+            _pseudo_llm_response(
+                provider="qa_guardrail",
+                model_name="qa_guardrail",
+                prompt_preview="qa_force_degraded",
+                error="qa_force_degraded",
+            ),
             True,
         )
 
@@ -203,7 +232,12 @@ def _decision_from_qa_feedback(
         )
         return (
             decision,
-            {"provider": "qa_guardrail", "prompt_preview": "qa_rejected_to_writer"},
+            _pseudo_llm_response(
+                provider="qa_guardrail",
+                model_name="qa_guardrail",
+                prompt_preview="qa_rejected_to_writer",
+                error=None,
+            ),
             False,
         )
 
@@ -228,7 +262,12 @@ def _decision_from_qa_feedback(
     )
     return (
         decision,
-        {"provider": "qa_guardrail", "prompt_preview": "qa_rejected_unimplemented_target"},
+        _pseudo_llm_response(
+            provider="qa_guardrail",
+            model_name="qa_guardrail",
+            prompt_preview="qa_rejected_unimplemented_target",
+            error="qa_rejected_unimplemented_target",
+        ),
         True,
     )
 
@@ -237,10 +276,10 @@ def _try_llm_decision(
     *,
     run_id: str,
     iteration: int,
-    llm_response: dict[str, Any],
+    llm_response: LLMResponse,
     triggered_by: TriggerSource,
 ) -> SupervisorDecision | None:
-    content = llm_response.get("content")
+    content = llm_response.content
     if not isinstance(content, dict):
         return None
 
@@ -297,9 +336,10 @@ async def _persist_iteration(
     run_id: str,
     iteration: int,
     decision: SupervisorDecision,
-    llm_response: dict[str, Any],
+    llm_response: LLMResponse,
 ) -> None:
     async with session_factory() as session:
+        llm_call_error = llm_response.error[:2000] if llm_response.error is not None else None
         step = Step(
             step_id=make_id("step_"),
             run_id=run_id,
@@ -310,11 +350,25 @@ async def _persist_iteration(
                 "iteration": iteration,
                 "chosen_tool": decision.chosen_tool,
                 "tool_args": decision.tool_args,
-                "llm_provider": llm_response.get("provider"),
-                "llm_prompt_preview": llm_response.get("prompt_preview"),
+                "llm_provider": llm_response.provider,
+                "llm_prompt_preview": llm_response.prompt_preview,
             },
         )
         session.add(step)
+        await session.flush()
+        session.add(
+            LLMCall(
+                step_id=step.step_id,
+                model_slot=llm_response.model_slot,
+                provider=llm_response.provider,
+                model_name=llm_response.model_name,
+                prompt_hash=llm_response.prompt_hash,
+                prompt_tokens=llm_response.prompt_tokens,
+                completion_tokens=llm_response.completion_tokens,
+                latency_ms=llm_response.latency_ms,
+                error=llm_call_error,
+            )
+        )
         session.add(
             SupervisorDecisionRecord(
                 id=decision.id,
@@ -397,18 +451,29 @@ async def supervisor_node(state: AgentState) -> AgentState:
             outcome_recorded_at=forced_now,
             created_at=forced_now,
         )
-        llm_response = {"provider": "guardrail", "prompt_preview": "max_iterations_hit"}
-    else:
-        llm_prompt = (
-            f"user_query={user_query}\n"
-            f"iteration={iteration}\n"
-            f"competitors={competitors}\n"
-            f"researched_competitors={researched_competitors}\n"
-            f"analysis_done={analysis_done}\n"
-            f"report_draft_done={report_draft_done}\n"
-            "Return chosen_tool + tool_args + reasoning_summary."
+        llm_response = _pseudo_llm_response(
+            provider="guardrail",
+            model_name="guardrail",
+            prompt_preview="max_iterations_hit",
+            error="max_iterations_hit",
         )
-        llm_response = await llm_client.complete_json(prompt=llm_prompt, model_slot="research")
+    else:
+        user_prompt = build_supervisor_user_prompt(
+            user_query=user_query,
+            iteration=iteration,
+            competitors=competitors,
+            researched_competitors=researched_competitors,
+            analysis_done=analysis_done,
+            report_draft_done=report_draft_done,
+            qa_outcome=qa_outcome,
+            qa_reject_to=qa_reject_to,
+            qa_reasons=qa_reasons,
+        )
+        llm_response = await get_llm_client().complete_json(
+            model_slot="research",
+            system_prompt=SUPERVISOR_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+        )
         decision = _try_llm_decision(
             run_id=run_id,
             iteration=iteration,

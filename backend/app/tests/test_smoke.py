@@ -45,6 +45,39 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                 ),
                 {"run_id": run_id},
             ).scalar_one()
+            supervisor_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'supervisor'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            supervisor_llm_call_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'supervisor'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            supervisor_llm_success_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'supervisor' "
+                    "AND l.model_slot = 'research' AND l.error IS NULL"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            supervisor_llm_prompt_hash_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'supervisor' "
+                    "AND l.prompt_hash IS NOT NULL"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
             evidence_count = connection.execute(
                 text("SELECT COUNT(*) AS count FROM evidence WHERE run_id = :run_id"),
                 {"run_id": run_id},
@@ -84,6 +117,10 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
         "latest_tool": decision_row["chosen_tool"] if decision_row else "missing",
         "qa_step_count": int(qa_step_count),
         "qa_rejection_count": int(qa_rejection_count),
+        "supervisor_step_count": int(supervisor_step_count),
+        "supervisor_llm_call_count": int(supervisor_llm_call_count),
+        "supervisor_llm_success_count": int(supervisor_llm_success_count),
+        "supervisor_llm_prompt_hash_count": int(supervisor_llm_prompt_hash_count),
         "evidence_count": int(evidence_count),
         "industry_pack_evidence_count": int(industry_pack_evidence_count),
         "evidence_url_count": int(evidence_url_count),
@@ -119,6 +156,9 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["latest_tool"] == "Finalize"
     assert snapshot["qa_step_count"] >= 1
     assert snapshot["qa_rejection_count"] == 0
+    assert snapshot["supervisor_llm_call_count"] >= snapshot["supervisor_step_count"]
+    assert snapshot["supervisor_llm_success_count"] >= 1
+    assert snapshot["supervisor_llm_prompt_hash_count"] >= 1
     assert snapshot["evidence_count"] >= 1
     assert snapshot["industry_pack_evidence_count"] >= 1
     assert snapshot["evidence_url_count"] >= 1
