@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { useRunsList } from "@/api/hooks";
+import { useResumeRun, useRunsList } from "@/api/hooks";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,6 +11,27 @@ import { formatDateTime, formatRelativeTime } from "@/lib/format";
 export function HomePage(): JSX.Element {
   const navigate = useNavigate();
   const runsQuery = useRunsList({ limit: 20, offset: 0 });
+  const resumeMutation = useResumeRun();
+  const [resumingRunId, setResumingRunId] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+
+  async function handleResumeRun(runId: string): Promise<void> {
+    setResumingRunId(runId);
+    try {
+      await resumeMutation.mutateAsync(runId);
+      setResumeError(null);
+      await runsQuery.refetch();
+      navigate(`/runs/${runId}`);
+    } catch (error) {
+      if (error instanceof Error) {
+        setResumeError(error.message);
+      } else {
+        setResumeError("恢复运行失败，请稍后重试。");
+      }
+    } finally {
+      setResumingRunId(null);
+    }
+  }
 
   return (
     <section className="space-y-4">
@@ -34,6 +56,12 @@ export function HomePage(): JSX.Element {
         </Card>
       ) : null}
 
+      {resumeError ? (
+        <Card className="border-red-400/40">
+          <CardContent className="pt-6 text-sm text-red-200">{resumeError}</CardContent>
+        </Card>
+      ) : null}
+
       {!runsQuery.isLoading && !runsQuery.isError && runsQuery.data?.items.length === 0 ? (
         <Card>
           <CardContent className="pt-6 text-sm text-muted-foreground">
@@ -54,7 +82,22 @@ export function HomePage(): JSX.Element {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-4">
                   <CardTitle className="text-base">{run.user_query}</CardTitle>
-                  <StatusBadge status={run.status} />
+                  <div className="flex items-center gap-2">
+                    <StatusBadge status={run.status} />
+                    {run.status === "running" ? (
+                      <Button
+                        disabled={resumingRunId === run.run_id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleResumeRun(run.run_id);
+                        }}
+                        size="sm"
+                        variant="outline"
+                      >
+                        恢复运行
+                      </Button>
+                    ) : null}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-1 text-sm text-muted-foreground">

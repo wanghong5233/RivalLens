@@ -118,3 +118,36 @@ export interface IndustryPackListItemResponse {
   competitors: IndustryPackCompetitorResponse[];
   research_dimensions: string[];
 }
+
+export interface SkillCandidateResponse {
+  id: string;
+  candidate_type: string;
+  industry_pack: string;
+  payload: Record<string, unknown>;
+  rationale: string;
+  supporting_run_ids: string[];
+  confidence: "low" | "medium" | "high" | string;
+  status: "staging" | "approved" | "rejected" | string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+export interface SkillCandidateListResponse {
+  items: SkillCandidateResponse[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface SkillCandidateReviewRequest {
+  reviewed_by: string;
+}
+
+export interface SkillCandidateReviewResponse {
+  id: string;
+  status: string;
+  reviewed_by: string;
+  reviewed_at: string;
+}

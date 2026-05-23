@@ -6,6 +6,7 @@ import { NewRunPage } from "@/pages/NewRunPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { RunTracePage } from "@/pages/RunTracePage";
 import { RunViewPage } from "@/pages/RunViewPage";
+import { SkillStagingPage } from "@/pages/SkillStagingPage";
 
 export const appRouter = createBrowserRouter([
   {
@@ -27,6 +28,10 @@ export const appRouter = createBrowserRouter([
       {
         path: "runs/:runId/trace",
         element: <RunTracePage />,
+      },
+      {
+        path: "skills/staging",
+        element: <SkillStagingPage />,
       },
       {
         path: "*",
