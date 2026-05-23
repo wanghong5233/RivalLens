@@ -1,13 +1,12 @@
 #!/usr/bin/env python
-from __future__ import annotations
 
 import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Dict, Pattern, Tuple
 
-PatternSpec = tuple[re.Pattern[str], str]
+PatternSpec = Tuple[Pattern[str], str]
 
 COMMAND_KEYS = ("command", "cmd", "shell_command", "script")
 
@@ -90,7 +89,7 @@ def _load_payload() -> Any:
     return {}
 
 
-def _emit(payload: dict[str, str]) -> None:
+def _emit(payload: Dict[str, str]) -> None:
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
