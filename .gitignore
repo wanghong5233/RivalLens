@@ -53,6 +53,8 @@ pnpm-debug.log*
 # ==== Frontend build artifacts ====
 frontend/dist/
 frontend/build/
+frontend/.env.local
+frontend/*.tsbuildinfo
 
 # ==== Database / Artifacts (runtime, not source) ====
 *.sqlite
