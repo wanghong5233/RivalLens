@@ -7,10 +7,9 @@
 | ID | type | 问题 | 优先级 | 状态 | 当前阶段下一步 |
 |---|---|---|---|---|---|
 | ORCH-001 (M1) | improvement | Collector framework 缺失，队友无法并行接入真实采集 | P0 | planned | 明确协议与 registry 最小骨架后开领 |
-| API-001 (M2) | improvement | 前端主干已打通，但 M2 业务页与 UI 精修仍待拆分认领 | P0 | planned | 按 M2.1-M2.5 领取独立 PR |
 | ING-001 (M3) | improvement | 脱敏策略仅布尔标记，缺字段级规则和审计证据 | P1 | investigating | 先补违规样本与失败分布 |
 | ORCH-002 (M4) | improvement | 无 SSE 进度流，长 run 只能轮询 | P1 | blocked-by:M1 | 主干先用 polling，等待 SSE 事件 schema 定稿 |
-| ORCH-003 (M5) | improvement | Skill Curator 未落地，反思结果无法沉淀为可复用能力 | P2 | triaging | 先定义 candidate 生命周期与审批边界 |
+| ORCH-003 (M5) | improvement | Skill Curator 已落地同步版，但缺异步化与 approved 写回 pack | P2 | triaging | 明确异步触发点与写回冲突策略 |
 | ORCH-004 (M6) | improvement | 仅支持 resume B1，缺 reset_to 阶段重放 | P2 | triaging | 明确 checkpoint 与业务 trace 一致性策略 |
 | API-002 (M7) | improvement | 缺 token/cost 护栏，运行成本不可控 | P2 | triaging | 先补 slot 级成本基线与告警阈值 |
 | ORCH-005 (M8) | improvement | 缺 golden eval 集，回归质量难量化 | P2 | triaging | 先定义评测样本结构与通过阈值 |
@@ -69,111 +68,17 @@ Researcher 当前仅支持 `pack_lookup`，证据源固定为本地行业包快�
 
 输出 collector 协议草案并由队友认领实现。
 
-## API-001 (M2) Frontend run console
+## Highlights for v2（评审亮点候选，非主干阻塞）
 
-- type: improvement
-- status: planned
-- priority: P0
-- owner: _unassigned_
-
-### Current Behavior
-
-联调主干已上线（`/`、`/runs/new`、`/runs/:run_id`、`/runs/:run_id/trace` + Evidence Drawer），可完成端到端联调。
-
-### Limitation
-
-仍缺业务页与视觉系统，评审与演示体验不完整。
-
-### Trigger Condition
-
-主干稳定后，需要并行交付剩余 M2 页面与 UI 精修。
-
-### Options Considered
-
-1. 先做 run 列表 + 详情 + trace + report 四页最小闭环。
-2. 一次性做完整交互（周期长，风险高）。
-
-### M2 拆分任务
-
-#### M2.1 单竞品 Battlecard 详情页
-
-- owner: _unassigned_
-- entry files:
-  - `frontend/src/pages/RunCompetitorPage.tsx`（新）
-  - `frontend/src/app/router.tsx`
-  - `frontend/src/components/EvidenceDrawer.tsx`（复用）
-- interface contract:
-  - 路径：`/runs/:run_id/competitors/:competitor_id`
-  - 消费：`GET /api/runs/{id}/report` + `GET /api/runs/{id}/evidence?competitor_id=...`
-- acceptance:
-  - 详情页展示该竞品的 section 内容
-  - citation 点击可打开 Evidence Drawer
-
-#### M2.2 Prospect Voice 页面
-
-- owner: _unassigned_
-- entry files:
-  - `frontend/src/pages/RunVoicePage.tsx`（新）
-  - `frontend/src/app/router.tsx`
-- interface contract:
-  - 路径：`/runs/:run_id/voice`
-  - 第一版先消费 `report.content_json` 中 user_feedback 相关内容
-- acceptance:
-  - 支持按竞品筛选
-  - 至少展示主题分组 + 引用明细
-
-#### M2.3 Compare 对比矩阵页面
-
-- owner: _unassigned_
-- entry files:
-  - `frontend/src/pages/RunComparePage.tsx`（新）
-  - `frontend/src/app/router.tsx`
-- interface contract:
-  - 路径：`/runs/:run_id/compare`
-  - 消费 `report.content_json`，按 section/competitor 透视
-- acceptance:
-  - 至少支持 4 个竞品横向对比
-  - 支持 feature/pricing 维度切换
-
-#### M2.4 Skill Staging 页面
-
-- owner: _unassigned_
-- entry files:
-  - `frontend/src/pages/SkillStagingPage.tsx`（新）
-  - `frontend/src/app/router.tsx`
-- interface contract:
-  - 路径：`/skills/staging`
-  - 后端暂未提供完整 API，先以 mock 数据打通页面交互
-- acceptance:
-  - 可展示候选列表 + 通过/拒绝按钮
-  - 预留后端 API 对接位
-
-#### M2.5 UI 视觉系统精修
-
-- owner: _unassigned_
-- entry files:
-  - `frontend/src/index.css`
-  - `frontend/src/components/ui/*`
-  - `frontend/src/components/StatusBadge.tsx`
-- interface contract:
-  - 统一深灰 + indigo 主题
-  - 状态色具备文本/图标双重语义（可达性）
-- acceptance:
-  - 页面在 1366 宽度下视觉一致
-  - loading/error/empty 状态样式统一
-
-### Suggested Effort
-
-~2.5 人日（可并行拆成 5 个 PR）
-
-### DoD
-
-- M2.1-M2.5 各自有验收截图或录屏
-- 每个子任务都可独立回归
-
-### Next Step
-
-由前端同学按 M2.1->M2.5 顺序领取并并行提交。
+| ID | 方向 | 触发条件 | 入口文件 |
+|---|---|---|---|
+| HLT-001 | DAG Run View（`@xyflow/react`） | 需要把 Agent 拓扑直观展示给评审 | `frontend/src/pages/RunTracePage.tsx` |
+| HLT-002 | Battlecard 卡片网格视图 | 需要一屏展示多竞品结论卡片 | `frontend/src/pages/RunViewPage.tsx` |
+| HLT-003 | Prospect Voice 主题视图 | 需要突出真实用户声音与情感分布 | `frontend/src/pages/RunVoicePage.tsx`（新） |
+| HLT-004 | Compare 跨竞品矩阵 | 需要横向比较 feature/pricing 差异 | `frontend/src/pages/RunComparePage.tsx`（新） |
+| HLT-005 | Skill Curator 真异步化 | 主流程耗时受 Curator 影响或需要脱耦 | `backend/app/agents/nodes/skill_curator.py` |
+| HLT-006 | approved 候选写回 `industry_packs` | 需要完成 skill 生效闭环并可审计 diff | `backend/app/router/skill_rt.py`、`industry_packs/*/skills/` |
+| HLT-007 | Battlecard freshness + importance 视觉系统 | 演示阶段需要更强业务可读性 | `frontend/src/components/StatusBadge.tsx`、`frontend/src/pages/RunViewPage.tsx` |
 
 ## ING-001 (M3) Desensitization pipeline
 
@@ -245,23 +150,24 @@ M2 页面稳定后，轮询负载或用户等待明显上升。
 
 ### Current Behavior
 
-`skill_candidates` 表已存在，但无异步反思流程和审批入口。
+Skill Curator 已在主流程中同步执行，且已提供 `GET/POST /api/skill-candidates*` 审批 API 与前端审核页。
 
 ### Limitation
 
-经验无法结构化沉淀，系统缺少自我演化闭环。
+当前仍是同步节点，且 `approved` 候选尚未自动写回 `industry_packs/<pack>/skills/` 生效池。
 
 ### Trigger Condition
 
-主干稳定并开始积累重复失败模式。
+主流程 wall-clock 受反思阶段影响，或出现需要自动生效 skill 的明确需求。
 
 ### DoD
 
-- candidate 产生、审批、落库链路定义完成
+- Curator 从主图拆为异步任务，失败不影响主 run 完成时间
+- `approved` 候选可写回 `industry_packs` 并保留可审计变更记录
 
 ### Next Step
 
-先定义 candidate 生命周期与 reject/revive 语义。
+先定义异步触发点、写回冲突策略和 reviewer 兜底机制。
 
 ## ORCH-004 (M6) Resume B2 reset_to replay
 
