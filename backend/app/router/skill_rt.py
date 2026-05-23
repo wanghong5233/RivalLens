@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+
+from db.engine import get_session_factory
+from exceptions.base import APIException
+from models.skill_candidate import SkillCandidateRecord
+
+router = APIRouter()
+
+
+class SkillCandidateResponse(BaseModel):
+    id: str
+    candidate_type: str
+    industry_pack: str
+    payload: dict[str, object]
+    rationale: str
+    supporting_run_ids: list[str]
+    confidence: str
+    status: str
+    reviewed_by: str | None
+    reviewed_at: str | None
+    error: str | None
+    created_at: str
+
+
+class SkillCandidateListResponse(BaseModel):
+    items: list[SkillCandidateResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class SkillCandidateReviewRequest(BaseModel):
+    reviewed_by: str = Field(default="human_reviewer", min_length=1, max_length=128)
+
+
+class SkillCandidateReviewResponse(BaseModel):
+    id: str
+    status: str
+    reviewed_by: str
+    reviewed_at: str
+
+
+def _to_iso(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    return dt.isoformat()
+
+
+def _to_item(record: SkillCandidateRecord) -> SkillCandidateResponse:
+    return SkillCandidateResponse(
+        id=record.id,
+        candidate_type=record.candidate_type,
+        industry_pack=record.industry_pack,
+        payload=record.payload,
+        rationale=record.rationale,
+        supporting_run_ids=list(record.supporting_run_ids),
+        confidence=record.confidence,
+        status=record.status,
+        reviewed_by=record.reviewed_by,
+        reviewed_at=_to_iso(record.reviewed_at),
+        error=record.error,
+        created_at=record.created_at.isoformat(),
+    )
+
+
+@router.get("/api/skill-candidates", response_model=SkillCandidateListResponse)
+async def list_skill_candidates(
+    status: str | None = Query(default=None),
+    industry_pack: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> SkillCandidateListResponse:
+    normalized_status = status.strip() if isinstance(status, str) else None
+    normalized_pack = industry_pack.strip() if isinstance(industry_pack, str) else None
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        list_query = select(SkillCandidateRecord)
+        total_query = select(func.count()).select_from(SkillCandidateRecord)
+        if normalized_status:
+            list_query = list_query.where(SkillCandidateRecord.status == normalized_status)
+            total_query = total_query.where(SkillCandidateRecord.status == normalized_status)
+        if normalized_pack:
+            list_query = list_query.where(SkillCandidateRecord.industry_pack == normalized_pack)
+            total_query = total_query.where(SkillCandidateRecord.industry_pack == normalized_pack)
+
+        list_query = list_query.order_by(SkillCandidateRecord.created_at.desc()).limit(limit).offset(offset)
+        rows = (await session.execute(list_query)).scalars().all()
+        total = int((await session.execute(total_query)).scalar_one())
+
+    return SkillCandidateListResponse(
+        items=[_to_item(record) for record in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/api/skill-candidates/{candidate_id}/approve", response_model=SkillCandidateReviewResponse)
+async def approve_skill_candidate(
+    candidate_id: str,
+    payload: SkillCandidateReviewRequest,
+) -> SkillCandidateReviewResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        record = await session.get(SkillCandidateRecord, candidate_id)
+        if record is None:
+            raise APIException(
+                status_code=404,
+                error_code="SKILL_CANDIDATE_NOT_FOUND",
+                message=f"candidate_id={candidate_id} does not exist",
+            )
+        if record.status != "staging":
+            raise APIException(
+                status_code=409,
+                error_code="SKILL_CANDIDATE_NOT_REVIEWABLE",
+                message=f"candidate_id={candidate_id} status={record.status} cannot be reviewed",
+            )
+        reviewed_at = datetime.now(timezone.utc)
+        record.status = "approved"
+        record.reviewed_by = payload.reviewed_by
+        record.reviewed_at = reviewed_at
+        await session.commit()
+
+    return SkillCandidateReviewResponse(
+        id=candidate_id,
+        status="approved",
+        reviewed_by=payload.reviewed_by,
+        reviewed_at=reviewed_at.isoformat(),
+    )
+
+
+@router.post("/api/skill-candidates/{candidate_id}/reject", response_model=SkillCandidateReviewResponse)
+async def reject_skill_candidate(
+    candidate_id: str,
+    payload: SkillCandidateReviewRequest,
+) -> SkillCandidateReviewResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        record = await session.get(SkillCandidateRecord, candidate_id)
+        if record is None:
+            raise APIException(
+                status_code=404,
+                error_code="SKILL_CANDIDATE_NOT_FOUND",
+                message=f"candidate_id={candidate_id} does not exist",
+            )
+        if record.status != "staging":
+            raise APIException(
+                status_code=409,
+                error_code="SKILL_CANDIDATE_NOT_REVIEWABLE",
+                message=f"candidate_id={candidate_id} status={record.status} cannot be reviewed",
+            )
+        reviewed_at = datetime.now(timezone.utc)
+        record.status = "rejected"
+        record.reviewed_by = payload.reviewed_by
+        record.reviewed_at = reviewed_at
+        await session.commit()
+
+    return SkillCandidateReviewResponse(
+        id=candidate_id,
+        status="rejected",
+        reviewed_by=payload.reviewed_by,
+        reviewed_at=reviewed_at.isoformat(),
+    )
