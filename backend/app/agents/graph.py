@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
+from langgraph.types import Send
 
 from agents.nodes.analyst import analyst_node
 from agents.nodes.qa import qa_node
@@ -14,11 +15,40 @@ from agents.state import AgentState
 
 def _route_after_supervisor(
     state: AgentState,
-) -> Literal["researcher", "analyst", "writer", "finalize"]:
+) -> list[Send] | Literal["researcher", "analyst", "writer", "finalize"]:
     next_action = state.get("next_action", "finalize")
-    if next_action in {"researcher", "analyst", "writer", "finalize"}:
-        return next_action
-    return "finalize"
+    if next_action != "researcher":
+        if next_action in {"analyst", "writer", "finalize"}:
+            return next_action
+        return "finalize"
+
+    pending_tool_args = state.get("pending_tool_args")
+    topics = pending_tool_args.get("topics") if isinstance(pending_tool_args, dict) else None
+    if not isinstance(topics, list) or len(topics) <= 1:
+        return "researcher"
+
+    run_id = state.get("run_id")
+    industry_pack = state.get("industry_pack")
+    if run_id is None or industry_pack is None:
+        return "researcher"
+
+    sends: list[Send] = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            continue
+        sends.append(
+            Send(
+                "researcher",
+                {
+                    "run_id": run_id,
+                    "industry_pack": industry_pack,
+                    "pending_tool_args": topic,
+                },
+            )
+        )
+    if sends:
+        return sends
+    return "researcher"
 
 
 def build_graph_uncompiled() -> StateGraph:

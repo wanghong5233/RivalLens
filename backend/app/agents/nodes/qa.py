@@ -167,7 +167,6 @@ async def qa_node(state: AgentState) -> AgentState:
 
     if isinstance(review_result, Approval):
         return {
-            **state,
             "last_completed_node": "writer",
             "pending_review_target_step_id": None,
             "qa_outcome": "approved",
@@ -180,7 +179,6 @@ async def qa_node(state: AgentState) -> AgentState:
     updated_rejection_count = qa_rejection_count + 1
     is_force_degraded = updated_rejection_count > MAX_QA_REJECTIONS
     return {
-        **state,
         "last_completed_node": "writer",
         "pending_review_target_step_id": None,
         "qa_outcome": "force_degraded" if is_force_degraded else "rejected",

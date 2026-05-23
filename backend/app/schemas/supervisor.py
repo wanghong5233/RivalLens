@@ -16,6 +16,11 @@ class ConductResearch(BaseModel):
     fallback_to_offline: bool = True
 
 
+class ConductResearchBatch(BaseModel):
+    topics: list[ConductResearch] = Field(min_length=1, max_length=8)
+    parallelism_rationale: str
+
+
 class Analyze(BaseModel):
     focus_dimensions: list[str] | None = None
     parallel_by_dimension: bool = False
@@ -41,7 +46,7 @@ class SupervisorDecision(BaseModel):
     id: str
     run_id: str
     iteration: int
-    chosen_tool: Literal["ConductResearch", "Analyze", "Write", "Finalize"]
+    chosen_tool: Literal["ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"]
     tool_args: dict
     reasoning_summary: str
     triggered_by: Literal[

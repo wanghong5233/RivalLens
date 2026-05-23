@@ -28,6 +28,8 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_report_must_have_markdown_content": ["reports.content_markdown"],
     "rule_report_template_id_valid": ["reports.content_json.template_id"],
     "rule_report_must_have_at_least_one_section": ["reports.content_json.sections"],
+    "rule_writer_sections_must_have_content": ["reports.content_json.sections[].content_markdown"],
+    "rule_writer_must_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_evidence_must_be_desensitized": ["evidence.desensitized"],
     "rule_report_exists": ["reports.report_id"],
 }
@@ -224,6 +226,7 @@ async def evaluate_report(
         content_markdown=report.content_markdown,
         content_json=report.content_json,
         evidence_items=evidence_items,
+        allowed_evidence_ids={item.id for item in evidence_items},
         allowed_template_ids=allowed_template_ids,
     )
     evidence_briefs = _build_evidence_briefs(evidence_items)

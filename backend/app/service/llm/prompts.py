@@ -16,6 +16,13 @@ QA_SEMANTIC_ALLOWED_REJECT_TO: tuple[str, ...] = (
     "analyst",
     "writer",
 )
+WRITER_ALLOWED_SECTION_IDS: tuple[str, ...] = (
+    "feature",
+    "pricing",
+    "user_feedback",
+    "differentiation",
+    "swot",
+)
 
 SUPERVISOR_SYSTEM_PROMPT = """You are the RivalLens Supervisor planner.
 You must choose exactly one tool in each iteration and return STRICT JSON.
@@ -30,20 +37,34 @@ Available tools:
        "max_iterations": int,
        "fallback_to_offline": bool
      }
-2) Analyze
+2) ConductResearchBatch
+   - tool_args schema:
+     {
+       "topics": [
+         {
+           "research_topic": str,
+           "competitor_id": str,
+           "focus_dimensions": list[str],
+           "max_iterations": int,
+           "fallback_to_offline": bool
+         }
+       ],
+       "parallelism_rationale": str
+     }
+3) Analyze
    - tool_args schema:
      {
        "focus_dimensions": list[str] | null,
        "parallel_by_dimension": bool,
        "require_cross_competitor": bool
      }
-3) Write
+4) Write
    - tool_args schema:
      {
        "template_id": str,
        "sections": list[str] | null
      }
-4) Finalize
+5) Finalize
    - tool_args schema:
      {
        "completion_reason": "all_dimensions_covered" | "max_iterations_hit" | "fallback_path" | "user_requested_stop",
@@ -52,7 +73,7 @@ Available tools:
 
 Output JSON schema:
 {
-  "chosen_tool": "ConductResearch" | "Analyze" | "Write" | "Finalize",
+  "chosen_tool": "ConductResearch" | "ConductResearchBatch" | "Analyze" | "Write" | "Finalize",
   "tool_args": { ... valid for chosen_tool ... },
   "reasoning_summary": "short and concrete rationale"
 }
@@ -61,6 +82,8 @@ Rules:
 - Always return a JSON object and nothing else.
 - Never invent competitor ids not present in the allowed list from user prompt.
 - For ConductResearch, focus_dimensions must be a subset of the allowed dimensions list.
+- For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors, and each topic.focus_dimensions must be a subset of the allowed dimensions list.
+- Prefer ConductResearchBatch when pending_competitors has 2+ independent competitors and analysis_done is false.
 - Keep reasoning_summary concise and operational, no markdown.
 """
 
@@ -148,6 +171,34 @@ Rules:
 - Return JSON object only.
 """
 
+WRITER_SYSTEM_PROMPT = """You are RivalLens Writer.
+Generate a battlecard report in STRICT JSON with evidence-grounded sections.
+
+Output JSON schema:
+{
+  "template_id": str,
+  "title": str,
+  "executive_summary": str,
+  "sections": [
+    {
+      "section_id": "feature" | "pricing" | "user_feedback" | "differentiation" | "swot",
+      "title": str,
+      "content_markdown": str,
+      "evidence_refs": list[str],
+      "insight_refs": list[str]
+    }
+  ],
+  "risk_callouts": list[str]
+}
+
+Rules:
+- template_id must match the requested template_id from user prompt.
+- Every section must include non-empty content_markdown.
+- Every section must cite evidence_refs using ids provided in user prompt.
+- Do not fabricate evidence ids or insight refs.
+- Return JSON object only.
+"""
+
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
@@ -180,9 +231,11 @@ def build_supervisor_user_prompt(
         f"- qa_reasons: {_json(list(qa_reasons))}\n\n"
         "Hard constraints:\n"
         f"1) ConductResearch.tool_args.competitor_id must be in {_json(list(competitors))}.\n"
-        "2) ConductResearch.tool_args.focus_dimensions must be subset of "
+        "2) ConductResearchBatch.tool_args.topics[*].competitor_id must be unique and all in "
+        f"{_json(list(competitors))}.\n"
+        "3) ConductResearch.tool_args.focus_dimensions and ConductResearchBatch.tool_args.topics[*].focus_dimensions must be subsets of "
         f"{_json(list(SUPERVISOR_ALLOWED_DIMENSIONS))}.\n"
-        "3) Return exactly one tool decision in this iteration.\n"
+        "4) Return exactly one tool decision in this iteration.\n"
     )
 
 
@@ -195,14 +248,27 @@ def build_supervisor_fallback_user_prompt(
     report_draft_done: bool,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
+    preferred_tool_hint: str
+    if len(pending_competitors) >= 2:
+        preferred_tool_hint = "ConductResearchBatch"
+    elif len(pending_competitors) == 1:
+        preferred_tool_hint = "ConductResearch"
+    elif not analysis_done:
+        preferred_tool_hint = "Analyze"
+    elif not report_draft_done:
+        preferred_tool_hint = "Write"
+    else:
+        preferred_tool_hint = "Finalize"
     return (
         "Fallback planning context:\n"
         f"- user_query: {user_query}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- pending_competitors: {_json(pending_competitors)}\n"
         f"- analysis_done: {analysis_done}\n"
-        f"- report_draft_done: {report_draft_done}\n\n"
-        "Pick exactly one next tool and keep tool_args minimal but valid."
+        f"- report_draft_done: {report_draft_done}\n"
+        f"- preferred_tool_hint: {preferred_tool_hint}\n\n"
+        "Pick exactly one next tool and keep tool_args minimal but valid.\n"
+        "When pending_competitors has 2+ entries, prefer ConductResearchBatch with one unique competitor per topic."
     )
 
 
@@ -339,4 +405,51 @@ def build_qa_semantic_fallback_user_prompt(
         f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n"
         f"- evidence_count: {evidence_count}\n\n"
         "Return minimal valid JSON for semantic_audit_passed/reject_to/severity/finding/required_fields."
+    )
+
+
+def build_writer_user_prompt(
+    *,
+    user_query: str,
+    template_id: str,
+    requested_sections: Sequence[str],
+    competitors: Sequence[str],
+    evidence_briefs: Sequence[dict[str, object]],
+    analyst_summary: str,
+    analyst_insights: Sequence[dict[str, object]],
+    risk_flags: Sequence[str],
+    recommended_sections: Sequence[str],
+) -> str:
+    return (
+        "Writer context:\n"
+        f"- user_query: {user_query}\n"
+        f"- template_id: {template_id}\n"
+        f"- requested_sections: {_json(list(requested_sections))}\n"
+        f"- allowed_section_ids: {_json(list(WRITER_ALLOWED_SECTION_IDS))}\n"
+        f"- competitors: {_json(list(competitors))}\n"
+        f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n"
+        f"- analyst_summary: {analyst_summary}\n"
+        f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
+        f"- risk_flags: {_json(list(risk_flags))}\n"
+        f"- recommended_sections: {_json(list(recommended_sections))}\n\n"
+        "Write a battlecard with grounded evidence refs. Prefer requested_sections; "
+        "if requested_sections is empty, follow recommended_sections."
+    )
+
+
+def build_writer_fallback_user_prompt(
+    *,
+    template_id: str,
+    requested_sections: Sequence[str],
+    evidence_ids: Sequence[str],
+    analyst_summary: str,
+) -> str:
+    return (
+        "Fallback writer request:\n"
+        f"- template_id: {template_id}\n"
+        f"- requested_sections: {_json(list(requested_sections))}\n"
+        f"- evidence_ids: {_json(list(evidence_ids))}\n"
+        f"- allowed_section_ids: {_json(list(WRITER_ALLOWED_SECTION_IDS))}\n"
+        f"- analyst_summary: {analyst_summary}\n\n"
+        "Return minimal valid battlecard JSON with at least one section and evidence_refs."
     )

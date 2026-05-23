@@ -60,6 +60,65 @@ def rule_report_must_have_at_least_one_section(content_json: dict[str, object]) 
     )
 
 
+def rule_writer_sections_must_have_content(content_json: dict[str, object]) -> RuleResult:
+    sections_raw = content_json.get("sections")
+    passed = False
+    if isinstance(sections_raw, list) and sections_raw:
+        passed = True
+        for section in sections_raw:
+            if not isinstance(section, dict):
+                passed = False
+                break
+            content_markdown_raw = section.get("content_markdown")
+            if (
+                not isinstance(content_markdown_raw, str)
+                or len(content_markdown_raw.strip()) < 60
+            ):
+                passed = False
+                break
+    return RuleResult(
+        rule_id="rule_writer_sections_must_have_content",
+        passed=passed,
+        severity="blocking",
+        reject_to="writer",
+        message="Every section must include substantial content_markdown.",
+    )
+
+
+def rule_writer_must_cite_evidence(
+    *,
+    content_json: dict[str, object],
+    allowed_evidence_ids: set[str],
+) -> RuleResult:
+    sections_raw = content_json.get("sections")
+    referenced_evidence_ids: list[str] = []
+    invalid_ref_detected = False
+    if isinstance(sections_raw, list):
+        for section in sections_raw:
+            if not isinstance(section, dict):
+                invalid_ref_detected = True
+                continue
+            evidence_refs_raw = section.get("evidence_refs")
+            if not isinstance(evidence_refs_raw, list):
+                continue
+            for evidence_id in evidence_refs_raw:
+                if not isinstance(evidence_id, str):
+                    invalid_ref_detected = True
+                    continue
+                if evidence_id not in allowed_evidence_ids:
+                    invalid_ref_detected = True
+                    continue
+                referenced_evidence_ids.append(evidence_id)
+    passed = bool(referenced_evidence_ids) and not invalid_ref_detected
+    return RuleResult(
+        rule_id="rule_writer_must_cite_evidence",
+        passed=passed,
+        severity="blocking",
+        reject_to="writer",
+        message="Writer sections must cite valid collected evidence_ids.",
+    )
+
+
 def rule_evidence_must_be_desensitized(evidence_items: list[EvidenceRecord]) -> RuleResult:
     passed = all(item.desensitized for item in evidence_items)
     return RuleResult(
@@ -76,6 +135,7 @@ def evaluate_fast_path_rules(
     content_markdown: str,
     content_json: dict[str, object],
     evidence_items: list[EvidenceRecord],
+    allowed_evidence_ids: set[str],
     allowed_template_ids: set[str] | None = None,
 ) -> list[RuleResult]:
     return [
@@ -85,5 +145,10 @@ def evaluate_fast_path_rules(
             allowed_template_ids=allowed_template_ids,
         ),
         rule_report_must_have_at_least_one_section(content_json),
+        rule_writer_sections_must_have_content(content_json),
+        rule_writer_must_cite_evidence(
+            content_json=content_json,
+            allowed_evidence_ids=allowed_evidence_ids,
+        ),
         rule_evidence_must_be_desensitized(evidence_items),
     ]

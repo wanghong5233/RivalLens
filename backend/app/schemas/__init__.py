@@ -17,7 +17,14 @@ from schemas.skill import (
     SkillCandidate,
     SourceRoutingCandidatePayload,
 )
-from schemas.supervisor import Analyze, ConductResearch, Finalize, SupervisorDecision, Write
+from schemas.supervisor import (
+    Analyze,
+    ConductResearch,
+    ConductResearchBatch,
+    Finalize,
+    SupervisorDecision,
+    Write,
+)
 
 __all__ = [
     "AgentMessage",
@@ -27,6 +34,7 @@ __all__ = [
     "CompetitorKnowledgeAggregate",
     "CompetitorKnowledgeFragment",
     "ConductResearch",
+    "ConductResearchBatch",
     "Conclusion",
     "Evidence",
     "Feature",

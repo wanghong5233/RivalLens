@@ -11,7 +11,7 @@ from schemas.skill import SkillCandidate
 from schemas.supervisor import SupervisorDecision
 
 
-def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
+def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float]:
     engine = create_engine(settings.DATABASE_URL_SYNC)
     try:
         with engine.connect() as connection:
@@ -27,6 +27,13 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                 text(
                     "SELECT chosen_tool FROM supervisor_decisions "
                     "WHERE run_id = :run_id ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"run_id": run_id},
+            ).mappings().first()
+            first_decision_row = connection.execute(
+                text(
+                    "SELECT chosen_tool FROM supervisor_decisions "
+                    "WHERE run_id = :run_id ORDER BY created_at ASC LIMIT 1"
                 ),
                 {"run_id": run_id},
             ).mappings().first()
@@ -127,6 +134,15 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                 ),
                 {"run_id": run_id},
             ).scalar_one()
+            writer_llm_call_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM llm_calls l "
+                    "JOIN steps s ON s.step_id = l.step_id "
+                    "WHERE s.run_id = :run_id AND s.agent_name = 'writer' "
+                    "AND l.model_slot = 'writer'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
             researcher_llm_call_count = connection.execute(
                 text(
                     "SELECT COUNT(*) AS count FROM llm_calls l "
@@ -141,6 +157,20 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                     "JOIN steps s ON s.step_id = l.step_id "
                     "WHERE s.run_id = :run_id AND s.agent_name = 'researcher' "
                     "AND l.model_slot = 'research'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            researcher_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'researcher'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            researcher_started_span_seconds_raw = connection.execute(
+                text(
+                    "SELECT COALESCE(EXTRACT(EPOCH FROM (MAX(started_at) - MIN(started_at))), 0) AS span "
+                    "FROM steps WHERE run_id = :run_id AND agent_name = 'researcher'"
                 ),
                 {"run_id": run_id},
             ).scalar_one()
@@ -188,12 +218,47 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
                     "windsurf_phrase": "%inline AI pair programming%",
                 },
             ).scalar_one()
+            latest_report_row = connection.execute(
+                text(
+                    "SELECT content_json, content_markdown FROM reports "
+                    "WHERE run_id = :run_id ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"run_id": run_id},
+            ).mappings().first()
     finally:
         engine.dispose()
+
+    if latest_report_row is not None:
+        report_json_raw = latest_report_row["content_json"]
+        report_markdown_raw = latest_report_row["content_markdown"]
+        if isinstance(report_json_raw, dict):
+            sections_raw = report_json_raw.get("sections")
+        else:
+            sections_raw = []
+        if isinstance(sections_raw, list):
+            report_sections_content_count = len(
+                [
+                    section
+                    for section in sections_raw
+                    if isinstance(section, dict)
+                    and isinstance(section.get("content_markdown"), str)
+                    and bool(section["content_markdown"].strip())
+                ]
+            )
+        else:
+            report_sections_content_count = 0
+        if isinstance(report_markdown_raw, str):
+            report_has_evidence_citation = "[ev_" in report_markdown_raw
+        else:
+            report_has_evidence_citation = False
+    else:
+        report_sections_content_count = 0
+        report_has_evidence_citation = False
 
     return {
         "run_status": run_row["status"] if run_row else "missing",
         "step_count": int(step_count),
+        "first_tool": first_decision_row["chosen_tool"] if first_decision_row else "missing",
         "latest_tool": decision_row["chosen_tool"] if decision_row else "missing",
         "qa_step_count": int(qa_step_count),
         "qa_rejection_count": int(qa_rejection_count),
@@ -207,14 +272,19 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool]:
         "analyst_fallback_mode_count": int(analyst_fallback_mode_count),
         "qa_llm_call_count": int(qa_llm_call_count),
         "qa_semantic_degraded_count": int(qa_semantic_degraded_count),
+        "writer_llm_call_count": int(writer_llm_call_count),
         "researcher_llm_call_count": int(researcher_llm_call_count),
         "researcher_llm_research_slot_count": int(researcher_llm_research_slot_count),
+        "researcher_step_count": int(researcher_step_count),
+        "researcher_started_span_seconds": float(researcher_started_span_seconds_raw),
         "checkpoint_row_count": int(checkpoint_row_count),
         "checkpoint_writes_row_count": int(checkpoint_writes_row_count),
         "evidence_count": int(evidence_count),
         "industry_pack_evidence_count": int(industry_pack_evidence_count),
         "evidence_url_count": int(evidence_url_count),
         "expected_phrase_count": int(expected_phrase_count),
+        "report_sections_content_count": int(report_sections_content_count),
+        "report_has_evidence_citation": report_has_evidence_citation,
     }
 
 
@@ -243,6 +313,7 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     snapshot = _fetch_persisted_snapshot(payload["run_id"])
     assert snapshot["run_status"] == "completed"
     assert snapshot["step_count"] >= 5
+    assert snapshot["first_tool"] == "ConductResearchBatch"
     assert snapshot["latest_tool"] == "Finalize"
     assert snapshot["qa_step_count"] >= 1
     assert snapshot["qa_rejection_count"] == 0
@@ -255,14 +326,19 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["analyst_fallback_mode_count"] >= 1
     assert snapshot["qa_llm_call_count"] >= 1
     assert snapshot["qa_semantic_degraded_count"] >= 1
+    assert snapshot["writer_llm_call_count"] >= 1
     assert snapshot["researcher_llm_call_count"] >= 1
     assert snapshot["researcher_llm_research_slot_count"] >= 1
+    assert snapshot["researcher_step_count"] >= 2
+    assert snapshot["researcher_started_span_seconds"] < 2.0
     assert snapshot["checkpoint_row_count"] >= 1
     assert snapshot["checkpoint_writes_row_count"] >= 1
     assert snapshot["evidence_count"] >= 1
     assert snapshot["industry_pack_evidence_count"] >= 1
     assert snapshot["evidence_url_count"] >= 1
     assert snapshot["expected_phrase_count"] >= 1
+    assert snapshot["report_sections_content_count"] >= 3
+    assert snapshot["report_has_evidence_citation"] is True
 
 
 def test_get_run_detail_and_trace(test_client: TestClient) -> None:
@@ -306,6 +382,119 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     not_found_response = test_client.get("/api/runs/run_not_exists")
     assert not_found_response.status_code == 404
     assert not_found_response.json()["error_code"] == "RUN_NOT_FOUND"
+
+
+def test_get_run_integration_endpoints(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "integration endpoints check",
+            "competitors": ["comp_cursor", "comp_windsurf"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    list_response = test_client.get("/api/runs", params={"status": "completed", "limit": 20, "offset": 0})
+    assert list_response.status_code == 200
+    list_payload = list_response.json()
+    assert isinstance(list_payload["items"], list)
+    run_items = [item for item in list_payload["items"] if item["run_id"] == run_id]
+    assert run_items
+    listed_run = run_items[0]
+    assert listed_run["step_count"] >= 1
+    assert listed_run["evidence_count"] >= 1
+    assert listed_run["has_report"] is True
+
+    report_response = test_client.get(f"/api/runs/{run_id}/report")
+    assert report_response.status_code == 200
+    report_payload = report_response.json()
+    assert report_payload["run_id"] == run_id
+    assert isinstance(report_payload["content_markdown"], str)
+    assert report_payload["content_markdown"].strip()
+    assert isinstance(report_payload["evidence_id_to_brief"], dict)
+    assert report_payload["evidence_id_to_brief"]
+
+    evidence_response = test_client.get(f"/api/runs/{run_id}/evidence")
+    assert evidence_response.status_code == 200
+    evidence_payload = evidence_response.json()
+    assert isinstance(evidence_payload, list)
+    assert evidence_payload
+    assert all(item["run_id"] == run_id for item in evidence_payload)
+
+    competitor_filtered_response = test_client.get(
+        f"/api/runs/{run_id}/evidence",
+        params={"competitor_id": "comp_cursor"},
+    )
+    assert competitor_filtered_response.status_code == 200
+    competitor_filtered_payload = competitor_filtered_response.json()
+    assert competitor_filtered_payload
+    assert all(item["competitor_id"] == "comp_cursor" for item in competitor_filtered_payload)
+
+    source_type_filtered_response = test_client.get(
+        f"/api/runs/{run_id}/evidence",
+        params={"source_type": "industry_pack_snapshot"},
+    )
+    assert source_type_filtered_response.status_code == 200
+    source_type_filtered_payload = source_type_filtered_response.json()
+    assert source_type_filtered_payload
+    assert all(item["source_type"] == "industry_pack_snapshot" for item in source_type_filtered_payload)
+
+    packs_response = test_client.get("/api/industry-packs")
+    assert packs_response.status_code == 200
+    packs_payload = packs_response.json()
+    assert isinstance(packs_payload, list)
+    target_pack = next((item for item in packs_payload if item["id"] == "ai_coding_tools"), None)
+    assert target_pack is not None
+    assert target_pack["display_name"] == "AI Coding Tools"
+    competitor_ids = {item["id"] for item in target_pack["competitors"]}
+    assert {"comp_cursor", "comp_windsurf"}.issubset(competitor_ids)
+    assert set(target_pack["research_dimensions"]) >= {"feature", "pricing", "user_feedback"}
+
+
+def test_resume_run_continues_from_checkpoint(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "resume from checkpoint",
+            "competitors": ["comp_cursor", "comp_windsurf"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE runs SET status = 'running', finished_at = :finished_at "
+                    "WHERE run_id = :run_id"
+                ),
+                {"run_id": run_id, "finished_at": None},
+            )
+    finally:
+        engine.dispose()
+
+    resume_response = test_client.post(f"/api/runs/{run_id}/resume")
+    assert resume_response.status_code == 200
+    resume_payload = resume_response.json()
+    assert resume_payload["run_id"] == run_id
+    assert resume_payload["status"] == "completed"
+
+    detail_response = test_client.get(f"/api/runs/{run_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["status"] == "completed"
+    assert detail_payload["finished_at"] is not None
+
+    non_resumable_response = test_client.post(f"/api/runs/{run_id}/resume")
+    assert non_resumable_response.status_code == 409
+    assert non_resumable_response.json()["error_code"] == "RUN_NOT_RESUMABLE"
 
 
 def test_schema_models_instantiation() -> None:

@@ -255,6 +255,7 @@ async def analyst_node(state: AgentState) -> AgentState:
                 **request.model_dump(),
                 "focus_dimensions": focus_dimensions,
                 "analysis_mode": analysis_mode,
+                "analysis_payload": analysis_result,
                 "analysis_summary": analysis_result["summary"],
                 "insight_count": len(
                     analysis_result["insights"] if isinstance(analysis_result["insights"], list) else []
@@ -296,7 +297,6 @@ async def analyst_node(state: AgentState) -> AgentState:
         await session.commit()
 
     return {
-        **state,
         "analysis_done": True,
         "pending_tool_args": {},
         "last_completed_node": "analyst",

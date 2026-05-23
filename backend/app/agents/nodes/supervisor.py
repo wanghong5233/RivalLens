@@ -19,12 +19,19 @@ from service.llm import (
 from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
 from schemas.ids import make_id
-from schemas.supervisor import Analyze, ConductResearch, Finalize, SupervisorDecision, Write
+from schemas.supervisor import (
+    Analyze,
+    ConductResearch,
+    ConductResearchBatch,
+    Finalize,
+    SupervisorDecision,
+    Write,
+)
 
 MAX_SUPERVISOR_ITERATIONS = 10
 DEFAULT_RESEARCH_DIMENSIONS = ["feature", "pricing", "user_feedback"]
 DEFAULT_WRITE_SECTIONS = ["feature", "pricing", "user_feedback", "differentiation", "swot"]
-VALID_TOOLS = {"ConductResearch", "Analyze", "Write", "Finalize"}
+VALID_TOOLS = {"ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"}
 TriggerSource = Literal[
     "user_query",
     "researcher_completion",
@@ -103,7 +110,40 @@ def _fallback_decision(
     pending_competitors = [c for c in competitors if c not in researched_competitors]
     now = _now_iso()
 
-    if pending_competitors:
+    if len(pending_competitors) >= 2:
+        topics = [
+            ConductResearch(
+                research_topic=f"{competitor_id} vs user_query={user_query}",
+                competitor_id=competitor_id,
+                focus_dimensions=DEFAULT_RESEARCH_DIMENSIONS,
+                max_iterations=6,
+                fallback_to_offline=True,
+            )
+            for competitor_id in pending_competitors[:8]
+        ]
+        args = ConductResearchBatch(
+            topics=topics,
+            parallelism_rationale=(
+                f"Fallback planner batches {len(topics)} pending competitors to reduce wall-clock time."
+            ),
+        ).model_dump()
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="ConductResearchBatch",
+            tool_args=args,
+            reasoning_summary=(
+                f"Fallback planner dispatches {len(topics)} pending competitors in parallel research."
+            ),
+            triggered_by=triggered_by,
+            outcome="dispatched",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+        return decision
+
+    if len(pending_competitors) == 1:
         competitor_id = pending_competitors[0]
         args = ConductResearch(
             research_topic=f"{competitor_id} vs user_query={user_query}",
@@ -303,11 +343,24 @@ def _try_llm_decision(
     if not isinstance(tool_args_raw, dict):
         return None
 
-    chosen_tool_literal: Literal["ConductResearch", "Analyze", "Write", "Finalize"]
+    chosen_tool_literal: Literal[
+        "ConductResearch",
+        "ConductResearchBatch",
+        "Analyze",
+        "Write",
+        "Finalize",
+    ]
     try:
         if chosen_tool == "ConductResearch":
             chosen_tool_literal = "ConductResearch"
             tool_args = ConductResearch.model_validate(tool_args_raw).model_dump()
+        elif chosen_tool == "ConductResearchBatch":
+            chosen_tool_literal = "ConductResearchBatch"
+            batch_args = ConductResearchBatch.model_validate(tool_args_raw)
+            topic_competitors = [topic.competitor_id for topic in batch_args.topics]
+            if len(set(topic_competitors)) != len(topic_competitors):
+                return None
+            tool_args = batch_args.model_dump()
         elif chosen_tool == "Analyze":
             chosen_tool_literal = "Analyze"
             tool_args = Analyze.model_validate(tool_args_raw).model_dump()
@@ -405,7 +458,7 @@ async def _persist_iteration(
 
 
 def _map_next_action(chosen_tool: str) -> Literal["researcher", "analyst", "writer", "finalize"]:
-    if chosen_tool == "ConductResearch":
+    if chosen_tool in {"ConductResearch", "ConductResearchBatch"}:
         return "researcher"
     if chosen_tool == "Analyze":
         return "analyst"
@@ -539,7 +592,6 @@ async def supervisor_node(state: AgentState) -> AgentState:
         "pending_tool_args": decision.tool_args,
         "next_action": next_action,
         "last_completed_node": None,
-        "researched_competitors": researched_competitors,
         "analysis_done": analysis_done,
         "report_draft_done": report_draft_done,
         "qa_outcome": None,

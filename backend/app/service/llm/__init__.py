@@ -8,6 +8,8 @@ from service.llm.prompts import (
     RESEARCHER_SYSTEM_PROMPT,
     SUPERVISOR_ALLOWED_DIMENSIONS,
     SUPERVISOR_SYSTEM_PROMPT,
+    WRITER_ALLOWED_SECTION_IDS,
+    WRITER_SYSTEM_PROMPT,
     build_analyst_fallback_user_prompt,
     build_analyst_user_prompt,
     build_compression_user_prompt,
@@ -18,6 +20,8 @@ from service.llm.prompts import (
     build_researcher_user_prompt,
     build_supervisor_fallback_user_prompt,
     build_supervisor_user_prompt,
+    build_writer_fallback_user_prompt,
+    build_writer_user_prompt,
 )
 from service.llm.providers import LLMProvider, build_providers
 from service.llm.response import LLMResponse, ProviderRawResponse
@@ -38,6 +42,8 @@ __all__ = [
     "SLOT_NAMES",
     "SUPERVISOR_ALLOWED_DIMENSIONS",
     "SUPERVISOR_SYSTEM_PROMPT",
+    "WRITER_ALLOWED_SECTION_IDS",
+    "WRITER_SYSTEM_PROMPT",
     "build_analyst_fallback_user_prompt",
     "build_analyst_user_prompt",
     "build_compression_fallback_user_prompt",
@@ -49,6 +55,8 @@ __all__ = [
     "build_researcher_user_prompt",
     "build_supervisor_fallback_user_prompt",
     "build_supervisor_user_prompt",
+    "build_writer_fallback_user_prompt",
+    "build_writer_user_prompt",
     "get_llm_client",
     "llm_client",
     "resolve_slot",

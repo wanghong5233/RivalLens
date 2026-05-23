@@ -11,6 +11,8 @@ from service.qa.rules import (
     rule_report_must_have_at_least_one_section,
     rule_report_must_have_markdown_content,
     rule_report_template_id_valid,
+    rule_writer_must_cite_evidence,
+    rule_writer_sections_must_have_content,
 )
 
 
@@ -43,6 +45,71 @@ def test_rule_report_template_id_valid_pass_and_fail() -> None:
 def test_rule_report_must_have_at_least_one_section_pass_and_fail() -> None:
     assert rule_report_must_have_at_least_one_section({"sections": ["feature"]}).passed is True
     assert rule_report_must_have_at_least_one_section({"sections": []}).passed is False
+
+
+def test_rule_writer_sections_must_have_content_pass_and_fail() -> None:
+    passing_content_json = {
+        "sections": [
+            {
+                "section_id": "feature",
+                "title": "Feature Comparison",
+                "content_markdown": (
+                    "This section contains enough concrete analysis details and evidence-backed "
+                    "narrative to satisfy QA minimum length constraints."
+                ),
+                "evidence_refs": ["ev_test_001"],
+            }
+        ]
+    }
+    failing_content_json = {
+        "sections": [
+            {
+                "section_id": "feature",
+                "title": "Feature Comparison",
+                "content_markdown": "too short",
+                "evidence_refs": ["ev_test_001"],
+            }
+        ]
+    }
+    assert rule_writer_sections_must_have_content(passing_content_json).passed is True
+    assert rule_writer_sections_must_have_content(failing_content_json).passed is False
+
+
+def test_rule_writer_must_cite_evidence_pass_and_fail() -> None:
+    passing_content_json = {
+        "sections": [
+            {
+                "section_id": "feature",
+                "title": "Feature Comparison",
+                "content_markdown": "x" * 80,
+                "evidence_refs": ["ev_test_001"],
+            }
+        ]
+    }
+    failing_content_json = {
+        "sections": [
+            {
+                "section_id": "feature",
+                "title": "Feature Comparison",
+                "content_markdown": "x" * 80,
+                "evidence_refs": ["ev_not_exists"],
+            }
+        ]
+    }
+    assert (
+        rule_writer_must_cite_evidence(
+            content_json=passing_content_json,
+            allowed_evidence_ids={"ev_test_001"},
+        ).passed
+        is True
+    )
+    assert (
+        rule_writer_must_cite_evidence(
+            content_json=failing_content_json,
+            allowed_evidence_ids={"ev_test_001"},
+        ).passed
+        is False
+    )
 
 
 def test_rule_evidence_must_be_desensitized_pass_and_fail() -> None:

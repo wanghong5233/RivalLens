@@ -255,12 +255,12 @@ async def researcher_node(state: AgentState) -> AgentState:
         await session.commit()
 
     researched_competitors = list(state.get("researched_competitors", []))
-    if request.competitor_id not in researched_competitors:
-        researched_competitors.append(request.competitor_id)
+    researched_competitor_delta = (
+        [] if request.competitor_id in researched_competitors else [request.competitor_id]
+    )
 
     return {
-        **state,
-        "researched_competitors": researched_competitors,
+        "researched_competitors": researched_competitor_delta,
         "pending_tool_args": {},
         "last_completed_node": "researcher",
         "status": "running",

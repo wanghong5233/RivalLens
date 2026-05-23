@@ -14,7 +14,7 @@ from agents.graph import compile_graph
 from core.config import settings
 from db.engine import dispose_engine, init_engine
 from exceptions.base import APIException
-from router import health_rt, run_rt
+from router import health_rt, pack_rt, run_rt
 from service.industry_pack.registry import get_industry_pack_registry
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
 from utils.request_id import new_request_id, request_id_ctx
@@ -97,4 +97,5 @@ async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONRespons
 
 
 app.include_router(health_rt.router)
+app.include_router(pack_rt.router)
 app.include_router(run_rt.router)

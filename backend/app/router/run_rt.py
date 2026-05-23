@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from db.engine import get_session_factory
 from exceptions.base import APIException
+from models.evidence import EvidenceRecord
+from models.report import Report
 from models.run import Run
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
@@ -42,6 +44,26 @@ class RunDetailResponse(BaseModel):
     created_at: str
 
 
+class RunListItemResponse(BaseModel):
+    run_id: str
+    user_query: str
+    industry_pack: str
+    status: str
+    started_at: str
+    finished_at: str | None
+    created_at: str
+    step_count: int
+    evidence_count: int
+    has_report: bool
+
+
+class RunListResponse(BaseModel):
+    items: list[RunListItemResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 class StepTraceResponse(BaseModel):
     step_id: str
     run_id: str
@@ -73,6 +95,36 @@ class RunTraceResponse(BaseModel):
     supervisor_decisions: list[SupervisorDecisionTraceResponse]
 
 
+class EvidenceBriefResponse(BaseModel):
+    evidence_id: str
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    competitor_id: str | None
+
+
+class RunReportResponse(BaseModel):
+    run_id: str
+    status: str
+    content_markdown: str
+    content_json: dict[str, object]
+    generated_at: str
+    evidence_id_to_brief: dict[str, EvidenceBriefResponse]
+
+
+class EvidenceListItemResponse(BaseModel):
+    evidence_id: str
+    run_id: str
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    sanitized_text: str
+    competitor_id: str | None
+    metadata: dict[str, object] | None
+    collected_at: str
+    created_at: str
+
+
 def _to_iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
@@ -91,6 +143,13 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
         finished_at=_to_iso(run.finished_at),
         created_at=run.created_at.isoformat(),
     )
+
+
+def _extract_competitor_id(span: dict[str, object] | None) -> str | None:
+    if not isinstance(span, dict):
+        return None
+    competitor_id = span.get("competitor_id")
+    return competitor_id if isinstance(competitor_id, str) else None
 
 
 def _validate_pack_and_competitors(payload: RunCreateRequest) -> None:
@@ -119,6 +178,71 @@ def _validate_pack_and_competitors(payload: RunCreateRequest) -> None:
             error_code="COMPETITOR_NOT_IN_PACK",
             message=f"competitor(s) {missing_joined} not found in pack {payload.industry_pack}.",
         )
+
+
+@router.get("/api/runs", response_model=RunListResponse)
+async def list_runs(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> RunListResponse:
+    normalized_status = status.strip() if isinstance(status, str) else None
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        step_count_subquery = (
+            select(func.count())
+            .select_from(Step)
+            .where(Step.run_id == Run.run_id)
+            .scalar_subquery()
+        )
+        evidence_count_subquery = (
+            select(func.count())
+            .select_from(EvidenceRecord)
+            .where(EvidenceRecord.run_id == Run.run_id)
+            .scalar_subquery()
+        )
+        report_count_subquery = (
+            select(func.count())
+            .select_from(Report)
+            .where(Report.run_id == Run.run_id)
+            .scalar_subquery()
+        )
+        list_query = select(
+            Run,
+            step_count_subquery.label("step_count"),
+            evidence_count_subquery.label("evidence_count"),
+            report_count_subquery.label("report_count"),
+        )
+        total_query = select(func.count()).select_from(Run)
+        if normalized_status:
+            list_query = list_query.where(Run.status == normalized_status)
+            total_query = total_query.where(Run.status == normalized_status)
+        list_query = list_query.order_by(Run.started_at.desc()).limit(limit).offset(offset)
+        rows = (await session.execute(list_query)).all()
+        total = int((await session.execute(total_query)).scalar_one())
+
+    items: list[RunListItemResponse] = []
+    for run, step_count, evidence_count, report_count in rows:
+        items.append(
+            RunListItemResponse(
+                run_id=run.run_id,
+                user_query=run.user_query,
+                industry_pack=run.industry_pack,
+                status=run.status,
+                started_at=run.started_at.isoformat(),
+                finished_at=_to_iso(run.finished_at),
+                created_at=run.created_at.isoformat(),
+                step_count=int(step_count),
+                evidence_count=int(evidence_count),
+                has_report=int(report_count) > 0,
+            )
+        )
+    return RunListResponse(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post("/api/runs", response_model=RunCreateResponse)
@@ -188,6 +312,54 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
     )
 
 
+@router.post("/api/runs/{run_id}/resume", response_model=RunCreateResponse)
+async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        if run.status != "running":
+            raise APIException(
+                status_code=409,
+                error_code="RUN_NOT_RESUMABLE",
+                message=f"run_id={run_id} status={run.status} cannot resume",
+            )
+
+    graph = getattr(request.app.state, "compiled_graph", None)
+    if graph is None:
+        raise APIException(
+            status_code=500,
+            error_code="GRAPH_NOT_INITIALIZED",
+            message="Compiled LangGraph instance is not initialized.",
+        )
+
+    graph_state = await graph.ainvoke(None, config={"configurable": {"thread_id": run_id}})
+
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=500,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} should exist before resume update",
+            )
+        run_status = str(graph_state.get("status", "completed"))
+        run.status = run_status if run_status in {"completed", "degraded"} else "completed"
+        run.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    return RunCreateResponse(
+        run_id=run_id,
+        status=run.status,
+        message="Run resumed from checkpoint.",
+    )
+
+
 @router.get("/api/runs/{run_id}", response_model=RunDetailResponse)
 async def get_run(run_id: str) -> RunDetailResponse:
     session_factory = get_session_factory()
@@ -200,6 +372,104 @@ async def get_run(run_id: str) -> RunDetailResponse:
                 message=f"run_id={run_id} does not exist",
             )
         return _to_run_detail(run)
+
+
+@router.get("/api/runs/{run_id}/report", response_model=RunReportResponse)
+async def get_run_report(run_id: str) -> RunReportResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        report = (
+            await session.execute(
+                select(Report).where(Report.run_id == run_id).order_by(Report.created_at.desc()).limit(1)
+            )
+        ).scalars().first()
+        if report is None:
+            raise APIException(
+                status_code=404,
+                error_code="REPORT_NOT_FOUND",
+                message=f"report for run_id={run_id} does not exist",
+            )
+        evidence_rows = (
+            await session.execute(
+                select(EvidenceRecord)
+                .where(EvidenceRecord.run_id == run_id)
+                .order_by(EvidenceRecord.created_at.asc())
+            )
+        ).scalars().all()
+
+    evidence_id_to_brief: dict[str, EvidenceBriefResponse] = {}
+    for evidence in evidence_rows:
+        evidence_id_to_brief[evidence.id] = EvidenceBriefResponse(
+            evidence_id=evidence.id,
+            source_type=evidence.source_type,
+            source_url=evidence.source_url,
+            source_title=evidence.source_title,
+            competitor_id=_extract_competitor_id(evidence.span),
+        )
+
+    return RunReportResponse(
+        run_id=run.run_id,
+        status=run.status,
+        content_markdown=report.content_markdown,
+        content_json=report.content_json,
+        generated_at=report.created_at.isoformat(),
+        evidence_id_to_brief=evidence_id_to_brief,
+    )
+
+
+@router.get("/api/runs/{run_id}/evidence", response_model=list[EvidenceListItemResponse])
+async def get_run_evidence(
+    run_id: str,
+    competitor_id: str | None = Query(default=None),
+    source_type: str | None = Query(default=None),
+) -> list[EvidenceListItemResponse]:
+    normalized_competitor_id = competitor_id.strip() if isinstance(competitor_id, str) else None
+    normalized_source_type = source_type.strip() if isinstance(source_type, str) else None
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        query = select(EvidenceRecord).where(EvidenceRecord.run_id == run_id)
+        if normalized_source_type:
+            query = query.where(EvidenceRecord.source_type == normalized_source_type)
+        evidence_rows = (
+            await session.execute(query.order_by(EvidenceRecord.created_at.asc()))
+        ).scalars().all()
+
+    if normalized_competitor_id:
+        evidence_rows = [
+            item
+            for item in evidence_rows
+            if _extract_competitor_id(item.span) == normalized_competitor_id
+        ]
+
+    return [
+        EvidenceListItemResponse(
+            evidence_id=evidence.id,
+            run_id=evidence.run_id,
+            source_type=evidence.source_type,
+            source_url=evidence.source_url,
+            source_title=evidence.source_title,
+            sanitized_text=evidence.sanitized_text,
+            competitor_id=_extract_competitor_id(evidence.span),
+            metadata=evidence.span,
+            collected_at=evidence.collected_at.isoformat(),
+            created_at=evidence.created_at.isoformat(),
+        )
+        for evidence in evidence_rows
+    ]
 
 
 @router.get("/api/runs/{run_id}/trace", response_model=RunTraceResponse)
