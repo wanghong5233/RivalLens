@@ -29,7 +29,7 @@ services:
     container_name: rivallens_api_dev
     hostname: rivallens_api
     env_file:
-      - .env.dev.example
+      - .env.dev
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:pg123456@rivallens_db:5432/rivallens_dev
       DATABASE_URL_SYNC: postgresql+psycopg2://postgres:pg123456@rivallens_db:5432/rivallens_dev
