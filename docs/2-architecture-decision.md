@@ -141,7 +141,7 @@ docker compose 是单机一次性起整套服务（postgres + backend + frontend
 
 | 不引入 | 推迟到 |
 |---|---|
-| Redis | 当前任务级状态用 PG 行锁 + LangGraph checkpoint 已足够。仅在出现真实的缓存命中率需求或跨进程任务队列需求时引入 |
+| Redis | 当前需求已被既有组件覆盖：任务持久化与中断恢复用 `langgraph-checkpoint-postgres`；多 run 隔离用 PG 行级锁；SSE/前端断线重连用 trace 表 append-only + PostgreSQL `LISTEN/NOTIFY` 进程内 pub/sub + 客户端 EventSource 自动重连；LLM 与采集限流用进程内 `asyncio.Semaphore`。下列任一触发条件成立时再引入：① 部署从单 worker 改为多 worker / 多副本；② SSE 并发订阅者 > 50（PG `LISTEN/NOTIFY` 连接吃紧）；③ 引入用户登录 + session；④ 需要 cron-like 持久化定时调度超出 `asyncio.create_task` 能力 |
 | Milvus / 向量库 | 当前 evidence 数量级 < 10^4，结构化 SQL 查询足够定位证据。本系统的检索语义是 `evidence-by-id`，而非 semantic search |
 | S3 / OSS | artifact 体积可控（单 run 量级 < 10 MB），本地目录挂载满足；引入对象存储需要 IAM、SDK、bucket 管理，无收益 |
 | Kafka / RabbitMQ | 单机单进程后端，无跨服务消息总线场景 |
