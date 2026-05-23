@@ -67,6 +67,38 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["latest_tool"] == "Finalize"
 
 
+def test_get_run_detail_and_trace(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    detail_response = test_client.get(f"/api/runs/{run_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["run_id"] == run_id
+    assert detail_payload["status"] == "completed"
+    assert detail_payload["industry_pack"] == "ai_coding_tools"
+
+    trace_response = test_client.get(f"/api/runs/{run_id}/trace")
+    assert trace_response.status_code == 200
+    trace_payload = trace_response.json()
+    assert trace_payload["run"]["run_id"] == run_id
+    assert len(trace_payload["steps"]) >= 1
+    assert len(trace_payload["supervisor_decisions"]) >= 1
+    assert trace_payload["supervisor_decisions"][-1]["chosen_tool"] == "Finalize"
+
+    not_found_response = test_client.get("/api/runs/run_not_exists")
+    assert not_found_response.status_code == 404
+    assert not_found_response.json()["error_code"] == "RUN_NOT_FOUND"
+
+
 def test_schema_models_instantiation() -> None:
     now = "2026-05-23T00:00:00+00:00"
 
