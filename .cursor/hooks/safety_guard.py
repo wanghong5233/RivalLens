@@ -61,10 +61,15 @@ def check_read(payload: dict) -> None:
         )
 
 
+def allow() -> None:
+    print(json.dumps({"permission": "allow"}, ensure_ascii=False))
+
+
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
     except Exception:
+        allow()
         return
 
     if isinstance(payload, dict):
@@ -72,6 +77,8 @@ def main() -> None:
             check_shell(payload)
         elif "path" in payload or "file_path" in payload:
             check_read(payload)
+
+    allow()
 
 
 if __name__ == "__main__":

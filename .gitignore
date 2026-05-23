@@ -6,6 +6,13 @@
 *.key
 secrets/
 
+# ==== Private / Internal docs (never committed) ====
+docs/private/
+**/private/
+
+# ==== Reference projects (read-only clones for study, never committed) ====
+reference_projects/
+
 # ==== Python ====
 __pycache__/
 *.py[cod]
