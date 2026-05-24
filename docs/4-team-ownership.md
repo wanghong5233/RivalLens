@@ -99,11 +99,17 @@ yy/cursor-data                        ●
 
 ### 3.2 `main` 分支保护
 
-GitHub 仓库设置里给 `main` 加一条 Branch Protection Rule 即可：
+仓库已转 public（GitHub Free 个人账号 private repo 不支持分支保护规则），并在 `Settings → Branches → Classic branch protection rule` 上开启：
 
-- ✅ Require pull request before merging（必须经 PR）
-- ✅ Require approval from §4.2 指定的 reviewer
-- ❌ 不开启 "禁止 force push" 等大团队选项——3 人信任成本足够低
+- ✅ Require a pull request before merging（必须经 PR）
+- ✅ Required approvals: 1（L 审核合入）
+- ✅ Dismiss stale pull request approvals when new commits are pushed
+- ✅ Require conversation resolution before merging
+- ✅ Do not allow force pushes
+- ✅ Do not allow deletions
+
+L 拥有 admin，B / C 给 Write 权限。Write 不能直接 push `main`，只能 push 自己的 feature 分支并开 PR。
+不开启 "Restrict updates" 这类强约束——3 人信任成本足够低，避免把日常维护卡死。
 
 ### 3.3 你现在马上开始后端编码，该开哪个分支？
 
