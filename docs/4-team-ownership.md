@@ -1,170 +1,45 @@
-# RivalLens 团队分工与协作机制
+# RivalLens Git 协作规范
 
-> 本文回答：3 人团队如何在 13 天窗口内交付一个**多 Agent 紧耦合**的系统、分支怎么管、提交记录怎么留、AI Coding 工具痕迹如何沉淀。
->
-> 内部能力评估、答辩内部话术等不公开内容见 `docs/private/`。
+本文只描述 git 工作流：分支、commit、PR、main 保护、AI Coding 痕迹。
+团队角色、项目排期、同步机制不在此文档范围。
 
-## 1. 团队组成与角色
+## 1. 分支模型
 
-| 角色代号 | 主要职责 | 技术覆盖 |
-|---|---|---|
-| **L（队长 / Tech Lead）** | 系统架构、Agent 编排核心、端到端 MVP 打通、PR review、答辩主讲 | 全栈 + AI Coding 工作流（Cursor / TRAE） |
-| **B（Backend Engineer）** | Researcher 工具层、数据脱敏管线、DB 迁移、FastAPI 路由、集成测试、部署脚本 | Python / FastAPI / SQLAlchemy / async |
-| **C（Config & Demo Engineer）** | 演示数据集准备、行业包 YAML、文档完善、录屏剧本、答辩材料整理；P2 起视情况承接前端静态页 | YAML / Markdown / 配置；React（在 AI Coding 辅助下） |
+- 长期分支只有 `main`，始终可演示，不能直接 commit/push
+- 短命 feature 分支寿命 ≤ 2 天，超时砍掉重开避免冲突地狱
+- 一个 feature 一条分支，不在同一分支堆多个任务
 
-**第一性原理**：本项目是**单一模块紧耦合**的 multi-agent 系统，传统"按 Agent 分人"会导致接口反复返工。改为按**耦合度 × 技术门槛**二维切：
+### 1.1 分支命名
 
-```text
-          高门槛              ↑
-                              │
-        L 独占                │
-   Supervisor / LangGraph     │
-   QA DSL / Skill Curator     │
-        紧耦合核心            │
-                              │
-   ───────────────────────────┼───────────────────────────
-                              │
-        C 主场                │   B 主场
-   演示数据 / 行业包 YAML     │   Researcher 工具 / DB
-   文档 / 录屏 / 测试         │   脱敏 / API 层 / 部署
-        松耦合外围            │   紧耦合外围
-                              │
-          低门槛              ↓
-```
+格式：`<作者首字母>/<短描述>`
 
-**保护规则**：
-- C **不直接修改** `backend/agents/` 下的核心代码。
-- B 的代码**必须**经 L review 后才能合入 `main`（保护 Agent 协议与 Schema invariant）。
-- L 不直接修改 `industry_packs/<pack>/` 下的 YAML（除非 C 不在场紧急修复），保证 C 的工作领地清晰可见。
+- 作者首字母：本仓库内三人各自姓名拼音首字母（`wh` / `xx` / `yy`，P0 对齐时确定）
+- 短描述：3-5 个英文词，连字符分隔，只描述做什么
 
-## 2. 工作切分（4 阶段）
+示例：
 
-ddl 锚点：录屏粗剪 `2026-06-05`。本表按从启动日起的相对天数估算（AI Coding 工作流下，传统估算应压缩约 50%）。
-
-| 阶段 | 时长 | L | B | C |
-|---|---|---|---|---|
-| **P0 对齐** | 0.5 天 | 讲解架构 / Schema / Cursor rules / TRAE 工作流；本仓库 `.cursor/` `.agents/skills/` 已就位 | 跑通 hello world；熟悉 LangGraph subgraph + Send 文档 | 跑通仓库；理解 industry_packs/ 结构 |
-| **P1 MVP 冲刺** | 3-4 天 | Supervisor + Researcher×N + Analyst + Writer + QA 最简版；PG schema + Alembic 迁移；端到端跑通 1 个竞品 | Researcher 工具层（`fetch_url` / `parse_page` / `extract_structured` / `search_web` / `lookup_offline_snapshot`）；脱敏管线；evidence 入库 | AI Coding 行业包：`competitors.yaml` + `report_template.yaml` + `qa_rules.yaml` + `qa_semantic_prompt.txt`；演示数据集（4 竞品各 ≥15 条 evidence 手工准备 + 脱敏） |
-| **P2 联调 + 前端** | 3-4 天 | 联调闭环 + QA reject 路径打通 + Skill Curator 异步任务 | FastAPI 路由层 + WebSocket 状态推送 + 集成测试 + Docker compose | 视技术储备承接前端 Battlecard 静态页（在 AI Coding 辅助下做 mock 数据展示），否则负责测试用例编写 + 文档美化 |
-| **P3 录屏 + 答辩** | 1-2 天 | 录屏主线 + 答辩 PPT 主稿 | bug 修复 + 部署脚本 + 本地一键启动验证 | 录屏次拍剪辑 + 答辩 PPT 美化 + 提交材料整理（数据来源清单 / 许可证 / 脱敏记录） |
-
-**关键交接物**（每阶段结束必须存在）：
-
-| 阶段 | 交接物 | 验证方式 |
-|---|---|---|
-| P0 | 三人都能 `make dev` 启动本地服务 | 截图 + 互相确认 |
-| P1 | 端到端单竞品 run 可完成；演示数据集就位；YAML 行业包就位 | `pytest backend/tests/integration/test_e2e_single_competitor.py` 通过 |
-| P2 | 4 竞品完整 run + Battlecard 报告页可视化 + QA reject 闭环触发 | 录屏前端 + 后端各一段 30s 演示 |
-| P3 | 录屏粗剪 + 答辩 PPT + 提交材料 | 团队三人完整过一遍录屏 |
-
-## 3. 分支模型（GitHub Flow + 人名首字母）
-
-**第一性原理**：3 人 13 天，分支管理只需要解决 3 件事：
-
-1. **隔离不同人的并行工作**（避免相互踩脚）
-2. **保护 `main` 始终可演示**
-3. **每个 PR 可追溯到具体作者**
-
-为此**只需要**：一个 `main` 长期分支 + 每人开自己的短命 feature 分支。**不需要** `dev` 集成分支、不需要按 feat/fix/chore 分类前缀——这些是大团队工程，3 人小团队是过度设计。
-
-```text
-main             ──●──●──●──●──●──●──   始终可演示，PR 一步合入
-                    ↑  ↑  ↑  ↑  ↑  ↑
-wh/sup-loop      ──●──┘  │  │  │  │
-xx/db-migration       ──●┘  │  │  │
-yy/ai-coding-pack          ──●  │  │
-xx/fetch-tool                   ●──┘  │
-yy/cursor-data                        ●
-```
-
-### 3.1 分支命名约定
-
-**格式**：`<作者首字母>/<短描述>`
-
-- **作者首字母**：本仓库内三人各自姓名拼音首字母（例 `wh` / `xx` / `yy`），P0 对齐时确定并写入此处。
-- **短描述**：3-5 个英文词，连字符分隔，**只描述做什么**——type 信息在 commit message 里，不在分支名里。
-
-| 示例 | 谁开 | 内容 |
+| 分支 | 谁开 | 内容 |
 |---|---|---|
 | `wh/supervisor-loop` | L | Supervisor 主循环 |
-| `wh/qa-reviewer` | L | QA Reviewer Agent |
 | `xx/fetch-url-tool` | B | Researcher 的 `fetch_url` 工具 |
-| `xx/db-migration-init` | B | 初始 Alembic 迁移 |
 | `yy/ai-coding-pack` | C | AI Coding 行业包 YAML |
-| `yy/cursor-evidence-seed` | C | Cursor 竞品演示数据 |
 
-**为什么不把 `feat/` / `fix/` / `chore/` 当分支前缀**：这些是 **commit type**（见 §5），用于描述"这次提交的性质"。分支前缀的作用完全不同——是标识"**谁在做什么**"，让 `git branch -a` 一眼能看出归属。两个概念混用会丢失作者信息。
+不要把 `feat/` `fix/` `chore/` 当分支前缀——这是 commit type（见 §3），不是分支前缀。分支前缀作用是标识"谁在做什么"，让 `git branch -a` 能看出归属。
 
-**短命原则**：单个 feature 分支寿命 **≤2 天**，第一个工作日就该有 PR 合入 `main`。超过 2 天没合的分支强制砍掉重开（避免长寿命分支导致冲突地狱）。
+## 2. main 分支保护
 
-### 3.2 `main` 分支保护
+仓库已转 public（GitHub Free 个人 private repo 不支持 branch protection），在 `Settings → Branches → Classic branch protection rule` 上启用：
 
-GitHub 仓库设置里给 `main` 加一条 Branch Protection Rule 即可：
+- ✅ Require a pull request before merging
+- ✅ Required approvals: 1（L 审核）
+- ✅ Dismiss stale pull request approvals when new commits are pushed
+- ✅ Require conversation resolution before merging
+- ✅ Do not allow force pushes
+- ✅ Do not allow deletions
 
-- ✅ Require pull request before merging（必须经 PR）
-- ✅ Require approval from §4.2 指定的 reviewer
-- ❌ 不开启 "禁止 force push" 等大团队选项——3 人信任成本足够低
+L 拥有 admin，B / C 给 Write 权限。Write 推不到 `main`，只能 push feature 分支并开 PR。
 
-### 3.3 你现在马上开始后端编码，该开哪个分支？
-
-```bash
-git checkout main
-git pull
-git checkout -b wh/agent-skeleton    # L 的第一个 feature 分支
-# ... 写代码、commit ...
-git push -u origin wh/agent-skeleton
-# 在 GitHub 开 PR → main
-```
-
-分支名替换为你自己的首字母 + 当前做的具体事。Agent 骨架做完合入 `main` 后，下一个功能（如 Supervisor 决策循环）就开 `wh/supervisor-loop`，依此类推。**任何情况下都不要直接在 `main` 上 commit。**
-
-## 4. PR 规则（轻量但有锚点）
-
-### 4.1 PR 必备字段
-
-PR 模板（建议放 `.github/pull_request_template.md`）：
-
-```markdown
-## 改动摘要
-（1-2 句，what + why）
-
-## 涉及范围
-- [ ] backend/agents/
-- [ ] backend/api/
-- [ ] backend/db/
-- [ ] frontend/
-- [ ] industry_packs/
-- [ ] data/demo/
-- [ ] docs/
-- [ ] tests/
-
-## Schema / 协议变更（如有）
-（涉及 docs/3 中任何字段或 AgentMessage 协议时必须勾选并描述）
-- [ ] 是
-- [ ] 否
-
-## AI Coding 工具使用
-（哪个步骤用了 Cursor / TRAE，简短说明，可贴 prompt 片段）
-
-## 验证
-- [ ] 本地 `pytest backend/tests/` 通过
-- [ ] 涉及 schema 变更时已更新 docs/3
-- [ ] 涉及 Agent 协议变更时已更新 docs/2.5
-```
-
-### 4.2 review 责任
-
-| PR 类型 | 必须 review 人 |
-|---|---|
-| 改 `backend/agents/` / `backend/core/` / `backend/db/migrations/` | L 必须 |
-| 改 `docs/2` / `docs/2.5` / `docs/3` | L 必须 |
-| 改 `industry_packs/` / `data/demo/` | L 一眼扫，不阻塞 |
-| 改 `frontend/` | L 必须 |
-| 改 `docs/` 其它 / `chore/` | 自合（self-merge）允许 |
-
-**不强制队员之间相互 review**——避免"为什么不这样写"无意义循环；review 集中在 L，保护核心 invariant。
-
-## 5. Commit 规范
+## 3. Commit 规范
 
 采用 [Conventional Commits](https://www.conventionalcommits.org/)：
 
@@ -176,7 +51,7 @@ PR 模板（建议放 `.github/pull_request_template.md`）：
 <optional footer, e.g. Refs #12 / [trae] / [cursor]>
 ```
 
-### 5.1 type 取值
+### 3.1 type
 
 | type | 用途 |
 |---|---|
@@ -189,85 +64,142 @@ PR 模板（建议放 `.github/pull_request_template.md`）：
 | `test` | 测试 |
 | `chore` | 构建 / CI / 依赖 / 杂项 |
 
-### 5.2 scope 取值
+### 3.2 scope
 
-`supervisor` / `researcher` / `analyst` / `writer` / `qa` / `curator` / `api` / `db` / `frontend` / `ai_coding`（行业包名） / `2`（文档编号） / `2.5` / `3` / etc.
+`supervisor` / `researcher` / `analyst` / `writer` / `qa` / `curator` / `api` / `db` / `frontend` / `ai_coding`（行业包名） / `2`（文档编号） / `2.5` / `3` 等。
 
-### 5.3 示例
+### 3.3 示例
 
 ```text
 feat(supervisor): add ConductResearch tool with dynamic K fan-out
 fix(researcher): handle pricing page 403 with single-shot retry
 docs(2.5): clarify compress_context fallback semantics
 config(ai_coding): add windsurf competitor profile
-data(cursor): seed 18 evidence from G2 reviews 2026-Q1
 chore(ci): add ruff to pre-commit
 ```
 
-### 5.4 禁止
+### 3.4 禁止
 
-- ❌ "update" "fix bug" "wip" 等无信息量的 subject
-- ❌ 一个 commit 跨多个 scope（拆开提交）
-- ❌ 直接在 `main` commit（必须走 feature branch + PR）
+- `update` / `fix bug` / `wip` 等无信息量 subject
+- 一个 commit 跨多个 scope（拆开提交）
+- 直接在 `main` 上 commit
 
-## 6. AI Coding 协作机制与痕迹保留
+## 4. PR 流程（gh CLI 命令为主）
 
-评分项明确要求"TRAE 等 AI 编程工具的使用痕迹清晰，体现深度协作"（占总分 10%）。本节是该评分项的硬证据来源。
+3 人敏捷只有一条铁律：**B/C 不能自合自己的代码，必须 L 过一遍**。这条铁律不靠纪律，靠 protection 物理约束（§2 的 `Required approvals: 1` + B/C 是 Write 不是 admin → B/C 在技术上无法合自己 PR）。
 
-### 6.1 工具配置已沉淀在仓库
+下面三个场景覆盖所有 PR。
+
+### 4.1 一次性配置
+
+```powershell
+gh auth login          # 选 github.com / HTTPS / 浏览器授权,只配一次
+```
+
+### 4.2 场景 A：作者开 PR（L / B / C 通用）
+
+```powershell
+git push -u origin <你的分支>
+gh pr create           # 交互式问标题和 body,或加 --fill 把 commit message 当 PR 内容
+```
+
+PR 标题用 commit type 起头，例如：
+
+```text
+feat(researcher): add fetch_url tool with robots.txt check
+docs(2): clarify desensitize boundary
+```
+
+PR body 简短即可：
+
+```markdown
+## 改动摘要
+（1-2 句 what + why）
+
+## 涉及范围
+backend/agents/ , docs/2
+
+## 验证
+本地 pytest 通过 / 文档改动无需测试
+```
+
+不强制填模板。
+
+### 4.3 场景 B：L 合 B/C 的 PR（AI 风险扫描 + approve + merge）
+
+L 在合 B/C 的 PR 前**必须**用 AI 扫一遍 diff。这是这套流程的核心质量门。
+
+```powershell
+gh pr diff <PR编号>                              # 看 diff
+gh pr checkout <PR编号>                          # 把分支拉到本地,让 Cursor agent 在 IDE 里扫
+# ↑ 二选一,看变更量大小
+
+gh pr review <PR编号> --approve --body "LGTM"   # AI 确认无风险后 L approve
+gh pr merge <PR编号> --squash --delete-branch   # 合入 main + 自动删远端分支
+```
+
+AI 风险扫描清单（让 Cursor agent 对照检查）：
+
+- 有没有 hardcode 的 API Key / 密码 / cookie / JWT
+- 有没有破坏 `docs/3` Schema 不变量（字段删 / 类型改 / Literal 枚举改）
+- 有没有改已合并的 Alembic 迁移历史（只能加新迁移版本）
+- 有没有引入 GPL / AGPL 依赖
+- 有没有 `except Exception` / 静默 fallback 返回 `[]` / 空 dict 隐藏失败
+- 有没有删别人的代码或文档
+- 有没有 git config / hook bypass / `--no-verify`
+
+### 4.4 场景 C：L 合自己的 PR（admin bypass）
+
+L 自己开的 PR 因为 GitHub 不允许 approve 自己，需要 admin 权限 bypass approval：
+
+```powershell
+gh pr merge <PR编号> --squash --delete-branch --admin
+```
+
+`--admin` 只 L 能用（B/C 没 admin 权限，对他们这条命令会报错）。**L 自审等于无审**，敏捷阶段接受这个折扣，换回 L 不被流程卡住。
+
+### 4.5 收尾（三种场景通用）
+
+```powershell
+git checkout main
+git pull origin main
+git fetch --prune              # 同步远端已删的分支引用
+git branch -D <已合的分支>     # squash 后本地视角是 unmerged,必须 -D 强删
+```
+
+### 4.6 合入方式
+
+统一 **Squash and merge**：feature 分支上 N 个 commit 压成 1 个进 main，main 历史保持线性可读。`gh pr merge --squash` 已经是这个行为。
+
+## 5. AI Coding 痕迹资产
+
+评分项要求"AI 编程工具痕迹清晰可验证"（占总分 10%）。已沉淀在仓库的资产：
 
 | 资产 | 路径 | 用途 |
 |---|---|---|
 | Cursor Rules | `.cursor/rules/*.mdc` | 工程纪律、Git 安全、env 安全 |
 | Cursor Hooks | `.cursor/hooks/*` | 提交前安全门禁 |
-| Agent Skills | `.agents/skills/*/SKILL.md` | 复用程序（agent-debugging、testing、git-change-control 等） |
-| Agent 文件 | `AGENTS.md` / `CLAUDE.md` | 跨工具共享的工程约束 |
+| Agent Skills | `.agents/skills/*/SKILL.md` | 复用 Skill |
+| Agent 文件 | `AGENTS.md` / `CLAUDE.md` | 跨工具共享约束 |
 
-这些文件**进 git**，不在 `.gitignore`。评委 clone 即可看到。
+一次性配置：
 
-### 6.2 一次性配置
+- **Cursor**：Settings → Agent → Attribution 默认开启，Cursor Agent 创建的 commit 自动附 `Made with Cursor`
+- **TRAE**：`git config commit.template .gitmessage`（仓库根 `.gitmessage` 已入仓，含 `Co-Authored-By: TRAE`）
 
-#### Cursor 用户
-
-Cursor Settings > Agent > Attribution **开启**（默认即开启）。生效后 Cursor Agent 创建的 commit 与 PR 自动附加 trailer `Made with Cursor`。
-
-参考：<https://cursor.com/help/integrations/git>
-
-#### TRAE 用户
+验证：
 
 ```bash
-git config commit.template .gitmessage
+git log --grep "Made with Cursor"
+git log --format='%(trailers)'
 ```
 
-仓库根 `.gitmessage` 内容（已入仓）：
+## 6. 第一次上手
 
-```text
-
-
-Co-Authored-By: TRAE <noreply@bytedance.com>
+```bash
+git clone https://github.com/wanghong5233/RivalLens.git
+cd RivalLens
+git checkout -b <首字母>/<你的第一个任务>
 ```
 
-生效后每次 `git commit` 自动附加 `Co-Authored-By` trailer；GitHub PR 页面自动渲染为 co-author 头像。
-
-### 6.3 评委可验证的证据位置
-
-| 证据 | 位置 | 验证 |
-|---|---|---|
-| 工具配置入仓 | `.cursor/` / `.agents/` / `AGENTS.md` / `.gitmessage` | `git ls-files` |
-| Cursor Agent 提交 | commit trailer `Made with Cursor` | `git log --grep "Made with Cursor"` |
-| TRAE 用户提交 | commit trailer `Co-Authored-By: TRAE` | GitHub PR co-author 头像；或 `git log --format='%(trailers)'` |
-| Cloud Agent 分支与 PR | GitHub `agent/*` 分支 + Cloud Agent 撰写的 PR description | GitHub Branches / Pull Requests 页 |
-| 本地 session 历史 | `~/.cursor/projects/<slug>/agent-transcripts/*.jsonl`、Cursor/TRAE 各自 `state.vscdb` | 答辩 Q&A 引用（不入仓） |
-
-## 7. 同步机制（轻量但有节奏）
-
-| 形式 | 频率 | 时长 | 内容 |
-|---|---|---|---|
-| 早会（异步）| 每个工作日早上 | 5 分钟 | 微信 / 群里文字汇报：昨天做完什么 / 今天做什么 / 阻塞点 |
-| 联调同步 | P1 末期、P2 末期 | 30 分钟 | 视频会议：跑通端到端 + 集中解决跨人接口问题 |
-| 答辩彩排 | P3 | 60 分钟 × 2 次 | 视频会议：完整过录屏 + 模拟 Q&A |
-
-**决策机制**：
-- Schema / 协议 / 架构层级决策 → L 拍板
-- 工具选型（如某个 Python 库的选择） → 提议人选定，L 一眼扫不阻塞
-- 工时安排 / 任务交换 → 当事人自行协商
+任务从 `docs/KNOWN_ISSUES_AND_BACKLOG.md` 按优先级认领，认领前在群里说一声避免撞车。
