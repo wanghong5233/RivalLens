@@ -84,60 +84,92 @@ chore(ci): add ruff to pre-commit
 - 一个 commit 跨多个 scope（拆开提交）
 - 直接在 `main` 上 commit
 
-## 4. PR 流程
+## 4. PR 流程（gh CLI 命令为主）
 
-### 4.1 标准步骤
+3 人敏捷只有一条铁律：**B/C 不能自合自己的代码，必须 L 过一遍**。这条铁律不靠纪律，靠 protection 物理约束（§2 的 `Required approvals: 1` + B/C 是 Write 不是 admin → B/C 在技术上无法合自己 PR）。
 
-```bash
-git checkout main
-git pull origin main
-git checkout -b <首字母>/<短描述>
-# ... 写代码 + commit ...
-git push -u origin <分支>
-# 去 GitHub 网页开 PR → main
+下面三个场景覆盖所有 PR。
+
+### 4.1 一次性配置
+
+```powershell
+gh auth login          # 选 github.com / HTTPS / 浏览器授权,只配一次
 ```
 
-### 4.2 PR 描述模板
+### 4.2 场景 A：作者开 PR（L / B / C 通用）
+
+```powershell
+git push -u origin <你的分支>
+gh pr create           # 交互式问标题和 body,或加 --fill 把 commit message 当 PR 内容
+```
+
+PR 标题用 commit type 起头，例如：
+
+```text
+feat(researcher): add fetch_url tool with robots.txt check
+docs(2): clarify desensitize boundary
+```
+
+PR body 简短即可：
 
 ```markdown
 ## 改动摘要
-（1-2 句，what + why）
+（1-2 句 what + why）
 
 ## 涉及范围
-- [ ] backend/agents/
-- [ ] backend/api/
-- [ ] backend/db/
-- [ ] frontend/
-- [ ] industry_packs/
-- [ ] docs/
-- [ ] tests/
-
-## Schema / 协议变更
-（涉及 docs/3 字段或 AgentMessage 协议时勾选并描述）
-- [ ] 是
-- [ ] 否
+backend/agents/ , docs/2
 
 ## 验证
-- [ ] 本地 `pytest backend/app/tests/` 通过
-- [ ] 涉及 schema 变更已更新 docs/3
-- [ ] 涉及 Agent 协议变更已更新 docs/2.5
+本地 pytest 通过 / 文档改动无需测试
 ```
 
-### 4.3 review 责任
+不强制填模板。
 
-| PR 涉及范围 | 必须 review 人 |
-|---|---|
-| `backend/agents/` / `backend/app/service/` / Alembic 迁移 | L 必须 |
-| `docs/2` / `docs/2.5` / `docs/3` | L 必须 |
-| `frontend/` | L 必须 |
-| `industry_packs/` YAML / `data/demo/` | L 一眼扫，不阻塞 |
-| 其它 `docs/` / `chore/` | self-merge 允许 |
+### 4.3 场景 B：L 合 B/C 的 PR（AI 风险扫描 + approve + merge）
 
-不强制队员之间相互 review；review 集中在 L 保护核心 invariant。
+L 在合 B/C 的 PR 前**必须**用 AI 扫一遍 diff。这是这套流程的核心质量门。
 
-### 4.4 合入方式
+```powershell
+gh pr diff <PR编号>                              # 看 diff
+gh pr checkout <PR编号>                          # 把分支拉到本地,让 Cursor agent 在 IDE 里扫
+# ↑ 二选一,看变更量大小
 
-PR 通过后用 **Squash and merge** 把 feature 分支压成一个 commit 合入 `main`，feature 分支合入后删除。
+gh pr review <PR编号> --approve --body "LGTM"   # AI 确认无风险后 L approve
+gh pr merge <PR编号> --squash --delete-branch   # 合入 main + 自动删远端分支
+```
+
+AI 风险扫描清单（让 Cursor agent 对照检查）：
+
+- 有没有 hardcode 的 API Key / 密码 / cookie / JWT
+- 有没有破坏 `docs/3` Schema 不变量（字段删 / 类型改 / Literal 枚举改）
+- 有没有改已合并的 Alembic 迁移历史（只能加新迁移版本）
+- 有没有引入 GPL / AGPL 依赖
+- 有没有 `except Exception` / 静默 fallback 返回 `[]` / 空 dict 隐藏失败
+- 有没有删别人的代码或文档
+- 有没有 git config / hook bypass / `--no-verify`
+
+### 4.4 场景 C：L 合自己的 PR（admin bypass）
+
+L 自己开的 PR 因为 GitHub 不允许 approve 自己，需要 admin 权限 bypass approval：
+
+```powershell
+gh pr merge <PR编号> --squash --delete-branch --admin
+```
+
+`--admin` 只 L 能用（B/C 没 admin 权限，对他们这条命令会报错）。**L 自审等于无审**，敏捷阶段接受这个折扣，换回 L 不被流程卡住。
+
+### 4.5 收尾（三种场景通用）
+
+```powershell
+git checkout main
+git pull origin main
+git fetch --prune              # 同步远端已删的分支引用
+git branch -D <已合的分支>     # squash 后本地视角是 unmerged,必须 -D 强删
+```
+
+### 4.6 合入方式
+
+统一 **Squash and merge**：feature 分支上 N 个 commit 压成 1 个进 main，main 历史保持线性可读。`gh pr merge --squash` 已经是这个行为。
 
 ## 5. AI Coding 痕迹资产
 
