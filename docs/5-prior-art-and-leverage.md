@@ -158,7 +158,12 @@ LangGraph Supervisor Agent
 | asyncpg | PG 异步驱动 | Apache-2.0 |
 | psycopg2-binary | PG 同步驱动 | LGPL（仅 driver，不影响项目协议） |
 | httpx | HTTP 客户端 | BSD-3-Clause |
-| reppy / urllib.robotparser | robots.txt 解析 | MIT / Python 标准库 |
+| urllib.robotparser | robots.txt 解析 | Python 标准库 |
+| aiolimiter | per-host QPS 限流 | MIT |
+| tavily-python | Web Search SDK（Tavily） | MIT |
+| readability-lxml | HTML 主体抽取 | Apache-2.0 |
+| beautifulsoup4 | HTML 解析 | MIT |
+| lxml | HTML/XML 解析引擎 | BSD-3-Clause |
 | react | 前端 | MIT |
 | vite | 前端构建 | MIT |
 | typescript | 前端语言 | Apache-2.0 |

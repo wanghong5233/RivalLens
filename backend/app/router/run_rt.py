@@ -15,8 +15,10 @@ from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
 from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
+from utils.logger import bind_run, get_logger
 
 router = APIRouter()
+log = get_logger("router.run_rt")
 
 
 class RunCreateRequest(BaseModel):
@@ -250,60 +252,68 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
     _validate_pack_and_competitors(payload)
     run_id = make_id("run_")
     session_factory = get_session_factory()
+    with bind_run(run_id):
+        log.info(
+            "api.run.create.start",
+            industry_pack=payload.industry_pack,
+            competitor_count=len(payload.competitors),
+            target_role_count=len(payload.target_roles),
+        )
 
-    async with session_factory() as session:
-        session.add(
-            Run(
-                run_id=run_id,
-                user_query=payload.user_query,
-                industry_pack=payload.industry_pack,
-                status="running",
-                target_roles=payload.target_roles,
-                competitors=payload.competitors,
+        async with session_factory() as session:
+            session.add(
+                Run(
+                    run_id=run_id,
+                    user_query=payload.user_query,
+                    industry_pack=payload.industry_pack,
+                    status="running",
+                    target_roles=payload.target_roles,
+                    competitors=payload.competitors,
+                )
             )
-        )
-        await session.commit()
+            await session.commit()
 
-    graph = getattr(request.app.state, "compiled_graph", None)
-    if graph is None:
-        raise APIException(
-            status_code=500,
-            error_code="GRAPH_NOT_INITIALIZED",
-            message="Compiled LangGraph instance is not initialized.",
-        )
-    graph_state = await graph.ainvoke(
-        {
-            "run_id": run_id,
-            "industry_pack": payload.industry_pack,
-            "competitors": payload.competitors,
-            "user_query": payload.user_query,
-            "researched_competitors": [],
-            "analysis_done": False,
-            "report_draft_done": False,
-            "current_iteration": 0,
-            "pending_tool_args": {},
-            "qa_outcome": None,
-            "qa_reject_to": None,
-            "qa_rejection_count": 0,
-            "pending_review_target_step_id": None,
-            "qa_reasons": [],
-            "status": "running",
-        },
-        config={"configurable": {"thread_id": run_id}},
-    )
-
-    async with session_factory() as session:
-        run = await session.get(Run, run_id)
-        if run is None:
+        graph = getattr(request.app.state, "compiled_graph", None)
+        if graph is None:
             raise APIException(
                 status_code=500,
-                error_code="RUN_NOT_FOUND",
-                message=f"run_id={run_id} should exist after creation",
+                error_code="GRAPH_NOT_INITIALIZED",
+                message="Compiled LangGraph instance is not initialized.",
             )
-        run_status = str(graph_state.get("status", "completed"))
-        run.status = run_status if run_status in {"completed", "degraded"} else "completed"
-        run.finished_at = datetime.now(timezone.utc)
-        await session.commit()
+        graph_state = await graph.ainvoke(
+            {
+                "run_id": run_id,
+                "industry_pack": payload.industry_pack,
+                "competitors": payload.competitors,
+                "user_query": payload.user_query,
+                "researched_competitors": [],
+                "analysis_done": False,
+                "report_draft_done": False,
+                "current_iteration": 0,
+                "pending_tool_args": {},
+                "qa_outcome": None,
+                "qa_reject_to": None,
+                "qa_rejection_count": 0,
+                "pending_review_target_step_id": None,
+                "qa_reasons": [],
+                "status": "running",
+            },
+            config={"configurable": {"thread_id": run_id}},
+        )
+
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=500,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} should exist after creation",
+                )
+            run_status = str(graph_state.get("status", "completed"))
+            run.status = run_status if run_status in {"completed", "degraded"} else "completed"
+            run.finished_at = datetime.now(timezone.utc)
+            await session.commit()
+        log.info("api.run.create.finish", status=run.status)
 
     return RunCreateResponse(
         run_id=run_id,
@@ -315,43 +325,45 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
 @router.post("/api/runs/{run_id}/resume", response_model=RunCreateResponse)
 async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
     session_factory = get_session_factory()
-    async with session_factory() as session:
-        run = await session.get(Run, run_id)
-        if run is None:
-            raise APIException(
-                status_code=404,
-                error_code="RUN_NOT_FOUND",
-                message=f"run_id={run_id} does not exist",
-            )
-        if run.status != "running":
-            raise APIException(
-                status_code=409,
-                error_code="RUN_NOT_RESUMABLE",
-                message=f"run_id={run_id} status={run.status} cannot resume",
-            )
+    with bind_run(run_id):
+        log.info("api.run.resume.start")
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=404,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} does not exist",
+                )
+            if run.status != "running":
+                raise APIException(
+                    status_code=409,
+                    error_code="RUN_NOT_RESUMABLE",
+                    message=f"run_id={run_id} status={run.status} cannot resume",
+                )
 
-    graph = getattr(request.app.state, "compiled_graph", None)
-    if graph is None:
-        raise APIException(
-            status_code=500,
-            error_code="GRAPH_NOT_INITIALIZED",
-            message="Compiled LangGraph instance is not initialized.",
-        )
-
-    graph_state = await graph.ainvoke(None, config={"configurable": {"thread_id": run_id}})
-
-    async with session_factory() as session:
-        run = await session.get(Run, run_id)
-        if run is None:
+        graph = getattr(request.app.state, "compiled_graph", None)
+        if graph is None:
             raise APIException(
                 status_code=500,
-                error_code="RUN_NOT_FOUND",
-                message=f"run_id={run_id} should exist before resume update",
+                error_code="GRAPH_NOT_INITIALIZED",
+                message="Compiled LangGraph instance is not initialized.",
             )
-        run_status = str(graph_state.get("status", "completed"))
-        run.status = run_status if run_status in {"completed", "degraded"} else "completed"
-        run.finished_at = datetime.now(timezone.utc)
-        await session.commit()
+        graph_state = await graph.ainvoke(None, config={"configurable": {"thread_id": run_id}})
+
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=500,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} should exist before resume update",
+                )
+            run_status = str(graph_state.get("status", "completed"))
+            run.status = run_status if run_status in {"completed", "degraded"} else "completed"
+            run.finished_at = datetime.now(timezone.utc)
+            await session.commit()
+        log.info("api.run.resume.finish", status=run.status)
 
     return RunCreateResponse(
         run_id=run_id,
@@ -475,27 +487,34 @@ async def get_run_evidence(
 @router.get("/api/runs/{run_id}/trace", response_model=RunTraceResponse)
 async def get_run_trace(run_id: str) -> RunTraceResponse:
     session_factory = get_session_factory()
-    async with session_factory() as session:
-        run = await session.get(Run, run_id)
-        if run is None:
-            raise APIException(
-                status_code=404,
-                error_code="RUN_NOT_FOUND",
-                message=f"run_id={run_id} does not exist",
-            )
+    with bind_run(run_id):
+        log.info("api.run.trace.query.start")
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=404,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} does not exist",
+                )
 
-        step_rows = (
-            await session.execute(
-                select(Step).where(Step.run_id == run_id).order_by(Step.created_at.asc())
-            )
-        ).scalars().all()
-        decision_rows = (
-            await session.execute(
-                select(SupervisorDecisionRecord)
-                .where(SupervisorDecisionRecord.run_id == run_id)
-                .order_by(SupervisorDecisionRecord.created_at.asc())
-            )
-        ).scalars().all()
+            step_rows = (
+                await session.execute(
+                    select(Step).where(Step.run_id == run_id).order_by(Step.created_at.asc())
+                )
+            ).scalars().all()
+            decision_rows = (
+                await session.execute(
+                    select(SupervisorDecisionRecord)
+                    .where(SupervisorDecisionRecord.run_id == run_id)
+                    .order_by(SupervisorDecisionRecord.created_at.asc())
+                )
+            ).scalars().all()
+        log.info(
+            "api.run.trace.query.finish",
+            step_count=len(step_rows),
+            decision_count=len(decision_rows),
+        )
 
     return RunTraceResponse(
         run=_to_run_detail(run),

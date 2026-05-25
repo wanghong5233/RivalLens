@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ /app
 
-RUN chmod -R 755 /app && \
+RUN sed -i 's/\r$//' /app/start.sh && \
+    chmod -R 755 /app && \
     chmod +x /app/start.sh
 
 ENV PYTHONPATH=/app

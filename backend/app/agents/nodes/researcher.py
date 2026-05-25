@@ -15,6 +15,7 @@ from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
 from service.industry_pack.models import IndustryPack
 from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
+from utils.log_node import log_node
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -95,42 +96,59 @@ def _build_evidence_rows(
     evidence_rows: list[EvidenceRecord] = []
     evidence_ids: list[str] = []
     allowed_dimensions = set(focus_dimensions)
+    allowed_source_types = {
+        "official_site",
+        "docs",
+        "pricing_page",
+        "public_review",
+        "article",
+        "local_note",
+        "offline_snapshot",
+    }
     for draft in evidence_drafts:
         if not isinstance(draft, dict):
             continue
         dimension_raw = draft.get("dimension")
         competitor_id_raw = draft.get("competitor_id")
         quote_raw = draft.get("quote")
+        sanitized_text_raw = draft.get("sanitized_text")
+        source_type_raw = draft.get("source_type")
         source_url_raw = draft.get("source_url")
         source_title_raw = draft.get("source_title")
+        metadata_raw = draft.get("metadata", {})
         if (
             not isinstance(dimension_raw, str)
             or dimension_raw not in allowed_dimensions
             or not isinstance(competitor_id_raw, str)
             or not isinstance(quote_raw, str)
-            or not isinstance(source_url_raw, str)
-            or not isinstance(source_title_raw, str)
         ):
             continue
+        if not isinstance(source_type_raw, str) or source_type_raw not in allowed_source_types:
+            source_type_raw = "article"
+        sanitized_text = sanitized_text_raw if isinstance(sanitized_text_raw, str) else quote_raw
+        source_url = source_url_raw if isinstance(source_url_raw, str) else None
+        source_title = source_title_raw if isinstance(source_title_raw, str) else None
+        metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
         evidence_id = make_id("ev_")
         evidence_ids.append(evidence_id)
         evidence_rows.append(
             EvidenceRecord(
                 id=evidence_id,
                 run_id=run_id,
-                source_type="industry_pack_snapshot",
-                source_url=source_url_raw,
-                source_title=source_title_raw,
+                source_type=source_type_raw,
+                source_url=source_url,
+                source_title=source_title,
                 quote=quote_raw,
-                sanitized_text=quote_raw,
+                sanitized_text=sanitized_text,
                 span={
+                    **metadata,
                     "dimension": dimension_raw,
                     "competitor_id": competitor_id_raw,
                     "pack_id": pack_id,
                 },
                 collected_by=step_id,
                 collected_at=collected_at,
-                desensitized=bool(draft.get("desensitized", True)),
+                desensitized=bool(draft.get("desensitized", False)),
             )
         )
     if not evidence_rows:
@@ -175,6 +193,7 @@ def _build_llm_call_rows(
     return rows
 
 
+@log_node("researcher")
 async def researcher_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     if run_id is None:

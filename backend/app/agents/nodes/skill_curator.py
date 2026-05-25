@@ -14,6 +14,10 @@ from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from schemas.ids import make_id
 from service.skill_curator import SkillCuratorCandidate, generate_skill_candidates
+from utils.log_node import log_node
+from utils.logger import get_logger
+
+log = get_logger("agents.skill_curator")
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -105,6 +109,7 @@ def _to_record(
     )
 
 
+@log_node("skill_curator")
 async def skill_curator_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     if run_id is None:
@@ -137,6 +142,14 @@ async def skill_curator_node(state: AgentState) -> AgentState:
     llm_call_error_trimmed = llm_call_error[:2000] if llm_call_error is not None else None
     candidates = generation_result.candidates
     persisted_candidate_count = len(candidates) if llm_call_error is None else 1
+    candidate_count_by_type: dict[str, int] = {}
+    if llm_call_error is None:
+        for candidate in candidates:
+            candidate_count_by_type[candidate.candidate_type] = (
+                candidate_count_by_type.get(candidate.candidate_type, 0) + 1
+            )
+    else:
+        candidate_count_by_type["qa_rule"] = 1
 
     try:
         async with session_factory() as session:
@@ -192,6 +205,12 @@ async def skill_curator_node(state: AgentState) -> AgentState:
             step.finished_at = datetime.now(timezone.utc)
             await session.commit()
     except SQLAlchemyError:
+        log.info(
+            "skill_curator.candidate",
+            candidate_count=0,
+            candidate_count_by_type={},
+            persist_error=True,
+        )
         return {
             "status": "completed",
             "qa_outcome": None,
@@ -199,6 +218,12 @@ async def skill_curator_node(state: AgentState) -> AgentState:
             "qa_reasons": [],
         }
 
+    log.info(
+        "skill_curator.candidate",
+        candidate_count=persisted_candidate_count,
+        candidate_count_by_type=candidate_count_by_type,
+        persist_error=False,
+    )
     return {
         "status": "completed",
         "qa_outcome": None,

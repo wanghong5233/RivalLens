@@ -12,6 +12,19 @@ from app_main import app
 from service.llm.response import LLMResponse
 
 
+@pytest.fixture(autouse=True)
+def _langchain_debug_compat(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Compatibility shim for mixed local environments where langchain package
+    # exists but does not expose legacy module-level flags expected by
+    # langchain-core 0.3.x callback manager.
+    try:
+        import langchain  # type: ignore
+    except ImportError:
+        return
+    monkeypatch.setattr(langchain, "debug", False, raising=False)
+    monkeypatch.setattr(langchain, "verbose", False, raising=False)
+
+
 class _FakeLLMClient:
     def __init__(self) -> None:
         self._response = LLMResponse(

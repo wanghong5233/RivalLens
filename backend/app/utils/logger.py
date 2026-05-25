@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import logging
 import sys
+from typing import Iterator
 
 import structlog
 
@@ -40,3 +42,18 @@ def bind_request_id() -> None:
 
 def clear_request_id() -> None:
     structlog.contextvars.clear_contextvars()
+
+
+@contextmanager
+def bind_run(run_id: str, *, node: str | None = None) -> Iterator[None]:
+    values: dict[str, str] = {"run_id": run_id}
+    if node is not None:
+        values["node"] = node
+    with structlog.contextvars.bound_contextvars(**values):
+        yield
+
+
+@contextmanager
+def bind_step(step_id: str) -> Iterator[None]:
+    with structlog.contextvars.bound_contextvars(step_id=step_id):
+        yield

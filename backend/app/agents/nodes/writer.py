@@ -23,6 +23,7 @@ from service.llm import (
     build_writer_user_prompt,
 )
 from service.llm.client import get_llm_client
+from utils.log_node import log_node
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -475,6 +476,7 @@ def _render_report_markdown(report_content: dict[str, object]) -> str:
     return "\n".join(markdown_lines).strip() + "\n"
 
 
+@log_node("writer")
 async def writer_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     if run_id is None:

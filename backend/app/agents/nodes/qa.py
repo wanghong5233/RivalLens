@@ -13,6 +13,10 @@ from models.step import Step
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection
 from service.qa.engine import MAX_QA_REJECTIONS, evaluate_report
+from utils.log_node import log_node
+from utils.logger import get_logger
+
+log = get_logger("agents.qa")
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -97,6 +101,7 @@ def _to_qa_reasons(rejection: Rejection) -> list[str]:
     return list(rejection.failed_rule_ids)
 
 
+@log_node("qa")
 async def qa_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     if run_id is None:
@@ -166,6 +171,12 @@ async def qa_node(state: AgentState) -> AgentState:
         await session.commit()
 
     if isinstance(review_result, Approval):
+        log.info(
+            "qa.outcome",
+            outcome="approved",
+            retry_count=qa_rejection_count,
+            target_step_id=writer_step.step_id,
+        )
         return {
             "last_completed_node": "writer",
             "pending_review_target_step_id": None,
@@ -178,6 +189,14 @@ async def qa_node(state: AgentState) -> AgentState:
 
     updated_rejection_count = qa_rejection_count + 1
     is_force_degraded = updated_rejection_count > MAX_QA_REJECTIONS
+    log.info(
+        "qa.outcome",
+        outcome="force_degraded" if is_force_degraded else "rejected",
+        reject_to="supervisor" if is_force_degraded else review_result.reject_to,
+        failed_rule_ids=review_result.failed_rule_ids,
+        retry_count=updated_rejection_count,
+        target_step_id=writer_step.step_id,
+    )
     return {
         "last_completed_node": "writer",
         "pending_review_target_step_id": None,

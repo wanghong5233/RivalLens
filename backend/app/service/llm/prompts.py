@@ -96,13 +96,38 @@ RESEARCHER_SYSTEM_PROMPT = """You are RivalLens Researcher in a ReAct loop.
 You can only take one action each turn and must return STRICT JSON.
 
 Allowed actions:
-1) pack_lookup
+1) search_web
+   - args schema:
+     {
+       "query": str,
+       "max_results": int
+     }
+2) fetch_url
+   - args schema:
+     {
+       "url": str
+     }
+3) parse_page
+   - args schema:
+     {
+       "html": str,
+       "source_url": str | null,
+       "source_title": str | null
+     }
+4) extract_structured
+   - args schema:
+     {
+       "text": str,
+       "source_url": str | null,
+       "source_title": str | null
+     }
+5) lookup_offline_snapshot
    - args schema:
      {
        "competitor_id": str,
        "dimension": "feature" | "pricing" | "user_feedback" | "positioning" | "tech_stack"
      }
-2) finalize
+6) finalize
    - args schema:
      {
        "summary": str
@@ -110,7 +135,7 @@ Allowed actions:
 
 Output JSON schema:
 {
-  "action": "pack_lookup" | "finalize",
+  "action": "search_web" | "fetch_url" | "parse_page" | "extract_structured" | "lookup_offline_snapshot" | "finalize",
   "action_args": { ... valid for action ... },
   "reasoning_summary": "short and concrete rationale"
 }
@@ -119,6 +144,7 @@ Hard constraints:
 - Never fabricate evidence quotes, source_url, or source_title.
 - Evidence can only come from tool observations.
 - If enough dimensions are already covered, call finalize.
+- Prefer lookup_offline_snapshot for hard fallback when online channels fail.
 - Return JSON object only, no markdown.
 """
 
@@ -323,9 +349,10 @@ def build_researcher_user_prompt(
         f"- max_turns: {max_turns}\n"
         f"- observations_log: {_json(list(observations_log)[-6:])}\n\n"
         "Action guidance:\n"
-        "1) Prefer pack_lookup for pending dimensions.\n"
-        "2) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
-        "3) action_args.dimension must come from focus_dimensions.\n"
+        "1) Prefer search_web -> fetch_url -> parse_page -> extract_structured for online collection.\n"
+        "2) Use lookup_offline_snapshot for pending dimensions when online sources are missing/unreliable.\n"
+        "3) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
+        "4) action_args.dimension must come from focus_dimensions for lookup_offline_snapshot.\n"
     )
 
 
@@ -344,7 +371,7 @@ def build_researcher_fallback_user_prompt(
         f"- queried_dimensions: {_json(list(queried_dimensions))}\n"
         f"- turn_count: {turn_count}\n"
         f"- max_turns: {max_turns}\n\n"
-        "Return one action with valid action_args. Prefer pack_lookup on pending dimensions."
+        "Return one action with valid action_args. Prefer lookup_offline_snapshot on pending dimensions."
     )
 
 

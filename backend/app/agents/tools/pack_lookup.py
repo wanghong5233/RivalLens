@@ -18,8 +18,9 @@ class ToolObservation:
     result: dict[str, Any]
 
 
-def pack_lookup(
+def _snapshot_observation(
     *,
+    tool_name: str,
     industry_pack_id: str,
     competitor_id: str,
     dimension: FocusDimension,
@@ -45,15 +46,22 @@ def pack_lookup(
     snippet_rows = [
         {
             "quote": item.quote,
+            "sanitized_text": item.quote,
             "source_url": item.source_url,
             "source_title": item.source_title,
+            "source_type": "local_note",
             "desensitized": item.desensitized,
+            "metadata": {
+                "pack_id": industry_pack_id,
+                "dimension": dimension,
+                "source": "industry_pack_snapshot",
+            },
         }
         for item in snippets
     ]
 
     return ToolObservation(
-        tool="pack_lookup",
+        tool=tool_name,
         args={
             "industry_pack_id": industry_pack_id,
             "competitor_id": competitor_id,
@@ -66,4 +74,32 @@ def pack_lookup(
             "dimension": dimension,
             "snippets": snippet_rows,
         },
+    )
+
+
+def pack_lookup(
+    *,
+    industry_pack_id: str,
+    competitor_id: str,
+    dimension: FocusDimension,
+) -> ToolObservation:
+    return _snapshot_observation(
+        tool_name="pack_lookup",
+        industry_pack_id=industry_pack_id,
+        competitor_id=competitor_id,
+        dimension=dimension,
+    )
+
+
+def lookup_offline_snapshot(
+    *,
+    industry_pack_id: str,
+    competitor_id: str,
+    dimension: FocusDimension,
+) -> ToolObservation:
+    return _snapshot_observation(
+        tool_name="lookup_offline_snapshot",
+        industry_pack_id=industry_pack_id,
+        competitor_id=competitor_id,
+        dimension=dimension,
     )

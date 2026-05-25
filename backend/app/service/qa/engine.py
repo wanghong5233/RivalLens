@@ -20,9 +20,11 @@ from service.llm import (
 from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
 from service.qa.rules import RuleResult, evaluate_fast_path_rules
+from utils.logger import get_logger
 
 MAX_QA_REJECTIONS = 3
 SEMANTIC_RULE_ID = "rule_qa_semantic_audit"
+log = get_logger("service.qa.engine")
 
 _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_report_must_have_markdown_content": ["reports.content_markdown"],
@@ -204,6 +206,12 @@ async def evaluate_report(
         ).scalars().all()
 
     if report is None or report.run_id != run_id:
+        log.info(
+            "qa.fast_path",
+            mode="skipped_missing_report",
+            failed_rule_count=1,
+            blocking_failed_rule_count=1,
+        )
         missing_report = RuleResult(
             rule_id="rule_report_exists",
             passed=False,
@@ -229,8 +237,17 @@ async def evaluate_report(
         allowed_evidence_ids={item.id for item in evidence_items},
         allowed_template_ids=allowed_template_ids,
     )
-    evidence_briefs = _build_evidence_briefs(evidence_items)
     failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
+    log.info(
+        "qa.fast_path",
+        mode="applied",
+        rule_count=len(rule_results),
+        failed_rule_count=len(failed_rule_ids),
+        blocking_failed_rule_count=sum(
+            1 for item in rule_results if (not item.passed and item.severity == "blocking")
+        ),
+    )
+    evidence_briefs = _build_evidence_briefs(evidence_items)
     semantic_user_prompt = build_qa_semantic_user_prompt(
         report_markdown=report.content_markdown,
         report_json=report.content_json,
@@ -275,4 +292,12 @@ async def evaluate_report(
         "qa_semantic_fallback_used": semantic_response.fallback_used,
         "qa_semantic_fallback_reason": semantic_response.fallback_reason,
     }
+    log.info(
+        "qa.slow_path",
+        mode=semantic_mode,
+        semantic_audit_passed=semantic_audit_passed,
+        fallback_used=semantic_response.fallback_used,
+        has_error=semantic_response.error is not None,
+        failed_rule_count=len(failed_rule_ids),
+    )
     return outcome, semantic_response, semantic_metadata

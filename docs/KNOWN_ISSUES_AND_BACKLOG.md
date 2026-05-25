@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-05-24
+最后更新: 2026-05-26
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -8,31 +8,14 @@
 
 ## P0（阻塞主干 / 致命缺失）
 
-### [ ] OBS-001 关键路径结构化日志
+### [x] OBS-001 关键路径结构化日志
 
 - **设计**：docs/2 §3.10 `structlog` 结构化日志写文件 + Observable-by-default 原则
-- **现状**：`backend/app/utils/logger.py` 已配 `structlog` JSON + `request_id` contextvar；全工程仅 `app_main.py` 三处埋点（启动/停止/未捕获异常）。6 个 Agent 节点、LLM Client、QA Engine、Pack Registry、Skill Curator、Run/Skill 路由全部零日志
+- **现状**：已落地 three-layer 本地埋点：Layer1 `bind_run/bind_step` contextvars；Layer2 `service/llm/client.py` 的 `llm.call.start/retry/fallback/finish`；Layer3 `supervisor.decision` / `qa.outcome` / `researcher.tool_call|compress|finalize` / `skill_curator.candidate` / `pack.load.*` / `api.run.*` / `api.skill.*`
 - **入口**：`backend/app/utils/logger.py`（加 `bind_run(run_id, step_id)` helper） + `agents/nodes/*.py` + `agents/subgraphs/researcher.py` + `service/llm/client.py` + `service/qa/engine.py` + `service/industry_pack/registry.py` + `router/run_rt.py` + `router/skill_rt.py`
 - **埋点最小集**：Supervisor decision / Researcher tool_call+compress / LLM call+retry+fallback / QA outcome（含 reject_to） / Skill Curator candidate count / Pack load / Run API 入口
 - **约束**：不打 prompt 原文 / API Key / 完整 evidence quote；只打长度、哈希、截断前 N 字
-- **验收**：按 `run_id` 在容器日志 `rg "run_xxx"` 可还原一次 run 的决策路径
-
-### [ ] ORCH-001 Researcher 真实采集渠道
-
-- **设计**：docs/2.5 §3.2 Researcher 工具集 `fetch_url` / `search_web` / `parse_page` / `extract_structured` / `lookup_offline_snapshot`
-- **现状**：`agents/tools/` 只有 `pack_lookup`，证据源固定为本地行业包快照
-- **入口**：`backend/app/service/collector/`（channel 注册中心） + `backend/app/agents/tools/<channel>.py`（每 channel 一个文件） + `agents/subgraphs/researcher.py`（注入 channel）
-- **约束**：单站点 QPS ≤ 1（docs/2 §11.1）；`urllib.robotparser` 检 robots.txt；User-Agent `RivalLens-Researcher/0.1`；输出强制经 ING-001 脱敏
-- **验收**：至少 1 个 stub channel 被 Researcher 调用；channel 失败不阻塞主 run；trace 可区分 `source_type`
-
-### [ ] ING-001 `desensitize_text` 边界函数
-
-- **设计**：docs/2 §6.3-§6.4 强制脱敏边界 `raw → desensitize_text → evidence.sanitized_text`
-- **现状**：`schemas/business.py` 中 `Evidence.desensitized:bool` 字段存在；`desensitize_text(text)` 函数不存在；Researcher 落 evidence 时无强制调用
-- **入口**：`backend/app/service/desensitize/`（新目录：`engine.py` + `patterns.py`） + `agents/subgraphs/researcher.py`（边界调用） + `backend/app/tests/test_desensitize.py`
-- **覆盖**：邮箱 / 手机号 / 中国身份证 / `@mention` 用户名 / 头像 URL
-- **约束**：失败抛 `DesensitizeError`，不静默；与 ORCH-001 同期上线
-- **验收**：≥15 条对抗样本单测 pass；`Evidence.desensitized` 由函数结果决定而不是写死 True
+- **验收**：`run_2e3be66d95c3` 已在容器日志回放通过，可见 `api.run.create.start → node.start → llm.call.* → supervisor.decision → researcher.tool_call/finalize → qa.fast_path/slow_path/outcome → skill_curator.candidate`
 
 ---
 
@@ -53,14 +36,6 @@
 - **入口**：`backend/app/router/run_rt.py`（SSE endpoint） + `backend/app/service/event_bus/`（PG LISTEN/NOTIFY 封装） + `frontend/src/api/hooks.ts`（改 EventSource）
 - **事件**：`step.start` / `step.finish` / `supervisor.decision` / `qa.outcome` / `run.finish`
 - **验收**：断线自动重连；trace append-only 兜底重放；p95 刷新延迟 < 1s
-
-### [ ] SEC-002 Prompt injection 关键词清洗
-
-- **设计**：docs/2 §11.3 公开评论先过脱敏，再过越狱关键词清洗
-- **现状**：清洗层完全不存在；Researcher 抓取的文本经脱敏后直接进 LLM context
-- **入口**：`backend/app/service/prompt_safety/`（新目录：`sanitizer.py` + `patterns.py`） + `agents/subgraphs/researcher.py`（desensitize 之后调用） + `backend/app/tests/test_prompt_safety.py`
-- **触发**：ORCH-001 接公开评论数据前必须上线
-- **验收**：≥10 类越狱模式样本检测命中；命中模式在 evidence trace 上有明确标记
 
 ---
 
@@ -87,6 +62,28 @@
 - **现状**：审批 API 有，approved 状态切换可用；写回 YAML 文件未做
 - **入口**：`backend/app/router/skill_rt.py`（approve handler 触发写回） + `industry_packs/<pack>/skills/`
 - **验收**：approved 候选生成对应 YAML 文件；Git diff 可审计变更
+
+### [ ] FRT-001 Conclusion → Evidence 一键溯源
+
+- **设计**：docs/0 §4 评分维度 1 要求“每条分析结论可定位到原始数据源，支持一键跳转或溯源查看”
+- **现状**：后端 `GET /api/runs/{run_id}/report` 已返回 `evidence_id_to_brief`；前端报告卡片没有从结论点跳到 evidence console 的快捷入口
+- **入口**：`frontend/src/pages/RunViewPage.tsx` + `frontend/src/pages/RunTracePage.tsx` + `frontend/src/api/hooks.ts`
+- **验收**：报告中的每条 conclusion 可点击跳到对应 evidence 列表，带 `evidence_id` 高亮或过滤条件
+
+### [ ] METRIC-001 业务闭环指标面板
+
+- **设计**：docs/0 §4 评分维度 3 要求“准确率、覆盖率、人工修正率”等可运营指标
+- **现状**：仅有 `llm_calls` 技术指标（token/latency）；缺面向业务闭环的指标定义、计算口径与展示 API
+- **入口**：`backend/app/router/run_rt.py`（新增 metrics endpoint） + `backend/app/service/qa/`（复用 rejection 数据） + `frontend/src/pages/RunViewPage.tsx`
+- **验收**：至少输出 coverage_rate / qa_rejection_rate / manual_review_rate 三项，字段口径在接口注释中可追溯
+
+### [ ] EXT-002 行业包扩展 source_type 注册
+
+- **设计**：docs/3 §2.6 Evidence.source_type 可扩展；docs/2.6 channel 映射决策树
+- **现状**：当前实现固定 7 类 source_type，尚未提供 pack 级扩展注册入口
+- **入口**：`backend/app/service/collector/registry.py` + `backend/app/service/industry_pack/extensions.py`（新增） + `industry_packs/<pack>/extension_schema.py`
+- **触发**：第二行业包需要新增来源类型（例如 `github_release` / `app_store_review`）
+- **验收**：新 pack 可注册新增 source_type 且不影响现有 7 类映射与查询
 
 ---
 
@@ -134,13 +131,6 @@
 - **入口**：各节点输出包装为 AgentMessage，落 `step.payload`；评审决定是否物理表化（增加 `models/agent_message.py`）
 - **决策点**：物理表 vs 仅逻辑契约
 
-### [ ] COMP-001 compliance-statement.md
-
-- **设计**：docs/2 §11.1 `docs/compliance-statement.md`（待建）
-- **入口**：`docs/compliance-statement.md`
-- **内容**：每个 channel 数据来源 / 抓取约束 / robots 策略 / User-Agent；引用 ING-001 + SEC-002 规则集
-- **触发**：ORCH-001 + ING-001 + SEC-002 落地后整理实际约束
-
 ---
 
 ## 评审亮点（Highlights，非阻塞）
@@ -158,6 +148,11 @@
 
 ## 已完成（Done）
 
+- [x] OBS-001 关键路径结构化日志（three-layer：contextvars + llm.call.* + decision span；按 run_id 可回放）
+- [x] ORCH-001 Researcher 真实采集渠道（`search_web` / `fetch_url` / `parse_page` / `extract_structured` / `lookup_offline_snapshot` + `fixtures_lookup`，dispatcher 接入 `ChannelRegistry`）
+- [x] ING-001 `desensitize_text` 边界函数（邮箱 / 手机号 / 身份证 / @mention / 头像 URL / Bearer token，失败抛 `DesensitizeError`）
+- [x] SEC-002 Prompt injection 关键词清洗（10 类模式命中写入 evidence metadata）
+- [x] COMP-001 `docs/compliance-statement.md`（数据来源、抓取范围、robots/QPS/UA、脱敏与提示注入边界）
 - [x] Supervisor 主循环 + tool calling 委派（ConductResearch / Analyze / Write / Finalize）
 - [x] Researcher ReAct subgraph + compress_context 节点
 - [x] Analyst LLM 跨竞品分析

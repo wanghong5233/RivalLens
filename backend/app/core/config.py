@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     LLM_MAX_RETRIES: int = 2
     COLLECTOR_PER_HOST_QPS: int = 1
     COLLECTOR_USER_AGENT: str = "RivalLens-Researcher/0.1"
+    TAVILY_API_KEY: str | None = None
+    COLLECTOR_OFFLINE_SNAPSHOT_DIR: str = "./data/snapshots"
+    COLLECTOR_FETCH_TIMEOUT_S: int = 10
+    COLLECTOR_ROBOTS_CACHE_TTL_S: int = 3600
     INDUSTRY_PACKS_DIR: str = "/app/industry_packs"
 
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
@@ -111,6 +115,14 @@ class Settings(BaseSettings):
             raise ValueError("LLM_MAX_RETRIES cannot be negative.")
         if self.LLM_GLOBAL_CONCURRENCY <= 0:
             raise ValueError("LLM_GLOBAL_CONCURRENCY must be positive.")
+        if self.COLLECTOR_PER_HOST_QPS <= 0:
+            raise ValueError("COLLECTOR_PER_HOST_QPS must be positive.")
+        if self.COLLECTOR_FETCH_TIMEOUT_S <= 0:
+            raise ValueError("COLLECTOR_FETCH_TIMEOUT_S must be positive.")
+        if self.COLLECTOR_ROBOTS_CACHE_TTL_S <= 0:
+            raise ValueError("COLLECTOR_ROBOTS_CACHE_TTL_S must be positive.")
+        if not self.COLLECTOR_USER_AGENT.strip():
+            raise ValueError("COLLECTOR_USER_AGENT cannot be empty.")
 
         return self
 

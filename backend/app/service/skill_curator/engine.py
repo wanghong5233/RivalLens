@@ -13,6 +13,9 @@ from service.llm import (
 from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
 from service.skill_curator.models import SkillCuratorCandidate, SkillCuratorOutput
+from utils.logger import get_logger
+
+log = get_logger("service.skill_curator.engine")
 
 
 @dataclass(slots=True)
@@ -30,6 +33,13 @@ def _normalize_output(content: dict[str, object]) -> tuple[list[SkillCuratorCand
     return parsed.candidates, None
 
 
+def _count_candidates(candidates: Sequence[SkillCuratorCandidate]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in candidates:
+        counts[item.candidate_type] = counts.get(item.candidate_type, 0) + 1
+    return counts
+
+
 async def generate_skill_candidates(
     *,
     run_id: str,
@@ -40,6 +50,13 @@ async def generate_skill_candidates(
     evidence_source_counts: dict[str, int],
     total_evidence_count: int,
 ) -> SkillCuratorGenerationResult:
+    log.info(
+        "skill_curator.candidate.start",
+        run_id=run_id,
+        industry_pack=industry_pack,
+        qa_rejection_count=qa_rejection_count,
+        total_evidence_count=total_evidence_count,
+    )
     llm_response = await get_llm_client().complete_json(
         model_slot="qa",
         system_prompt=SKILL_CURATOR_SYSTEM_PROMPT,
@@ -62,6 +79,12 @@ async def generate_skill_candidates(
         ),
     )
     if llm_response.error is not None:
+        log.info(
+            "skill_curator.candidate.finish",
+            candidate_count=0,
+            candidate_count_by_type={},
+            has_error=True,
+        )
         return SkillCuratorGenerationResult(
             candidates=[],
             llm_response=llm_response,
@@ -69,6 +92,12 @@ async def generate_skill_candidates(
         )
 
     candidates, normalize_error = _normalize_output(llm_response.content)
+    log.info(
+        "skill_curator.candidate.finish",
+        candidate_count=len(candidates) if normalize_error is None else 0,
+        candidate_count_by_type=_count_candidates(candidates) if normalize_error is None else {},
+        has_error=normalize_error is not None,
+    )
     return SkillCuratorGenerationResult(
         candidates=candidates,
         llm_response=llm_response,

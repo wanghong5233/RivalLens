@@ -18,6 +18,10 @@ from service.llm import (
 )
 from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
+from utils.log_node import log_node
+from utils.logger import bind_step, get_logger
+
+log = get_logger("agents.supervisor")
 from schemas.ids import make_id
 from schemas.supervisor import (
     Analyze,
@@ -402,7 +406,7 @@ async def _persist_iteration(
     iteration: int,
     decision: SupervisorDecision,
     llm_response: LLMResponse,
-) -> None:
+) -> str:
     async with session_factory() as session:
         llm_call_error = llm_response.error[:2000] if llm_response.error is not None else None
         step = Step(
@@ -455,6 +459,7 @@ async def _persist_iteration(
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()
+    return step.step_id
 
 
 def _map_next_action(chosen_tool: str) -> Literal["researcher", "analyst", "writer", "finalize"]:
@@ -467,6 +472,7 @@ def _map_next_action(chosen_tool: str) -> Literal["researcher", "analyst", "writ
     return "finalize"
 
 
+@log_node("supervisor")
 async def supervisor_node(state: AgentState) -> AgentState:
     session_factory = _resolve_session_factory(state)
 
@@ -565,13 +571,23 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 user_query=user_query,
             )
 
-    await _persist_iteration(
+    persisted_step_id = await _persist_iteration(
         session_factory=session_factory,
         run_id=run_id,
         iteration=iteration,
         decision=decision,
         llm_response=llm_response,
     )
+    with bind_step(persisted_step_id):
+        log.info(
+            "supervisor.decision",
+            iteration=iteration,
+            chosen_tool=decision.chosen_tool,
+            triggered_by=decision.triggered_by,
+            outcome=decision.outcome,
+            reasoning_summary_len=len(decision.reasoning_summary),
+            tool_arg_keys=sorted(decision.tool_args.keys()),
+        )
     decisions.append(decision)
 
     next_action = _map_next_action(decision.chosen_tool)

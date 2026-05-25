@@ -9,8 +9,10 @@ from sqlalchemy import func, select
 from db.engine import get_session_factory
 from exceptions.base import APIException
 from models.skill_candidate import SkillCandidateRecord
+from utils.logger import get_logger
 
 router = APIRouter()
+log = get_logger("router.skill_rt")
 
 
 class SkillCandidateResponse(BaseModel):
@@ -78,6 +80,13 @@ async def list_skill_candidates(
 ) -> SkillCandidateListResponse:
     normalized_status = status.strip() if isinstance(status, str) else None
     normalized_pack = industry_pack.strip() if isinstance(industry_pack, str) else None
+    log.info(
+        "api.skill.list.start",
+        status=normalized_status,
+        industry_pack=normalized_pack,
+        limit=limit,
+        offset=offset,
+    )
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -93,6 +102,7 @@ async def list_skill_candidates(
         list_query = list_query.order_by(SkillCandidateRecord.created_at.desc()).limit(limit).offset(offset)
         rows = (await session.execute(list_query)).scalars().all()
         total = int((await session.execute(total_query)).scalar_one())
+    log.info("api.skill.list.finish", item_count=len(rows), total=total)
 
     return SkillCandidateListResponse(
         items=[_to_item(record) for record in rows],
@@ -107,6 +117,7 @@ async def approve_skill_candidate(
     candidate_id: str,
     payload: SkillCandidateReviewRequest,
 ) -> SkillCandidateReviewResponse:
+    log.info("api.skill.approve.start", candidate_id=candidate_id)
     session_factory = get_session_factory()
     async with session_factory() as session:
         record = await session.get(SkillCandidateRecord, candidate_id)
@@ -127,6 +138,7 @@ async def approve_skill_candidate(
         record.reviewed_by = payload.reviewed_by
         record.reviewed_at = reviewed_at
         await session.commit()
+    log.info("api.skill.approve.finish", candidate_id=candidate_id, reviewed_by=payload.reviewed_by)
 
     return SkillCandidateReviewResponse(
         id=candidate_id,
@@ -141,6 +153,7 @@ async def reject_skill_candidate(
     candidate_id: str,
     payload: SkillCandidateReviewRequest,
 ) -> SkillCandidateReviewResponse:
+    log.info("api.skill.reject.start", candidate_id=candidate_id)
     session_factory = get_session_factory()
     async with session_factory() as session:
         record = await session.get(SkillCandidateRecord, candidate_id)
@@ -161,6 +174,7 @@ async def reject_skill_candidate(
         record.reviewed_by = payload.reviewed_by
         record.reviewed_at = reviewed_at
         await session.commit()
+    log.info("api.skill.reject.finish", candidate_id=candidate_id, reviewed_by=payload.reviewed_by)
 
     return SkillCandidateReviewResponse(
         id=candidate_id,
