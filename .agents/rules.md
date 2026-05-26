@@ -18,6 +18,9 @@ Index of the agent guardrails configured in this repository.
 - `.cursor/hooks.json` — project-level hook configuration.
 - `.cursor/hooks/safety_guard.py` — blocks `git add .` patterns and reads of real env files.
 - `.cursor/hooks/block-dangerous-shell.py` — blocks force-push / hard reset / branch -D / commit --amend / rm -rf / Remove-Item -Recurse -Force and similar (10 patterns, cross-platform, `failClosed: true`).
+- `scripts/scan_secrets.py` — scans staged/tracked files for API key / token / `ep-...` leakage patterns.
+- `.githooks/pre-commit` — local git pre-commit secret scan gate.
+- `.github/workflows/secret-scan.yml` — server-side secret scan gate on push/PR.
 
 ## Codex
 

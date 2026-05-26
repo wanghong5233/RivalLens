@@ -61,7 +61,7 @@ AI 驱动的竞品分析 Agent 协作系统
 #### Doubao-Seed-2.0-lite
 
 ```text
-EP：ep-20260514111325-xjmj7
+EP：ep-REPLACE-ME（真实值仅放本地私有环境变量）
 APIKEY：见飞书原文 / 私有环境变量，不写入项目文档与代码仓库。
 ```
 

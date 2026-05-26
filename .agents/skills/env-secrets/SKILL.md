@@ -8,6 +8,7 @@ description: Environment variable, secret, token, local URL, and config safety g
 ## Safety Rules
 
 - Never commit real secrets, API keys, tokens, passwords, private URLs, or `.env` files with real values.
+- Treat provider endpoint IDs (for example `ep-...`) as sensitive and never keep real values in docs or code.
 - Keep real local values in ignored local env files.
 - Use `.env.example` files for names, comments, placeholders, and safe defaults only.
 - Do not copy unrelated team secrets into a local project because a neighboring repository has them.
@@ -51,5 +52,7 @@ When updating examples:
 ## Final Check
 
 - Search changed files for `sk-`, `Bearer `, `token`, `secret`, `password`, `api_key`, and provider-specific key names.
+- Search for endpoint-ID literals like `ep-<digits>-<suffix>` and replace them with placeholders.
+- Run `python scripts/scan_secrets.py --staged` before commit.
 - Confirm ignored local env files were not staged.
 - Confirm Docker/env defaults do not silently override the intended local config.

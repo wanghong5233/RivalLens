@@ -39,6 +39,26 @@
 
 L 拥有 admin，B / C 给 Write 权限。Write 推不到 `main`，只能 push feature 分支并开 PR。
 
+## 2.1 密钥/EP 防泄漏（强制）
+
+赛题方已明确：API Key / EP 再次泄漏会有退赛风险。本仓库采用双层防线：
+
+- 本地提交前扫描：`.githooks/pre-commit` 调用 `python scripts/scan_secrets.py --staged`
+- 远端仓库扫描：GitHub Actions `Secret Scan` 在 `push` / `pull_request` 自动执行 `python scripts/scan_secrets.py --all-tracked`
+
+首次克隆后，每个成员执行一次（仅本机生效）：
+
+```bash
+git config core.hooksPath .githooks
+```
+
+日常自检命令：
+
+```bash
+python scripts/scan_secrets.py --staged
+python scripts/scan_secrets.py --all-tracked
+```
+
 ## 3. Commit 规范
 
 采用 [Conventional Commits](https://www.conventionalcommits.org/)：

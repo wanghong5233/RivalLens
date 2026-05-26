@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Cursor pre-tool safety guard for RivalLens.
 
-Blocks broad/destructive shell commands and reads/edits of real .env files
-to prevent secret leakage and accidental working-tree corruption.
+Blocks broad/destructive shell commands and reads/edits of real .env files,
+and runs secret scan before git commit/push in agent shell flow.
 """
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import PurePath
 
@@ -50,6 +51,40 @@ def check_shell(payload: dict) -> None:
                 "Blocked broad/destructive command. Use explicit paths or ask for approval."
             )
 
+    if re.search(r"\bgit\s+commit\b", compact):
+        check_passed, message = run_secret_scan("--staged")
+        if not check_passed:
+            deny(f"Blocked git commit by secret scan: {message}")
+
+    if re.search(r"\bgit\s+push\b", compact):
+        check_passed, message = run_secret_scan("--all-tracked")
+        if not check_passed:
+            deny(f"Blocked git push by secret scan: {message}")
+
+
+def run_secret_scan(mode_flag: str) -> tuple[bool, str]:
+    command = [sys.executable, "scripts/scan_secrets.py", mode_flag, "--quiet"]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        return False, f"secret scan execution failed ({type(exc).__name__})"
+
+    if result.returncode == 0:
+        return True, ""
+
+    output = result.stderr.strip() or result.stdout.strip()
+    if not output:
+        output = "secret scan found suspicious content."
+    return False, output
+
 
 def check_read(payload: dict) -> None:
     path = str(payload.get("path", "") or payload.get("file_path", ""))
@@ -66,7 +101,7 @@ def allow() -> None:
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
-    except Exception:
+    except json.JSONDecodeError:
         allow()
         return
 

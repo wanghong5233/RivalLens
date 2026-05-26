@@ -6,13 +6,13 @@
         "command": "python .cursor/hooks/block-dangerous-shell.py",
         "matcher": "Shell",
         "timeout": 5,
-        "failClosed": false
+        "failClosed": true
       },
       {
         "command": "python .cursor/hooks/safety_guard.py",
         "matcher": "Shell",
         "timeout": 5,
-        "failClosed": false
+        "failClosed": true
       }
     ],
     "beforeReadFile": [
