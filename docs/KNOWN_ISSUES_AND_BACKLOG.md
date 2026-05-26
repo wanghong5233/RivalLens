@@ -63,19 +63,19 @@
 - **入口**：`backend/app/router/skill_rt.py`（approve handler 触发写回） + `industry_packs/<pack>/skills/`
 - **验收**：approved 候选生成对应 YAML 文件；Git diff 可审计变更
 
-### [ ] FRT-001 Conclusion → Evidence 一键溯源
+### [x] FRT-001 Conclusion → Evidence 一键溯源
 
 - **设计**：docs/0 §4 评分维度 1 要求“每条分析结论可定位到原始数据源，支持一键跳转或溯源查看”
-- **现状**：后端 `GET /api/runs/{run_id}/report` 已返回 `evidence_id_to_brief`；前端报告卡片没有从结论点跳到 evidence console 的快捷入口
-- **入口**：`frontend/src/pages/RunViewPage.tsx` + `frontend/src/pages/RunTracePage.tsx` + `frontend/src/api/hooks.ts`
-- **验收**：报告中的每条 conclusion 可点击跳到对应 evidence 列表，带 `evidence_id` 高亮或过滤条件
+- **现状**：后端 `GET /api/runs/{run_id}/report` 已返回 `evidence_id_to_brief`；新增 `/runs/:runId/evidence` 独立 Evidence Console，支持 `competitor_id/source_type/evidence_id` 过滤和高亮
+- **入口**：`frontend/src/pages/RunViewPage.tsx` + `frontend/src/pages/RunTracePage.tsx` + `frontend/src/pages/RunEvidencePage.tsx` + `frontend/src/components/EvidenceDrawer.tsx`
+- **验收**：report citation / competitor 卡片 / supervisor decision / drawer 四个入口均可跳转到 Evidence Console 并定位 evidence
 
-### [ ] METRIC-001 业务闭环指标面板
+### [x] METRIC-001 业务闭环指标面板
 
 - **设计**：docs/0 §4 评分维度 3 要求“准确率、覆盖率、人工修正率”等可运营指标
-- **现状**：仅有 `llm_calls` 技术指标（token/latency）；缺面向业务闭环的指标定义、计算口径与展示 API
-- **入口**：`backend/app/router/run_rt.py`（新增 metrics endpoint） + `backend/app/service/qa/`（复用 rejection 数据） + `frontend/src/pages/RunViewPage.tsx`
-- **验收**：至少输出 coverage_rate / qa_rejection_rate / manual_review_rate 三项，字段口径在接口注释中可追溯
+- **现状**：新增 `GET /api/runs/{run_id}/metrics`，统一输出 coverage/QA/token/latency/manual-review-proxy 等指标；RunView 新增指标卡片
+- **入口**：`backend/app/router/run_rt.py` + `backend/app/service/metrics/engine.py` + `frontend/src/components/MetricsPanel.tsx` + `frontend/src/pages/RunViewPage.tsx`
+- **验收**：至少输出 coverage_rate / qa_rejection_rate / manual_review_rate，且口径在 endpoint docstring 与前端提示中可追溯
 
 ### [ ] EXT-002 行业包扩展 source_type 注册
 
@@ -89,12 +89,21 @@
 
 ## P3（工程治理 / 优化）
 
-### [ ] SEC-001 gitleaks pre-commit hook
+### [x] SEC-001 提交前参赛资源泄漏拦截（scanner-first）
 
-- **设计**：docs/2 §11.2 建议接入 `gitleaks` pre-commit hook 阻止 Key 误提交
-- **现状**：`.gitignore` 已排除 `.env`；无任何静态扫描
-- **入口**：`.gitleaks.toml` + `.pre-commit-config.yaml` + `scripts/install_hooks.sh`
-- **验收**：本地 commit 含模拟 Key 字符串被拒绝
+- **设计**：赛题方额外通知 API Key / EP 多次泄漏将触发强制退赛；这是参赛资源与仓库治理红线，和 `docs/0` 第 82 行的“采集数据隐私与安全”不是同一类问题
+- **现状**：已落地 `scripts/scan_secrets.py`，并接入 `.githooks/pre-commit`、`.github/workflows/secret-scan.yml`、`.cursor/.codex/.claude` hook 的 commit/push 拦截；`docs/0-problem-background.md` 中误入仓库的明文样式 EP 已替换为占位符
+- **入口**：`scripts/scan_secrets.py` + `.githooks/pre-commit` + `.github/workflows/secret-scan.yml` + `hooks/safety_guard.py`
+- **验收**：`python scripts/scan_secrets.py --staged/--all-tracked` 可通过；模拟 Key/EP 字符串会阻断 commit 或 CI
+- **备注**：`gitleaks` 作为可选增强，不阻塞当前版本
+
+### [ ] SEC-003 gitleaks 规则集接管（可选增强）
+
+- **设计**：在现有 scanner-first 防线基础上，可增加第三方规则库与误报基线管理
+- **现状**：当前已具备本地与 CI 双层扫描，满足当前赛题风险控制
+- **入口**：`.gitleaks.toml` + `.pre-commit-config.yaml`
+- **触发**：需要跨项目统一规则、统一审计报表、或团队已接受额外误报处理成本时
+- **验收**：不显著增加误报的前提下，替换或并行现有扫描链路
 
 ### [ ] API-002 LLM 成本护栏
 
@@ -152,6 +161,9 @@
 - [x] ORCH-001 Researcher 真实采集渠道（`search_web` / `fetch_url` / `parse_page` / `extract_structured` / `lookup_offline_snapshot` + `fixtures_lookup`，dispatcher 接入 `ChannelRegistry`）
 - [x] ING-001 `desensitize_text` 边界函数（邮箱 / 手机号 / 身份证 / @mention / 头像 URL / Bearer token，失败抛 `DesensitizeError`）
 - [x] SEC-002 Prompt injection 关键词清洗（10 类模式命中写入 evidence metadata）
+- [x] SEC-001 提交前参赛资源泄漏拦截（API Key / EP scanner-first：`scan_secrets.py` + `.githooks/pre-commit` + `secret-scan` CI + agent hooks）
+- [x] FRT-001 Conclusion → Evidence 一键溯源（Evidence Console + 多入口跳转/高亮）
+- [x] METRIC-001 业务闭环指标面板（`GET /api/runs/{run_id}/metrics` + RunView MetricsPanel）
 - [x] COMP-001 `docs/compliance-statement.md`（数据来源、抓取范围、robots/QPS/UA、脱敏与提示注入边界）
 - [x] Supervisor 主循环 + tool calling 委派（ConductResearch / Analyze / Write / Finalize）
 - [x] Researcher ReAct subgraph + compress_context 节点

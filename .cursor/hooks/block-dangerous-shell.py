@@ -76,7 +76,10 @@ def _find_command(value: Any) -> str:
 
 
 def _load_payload() -> Any:
-    raw_input = sys.stdin.read()
+    try:
+        raw_input = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    except Exception:
+        raw_input = sys.stdin.read()
     if raw_input.strip():
         try:
             return json.loads(raw_input)
@@ -90,7 +93,21 @@ def _load_payload() -> Any:
 
 
 def _emit(payload: Dict[str, str]) -> None:
-    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    output = json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n"
+    try:
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is not None:
+            buffer.write(output.encode("utf-8", errors="replace"))
+            buffer.flush()
+        else:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+    except Exception:
+        try:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 def main() -> int:

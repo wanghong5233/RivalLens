@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import sys
 from collections.abc import Generator
 from typing import Callable
 
@@ -23,6 +25,13 @@ def _langchain_debug_compat(monkeypatch: pytest.MonkeyPatch) -> None:
         return
     monkeypatch.setattr(langchain, "debug", False, raising=False)
     monkeypatch.setattr(langchain, "verbose", False, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _windows_selector_event_loop_policy() -> None:
+    if sys.platform != "win32":
+        return
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 class _FakeLLMClient:

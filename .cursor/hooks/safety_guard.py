@@ -10,15 +10,29 @@ import re
 import subprocess
 import sys
 from pathlib import PurePath
+from typing import Dict
+
+
+def emit(payload: Dict[str, str]) -> None:
+    output = json.dumps(payload, ensure_ascii=True) + "\n"
+    try:
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is not None:
+            buffer.write(output.encode("utf-8", errors="replace"))
+            buffer.flush()
+        else:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+    except Exception:
+        try:
+            sys.stdout.write(output)
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 def deny(reason: str) -> None:
-    print(
-        json.dumps(
-            {"permission": "deny", "userMessage": reason},
-            ensure_ascii=False,
-        )
-    )
+    emit({"permission": "deny", "userMessage": reason})
     raise SystemExit(0)
 
 
@@ -95,12 +109,19 @@ def check_read(payload: dict) -> None:
 
 
 def allow() -> None:
-    print(json.dumps({"permission": "allow"}, ensure_ascii=False))
+    emit({"permission": "allow"})
 
 
 def main() -> None:
     try:
-        payload = json.load(sys.stdin)
+        raw_payload = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+    except Exception:
+        raw_payload = sys.stdin.read()
+    if not raw_payload.strip():
+        allow()
+        return
+    try:
+        payload = json.loads(raw_payload)
     except json.JSONDecodeError:
         allow()
         return

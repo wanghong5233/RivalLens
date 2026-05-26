@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 
 import { useRunDetail, useRunReport, useRunTrace } from "@/api/hooks";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
+import { MetricsPanel } from "@/components/MetricsPanel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,6 +30,7 @@ export function RunViewPage(): JSX.Element {
   const traceQuery = useRunTrace(runId);
 
   const runStatus = detailQuery.data?.status ?? "running";
+  const isRunActive = runStatus === "running";
   const isReportReady = runStatus === "completed" || runStatus === "degraded";
   const reportQuery = useRunReport(runId, { enabled: isReportReady });
 
@@ -193,6 +195,8 @@ export function RunViewPage(): JSX.Element {
             </CardContent>
           </Card>
 
+          <MetricsPanel isRunActive={isRunActive} runId={runId} />
+
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base">竞品进度</CardTitle>
@@ -207,6 +211,12 @@ export function RunViewPage(): JSX.Element {
                       <p className="mt-1 text-muted-foreground">
                         {item.done ? "✓ 已完成调研" : "⏳ 调研中"} · {item.evidenceCount} evidence
                       </p>
+                      <Link
+                        className="mt-2 inline-flex rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
+                        to={`/runs/${runId}/evidence?competitor_id=${encodeURIComponent(competitorId)}`}
+                      >
+                        查看证据
+                      </Link>
                     </div>
                   );
                 })}

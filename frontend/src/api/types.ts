@@ -93,6 +93,25 @@ export interface RunReportResponse {
   evidence_id_to_brief: Record<string, EvidenceBriefResponse>;
 }
 
+export interface RunMetricsResponse {
+  run_id: string;
+  coverage_rate: number;
+  evidence_count_total: number;
+  evidence_count_by_competitor: Record<string, number>;
+  source_type_distribution: Record<string, number>;
+  desensitization_coverage: number;
+  qa_total_steps: number;
+  qa_rejected_steps: number;
+  qa_rejection_rate: number;
+  supervisor_iterations: number;
+  llm_token_total: number;
+  llm_call_count: number;
+  llm_latency_p50_ms: number | null;
+  manual_review_rate: number;
+  manual_review_is_proxy: boolean;
+  run_wall_clock_seconds: number | null;
+}
+
 export interface EvidenceListItemResponse {
   evidence_id: string;
   run_id: string;

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Link } from "react-router-dom";
 
 import { useRunEvidence } from "@/api/hooks";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -85,6 +86,13 @@ export function EvidenceDrawer({
                 <div className="text-xs text-muted-foreground">
                   <span>competitor: {item.competitor_id ?? "-"}</span>
                 </div>
+                <Link
+                  className="inline-flex rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
+                  onClick={() => onOpenChange(false)}
+                  to={`/runs/${runId}/evidence?evidence_id=${encodeURIComponent(item.evidence_id)}`}
+                >
+                  查看完整证据
+                </Link>
                 {item.source_url ? (
                   <a
                     className="text-xs text-primary underline-offset-4 hover:underline"

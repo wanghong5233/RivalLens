@@ -13,6 +13,7 @@ import type {
   RunCreateResponse,
   RunDetailResponse,
   RunListResponse,
+  RunMetricsResponse,
   RunReportResponse,
   RunTraceResponse,
   SkillCandidateListResponse,
@@ -73,6 +74,11 @@ async function fetchRunTrace(runId: string): Promise<RunTraceResponse> {
 
 async function fetchRunReport(runId: string): Promise<RunReportResponse> {
   const { data } = await apiClient.get<RunReportResponse>(`/api/runs/${runId}/report`);
+  return data;
+}
+
+async function fetchRunMetrics(runId: string): Promise<RunMetricsResponse> {
+  const { data } = await apiClient.get<RunMetricsResponse>(`/api/runs/${runId}/metrics`);
   return data;
 }
 
@@ -171,6 +177,18 @@ export function useRunReport(
   return useQuery({
     queryKey: ["run-report", runId],
     queryFn: () => fetchRunReport(runId),
+    enabled: Boolean(runId) && (options.enabled ?? true),
+    refetchInterval: options.refetchInterval,
+  });
+}
+
+export function useRunMetrics(
+  runId: string,
+  options: QueryBehaviorOptions = {},
+): UseQueryResult<RunMetricsResponse, Error> {
+  return useQuery({
+    queryKey: ["run-metrics", runId],
+    queryFn: () => fetchRunMetrics(runId),
     enabled: Boolean(runId) && (options.enabled ?? true),
     refetchInterval: options.refetchInterval,
   });

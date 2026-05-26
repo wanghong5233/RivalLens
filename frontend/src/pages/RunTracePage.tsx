@@ -7,6 +7,50 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateTime } from "@/lib/format";
 
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function asStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => asNonEmptyString(item))
+    .filter((item): item is string => item !== null);
+}
+
+function buildDecisionEvidenceLink(runId: string, toolArgs: Record<string, unknown>): string | null {
+  const directEvidenceIds = asStringList(toolArgs.evidence_ids);
+  if (directEvidenceIds.length > 0) {
+    return `/runs/${runId}/evidence?evidence_id=${encodeURIComponent(directEvidenceIds[0])}`;
+  }
+
+  const directCompetitorId = asNonEmptyString(toolArgs.competitor_id);
+  if (directCompetitorId !== null) {
+    return `/runs/${runId}/evidence?competitor_id=${encodeURIComponent(directCompetitorId)}`;
+  }
+
+  if (!Array.isArray(toolArgs.topics)) {
+    return null;
+  }
+  for (const topic of toolArgs.topics) {
+    if (typeof topic !== "object" || topic === null) {
+      continue;
+    }
+    const record = topic as Record<string, unknown>;
+    const competitorId = asNonEmptyString(record.competitor_id);
+    if (competitorId !== null) {
+      return `/runs/${runId}/evidence?competitor_id=${encodeURIComponent(competitorId)}`;
+    }
+  }
+  return null;
+}
+
 export function RunTracePage(): JSX.Element {
   const { runId: runIdFromParams } = useParams<{ runId: string }>();
   const runId = runIdFromParams ?? "";
@@ -100,15 +144,23 @@ export function RunTracePage(): JSX.Element {
                 <CardTitle className="text-base text-gray-100">Supervisor decisions</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {traceQuery.data.supervisor_decisions.map((decision) => (
-                  <div className="rounded border border-gray-700 p-3" key={decision.id}>
-                    <p>
-                      <span className="text-gray-400">[{formatDateTime(decision.created_at)}]</span> iter=
-                      {decision.iteration} · {decision.chosen_tool}
-                    </p>
-                    <p className="mt-1 text-xs text-gray-500">{decision.reasoning_summary}</p>
-                  </div>
-                ))}
+                {traceQuery.data.supervisor_decisions.map((decision) => {
+                  const evidenceLink = buildDecisionEvidenceLink(runId, decision.tool_args);
+                  return (
+                    <div className="rounded border border-gray-700 p-3" key={decision.id}>
+                      <p>
+                        <span className="text-gray-400">[{formatDateTime(decision.created_at)}]</span> iter=
+                        {decision.iteration} · {decision.chosen_tool}
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">{decision.reasoning_summary}</p>
+                      {evidenceLink !== null ? (
+                        <Link className="mt-2 inline-flex text-xs text-primary hover:underline" to={evidenceLink}>
+                          查看相关证据
+                        </Link>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </CardContent>
             </Card>
           </TabsContent>

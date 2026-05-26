@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query, Request
@@ -9,12 +10,15 @@ from sqlalchemy import func, select
 from db.engine import get_session_factory
 from exceptions.base import APIException
 from models.evidence import EvidenceRecord
+from models.llm_call import LLMCall
 from models.report import Report
 from models.run import Run
+from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
 from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
+from service.metrics import build_run_metrics_snapshot
 from utils.logger import bind_run, get_logger
 
 router = APIRouter()
@@ -125,6 +129,25 @@ class EvidenceListItemResponse(BaseModel):
     metadata: dict[str, object] | None
     collected_at: str
     created_at: str
+
+
+class RunMetricsResponse(BaseModel):
+    run_id: str
+    coverage_rate: float
+    evidence_count_total: int
+    evidence_count_by_competitor: dict[str, int]
+    source_type_distribution: dict[str, int]
+    desensitization_coverage: float
+    qa_total_steps: int
+    qa_rejected_steps: int
+    qa_rejection_rate: float
+    supervisor_iterations: int
+    llm_token_total: int
+    llm_call_count: int
+    llm_latency_p50_ms: int | None
+    manual_review_rate: float
+    manual_review_is_proxy: bool
+    run_wall_clock_seconds: int | None
 
 
 def _to_iso(dt: datetime | None) -> str | None:
@@ -482,6 +505,67 @@ async def get_run_evidence(
         )
         for evidence in evidence_rows
     ]
+
+
+@router.get("/api/runs/{run_id}/metrics", response_model=RunMetricsResponse)
+async def get_run_metrics(run_id: str) -> RunMetricsResponse:
+    """
+    Runtime business-loop metrics for scoring and demo checkpoints.
+
+    manual_review_rate is a proxy metric based on reviewed skill candidates
+    linked to this run, not direct evaluator edits on report content.
+    """
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+
+        evidence_rows = (
+            await session.execute(
+                select(EvidenceRecord)
+                .where(EvidenceRecord.run_id == run_id)
+                .order_by(EvidenceRecord.created_at.asc())
+            )
+        ).scalars().all()
+        step_rows = (
+            await session.execute(select(Step).where(Step.run_id == run_id).order_by(Step.created_at.asc()))
+        ).scalars().all()
+        llm_rows = (
+            await session.execute(
+                select(LLMCall)
+                .join(Step, LLMCall.step_id == Step.step_id)
+                .where(Step.run_id == run_id)
+                .order_by(LLMCall.created_at.asc())
+            )
+        ).scalars().all()
+        decision_rows = (
+            await session.execute(
+                select(SupervisorDecisionRecord)
+                .where(SupervisorDecisionRecord.run_id == run_id)
+                .order_by(SupervisorDecisionRecord.created_at.asc())
+            )
+        ).scalars().all()
+        candidate_rows = (
+            await session.execute(
+                select(SkillCandidateRecord).where(SkillCandidateRecord.industry_pack == run.industry_pack)
+            )
+        ).scalars().all()
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=evidence_rows,
+        step_rows=step_rows,
+        llm_rows=llm_rows,
+        decision_rows=decision_rows,
+        candidate_rows=candidate_rows,
+    )
+    return RunMetricsResponse(**asdict(snapshot))
 
 
 @router.get("/api/runs/{run_id}/trace", response_model=RunTraceResponse)
