@@ -5,9 +5,11 @@ from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from core.config import settings
 from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
@@ -16,6 +18,7 @@ from models.report import Report
 from models.step import Step
 from schemas.ids import make_id
 from schemas.supervisor import Write
+from service.conclusion import load_conclusions_for_run
 from service.llm import (
     WRITER_ALLOWED_SECTION_IDS,
     WRITER_SYSTEM_PROMPT,
@@ -24,6 +27,9 @@ from service.llm import (
 )
 from service.llm.client import get_llm_client
 from utils.log_node import log_node
+from utils.logger import get_logger
+
+log = get_logger("agents.writer")
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -111,6 +117,60 @@ def _normalize_analyst_payload(payload: object) -> dict[str, object]:
     }
 
 
+def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> dict[str, object]:
+    insights: list[dict[str, object]] = []
+    risk_flags: list[str] = []
+    recommended_sections: list[str] = []
+    for index, item in enumerate(conclusions):
+        section_raw = item.get("section")
+        claim_raw = item.get("claim")
+        confidence_raw = item.get("confidence")
+        evidence_ids_raw = item.get("evidence_ids")
+        if (
+            not isinstance(section_raw, str)
+            or section_raw not in WRITER_ALLOWED_SECTION_IDS
+            or not isinstance(claim_raw, str)
+            or not claim_raw.strip()
+            or not isinstance(evidence_ids_raw, list)
+        ):
+            continue
+        evidence_ids = [evidence_id for evidence_id in evidence_ids_raw if isinstance(evidence_id, str)]
+        if not evidence_ids:
+            continue
+        confidence = (
+            confidence_raw
+            if isinstance(confidence_raw, str) and confidence_raw in {"high", "medium", "low"}
+            else "medium"
+        )
+        insights.append(
+            {
+                "insight_id": f"insight_{index + 1}",
+                "dimension": section_raw,
+                "finding": claim_raw.strip(),
+                "confidence": confidence,
+                "evidence_ids": _stable_unique(evidence_ids),
+            }
+        )
+        recommended_sections.append(section_raw)
+        raw_risk_flags = item.get("risk_flags")
+        if isinstance(raw_risk_flags, list):
+            risk_flags.extend(flag for flag in raw_risk_flags if isinstance(flag, str))
+
+    summary = (
+        f"Loaded {len(insights)} persisted conclusions from structured storage."
+        if insights
+        else ""
+    )
+    return _normalize_analyst_payload(
+        {
+            "summary": summary,
+            "insights": insights,
+            "risk_flags": _stable_unique(risk_flags),
+            "recommended_sections": _stable_unique(recommended_sections),
+        }
+    )
+
+
 async def _load_writer_inputs(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -124,6 +184,27 @@ async def _load_writer_inputs(
                 .order_by(EvidenceRecord.created_at.asc())
             )
         ).scalars().all()
+        if settings.WRITER_READ_CONCLUSIONS_FROM_TABLE:
+            try:
+                conclusion_rows = await load_conclusions_for_run(
+                    session=session,
+                    run_id=run_id,
+                )
+            except SQLAlchemyError as exc:
+                log.info(
+                    "writer.conclusions.fallback_to_json",
+                    run_id=run_id,
+                    reason="query_error",
+                    error=str(exc)[:500],
+                )
+                conclusion_rows = []
+            if conclusion_rows:
+                return evidence_rows, _analyst_payload_from_conclusions(conclusion_rows)
+            log.info(
+                "writer.conclusions.fallback_to_json",
+                run_id=run_id,
+                reason="empty_conclusions",
+            )
         analyst_step = (
             await session.execute(
                 select(Step)

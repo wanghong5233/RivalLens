@@ -17,6 +17,7 @@ from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
+from service.conclusion import load_conclusions_for_run
 from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 from service.metrics import build_run_metrics_snapshot
 from utils.logger import bind_run, get_logger
@@ -148,6 +149,24 @@ class RunMetricsResponse(BaseModel):
     manual_review_rate: float
     manual_review_is_proxy: bool
     run_wall_clock_seconds: int | None
+
+
+class ConclusionItemResponse(BaseModel):
+    conclusion_id: str
+    run_id: str
+    step_id: str
+    section: str
+    claim: str
+    confidence: str
+    competitor_ids: list[str]
+    risk_flags: list[str]
+    evidence_ids: list[str]
+    created_at: str
+
+
+class RunConclusionsResponse(BaseModel):
+    run_id: str
+    items: list[ConclusionItemResponse]
 
 
 def _to_iso(dt: datetime | None) -> str | None:
@@ -505,6 +524,25 @@ async def get_run_evidence(
         )
         for evidence in evidence_rows
     ]
+
+
+@router.get("/api/runs/{run_id}/conclusions", response_model=RunConclusionsResponse)
+async def get_run_conclusions(run_id: str) -> RunConclusionsResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        items_raw = await load_conclusions_for_run(session=session, run_id=run_id)
+
+    return RunConclusionsResponse(
+        run_id=run_id,
+        items=[ConclusionItemResponse.model_validate(item) for item in items_raw],
+    )
 
 
 @router.get("/api/runs/{run_id}/metrics", response_model=RunMetricsResponse)

@@ -21,14 +21,6 @@
 
 ## P1（质量 / 联调体验）
 
-### [ ] SCH-001 Conclusion 持久化表
-
-- **设计**：docs/3 §2.7 Conclusion + §9 Evidence ↔ Conclusion 多对多双向溯源
-- **现状**：`schemas/business.py` 已定义 Conclusion / Feature / Pricing / Persona / UserFeedback 全套 Pydantic；ORM 层无对应表，数据只以 JSON 嵌在 `report.content_json` / `step.payload`
-- **入口**：`backend/app/models/conclusion.py` + `backend/app/alembic/versions/<timestamp>_add_conclusions.py` + `agents/nodes/analyst.py`（双写） + `agents/nodes/writer.py`（改读结构化）
-- **范围**：第一版**只**表化 Conclusion，其他实体保留 JSON 内嵌；真有跨 run 查询需求再扩
-- **验收**：SQL 直接 join evidence 还原多对多；smoke 验证 Conclusion 表 row count ≥ 1
-
 ### [ ] ORCH-002 SSE 进度推送
 
 - **设计**：docs/2 §4 PG `LISTEN/NOTIFY` + SSE / EventSource 自动重连
@@ -161,6 +153,7 @@
 - [x] ING-001 `desensitize_text` 边界函数（邮箱 / 手机号 / 身份证 / @mention / 头像 URL / Bearer token，失败抛 `DesensitizeError`）
 - [x] SEC-002 Prompt injection 关键词清洗（10 类模式命中写入 evidence metadata）
 - [x] SEC-001 提交前参赛资源泄漏拦截（API Key / EP scanner-first：`scan_secrets.py` + `.githooks/pre-commit` + `secret-scan` CI + agent hooks）
+- [x] SCH-001 Conclusion 持久化表（`conclusions` + `conclusion_evidence` 多对多落库；Analyst 双写，Writer 表优先 + JSON fallback）
 - [x] FRT-001 Conclusion → Evidence 一键溯源（Evidence Console + 多入口跳转/高亮）
 - [x] METRIC-001 业务闭环指标面板（`GET /api/runs/{run_id}/metrics` + RunView MetricsPanel）
 - [x] HLT-001 DAG Run View（`@xyflow/react` + `@dagrejs/dagre`，`/runs/:runId/trace` 默认 DAG Tab，支持节点详情抽屉与 Evidence 跳转）

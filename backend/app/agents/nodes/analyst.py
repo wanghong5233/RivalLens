@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
@@ -14,6 +15,7 @@ from models.llm_call import LLMCall
 from models.step import Step
 from schemas.ids import make_id
 from schemas.supervisor import Analyze
+from service.conclusion import persist_conclusions_for_step
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
     SUPERVISOR_ALLOWED_DIMENSIONS,
@@ -22,6 +24,9 @@ from service.llm import (
 )
 from service.llm.client import get_llm_client
 from utils.log_node import log_node
+from utils.logger import get_logger
+
+log = get_logger("agents.analyst")
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -242,32 +247,44 @@ async def analyst_node(state: AgentState) -> AgentState:
             focus_dimensions=focus_dimensions,
             evidence_briefs=evidence_briefs,
         )
+    analysis_insights = (
+        [item for item in analysis_result["insights"] if isinstance(item, dict)]
+        if isinstance(analysis_result.get("insights"), list)
+        else []
+    )
+    analysis_risk_flags = (
+        [item for item in analysis_result["risk_flags"] if isinstance(item, str)]
+        if isinstance(analysis_result.get("risk_flags"), list)
+        else []
+    )
+    evidence_lookup = {row.id: row for row in evidence_rows}
 
     llm_call_error = llm_response.error or analysis_schema_error
     llm_call_error_trimmed = llm_call_error[:2000] if llm_call_error is not None else None
 
     async with session_factory() as session:
+        step_payload: dict[str, object] = {
+            **request.model_dump(),
+            "focus_dimensions": focus_dimensions,
+            "analysis_mode": analysis_mode,
+            "analysis_payload": analysis_result,
+            "analysis_summary": analysis_result["summary"],
+            "insight_count": len(
+                analysis_result["insights"] if isinstance(analysis_result["insights"], list) else []
+            ),
+            "fallback_reason": fallback_reason,
+            "llm_provider": llm_response.provider,
+            "llm_prompt_preview": llm_response.prompt_preview,
+            "llm_fallback_used": llm_response.fallback_used,
+            "llm_fallback_reason": llm_response.fallback_reason,
+        }
         step = Step(
             step_id=step_id,
             run_id=run_id,
             agent_name="analyst",
             status="running",
             retry_count=0,
-            payload={
-                **request.model_dump(),
-                "focus_dimensions": focus_dimensions,
-                "analysis_mode": analysis_mode,
-                "analysis_payload": analysis_result,
-                "analysis_summary": analysis_result["summary"],
-                "insight_count": len(
-                    analysis_result["insights"] if isinstance(analysis_result["insights"], list) else []
-                ),
-                "fallback_reason": fallback_reason,
-                "llm_provider": llm_response.provider,
-                "llm_prompt_preview": llm_response.prompt_preview,
-                "llm_fallback_used": llm_response.fallback_used,
-                "llm_fallback_reason": llm_response.fallback_reason,
-            },
+            payload=step_payload,
         )
         session.add(step)
         await session.flush()
@@ -294,6 +311,37 @@ async def analyst_node(state: AgentState) -> AgentState:
                 size_bytes=None,
             )
         )
+        conclusions_persist_error: str | None = None
+        persisted_conclusion_count = 0
+        try:
+            async with session.begin_nested():
+                conclusion_records = await persist_conclusions_for_step(
+                    session=session,
+                    run_id=run_id,
+                    step_id=step_id,
+                    insights=analysis_insights,
+                    evidence_lookup=evidence_lookup,
+                    risk_flags=analysis_risk_flags,
+                )
+                await session.flush()
+                persisted_conclusion_count = len(conclusion_records)
+        except SQLAlchemyError as exc:
+            conclusions_persist_error = str(exc)[:2000]
+            log.info(
+                "analyst.conclusions.persist_fail",
+                run_id=run_id,
+                step_id=step_id,
+                error=conclusions_persist_error,
+            )
+        step.payload = {
+            **step.payload,
+            "conclusions_persisted_count": persisted_conclusion_count,
+        }
+        if conclusions_persist_error is not None:
+            step.payload = {
+                **step.payload,
+                "conclusions_persist_error": conclusions_persist_error,
+            }
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()

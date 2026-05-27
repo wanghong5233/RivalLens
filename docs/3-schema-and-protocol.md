@@ -148,6 +148,7 @@ class Conclusion(BaseModel):
 
 - 没有 evidence 的 claim 不允许进入最终报告。
 - `confidence` 由 Analyst 评估，QA Reviewer 可降级（如冲突 → `low`）。
+- SCH-001（C1）已落地物理表：`conclusions(conclusion_id, run_id, step_id, section, claim, confidence, competitor_ids JSONB, risk_flags JSONB, created_at)` 与 `conclusion_evidence(conclusion_id, evidence_id, relevance_rank, created_at)`；关系表主键为 `(conclusion_id, evidence_id)`。
 
 ## 3. 中间产物
 
@@ -497,6 +498,15 @@ class SourceRoutingCandidatePayload(BaseModel):
 Conclusion.evidence_ids[] → Evidence.id
 Evidence.id → 可被多个 Conclusion 复用
 ```
+
+对应数据库 join 关系为：
+
+```text
+conclusions.conclusion_id = conclusion_evidence.conclusion_id
+conclusion_evidence.evidence_id = evidence.id
+```
+
+`conclusion_evidence.relevance_rank` 保留 Analyst 输出的 evidence 顺序，按 `conclusions.created_at ASC, relevance_rank ASC` 可还原稳定引用顺序。
 
 前端展示规则：
 

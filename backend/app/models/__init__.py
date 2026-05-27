@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from models.artifact import Artifact
+from models.conclusion import ConclusionEvidenceLink, ConclusionRecord
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.report import Report
@@ -11,6 +12,8 @@ from models.supervisor_decision import SupervisorDecisionRecord
 
 __all__ = [
     "Artifact",
+    "ConclusionEvidenceLink",
+    "ConclusionRecord",
     "EvidenceRecord",
     "LLMCall",
     "Report",
