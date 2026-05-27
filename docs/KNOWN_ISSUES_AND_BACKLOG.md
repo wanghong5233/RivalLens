@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-05-26
+最后更新: 2026-05-27
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -148,7 +148,6 @@
 
 | ID | 方向 | 入口 |
 |---|---|---|
-| HLT-001 | DAG Run View（`@xyflow/react`） Agent 拓扑可视化 | `frontend/src/pages/RunTracePage.tsx` |
 | HLT-002 | Battlecard 卡片网格视图，一屏多竞品 | `frontend/src/pages/RunViewPage.tsx` |
 | HLT-003 | Prospect Voice 用户声音 / 情感分布视图 | `frontend/src/pages/RunVoicePage.tsx`（新） |
 | HLT-004 | Compare 跨竞品矩阵 | `frontend/src/pages/RunComparePage.tsx`（新） |
@@ -164,6 +163,7 @@
 - [x] SEC-001 提交前参赛资源泄漏拦截（API Key / EP scanner-first：`scan_secrets.py` + `.githooks/pre-commit` + `secret-scan` CI + agent hooks）
 - [x] FRT-001 Conclusion → Evidence 一键溯源（Evidence Console + 多入口跳转/高亮）
 - [x] METRIC-001 业务闭环指标面板（`GET /api/runs/{run_id}/metrics` + RunView MetricsPanel）
+- [x] HLT-001 DAG Run View（`@xyflow/react` + `@dagrejs/dagre`，`/runs/:runId/trace` 默认 DAG Tab，支持节点详情抽屉与 Evidence 跳转）
 - [x] COMP-001 `docs/compliance-statement.md`（数据来源、抓取范围、robots/QPS/UA、脱敏与提示注入边界）
 - [x] Supervisor 主循环 + tool calling 委派（ConductResearch / Analyze / Write / Finalize）
 - [x] Researcher ReAct subgraph + compress_context 节点

@@ -2,54 +2,12 @@ import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useRunTrace } from "@/api/hooks";
+import { RunTraceDag } from "@/components/dag/RunTraceDag";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { buildEvidenceLinkFromToolArgs } from "@/lib/evidenceLinks";
 import { formatDateTime } from "@/lib/format";
-
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
-function asStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((item) => asNonEmptyString(item))
-    .filter((item): item is string => item !== null);
-}
-
-function buildDecisionEvidenceLink(runId: string, toolArgs: Record<string, unknown>): string | null {
-  const directEvidenceIds = asStringList(toolArgs.evidence_ids);
-  if (directEvidenceIds.length > 0) {
-    return `/runs/${runId}/evidence?evidence_id=${encodeURIComponent(directEvidenceIds[0])}`;
-  }
-
-  const directCompetitorId = asNonEmptyString(toolArgs.competitor_id);
-  if (directCompetitorId !== null) {
-    return `/runs/${runId}/evidence?competitor_id=${encodeURIComponent(directCompetitorId)}`;
-  }
-
-  if (!Array.isArray(toolArgs.topics)) {
-    return null;
-  }
-  for (const topic of toolArgs.topics) {
-    if (typeof topic !== "object" || topic === null) {
-      continue;
-    }
-    const record = topic as Record<string, unknown>;
-    const competitorId = asNonEmptyString(record.competitor_id);
-    if (competitorId !== null) {
-      return `/runs/${runId}/evidence?competitor_id=${encodeURIComponent(competitorId)}`;
-    }
-  }
-  return null;
-}
 
 export function RunTracePage(): JSX.Element {
   const { runId: runIdFromParams } = useParams<{ runId: string }>();
@@ -112,12 +70,24 @@ export function RunTracePage(): JSX.Element {
       ) : null}
 
       {traceQuery.data ? (
-        <Tabs defaultValue="steps">
+        <Tabs defaultValue="dag">
           <TabsList className="bg-gray-900">
+            <TabsTrigger value="dag">DAG</TabsTrigger>
             <TabsTrigger value="steps">Steps</TabsTrigger>
             <TabsTrigger value="decisions">Supervisor decisions</TabsTrigger>
             <TabsTrigger value="llm">LLM calls</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="dag">
+            <Card className="bg-black/40">
+              <CardHeader>
+                <CardTitle className="text-base text-gray-100">DAG 决策回放</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <RunTraceDag trace={traceQuery.data} />
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="steps">
             <Card className="bg-black/40">
@@ -145,7 +115,7 @@ export function RunTracePage(): JSX.Element {
               </CardHeader>
               <CardContent className="space-y-2">
                 {traceQuery.data.supervisor_decisions.map((decision) => {
-                  const evidenceLink = buildDecisionEvidenceLink(runId, decision.tool_args);
+                  const evidenceLink = buildEvidenceLinkFromToolArgs(runId, decision.tool_args);
                   return (
                     <div className="rounded border border-gray-700 p-3" key={decision.id}>
                       <p>
