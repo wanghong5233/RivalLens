@@ -4,6 +4,7 @@ from service.industry_pack.models import (
     DimensionSnippet,
     IndustryPack,
     PackMetadata,
+    PromotedQARule,
 )
 from service.industry_pack.registry import (
     IndustryPackNotFound,
@@ -18,6 +19,7 @@ __all__ = [
     "IndustryPackNotFound",
     "IndustryPackRegistry",
     "PackMetadata",
+    "PromotedQARule",
     "get_industry_pack_registry",
     "load_pack",
 ]

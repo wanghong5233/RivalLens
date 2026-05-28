@@ -11,6 +11,7 @@ from models.evidence import EvidenceRecord
 from models.report import Report
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection, RetryPolicy
+from service.industry_pack.models import PromotedQARule
 from service.llm import (
     QA_SEMANTIC_ALLOWED_REJECT_TO,
     QA_SEMANTIC_SYSTEM_PROMPT,
@@ -187,6 +188,23 @@ def _semantic_rule_result(semantic_output: dict[str, object]) -> RuleResult:
     )
 
 
+def _build_promoted_rule_results(
+    promoted_qa_rules: list[PromotedQARule],
+) -> list[RuleResult]:
+    observed_rules: list[RuleResult] = []
+    for item in promoted_qa_rules:
+        observed_rules.append(
+            RuleResult(
+                rule_id=f"rule_promoted_{item.rule_id}",
+                passed=True,
+                severity="warning",
+                reject_to="writer",
+                message=f"Promoted skill rule '{item.rule_id}' loaded from pack.",
+            )
+        )
+    return observed_rules
+
+
 async def evaluate_report(
     *,
     run_id: str,
@@ -196,7 +214,10 @@ async def evaluate_report(
     session_factory: async_sessionmaker[AsyncSession],
     qa_rejection_count: int,
     allowed_template_ids: set[str] | None = None,
+    promoted_qa_rules: list[PromotedQARule] | None = None,
 ) -> tuple[Approval | Rejection, LLMResponse | None, dict[str, object]]:
+    promoted_rules = promoted_qa_rules or []
+    promoted_rule_ids = [item.rule_id for item in promoted_rules]
     async with session_factory() as session:
         report = await session.get(Report, report_id)
         evidence_items = (
@@ -228,6 +249,7 @@ async def evaluate_report(
             "qa_semantic_mode": "skipped_missing_report",
             "qa_semantic_audit_passed": False,
             "qa_semantic_error": "report_missing",
+            "promoted_qa_rule_ids": promoted_rule_ids,
         }
 
     rule_results = evaluate_fast_path_rules(
@@ -237,6 +259,7 @@ async def evaluate_report(
         allowed_evidence_ids={item.id for item in evidence_items},
         allowed_template_ids=allowed_template_ids,
     )
+    rule_results.extend(_build_promoted_rule_results(promoted_rules))
     failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
     log.info(
         "qa.fast_path",
@@ -291,6 +314,7 @@ async def evaluate_report(
         "qa_semantic_error": semantic_response.error,
         "qa_semantic_fallback_used": semantic_response.fallback_used,
         "qa_semantic_fallback_reason": semantic_response.fallback_reason,
+        "promoted_qa_rule_ids": promoted_rule_ids,
     }
     log.info(
         "qa.slow_path",

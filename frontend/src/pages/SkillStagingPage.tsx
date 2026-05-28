@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useApproveCandidate, useRejectCandidate, useSkillCandidates } from "@/api/hooks";
+import type { PromotedArtifactResponse } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,6 +16,7 @@ export function SkillStagingPage(): JSX.Element {
   const [reviewedBy, setReviewedBy] = useState("owner_wh");
   const [pendingCandidateId, setPendingCandidateId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [promotionHints, setPromotionHints] = useState<PromotedArtifactResponse[]>([]);
 
   const candidatesQuery = useSkillCandidates({
     status: statusFilter === "all" ? undefined : statusFilter,
@@ -38,9 +40,11 @@ export function SkillStagingPage(): JSX.Element {
     setPendingCandidateId(candidateId);
     try {
       if (action === "approve") {
-        await approveMutation.mutateAsync({ candidateId, reviewedBy: reviewer });
+        const result = await approveMutation.mutateAsync({ candidateId, reviewedBy: reviewer });
+        setPromotionHints(result.promoted_artifacts);
       } else {
         await rejectMutation.mutateAsync({ candidateId, reviewedBy: reviewer });
+        setPromotionHints([]);
       }
       setActionError(null);
       await candidatesQuery.refetch();
@@ -101,6 +105,30 @@ export function SkillStagingPage(): JSX.Element {
       {actionError ? (
         <Card className="border-red-400/40">
           <CardContent className="pt-6 text-sm text-red-200">{actionError}</CardContent>
+        </Card>
+      ) : null}
+
+      {promotionHints.length > 0 ? (
+        <Card className="border-primary/40">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">已写回 industry_packs</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-xs">
+            <p className="text-muted-foreground">
+              以下文件已更新，请手动执行 git commit 以完成版本入库：
+            </p>
+            {promotionHints.map((item) => (
+              <div
+                className="rounded-md border border-border bg-muted/30 px-3 py-2 font-mono"
+                key={`${item.path}-${item.entry_id}`}
+              >
+                <p>{item.path}</p>
+                <p className="text-muted-foreground">
+                  action={item.action} · entry_id={item.entry_id}
+                </p>
+              </div>
+            ))}
+          </CardContent>
         </Card>
       ) : null}
 

@@ -70,3 +70,98 @@ def test_registry_get_missing_pack_raises() -> None:
     registry = IndustryPackRegistry()
     with pytest.raises(IndustryPackNotFound):
         registry.get("not_exists")
+
+
+def test_load_pack_reads_promoted_qa_rules(tmp_path: Path) -> None:
+    pack_dir = tmp_path / "pack_with_promoted_rules"
+    competitors_dir = pack_dir / "competitors"
+    skills_dir = pack_dir / "skills"
+    competitors_dir.mkdir(parents=True)
+    skills_dir.mkdir(parents=True)
+    (pack_dir / "pack.yaml").write_text(
+        "\n".join(
+            [
+                "id: promoted_pack",
+                "name: Promoted Pack",
+                'version: "0.1"',
+                "default_focus_dimensions:",
+                "  - feature",
+                'description: "pack with promoted rules"',
+                "competitor_files:",
+                "  - competitors/base.yaml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (competitors_dir / "base.yaml").write_text(
+        "\n".join(
+            [
+                "id: comp_base",
+                "display_name: Base Competitor",
+                "aliases: [base]",
+                "official_url: https://example.com",
+                "category: ide_assistant",
+                "snapshots: {}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (skills_dir / "qa_rules_promoted.yaml").write_text(
+        "\n".join(
+            [
+                "- rule_id: rule_promoted_feature_signal",
+                '  rule_yaml: "id: rule_promoted_feature_signal"',
+                "  candidate_id: skill_123",
+                "  approved_by: owner_wh",
+                "  approved_at: '2026-05-27T12:00:00+00:00'",
+                "  supporting_run_ids:",
+                "    - run_123",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    pack = load_pack(pack_dir)
+    assert len(pack.promoted_qa_rules) == 1
+    assert pack.promoted_qa_rules[0].rule_id == "rule_promoted_feature_signal"
+
+
+def test_load_pack_invalid_promoted_qa_rules_raises(tmp_path: Path) -> None:
+    pack_dir = tmp_path / "pack_invalid_promoted_rules"
+    competitors_dir = pack_dir / "competitors"
+    skills_dir = pack_dir / "skills"
+    competitors_dir.mkdir(parents=True)
+    skills_dir.mkdir(parents=True)
+    (pack_dir / "pack.yaml").write_text(
+        "\n".join(
+            [
+                "id: invalid_promoted_pack",
+                "name: Invalid Promoted Pack",
+                'version: "0.1"',
+                "default_focus_dimensions:",
+                "  - feature",
+                'description: "pack with invalid promoted rules"',
+                "competitor_files:",
+                "  - competitors/base.yaml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (competitors_dir / "base.yaml").write_text(
+        "\n".join(
+            [
+                "id: comp_base",
+                "display_name: Base Competitor",
+                "aliases: [base]",
+                "official_url: https://example.com",
+                "category: ide_assistant",
+                "snapshots: {}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (skills_dir / "qa_rules_promoted.yaml").write_text(
+        "invalid_root: object",
+        encoding="utf-8",
+    )
+    with pytest.raises(IndustryPackNotFound):
+        load_pack(pack_dir)

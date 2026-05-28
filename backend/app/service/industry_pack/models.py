@@ -30,6 +30,15 @@ class PackMetadata(BaseModel):
     competitor_files: list[str] = Field(default_factory=list)
 
 
+class PromotedQARule(BaseModel):
+    rule_id: str
+    rule_yaml: str
+    candidate_id: str
+    approved_by: str
+    approved_at: str
+    supporting_run_ids: list[str] = Field(default_factory=list)
+
+
 class IndustryPack(BaseModel):
     id: str
     name: str
@@ -37,3 +46,4 @@ class IndustryPack(BaseModel):
     default_focus_dimensions: list[FocusDimension] = Field(default_factory=list)
     description: str
     competitors: dict[str, CompetitorSnapshot] = Field(default_factory=dict)
+    promoted_qa_rules: list[PromotedQARule] = Field(default_factory=list)

@@ -169,4 +169,11 @@ export interface SkillCandidateReviewResponse {
   status: string;
   reviewed_by: string;
   reviewed_at: string;
+  promoted_artifacts: PromotedArtifactResponse[];
+}
+
+export interface PromotedArtifactResponse {
+  path: string;
+  action: "created" | "appended" | string;
+  entry_id: string;
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Cursor pre-tool safety guard for RivalLens.
 
 Blocks broad/destructive shell commands and reads/edits of real .env files,

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from core.config import settings
 from db.engine import get_session_factory
 from exceptions.base import APIException
 from models.skill_candidate import SkillCandidateRecord
+from service.skill_promotion import (
+    PromotionWriteError,
+    promote_approved_candidate,
+)
 from utils.logger import get_logger
 
 router = APIRouter()
@@ -41,11 +47,18 @@ class SkillCandidateReviewRequest(BaseModel):
     reviewed_by: str = Field(default="human_reviewer", min_length=1, max_length=128)
 
 
+class PromotedArtifactResponse(BaseModel):
+    path: str
+    action: str
+    entry_id: str
+
+
 class SkillCandidateReviewResponse(BaseModel):
     id: str
     status: str
     reviewed_by: str
     reviewed_at: str
+    promoted_artifacts: list[PromotedArtifactResponse] = Field(default_factory=list)
 
 
 def _to_iso(dt: datetime | None) -> str | None:
@@ -119,6 +132,7 @@ async def approve_skill_candidate(
 ) -> SkillCandidateReviewResponse:
     log.info("api.skill.approve.start", candidate_id=candidate_id)
     session_factory = get_session_factory()
+    promoted_artifacts: list[PromotedArtifactResponse] = []
     async with session_factory() as session:
         record = await session.get(SkillCandidateRecord, candidate_id)
         if record is None:
@@ -137,7 +151,25 @@ async def approve_skill_candidate(
         record.status = "approved"
         record.reviewed_by = payload.reviewed_by
         record.reviewed_at = reviewed_at
+        try:
+            promoted_artifact_rows = promote_approved_candidate(
+                record=record,
+                pack_root=Path(settings.INDUSTRY_PACKS_DIR),
+                reviewed_by=payload.reviewed_by,
+                reviewed_at=reviewed_at,
+            )
+        except PromotionWriteError as exc:
+            await session.rollback()
+            raise APIException(
+                status_code=500,
+                error_code="PROMOTION_WRITE_FAILED",
+                message=f"failed to write promoted skill artifacts: {exc}",
+            ) from exc
         await session.commit()
+        promoted_artifacts = [
+            PromotedArtifactResponse.model_validate(item)
+            for item in promoted_artifact_rows
+        ]
     log.info("api.skill.approve.finish", candidate_id=candidate_id, reviewed_by=payload.reviewed_by)
 
     return SkillCandidateReviewResponse(
@@ -145,6 +177,7 @@ async def approve_skill_candidate(
         status="approved",
         reviewed_by=payload.reviewed_by,
         reviewed_at=reviewed_at.isoformat(),
+        promoted_artifacts=promoted_artifacts,
     )
 
 
@@ -181,4 +214,5 @@ async def reject_skill_candidate(
         status="rejected",
         reviewed_by=payload.reviewed_by,
         reviewed_at=reviewed_at.isoformat(),
+        promoted_artifacts=[],
     )

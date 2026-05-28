@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+from pathlib import Path
+import shutil
 from uuid import uuid4
 
 import pytest
@@ -826,3 +829,108 @@ def test_create_run_rejects_missing_competitor_in_pack(test_client: TestClient) 
     payload = response.json()
     assert response.status_code == 400
     assert payload["error_code"] == "COMPETITOR_NOT_IN_PACK"
+
+
+def _prepare_promoted_pack_copy(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Path:
+    source_root = Path(settings.INDUSTRY_PACKS_DIR).resolve()
+    copied_root = tmp_path / "industry_packs"
+    shutil.copytree(source_root, copied_root)
+    monkeypatch.setattr(settings, "INDUSTRY_PACKS_DIR", str(copied_root))
+    return copied_root
+
+
+def _latest_staging_skill_candidate_id_for_run(run_id: str) -> str:
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT id FROM skill_candidates "
+                    "WHERE status = 'staging' "
+                    "AND supporting_run_ids @> CAST(:supporting_run_ids AS jsonb) "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"supporting_run_ids": json.dumps([run_id], ensure_ascii=False)},
+            ).mappings().first()
+    finally:
+        engine.dispose()
+    if row is None:
+        raise RuntimeError(f"No staging skill candidate found for run_id={run_id}")
+    return str(row["id"])
+
+
+def _latest_qa_step_payload(run_id: str) -> dict[str, object]:
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT payload FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'qa' "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"run_id": run_id},
+            ).mappings().first()
+    finally:
+        engine.dispose()
+    if row is None:
+        raise RuntimeError(f"No qa step found for run_id={run_id}")
+    payload = row["payload"]
+    if not isinstance(payload, dict):
+        raise RuntimeError("QA payload is not a dict")
+    return payload
+
+
+def test_promoted_qa_rule_visible_in_next_run(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    copied_pack_root = _prepare_promoted_pack_copy(monkeypatch=monkeypatch, tmp_path=tmp_path)
+    from service.industry_pack.registry import get_industry_pack_registry
+
+    get_industry_pack_registry().load_all(copied_pack_root)
+    first_run = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "generate candidate for promotion smoke",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert first_run.status_code == 200
+    first_run_id = first_run.json()["run_id"]
+    candidate_id = _latest_staging_skill_candidate_id_for_run(first_run_id)
+
+    approve_response = test_client.post(
+        f"/api/skill-candidates/{candidate_id}/approve",
+        json={"reviewed_by": "owner_wh"},
+    )
+    approve_payload = approve_response.json()
+    assert approve_response.status_code == 200
+    promoted_artifacts = approve_payload.get("promoted_artifacts", [])
+    assert isinstance(promoted_artifacts, list) and promoted_artifacts
+
+    get_industry_pack_registry().load_all(copied_pack_root)
+    second_run = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "verify promoted qa rules visibility",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert second_run.status_code == 200
+    second_run_id = second_run.json()["run_id"]
+    qa_payload = _latest_qa_step_payload(second_run_id)
+    promoted_rule_ids_raw = qa_payload.get("promoted_qa_rule_ids")
+    assert isinstance(promoted_rule_ids_raw, list)
+    promoted_rule_ids = [item for item in promoted_rule_ids_raw if isinstance(item, str)]
+    assert promoted_rule_ids
+    assert any(item.startswith("rule_") for item in promoted_rule_ids)

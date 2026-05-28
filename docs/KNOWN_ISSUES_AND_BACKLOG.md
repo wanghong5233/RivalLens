@@ -48,13 +48,6 @@
 - **入口**：`backend/app/agents/graph.py`（qa-approved 后异步触发改造） + `agents/nodes/skill_curator.py`
 - **验收**：Curator 拆为异步任务，失败不影响主 run 完成时间
 
-### [ ] ORCH-006 approved 候选写回 industry_packs
-
-- **设计**：docs/2.5 §6.1 闭环 / docs/2 §7.2 `skill_candidates ──[approved by reviewer]──> industry_packs/<pack>/skills/`
-- **现状**：审批 API 有，approved 状态切换可用；写回 YAML 文件未做
-- **入口**：`backend/app/router/skill_rt.py`（approve handler 触发写回） + `industry_packs/<pack>/skills/`
-- **验收**：approved 候选生成对应 YAML 文件；Git diff 可审计变更
-
 ### [x] FRT-001 Conclusion → Evidence 一键溯源
 
 - **设计**：docs/0 §4 评分维度 1 要求“每条分析结论可定位到原始数据源，支持一键跳转或溯源查看”
@@ -125,6 +118,13 @@
 - **入口**：`backend/app/service/skill_curator/generators/`（每候选类型一文件） + `service/skill_curator/engine.py`（改 dispatcher）
 - **验收**：三个 generator 互不耦合；trace 可看到每类候选来自哪个 generator
 
+### [ ] ORCH-006b promoted qa_rule YAML DSL 解释器
+
+- **设计**：docs/2.5 §6.4 + docs/3 §10.1（`qa_rules_promoted.yaml`）
+- **现状**：ORCH-006 已完成写回与 loader 读取，QA trace 可见 `promoted_qa_rule_ids`；但 promoted 规则当前是 observed-only，不参与 blocking reject
+- **入口**：`backend/app/service/qa/rules.py`（DSL 解释执行） + `service/qa/engine.py`（融合 promoted blocking outcome）
+- **验收**：构造一条 promoted 规则可稳定触发 QA reject，且 required_fields/reject_to 可追溯
+
 ### [ ] MSG-001 AgentMessage 编排落地
 
 - **设计**：docs/3 §4 AgentMessage + payload_type 枚举
@@ -154,6 +154,7 @@
 - [x] SEC-002 Prompt injection 关键词清洗（10 类模式命中写入 evidence metadata）
 - [x] SEC-001 提交前参赛资源泄漏拦截（API Key / EP scanner-first：`scan_secrets.py` + `.githooks/pre-commit` + `secret-scan` CI + agent hooks）
 - [x] SCH-001 Conclusion 持久化表（`conclusions` + `conclusion_evidence` 多对多落库；Analyst 双写，Writer 表优先 + JSON fallback）
+- [x] ORCH-006 approved 候选写回 industry_packs（`qa_rule` 写回 `skills/qa_rules_promoted.yaml` + pack loader 读取 + QA trace 透传 `promoted_qa_rule_ids`；`prompt_template/source_routing` 先落盘）
 - [x] FRT-001 Conclusion → Evidence 一键溯源（Evidence Console + 多入口跳转/高亮）
 - [x] METRIC-001 业务闭环指标面板（`GET /api/runs/{run_id}/metrics` + RunView MetricsPanel）
 - [x] HLT-001 DAG Run View（`@xyflow/react` + `@dagrejs/dagre`，`/runs/:runId/trace` 默认 DAG Tab，支持节点详情抽屉与 Evidence 跳转）

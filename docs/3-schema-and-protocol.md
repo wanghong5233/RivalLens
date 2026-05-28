@@ -533,6 +533,23 @@ industry_packs/<pack_name>/
     └── qa_rules_promoted.yaml
 ```
 
+`skills/` 三类产物字段约定：
+
+- `qa_rules_promoted.yaml`（list）每条至少包含：
+  - `rule_id: str`
+  - `rule_yaml: str`
+  - `candidate_id: str`
+  - `approved_by: str`
+  - `approved_at: str`
+  - `supporting_run_ids: list[str]`
+- `prompt_templates/<template_name>__<candidate_id>.yaml`（object）包含：
+  - `target_agent` / `template_name` / `template_body` / `replaces_template_id`
+  - `evidence_quality_delta` / `rejection_rate_delta`
+  - `candidate_id` / `approved_by` / `approved_at` / `supporting_run_ids`
+- `source_routing.yaml`（list）每条包含：
+  - `source_type` / `competitor_category` / `priority_delta` / `quality_score_sample`
+  - `candidate_id` / `approved_by` / `approved_at` / `supporting_run_ids`
+
 ### 10.2 AI Coding 行业包扩展 schema 示例
 
 ```python

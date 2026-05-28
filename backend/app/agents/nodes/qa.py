@@ -12,6 +12,10 @@ from models.report import Report
 from models.step import Step
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection
+from service.industry_pack.registry import (
+    IndustryPackNotFound,
+    get_industry_pack_registry,
+)
 from service.qa.engine import MAX_QA_REJECTIONS, evaluate_report
 from utils.log_node import log_node
 from utils.logger import get_logger
@@ -111,6 +115,15 @@ async def qa_node(state: AgentState) -> AgentState:
     pending_review_target_step_id = state.get("pending_review_target_step_id")
     qa_rejection_count = int(state.get("qa_rejection_count", 0))
     qa_step_id = make_id("step_")
+    industry_pack = state.get("industry_pack")
+    promoted_qa_rules = []
+    if isinstance(industry_pack, str) and industry_pack:
+        try:
+            promoted_qa_rules = get_industry_pack_registry().get(
+                industry_pack
+            ).promoted_qa_rules
+        except IndustryPackNotFound:
+            promoted_qa_rules = []
 
     writer_step, report = await _load_review_targets(
         session_factory=session_factory,
@@ -124,7 +137,12 @@ async def qa_node(state: AgentState) -> AgentState:
         reviewer_step_id=qa_step_id,
         session_factory=session_factory,
         qa_rejection_count=qa_rejection_count,
+        promoted_qa_rules=promoted_qa_rules,
     )
+    promoted_qa_rule_ids = [
+        item.rule_id
+        for item in promoted_qa_rules
+    ]
 
     async with session_factory() as session:
         step = Step(
@@ -138,7 +156,8 @@ async def qa_node(state: AgentState) -> AgentState:
                 report_id=report.report_id,
                 review_result=review_result,
             )
-            | semantic_metadata,
+            | semantic_metadata
+            | {"promoted_qa_rule_ids": promoted_qa_rule_ids},
             rejection_reason=(
                 review_result.model_dump()
                 if isinstance(review_result, Rejection)
@@ -172,6 +191,11 @@ async def qa_node(state: AgentState) -> AgentState:
 
     if isinstance(review_result, Approval):
         log.info(
+            "qa.promoted_rules",
+            count=len(promoted_qa_rule_ids),
+            rule_id_list=promoted_qa_rule_ids,
+        )
+        log.info(
             "qa.outcome",
             outcome="approved",
             retry_count=qa_rejection_count,
@@ -189,6 +213,11 @@ async def qa_node(state: AgentState) -> AgentState:
 
     updated_rejection_count = qa_rejection_count + 1
     is_force_degraded = updated_rejection_count > MAX_QA_REJECTIONS
+    log.info(
+        "qa.promoted_rules",
+        count=len(promoted_qa_rule_ids),
+        rule_id_list=promoted_qa_rule_ids,
+    )
     log.info(
         "qa.outcome",
         outcome="force_degraded" if is_force_degraded else "rejected",

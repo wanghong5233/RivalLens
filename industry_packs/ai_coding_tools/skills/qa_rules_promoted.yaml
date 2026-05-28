@@ -1,0 +1,7 @@
+- rule_id: rule_pricing_requires_recent_source
+  rule_yaml: 'id: rule_pricing_requires_recent_source'
+  candidate_id: skill_8095d844f3af
+  approved_by: owner_wh
+  approved_at: '2026-05-27T16:54:08.244952+00:00'
+  supporting_run_ids:
+  - run_a1eac6e8ad04
