@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Sequence
 
-from pydantic import ValidationError
-
-from service.llm import (
-    SKILL_CURATOR_SYSTEM_PROMPT,
-    build_skill_curator_fallback_user_prompt,
-    build_skill_curator_user_prompt,
-)
-from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
-from service.skill_curator.models import SkillCuratorCandidate, SkillCuratorOutput
+from service.skill_curator.generators import (
+    generate_prompt_template_candidates,
+    generate_qa_rule_candidates,
+    generate_source_routing_candidates,
+)
+from service.skill_curator.models import SkillCuratorCandidate
 from utils.logger import get_logger
 
 log = get_logger("service.skill_curator.engine")
@@ -25,19 +23,24 @@ class SkillCuratorGenerationResult:
     error: str | None
 
 
-def _normalize_output(content: dict[str, object]) -> tuple[list[SkillCuratorCandidate], str | None]:
-    try:
-        parsed = SkillCuratorOutput.model_validate(content)
-    except ValidationError as exc:
-        return [], f"skill_curator_schema_invalid: {exc.errors()[0]['msg']}"
-    return parsed.candidates, None
-
-
 def _count_candidates(candidates: Sequence[SkillCuratorCandidate]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in candidates:
         counts[item.candidate_type] = counts.get(item.candidate_type, 0) + 1
     return counts
+
+
+def _pick_primary_llm_response(
+    *,
+    qa_rule_response: LLMResponse,
+    prompt_template_response: LLMResponse,
+    source_routing_response: LLMResponse,
+) -> LLMResponse:
+    if qa_rule_response.error is None:
+        return qa_rule_response
+    if prompt_template_response.error is None:
+        return prompt_template_response
+    return source_routing_response
 
 
 async def generate_skill_candidates(
@@ -57,10 +60,8 @@ async def generate_skill_candidates(
         qa_rejection_count=qa_rejection_count,
         total_evidence_count=total_evidence_count,
     )
-    llm_response = await get_llm_client().complete_json(
-        model_slot="qa",
-        system_prompt=SKILL_CURATOR_SYSTEM_PROMPT,
-        user_prompt=build_skill_curator_user_prompt(
+    qa_rule_result, prompt_template_result, source_routing_result = await asyncio.gather(
+        generate_qa_rule_candidates(
             run_id=run_id,
             industry_pack=industry_pack,
             qa_rejection_count=qa_rejection_count,
@@ -69,16 +70,41 @@ async def generate_skill_candidates(
             evidence_source_counts=evidence_source_counts,
             total_evidence_count=total_evidence_count,
         ),
-        fallback_system_prompt=SKILL_CURATOR_SYSTEM_PROMPT,
-        fallback_user_prompt=build_skill_curator_fallback_user_prompt(
+        generate_prompt_template_candidates(
             run_id=run_id,
             industry_pack=industry_pack,
             qa_rejection_count=qa_rejection_count,
+            qa_reasons=qa_reasons,
+            supervisor_decisions=supervisor_decisions,
+            evidence_source_counts=evidence_source_counts,
+            total_evidence_count=total_evidence_count,
+        ),
+        generate_source_routing_candidates(
+            run_id=run_id,
+            industry_pack=industry_pack,
+            qa_rejection_count=qa_rejection_count,
+            qa_reasons=qa_reasons,
+            supervisor_decisions=supervisor_decisions,
             evidence_source_counts=evidence_source_counts,
             total_evidence_count=total_evidence_count,
         ),
     )
-    if llm_response.error is not None:
+
+    generator_results = [qa_rule_result, prompt_template_result, source_routing_result]
+    candidates: list[SkillCuratorCandidate] = []
+    errors: list[str] = []
+    for item in generator_results:
+        candidates.extend(item.candidates)
+        if item.error is not None:
+            errors.append(item.error)
+
+    llm_response = _pick_primary_llm_response(
+        qa_rule_response=qa_rule_result.llm_response,
+        prompt_template_response=prompt_template_result.llm_response,
+        source_routing_response=source_routing_result.llm_response,
+    )
+    normalize_error = "; ".join(errors) if errors else None
+    if normalize_error is not None and not candidates:
         log.info(
             "skill_curator.candidate.finish",
             candidate_count=0,
@@ -88,18 +114,17 @@ async def generate_skill_candidates(
         return SkillCuratorGenerationResult(
             candidates=[],
             llm_response=llm_response,
-            error=llm_response.error,
+            error=normalize_error,
         )
 
-    candidates, normalize_error = _normalize_output(llm_response.content)
     log.info(
         "skill_curator.candidate.finish",
-        candidate_count=len(candidates) if normalize_error is None else 0,
-        candidate_count_by_type=_count_candidates(candidates) if normalize_error is None else {},
-        has_error=normalize_error is not None,
+        candidate_count=len(candidates),
+        candidate_count_by_type=_count_candidates(candidates),
+        has_error=normalize_error is not None and not candidates,
     )
     return SkillCuratorGenerationResult(
         candidates=candidates,
         llm_response=llm_response,
-        error=normalize_error,
+        error=normalize_error if not candidates else None,
     )

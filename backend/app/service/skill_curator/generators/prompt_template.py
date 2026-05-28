@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Sequence
+
+from pydantic import ValidationError
+
+from service.llm.client import get_llm_client
+from service.llm.response import LLMResponse
+from service.skill_curator.models import SkillCuratorCandidate, SkillCuratorOutput
+from service.skill_curator.prompts import (
+    SKILL_CURATOR_PROMPT_TEMPLATE_SYSTEM_PROMPT,
+    build_skill_curator_prompt_template_fallback_user_prompt,
+    build_skill_curator_prompt_template_user_prompt,
+)
+from utils.logger import get_logger
+
+log = get_logger("service.skill_curator.generator.prompt_template")
+
+
+@dataclass(slots=True)
+class CuratorGeneratorResult:
+    candidates: list[SkillCuratorCandidate]
+    llm_response: LLMResponse
+    error: str | None
+
+
+def _normalize_output(content: dict[str, object]) -> tuple[list[SkillCuratorCandidate], str | None]:
+    try:
+        parsed = SkillCuratorOutput.model_validate(content)
+    except ValidationError as exc:
+        return [], f"skill_curator_schema_invalid: {exc.errors()[0]['msg']}"
+    filtered = [item for item in parsed.candidates if item.candidate_type == "prompt_template"]
+    return filtered, None
+
+
+async def generate_prompt_template_candidates(
+    *,
+    run_id: str,
+    industry_pack: str,
+    qa_rejection_count: int,
+    qa_reasons: Sequence[str],
+    supervisor_decisions: Sequence[dict[str, object]],
+    evidence_source_counts: dict[str, int],
+    total_evidence_count: int,
+) -> CuratorGeneratorResult:
+    log.info(
+        "skill_curator.prompt_template.start",
+        run_id=run_id,
+        industry_pack=industry_pack,
+    )
+    llm_response = await get_llm_client().complete_json(
+        model_slot="qa",
+        system_prompt=SKILL_CURATOR_PROMPT_TEMPLATE_SYSTEM_PROMPT,
+        user_prompt=build_skill_curator_prompt_template_user_prompt(
+            run_id=run_id,
+            industry_pack=industry_pack,
+            qa_rejection_count=qa_rejection_count,
+            qa_reasons=qa_reasons,
+            supervisor_decisions=supervisor_decisions,
+            evidence_source_counts=evidence_source_counts,
+            total_evidence_count=total_evidence_count,
+        ),
+        fallback_system_prompt=SKILL_CURATOR_PROMPT_TEMPLATE_SYSTEM_PROMPT,
+        fallback_user_prompt=build_skill_curator_prompt_template_fallback_user_prompt(
+            run_id=run_id,
+            industry_pack=industry_pack,
+            qa_rejection_count=qa_rejection_count,
+            evidence_source_counts=evidence_source_counts,
+            total_evidence_count=total_evidence_count,
+        ),
+    )
+    if llm_response.error is not None:
+        log.info("skill_curator.prompt_template.finish", candidate_count=0, has_error=True)
+        return CuratorGeneratorResult(candidates=[], llm_response=llm_response, error=llm_response.error)
+
+    candidates, normalize_error = _normalize_output(llm_response.content)
+    log.info(
+        "skill_curator.prompt_template.finish",
+        candidate_count=len(candidates) if normalize_error is None else 0,
+        has_error=normalize_error is not None,
+    )
+    return CuratorGeneratorResult(
+        candidates=candidates,
+        llm_response=llm_response,
+        error=normalize_error,
+    )
+

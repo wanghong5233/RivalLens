@@ -1,0 +1,14 @@
+id: 04_reject_max_retry_force_degraded
+description: Repeated semantic rejection should trigger force_degraded outcome.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "semantic-force-degraded-demo"
+  competitors:
+    - comp_cursor
+  industry_pack: ai_coding_tools
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: force_degraded
+  qa_rejection_count_gte: 4

@@ -408,6 +408,7 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         DesensitizeError,
         ValueError,
         TypeError,
+        RuntimeError,
     ) as exc:
         observation_row = {
             "tool": action_raw,

@@ -104,26 +104,26 @@
 - **入口**：`backend/app/router/run_rt.py` + `agents/graph.py`（配合 checkpoint reset_to） + 可选 `backend/app/service/checkpoint/`
 - **验收**：可指定 `reset_to=writer` 等阶段，清理后续 steps 重新跑
 
-### [ ] ORCH-005 Golden eval 集
+### [x] ORCH-005 Golden eval 集
 
 - **设计**：docs/2.5 §8 失败模式可量化回归
-- **现状**：回归仅靠 smoke + 人工观察
-- **入口**：`backend/app/tests/golden/cases/*.yaml` + `runner.py` + `assertions.py` + `scripts/run_golden.sh`
-- **验收**：10 条核心场景，可复跑脚本 + 通过阈值
+- **现状**：已落地 `backend/app/tests/golden/`（10 条 case + runner + assertions）与 `backend/app/scripts/run_golden.py` 报告导出，支持固定口径回归
+- **入口**：`backend/app/tests/golden/cases/*.yaml` + `backend/app/tests/golden/runner.py` + `backend/app/tests/golden/assertions.py` + `backend/app/scripts/run_golden.py`
+- **验收**：可批量复跑 10 条核心场景并生成报告（`docs/private/golden_report_<ts>.md`）
 
-### [ ] CUR-001 Skill Curator 三类候选 generator 拆分
+### [x] CUR-001 Skill Curator 三类候选 generator 拆分
 
 - **设计**：docs/2.5 §3.6 `extract_rejection_patterns` / `evaluate_prompt_effectiveness` / `rank_source_routing` / `generate_candidate` 四工具
-- **现状**：`service/skill_curator/engine.py` 单一 prompt 同时产出三类候选
-- **入口**：`backend/app/service/skill_curator/generators/`（每候选类型一文件） + `service/skill_curator/engine.py`（改 dispatcher）
-- **验收**：三个 generator 互不耦合；trace 可看到每类候选来自哪个 generator
+- **现状**：已拆分 `qa_rule` / `prompt_template` / `source_routing` 三个 generator，engine 改为 dispatcher 并发汇总；trace 可区分 `skill_curator.<type>.start/finish`
+- **入口**：`backend/app/service/skill_curator/generators/` + `backend/app/service/skill_curator/prompts.py` + `backend/app/service/skill_curator/engine.py`
+- **验收**：任一 generator 失败不阻断其余类型候选产出；可在日志中定位候选来源
 
-### [ ] ORCH-006b promoted qa_rule YAML DSL 解释器
+### [x] ORCH-006b promoted qa_rule YAML DSL 解释器
 
 - **设计**：docs/2.5 §6.4 + docs/3 §10.1（`qa_rules_promoted.yaml`）
-- **现状**：ORCH-006 已完成写回与 loader 读取，QA trace 可见 `promoted_qa_rule_ids`；但 promoted 规则当前是 observed-only，不参与 blocking reject
-- **入口**：`backend/app/service/qa/rules.py`（DSL 解释执行） + `service/qa/engine.py`（融合 promoted blocking outcome）
-- **验收**：构造一条 promoted 规则可稳定触发 QA reject，且 required_fields/reject_to 可追溯
+- **现状**：已新增 `service/qa/promoted_rules.py`，支持最小 DSL 算子并接入 `service/qa/engine.py`；promoted 规则可触发 blocking reject，且 payload 透传 `promoted_qa_blocked_rule_ids`
+- **入口**：`backend/app/service/qa/promoted_rules.py` + `backend/app/service/qa/engine.py` + `backend/app/agents/nodes/qa.py`
+- **验收**：构造 promoted 规则可稳定触发 `reject_to=writer`；`required_fields` 与 blocked rule id 可追溯
 
 ### [ ] MSG-001 AgentMessage 编排落地
 

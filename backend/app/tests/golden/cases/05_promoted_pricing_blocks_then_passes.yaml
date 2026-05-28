@@ -1,0 +1,31 @@
+id: 05_promoted_pricing_blocks_then_passes
+description: Promoted pricing length rule blocks once and passes after writer redo.
+setup:
+  promoted_qa_rules:
+    - rule_id: rule_pricing_retry_demo
+      rule_yaml: |
+        id: rule_pricing_retry_demo
+        when:
+          section_title_contains: ["Pricing"]
+        require:
+          section_content_min_chars: 120
+        severity: blocking
+        reject_to: writer
+        message: "Writer must provide enough detail in pricing section."
+      candidate_id: skill_retry_demo
+      approved_by: owner_wh
+      approved_at: "2026-05-27T16:54:08.244952+00:00"
+      supporting_run_ids:
+        - run_retry_demo
+input:
+  user_query: "promoted retry-demo length gate"
+  competitors:
+    - comp_cursor
+  industry_pack: ai_coding_tools
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 1
+  qa_reject_to_includes: []
+

@@ -24,6 +24,11 @@ from schemas.supervisor import SupervisorDecision
 from service.conclusion import persist_conclusions_for_step
 
 
+@pytest.fixture(autouse=True)
+def _offline_research_channels(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", None)
+
+
 def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float]:
     engine = create_engine(settings.DATABASE_URL_SYNC)
     try:
@@ -885,6 +890,28 @@ def _latest_qa_step_payload(run_id: str) -> dict[str, object]:
     return payload
 
 
+def _qa_payloads_for_run(run_id: str) -> list[dict[str, object]]:
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT payload FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'qa' "
+                    "ORDER BY created_at ASC"
+                ),
+                {"run_id": run_id},
+            ).mappings().all()
+    finally:
+        engine.dispose()
+    payloads: list[dict[str, object]] = []
+    for row in rows:
+        payload = row["payload"]
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
 def test_promoted_qa_rule_visible_in_next_run(
     test_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -934,3 +961,115 @@ def test_promoted_qa_rule_visible_in_next_run(
     promoted_rule_ids = [item for item in promoted_rule_ids_raw if isinstance(item, str)]
     assert promoted_rule_ids
     assert any(item.startswith("rule_") for item in promoted_rule_ids)
+
+
+def test_promoted_qa_rule_blocks_report_with_enforced_yaml(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    copied_pack_root = _prepare_promoted_pack_copy(monkeypatch=monkeypatch, tmp_path=tmp_path)
+    promoted_yaml_path = copied_pack_root / "ai_coding_tools" / "skills" / "qa_rules_promoted.yaml"
+    promoted_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    promoted_yaml_path.write_text(
+        (
+            "- rule_id: rule_pricing_requires_recent_source\n"
+            "  rule_yaml: |\n"
+            "    id: rule_pricing_requires_recent_source\n"
+            "    require:\n"
+            "      has_evidence_with:\n"
+            "        source_type_in: [pricing_page]\n"
+            "        collected_within_days: 30\n"
+            "    severity: blocking\n"
+            "    reject_to: writer\n"
+            "    message: \"Pricing section must cite recent pricing evidence.\"\n"
+            "  candidate_id: skill_manual_promoted\n"
+            "  approved_by: owner_wh\n"
+            "  approved_at: '2026-05-27T16:54:08.244952+00:00'\n"
+            "  supporting_run_ids:\n"
+            "  - run_manual_promoted\n"
+        ),
+        encoding="utf-8",
+    )
+
+    from service.industry_pack.registry import get_industry_pack_registry
+
+    get_industry_pack_registry().load_all(copied_pack_root)
+    run_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "verify promoted qa rule enforce mode",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["run_id"]
+    qa_payload = _latest_qa_step_payload(run_id)
+
+    assert qa_payload.get("qa_outcome") in {"rejected", "force_degraded"}
+    if qa_payload.get("qa_outcome") == "force_degraded":
+        assert qa_payload.get("qa_reject_to") == "supervisor"
+    else:
+        assert qa_payload.get("reject_to") == "writer"
+    failed_rule_ids_raw = qa_payload.get("failed_rule_ids")
+    assert isinstance(failed_rule_ids_raw, list)
+    failed_rule_ids = [item for item in failed_rule_ids_raw if isinstance(item, str)]
+    assert "rule_promoted_rule_pricing_requires_recent_source" in failed_rule_ids
+    blocked_rule_ids_raw = qa_payload.get("promoted_qa_blocked_rule_ids")
+    assert isinstance(blocked_rule_ids_raw, list)
+    blocked_rule_ids = [item for item in blocked_rule_ids_raw if isinstance(item, str)]
+    assert "rule_promoted_rule_pricing_requires_recent_source" in blocked_rule_ids
+
+
+def test_promoted_qa_rule_blocks_then_writer_redo_passes(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    copied_pack_root = _prepare_promoted_pack_copy(monkeypatch=monkeypatch, tmp_path=tmp_path)
+    promoted_yaml_path = copied_pack_root / "ai_coding_tools" / "skills" / "qa_rules_promoted.yaml"
+    promoted_yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    promoted_yaml_path.write_text(
+        (
+            "- rule_id: rule_pricing_retry_demo\n"
+            "  rule_yaml: |\n"
+            "    id: rule_pricing_retry_demo\n"
+            "    require:\n"
+            "      has_evidence_with:\n"
+            "        source_type_in: [pricing_page]\n"
+            "        collected_within_days: 1\n"
+            "    severity: blocking\n"
+            "    reject_to: writer\n"
+            "    message: \"Writer must include recent pricing source.\"\n"
+            "  candidate_id: skill_retry_demo\n"
+            "  approved_by: owner_wh\n"
+            "  approved_at: '2026-05-27T16:54:08.244952+00:00'\n"
+            "  supporting_run_ids:\n"
+            "  - run_retry_demo\n"
+        ),
+        encoding="utf-8",
+    )
+    from service.industry_pack.registry import get_industry_pack_registry
+
+    get_industry_pack_registry().load_all(copied_pack_root)
+    run_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "promoted retry-demo source gate",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["run_id"]
+    qa_payloads = _qa_payloads_for_run(run_id)
+    first_payload = qa_payloads[0]
+    assert first_payload.get("qa_outcome") == "rejected"
+    assert first_payload.get("reject_to") == "writer"
+    failed_rule_ids_raw = first_payload.get("failed_rule_ids")
+    assert isinstance(failed_rule_ids_raw, list)
+    failed_rule_ids = [item for item in failed_rule_ids_raw if isinstance(item, str)]
+    assert "rule_promoted_rule_pricing_retry_demo" in failed_rule_ids

@@ -1,0 +1,14 @@
+id: 08_online_fail_fallback_offline
+description: Online channel failure should fallback to offline snapshot and still approve.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "online-fail fallback demo"
+  competitors:
+    - comp_cursor
+  industry_pack: ai_coding_tools
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 0

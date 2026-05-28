@@ -87,12 +87,14 @@ def _make_qa_payload(
             "target_step_id": target_step_id,
             "report_id": report_id,
             "qa_outcome": "approved",
+            "qa_reject_to": None,
             "passed_rule_ids": review_result.passed_rule_ids,
         }
     return {
         "target_step_id": target_step_id,
         "report_id": report_id,
         "qa_outcome": "rejected",
+        "qa_reject_to": review_result.reject_to,
         "failed_rule_ids": review_result.failed_rule_ids,
         "reject_to": review_result.reject_to,
     }
@@ -143,6 +145,32 @@ async def qa_node(state: AgentState) -> AgentState:
         item.rule_id
         for item in promoted_qa_rules
     ]
+    enforced_count_raw = semantic_metadata.get("promoted_qa_enforced_count", 0)
+    parse_error_count_raw = semantic_metadata.get("promoted_qa_parse_error_count", 0)
+    blocked_rule_ids_raw = semantic_metadata.get("promoted_qa_blocked_rule_ids", [])
+    enforced_count = enforced_count_raw if isinstance(enforced_count_raw, int) else 0
+    parse_error_count = parse_error_count_raw if isinstance(parse_error_count_raw, int) else 0
+    blocked_rule_ids = (
+        [item for item in blocked_rule_ids_raw if isinstance(item, str)]
+        if isinstance(blocked_rule_ids_raw, list)
+        else []
+    )
+    updated_rejection_count = (
+        qa_rejection_count + 1 if isinstance(review_result, Rejection) else qa_rejection_count
+    )
+    is_force_degraded = (
+        isinstance(review_result, Rejection)
+        and updated_rejection_count > MAX_QA_REJECTIONS
+    )
+    qa_payload = _make_qa_payload(
+        target_step_id=writer_step.step_id,
+        report_id=report.report_id,
+        review_result=review_result,
+    )
+    if isinstance(review_result, Rejection) and is_force_degraded:
+        qa_payload["qa_outcome"] = "force_degraded"
+        qa_payload["qa_reject_to"] = "supervisor"
+        qa_payload["reject_to"] = "supervisor"
 
     async with session_factory() as session:
         step = Step(
@@ -151,11 +179,7 @@ async def qa_node(state: AgentState) -> AgentState:
             agent_name="qa",
             status="running",
             retry_count=0,
-            payload=_make_qa_payload(
-                target_step_id=writer_step.step_id,
-                report_id=report.report_id,
-                review_result=review_result,
-            )
+            payload=qa_payload
             | semantic_metadata
             | {"promoted_qa_rule_ids": promoted_qa_rule_ids},
             rejection_reason=(
@@ -194,6 +218,9 @@ async def qa_node(state: AgentState) -> AgentState:
             "qa.promoted_rules",
             count=len(promoted_qa_rule_ids),
             rule_id_list=promoted_qa_rule_ids,
+            enforced_count=enforced_count,
+            parse_error_count=parse_error_count,
+            blocked_rule_ids=blocked_rule_ids,
         )
         log.info(
             "qa.outcome",
@@ -211,12 +238,13 @@ async def qa_node(state: AgentState) -> AgentState:
             "status": "running",
         }
 
-    updated_rejection_count = qa_rejection_count + 1
-    is_force_degraded = updated_rejection_count > MAX_QA_REJECTIONS
     log.info(
         "qa.promoted_rules",
         count=len(promoted_qa_rule_ids),
         rule_id_list=promoted_qa_rule_ids,
+        enforced_count=enforced_count,
+        parse_error_count=parse_error_count,
+        blocked_rule_ids=blocked_rule_ids,
     )
     log.info(
         "qa.outcome",

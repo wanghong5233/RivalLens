@@ -1,0 +1,14 @@
+id: 03_reject_writer_no_evidence
+description: Writer output without sufficient evidence should be rejected at least once.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "writer-no-evidence-demo"
+  competitors:
+    - comp_cursor
+  industry_pack: ai_coding_tools
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 1

@@ -230,31 +230,6 @@ Rules:
 - Return JSON object only.
 """
 
-SKILL_CURATOR_SYSTEM_PROMPT = """You are RivalLens Skill Curator.
-You inspect one run trace and propose reusable skill candidates in STRICT JSON.
-
-Output JSON schema:
-{
-  "candidates": [
-    {
-      "candidate_type": "qa_rule" | "prompt_template" | "source_routing",
-      "payload": { "any_json_object": true },
-      "rationale": str,
-      "confidence": "low" | "medium" | "high",
-      "supporting_run_ids": list[str]
-    }
-  ]
-}
-
-Rules:
-- Return JSON object only.
-- candidates can be empty if no stable pattern is observed.
-- candidate_type must be one of allowed values.
-- rationale must be concrete and tied to observed trace evidence.
-- Never include secrets or credentials in payload.
-"""
-
-
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -511,46 +486,3 @@ def build_writer_fallback_user_prompt(
     )
 
 
-def build_skill_curator_user_prompt(
-    *,
-    run_id: str,
-    industry_pack: str,
-    qa_rejection_count: int,
-    qa_reasons: Sequence[str],
-    supervisor_decisions: Sequence[dict[str, object]],
-    evidence_source_counts: dict[str, int],
-    total_evidence_count: int,
-) -> str:
-    decision_tail = list(supervisor_decisions)[-8:]
-    return (
-        "Curator context:\n"
-        f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
-        f"- qa_rejection_count: {qa_rejection_count}\n"
-        f"- qa_reasons: {_json(list(qa_reasons))}\n"
-        f"- supervisor_decisions_tail: {_json(decision_tail)}\n"
-        f"- evidence_source_counts: {_json(evidence_source_counts)}\n"
-        f"- total_evidence_count: {total_evidence_count}\n"
-        f"- allowed_candidate_types: {_json(list(SKILL_CURATOR_ALLOWED_TYPES))}\n\n"
-        "Return candidate list for stable reusable patterns only."
-    )
-
-
-def build_skill_curator_fallback_user_prompt(
-    *,
-    run_id: str,
-    industry_pack: str,
-    qa_rejection_count: int,
-    evidence_source_counts: dict[str, int],
-    total_evidence_count: int,
-) -> str:
-    return (
-        "Fallback skill curator request:\n"
-        f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
-        f"- qa_rejection_count: {qa_rejection_count}\n"
-        f"- evidence_source_counts: {_json(evidence_source_counts)}\n"
-        f"- total_evidence_count: {total_evidence_count}\n"
-        f"- allowed_candidate_types: {_json(list(SKILL_CURATOR_ALLOWED_TYPES))}\n\n"
-        "Return minimal valid JSON. candidates can be [] when no robust pattern exists."
-    )

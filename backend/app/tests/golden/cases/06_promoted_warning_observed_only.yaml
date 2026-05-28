@@ -1,0 +1,21 @@
+id: 06_promoted_warning_observed_only
+description: Promoted rule with parse error should degrade to observed-only warning.
+setup:
+  promoted_qa_rules:
+    - rule_id: rule_promoted_warning_demo
+      rule_yaml: "id: [invalid"
+      candidate_id: skill_warning_demo
+      approved_by: owner_wh
+      approved_at: "2026-05-27T16:54:08.244952+00:00"
+      supporting_run_ids:
+        - run_warning_demo
+input:
+  user_query: "promoted parse error placeholder"
+  competitors:
+    - comp_cursor
+  industry_pack: ai_coding_tools
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 0

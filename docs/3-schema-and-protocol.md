@@ -542,6 +542,14 @@ industry_packs/<pack_name>/
   - `approved_by: str`
   - `approved_at: str`
   - `supporting_run_ids: list[str]`
+  - `rule_yaml` 最小 DSL 算子（v1）：
+    - `when.section_title_contains: list[str]`（命中章节才评估）
+    - `require.has_evidence_with.source_type_in: list[str]`
+    - `require.has_evidence_with.collected_within_days: int`
+    - `require.evidence_refs_count_gte: int`
+    - `require.section_content_min_chars: int`
+    - `severity: "blocking" | "warning"`、`reject_to: "supervisor" | "researcher" | "analyst" | "writer"`、`message: str`
+  - 解析失败策略：降级 warning 并记录 `parse_error`，不阻塞主 run
 - `prompt_templates/<template_name>__<candidate_id>.yaml`（object）包含：
   - `target_agent` / `template_name` / `template_body` / `replaces_template_id`
   - `evidence_quality_delta` / `rejection_rate_delta`

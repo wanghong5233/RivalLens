@@ -20,6 +20,7 @@ from service.llm import (
 )
 from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
+from service.qa.promoted_rules import evaluate_promoted_rule_yaml
 from service.qa.rules import RuleResult, evaluate_fast_path_rules
 from utils.logger import get_logger
 
@@ -36,6 +37,10 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_evidence_must_be_desensitized": ["evidence.desensitized"],
     "rule_report_exists": ["reports.report_id"],
 }
+_PROMOTED_RULE_REQUIRED_FIELDS = [
+    "reports.content_json.sections[].evidence_refs",
+    "reports.content_json.sections[].content_markdown",
+]
 
 
 def _now_iso() -> str:
@@ -70,6 +75,8 @@ def _build_rejection(
     required_fields: set[str] = set()
     for item in failed_rules:
         required_fields.update(_RULE_REQUIRED_FIELDS.get(item.rule_id, []))
+        if item.rule_id.startswith("rule_promoted_"):
+            required_fields.update(_PROMOTED_RULE_REQUIRED_FIELDS)
 
     return Rejection(
         rejection_id=make_id("rejection_"),
@@ -189,20 +196,42 @@ def _semantic_rule_result(semantic_output: dict[str, object]) -> RuleResult:
 
 
 def _build_promoted_rule_results(
+    *,
     promoted_qa_rules: list[PromotedQARule],
-) -> list[RuleResult]:
+    content_json: dict[str, object],
+    evidence_items: list[EvidenceRecord],
+    now: datetime | None = None,
+) -> tuple[list[RuleResult], dict[str, object]]:
     observed_rules: list[RuleResult] = []
+    current_time = now or datetime.now(timezone.utc)
+    evidence_by_id = {item.id: item for item in evidence_items}
+    parse_error_count = 0
+    enforced_count = 0
     for item in promoted_qa_rules:
-        observed_rules.append(
-            RuleResult(
-                rule_id=f"rule_promoted_{item.rule_id}",
-                passed=True,
-                severity="warning",
-                reject_to="writer",
-                message=f"Promoted skill rule '{item.rule_id}' loaded from pack.",
-            )
+        evaluated = evaluate_promoted_rule_yaml(
+            promoted_rule_id=f"rule_promoted_{item.rule_id}",
+            rule_yaml=item.rule_yaml,
+            content_json=content_json,
+            evidence_by_id=evidence_by_id,
+            now=current_time,
         )
-    return observed_rules
+        observed_rules.append(
+            evaluated.result
+        )
+        if evaluated.enforced:
+            enforced_count += 1
+        if evaluated.parse_error is not None:
+            parse_error_count += 1
+    blocked_rule_ids = [
+        item.rule_id
+        for item in observed_rules
+        if (not item.passed and item.severity == "blocking")
+    ]
+    return observed_rules, {
+        "promoted_qa_enforced_count": enforced_count,
+        "promoted_qa_parse_error_count": parse_error_count,
+        "promoted_qa_blocked_rule_ids": blocked_rule_ids,
+    }
 
 
 async def evaluate_report(
@@ -259,7 +288,12 @@ async def evaluate_report(
         allowed_evidence_ids={item.id for item in evidence_items},
         allowed_template_ids=allowed_template_ids,
     )
-    rule_results.extend(_build_promoted_rule_results(promoted_rules))
+    promoted_rule_results, promoted_rule_metadata = _build_promoted_rule_results(
+        promoted_qa_rules=promoted_rules,
+        content_json=report.content_json,
+        evidence_items=evidence_items,
+    )
+    rule_results.extend(promoted_rule_results)
     failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
     log.info(
         "qa.fast_path",
@@ -315,6 +349,7 @@ async def evaluate_report(
         "qa_semantic_fallback_used": semantic_response.fallback_used,
         "qa_semantic_fallback_reason": semantic_response.fallback_reason,
         "promoted_qa_rule_ids": promoted_rule_ids,
+        **promoted_rule_metadata,
     }
     log.info(
         "qa.slow_path",

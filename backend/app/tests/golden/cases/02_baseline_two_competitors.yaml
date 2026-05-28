@@ -1,0 +1,16 @@
+id: 02_baseline_two_competitors
+description: Baseline run with two competitors should complete and pass QA.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "baseline two competitors"
+  competitors:
+    - comp_cursor
+    - comp_windsurf
+  industry_pack: ai_coding_tools
+  target_roles:
+    - founder
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 0
+

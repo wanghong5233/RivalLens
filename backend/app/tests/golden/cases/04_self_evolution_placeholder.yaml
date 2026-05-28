@@ -1,0 +1,15 @@
+id: 04_self_evolution_baseline_control
+description: Self-evolution baseline control without promoted blocking rules.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "self evolution placeholder baseline"
+  competitors:
+    - comp_cursor
+  industry_pack: ai_coding_tools
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 0
+

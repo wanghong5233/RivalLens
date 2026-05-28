@@ -1,0 +1,14 @@
+id: 10_qa_semantic_reject_then_approve
+description: Semantic QA rejects first then approves after writer rewrite.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "semantic-reject-demo"
+  competitors:
+    - comp_cursor
+  industry_pack: ai_coding_tools
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 1
