@@ -21,11 +21,11 @@
 
 ## P1（质量 / 联调体验）
 
-### [ ] ORCH-002 SSE 进度推送
+### [x] ORCH-002 SSE 进度推送
 
 - **设计**：docs/2 §4 PG `LISTEN/NOTIFY` + SSE / EventSource 自动重连
-- **现状**：前端 `useRunDetail` / `useRunTrace` 每 2 秒轮询 `/api/runs/{id}` 与 `/api/runs/{id}/trace`
-- **入口**：`backend/app/router/run_rt.py`（SSE endpoint） + `backend/app/service/event_bus/`（PG LISTEN/NOTIFY 封装） + `frontend/src/api/hooks.ts`（改 EventSource）
+- **现状**：已落地 `service/event_bus`（PG `LISTEN/NOTIFY` + 进程内 fan-out）与 `/api/runs/{run_id}/events` SSE，前端 `useRunEvents` 事件驱动 invalidation；轮询降到 10s 作为 fallback
+- **入口**：`backend/app/service/event_bus/bus.py` + `backend/app/router/run_rt.py` + `frontend/src/api/sse.ts` + `frontend/src/api/hooks.ts`
 - **事件**：`step.start` / `step.finish` / `supervisor.decision` / `qa.outcome` / `run.finish`
 - **验收**：断线自动重连；trace append-only 兜底重放；p95 刷新延迟 < 1s
 
@@ -41,12 +41,12 @@
 - **触发**：接第二个行业包，或 AI Coding pack 需要 `AICodingExtension` 字段
 - **验收**：AICodingExtension 注册可挂到 Researcher fragment 上；未注册 pack 不影响其他 pack 加载
 
-### [ ] ORCH-003 Skill Curator 异步化
+### [x] ORCH-003 Skill Curator 异步化
 
 - **设计**：docs/2.5 §3.6 + §6.1 异步，run 完成后启动，不参与主图并行
-- **现状**：Curator 是主图同步节点（`agents/graph.py` 中 QA approved → skill_curator → END）；run wall-clock 受 Curator 影响
-- **入口**：`backend/app/agents/graph.py`（qa-approved 后异步触发改造） + `agents/nodes/skill_curator.py`
-- **验收**：Curator 拆为异步任务，失败不影响主 run 完成时间
+- **现状**：已从主图移除 `skill_curator` 节点，`qa.approved -> END`；`/api/runs` 与 `/api/runs/{id}/resume` 在主图完成后 `create_task` 启动 `run_skill_curator_for_run`，并挂入 `app.state.background_tasks`
+- **入口**：`backend/app/agents/graph.py` + `backend/app/service/skill_curator/tasks.py` + `backend/app/router/run_rt.py` + `backend/app/app_main.py`
+- **验收**：Curator 异步失败写 `skill_candidates.error` 且不阻断主 run 完成；shutdown 时后台任务可取消
 
 ### [x] FRT-001 Conclusion → Evidence 一键溯源
 

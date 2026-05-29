@@ -31,6 +31,7 @@ from schemas.supervisor import (
     SupervisorDecision,
     Write,
 )
+from service.event_bus import RunEventType, emit_run_event
 
 MAX_SUPERVISOR_ITERATIONS = 10
 DEFAULT_RESEARCH_DIMENSIONS = ["feature", "pricing", "user_feedback"]
@@ -588,6 +589,17 @@ async def supervisor_node(state: AgentState) -> AgentState:
             reasoning_summary_len=len(decision.reasoning_summary),
             tool_arg_keys=sorted(decision.tool_args.keys()),
         )
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.SUPERVISOR_DECISION,
+        step_id=persisted_step_id,
+        payload={
+            "iteration": iteration,
+            "chosen_tool": decision.chosen_tool,
+            "triggered_by": decision.triggered_by or "unknown",
+            "outcome": decision.outcome or "unknown",
+        },
+    )
     decisions.append(decision)
 
     next_action = _map_next_action(decision.chosen_tool)

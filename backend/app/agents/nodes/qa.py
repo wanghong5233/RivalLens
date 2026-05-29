@@ -12,6 +12,7 @@ from models.report import Report
 from models.step import Step
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection
+from service.event_bus import RunEventType, emit_run_event
 from service.industry_pack.registry import (
     IndustryPackNotFound,
     get_industry_pack_registry,
@@ -212,6 +213,12 @@ async def qa_node(state: AgentState) -> AgentState:
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()
+    if isinstance(review_result, Approval):
+        event_qa_outcome = "approved"
+        event_reject_to: str | None = None
+    else:
+        event_qa_outcome = "force_degraded" if is_force_degraded else "rejected"
+        event_reject_to = "supervisor" if is_force_degraded else review_result.reject_to
 
     if isinstance(review_result, Approval):
         log.info(
@@ -227,6 +234,16 @@ async def qa_node(state: AgentState) -> AgentState:
             outcome="approved",
             retry_count=qa_rejection_count,
             target_step_id=writer_step.step_id,
+        )
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.QA_OUTCOME,
+            step_id=qa_step_id,
+            payload={
+                "qa_outcome": event_qa_outcome,
+                "reject_to": event_reject_to,
+                "target_step_id": writer_step.step_id,
+            },
         )
         return {
             "last_completed_node": "writer",
@@ -253,6 +270,17 @@ async def qa_node(state: AgentState) -> AgentState:
         failed_rule_ids=review_result.failed_rule_ids,
         retry_count=updated_rejection_count,
         target_step_id=writer_step.step_id,
+    )
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.QA_OUTCOME,
+        step_id=qa_step_id,
+        payload={
+            "qa_outcome": event_qa_outcome,
+            "reject_to": event_reject_to,
+            "target_step_id": writer_step.step_id,
+            "failed_rule_count": len(review_result.failed_rule_ids),
+        },
     )
     return {
         "last_completed_node": "writer",

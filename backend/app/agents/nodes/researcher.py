@@ -13,6 +13,7 @@ from models.llm_call import LLMCall
 from models.step import Step
 from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
+from service.event_bus import RunEventType, emit_run_event
 from service.industry_pack.models import IndustryPack
 from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 from utils.log_node import log_node
@@ -220,6 +221,15 @@ async def researcher_node(state: AgentState) -> AgentState:
     subgraph_output = await subgraph.ainvoke(subgraph_input)
 
     step_id = make_id("step_")
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_START,
+        step_id=step_id,
+        payload={
+            "agent_name": "researcher",
+            "competitor_id": request.competitor_id,
+        },
+    )
     collected_at = datetime.now(timezone.utc)
     evidence_rows, evidence_ids = _build_evidence_rows(
         run_id=run_id,
@@ -272,6 +282,17 @@ async def researcher_node(state: AgentState) -> AgentState:
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_FINISH,
+        step_id=step_id,
+        payload={
+            "agent_name": "researcher",
+            "status": "completed",
+            "evidence_count": len(evidence_ids),
+            "competitor_id": request.competitor_id,
+        },
+    )
 
     researched_competitors = list(state.get("researched_competitors", []))
     researched_competitor_delta = (

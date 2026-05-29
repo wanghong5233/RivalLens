@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query";
 
 import { apiClient } from "@/api/client";
+import { getRunFallbackPollMs, useRunEvents } from "@/api/sse";
 import type {
   EvidenceListItemResponse,
   IndustryPackListItemResponse,
@@ -21,7 +22,7 @@ import type {
   SkillCandidateReviewResponse,
 } from "@/api/types";
 
-const RUNNING_POLL_INTERVAL_MS = 2_000;
+const RUNNING_POLL_INTERVAL_MS = getRunFallbackPollMs();
 
 export interface RunsListQuery {
   status?: string;
@@ -151,6 +152,7 @@ export function useRunsList(query: RunsListQuery = {}): UseQueryResult<RunListRe
 }
 
 export function useRunDetail(runId: string): UseQueryResult<RunDetailResponse, Error> {
+  useRunEvents(runId);
   return useQuery({
     queryKey: ["run-detail", runId],
     queryFn: () => fetchRunDetail(runId),
@@ -161,6 +163,7 @@ export function useRunDetail(runId: string): UseQueryResult<RunDetailResponse, E
 }
 
 export function useRunTrace(runId: string): UseQueryResult<RunTraceResponse, Error> {
+  useRunEvents(runId);
   return useQuery({
     queryKey: ["run-trace", runId],
     queryFn: () => fetchRunTrace(runId),

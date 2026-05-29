@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useRunTrace } from "@/api/hooks";
+import { useRunEvents } from "@/api/sse";
 import { RunTraceDag } from "@/components/dag/RunTraceDag";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,6 +13,7 @@ import { formatDateTime } from "@/lib/format";
 export function RunTracePage(): JSX.Element {
   const { runId: runIdFromParams } = useParams<{ runId: string }>();
   const runId = runIdFromParams ?? "";
+  useRunEvents(runId);
   const traceQuery = useRunTrace(runId);
 
   const llmSummaries = useMemo(() => {

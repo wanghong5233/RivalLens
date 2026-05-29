@@ -121,9 +121,11 @@ React Flow 是 React 生态中 DAG / node-edge 视图最成熟的开源方案，
 
 与 §3.4 选型一致。该 checkpoint 实现支持任务级并发隔离与节点级中断恢复，符合长任务系统的可靠性需求。许可证 MIT。
 
-### 3.10 Trace 与可观测：自研最小 Trace 表 + 结构化日志
+### 3.10 Trace 与可观测：自研最小 Trace 表 + 结构化日志 + SSE 事件通道
 
 引入 Langfuse / OpenTelemetry collector / Phoenix 等完整观测平台会带来额外的部署组件（采集器、存储后端、UI），且与上述 Postgres 数据模型重复。本系统的 Trace 维度（`runs / steps / llm_calls / artifacts`）字段固定、查询模式简单，自研表 + JSONB 即可覆盖；外加 `structlog` 结构化日志写文件。前端 Trace Timeline 直接从这些表渲染。
+
+在实时性上，后端使用 PostgreSQL `LISTEN/NOTIFY` 驱动的 `EventBus`（`step.start` / `step.finish` / `supervisor.decision` / `qa.outcome` / `curator.start` / `curator.finish` / `run.finish`），并通过 `GET /api/runs/{run_id}/events` 提供 SSE 流。前端 `EventSource` 接收事件后只做 query invalidation（`run-detail` / `run-trace`），断线后由 10s polling fallback 与 `/trace` append-only 回放兜底。
 
 后续若需迁移到 Langfuse 或 OTel，由于数据模型已结构化，迁移成本可控。
 
@@ -141,7 +143,7 @@ docker compose 是单机一次性起整套服务（postgres + backend + frontend
 
 | 不引入 | 推迟到 |
 |---|---|
-| Redis | 当前需求已被既有组件覆盖：任务持久化与中断恢复用 `langgraph-checkpoint-postgres`；多 run 隔离用 PG 行级锁；SSE/前端断线重连用 trace 表 append-only + PostgreSQL `LISTEN/NOTIFY` 进程内 pub/sub + 客户端 EventSource 自动重连；LLM 与采集限流用进程内 `asyncio.Semaphore`。下列任一触发条件成立时再引入：① 部署从单 worker 改为多 worker / 多副本；② SSE 并发订阅者 > 50（PG `LISTEN/NOTIFY` 连接吃紧）；③ 引入用户登录 + session；④ 需要 cron-like 持久化定时调度超出 `asyncio.create_task` 能力 |
+| Redis | 当前需求已被既有组件覆盖：任务持久化与中断恢复用 `langgraph-checkpoint-postgres`；多 run 隔离用 PG 行级锁；SSE/前端断线重连用 trace 表 append-only + PostgreSQL `LISTEN/NOTIFY` 进程内 fan-out + 客户端 EventSource 自动重连；LLM 与采集限流用进程内 `asyncio.Semaphore`。下列任一触发条件成立时再引入：① 部署从单 worker 改为多 worker / 多副本；② SSE 并发订阅者 > 50（PG `LISTEN/NOTIFY` 连接吃紧）；③ 引入用户登录 + session；④ 需要 cron-like 持久化定时调度超出 `asyncio.create_task` 能力 |
 | Milvus / 向量库 | 当前 evidence 数量级 < 10^4，结构化 SQL 查询足够定位证据。本系统的检索语义是 `evidence-by-id`，而非 semantic search |
 | S3 / OSS | artifact 体积可控（单 run 量级 < 10 MB），本地目录挂载满足；引入对象存储需要 IAM、SDK、bucket 管理，无收益 |
 | Kafka / RabbitMQ | 单机单进程后端，无跨服务消息总线场景 |

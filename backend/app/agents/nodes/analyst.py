@@ -15,6 +15,7 @@ from models.llm_call import LLMCall
 from models.step import Step
 from schemas.ids import make_id
 from schemas.supervisor import Analyze
+from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import persist_conclusions_for_step
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
@@ -194,6 +195,15 @@ async def analyst_node(state: AgentState) -> AgentState:
     user_query = str(state.get("user_query", ""))
     competitors = list(state.get("competitors", []))
     step_id = make_id("step_")
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_START,
+        step_id=step_id,
+        payload={
+            "agent_name": "analyst",
+            "focus_dimensions": focus_dimensions,
+        },
+    )
 
     async with session_factory() as session:
         evidence_rows = (
@@ -345,6 +355,17 @@ async def analyst_node(state: AgentState) -> AgentState:
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_FINISH,
+        step_id=step_id,
+        payload={
+            "agent_name": "analyst",
+            "status": "completed",
+            "analysis_mode": analysis_mode,
+            "insight_count": len(analysis_insights),
+        },
+    )
 
     return {
         "analysis_done": True,

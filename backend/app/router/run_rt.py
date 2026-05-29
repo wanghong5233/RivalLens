@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import datetime, timezone
+import json
 
 from fastapi import APIRouter, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -18,8 +22,10 @@ from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
 from service.conclusion import load_conclusions_for_run
+from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 from service.metrics import build_run_metrics_snapshot
+from service.skill_curator.tasks import run_skill_curator_for_run
 from utils.logger import bind_run, get_logger
 
 router = APIRouter()
@@ -167,6 +173,61 @@ class ConclusionItemResponse(BaseModel):
 class RunConclusionsResponse(BaseModel):
     run_id: str
     items: list[ConclusionItemResponse]
+
+
+def _to_sse_chunk(*, event: str, data: dict[str, object]) -> str:
+    serialized = json.dumps(data, ensure_ascii=False)
+    return f"event: {event}\ndata: {serialized}\n\n"
+
+
+def _event_bus_from_request(request: Request) -> EventBus | None:
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if isinstance(event_bus, EventBus):
+        return event_bus
+    return None
+
+
+def _register_background_task(request: Request, task: asyncio.Task[object]) -> None:
+    background_tasks = getattr(request.app.state, "background_tasks", None)
+    if not isinstance(background_tasks, set):
+        return
+    background_tasks.add(task)
+
+    def _discard(finished_task: asyncio.Task[object]) -> None:
+        background_tasks.discard(finished_task)
+
+    task.add_done_callback(_discard)
+
+
+def _build_run_finish_payload(*, run_id: str, status: str) -> dict[str, object]:
+    return {"run_id": run_id, "status": status}
+
+
+async def _run_event_stream(
+    *,
+    event_bus: EventBus,
+    run_id: str,
+    keepalive_seconds: float = 15.0,
+    max_events: int | None = None,
+) -> AsyncIterator[str]:
+    yield "retry: 15000\n\n"
+    emitted_count = 0
+    async with event_bus.subscribe(run_id) as queue:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=keepalive_seconds)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            except asyncio.CancelledError:
+                return
+            yield _to_sse_chunk(
+                event=event.event_type.value,
+                data=event.model_dump(mode="json"),
+            )
+            emitted_count += 1
+            if max_events is not None and emitted_count >= max_events:
+                return
 
 
 def _to_iso(dt: datetime | None) -> str | None:
@@ -355,6 +416,16 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             run.status = run_status if run_status in {"completed", "degraded"} else "completed"
             run.finished_at = datetime.now(timezone.utc)
             await session.commit()
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(run_id=run_id, status=run.status),
+        )
+        task = asyncio.create_task(
+            run_skill_curator_for_run(run_id=run_id, industry_pack=payload.industry_pack),
+            name=f"skill_curator_{run_id}",
+        )
+        _register_background_task(request, task)
         log.info("api.run.create.finish", status=run.status)
 
     return RunCreateResponse(
@@ -401,16 +472,44 @@ async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
                     error_code="RUN_NOT_FOUND",
                     message=f"run_id={run_id} should exist before resume update",
                 )
+            run_industry_pack = run.industry_pack
             run_status = str(graph_state.get("status", "completed"))
             run.status = run_status if run_status in {"completed", "degraded"} else "completed"
             run.finished_at = datetime.now(timezone.utc)
             await session.commit()
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(run_id=run_id, status=run.status),
+        )
+        task = asyncio.create_task(
+            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack),
+            name=f"skill_curator_{run_id}",
+        )
+        _register_background_task(request, task)
         log.info("api.run.resume.finish", status=run.status)
 
     return RunCreateResponse(
         run_id=run_id,
         status=run.status,
         message="Run resumed from checkpoint.",
+    )
+
+
+@router.get("/api/runs/{run_id}/events")
+async def stream_run_events(run_id: str, request: Request) -> StreamingResponse:
+    event_bus = _event_bus_from_request(request)
+    if event_bus is None:
+        raise APIException(
+            status_code=503,
+            error_code="EVENT_BUS_NOT_INITIALIZED",
+            message="Run event stream is not initialized.",
+        )
+
+    return StreamingResponse(
+        _run_event_stream(event_bus=event_bus, run_id=run_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
 

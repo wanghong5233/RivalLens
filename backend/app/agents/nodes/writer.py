@@ -18,6 +18,7 @@ from models.report import Report
 from models.step import Step
 from schemas.ids import make_id
 from schemas.supervisor import Write
+from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import load_conclusions_for_run
 from service.llm import (
     WRITER_ALLOWED_SECTION_IDS,
@@ -566,6 +567,15 @@ async def writer_node(state: AgentState) -> AgentState:
     session_factory = _require_session_factory(state)
     request = Write.model_validate(state.get("pending_tool_args", {}))
     step_id = make_id("step_")
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_START,
+        step_id=step_id,
+        payload={
+            "agent_name": "writer",
+            "template_id": request.template_id,
+        },
+    )
     report_id = f"report_{uuid4().hex[:12]}"
     evidence_rows, analyst_payload = await _load_writer_inputs(
         session_factory=session_factory,
@@ -725,6 +735,17 @@ async def writer_node(state: AgentState) -> AgentState:
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_FINISH,
+        step_id=step_id,
+        payload={
+            "agent_name": "writer",
+            "status": "completed",
+            "writer_mode": writer_mode,
+            "section_count": section_count,
+        },
+    )
 
     return {
         "report_draft_done": True,

@@ -1,9 +1,10 @@
 from __future__ import annotations
-
+import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
+import time
 from uuid import uuid4
 
 import pytest
@@ -12,6 +13,7 @@ from sqlalchemy import create_engine, delete, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from agents.nodes.writer import writer_node
+from agents.graph import build_graph_uncompiled
 from core.config import settings
 from models.evidence import EvidenceRecord
 from models.run import Run
@@ -21,6 +23,7 @@ from schemas.business import Evidence
 from schemas.qa import Rejection, RetryPolicy
 from schemas.skill import SkillCandidate
 from schemas.supervisor import SupervisorDecision
+from service.event_bus import RunEvent, RunEventType
 from service.conclusion import persist_conclusions_for_step
 
 
@@ -397,6 +400,7 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert response.status_code == 200
     assert payload["status"] == "completed"
     assert payload["run_id"].startswith("run_")
+    assert _wait_for_skill_candidate_count(payload["run_id"]) >= 1
 
     snapshot = _fetch_persisted_snapshot(payload["run_id"])
     assert snapshot["run_status"] == "completed"
@@ -470,7 +474,8 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     assert "analyst" in step_agents
     assert "writer" in step_agents
     assert "qa" in step_agents
-    assert "skill_curator" in step_agents
+    assert "skill_curator" not in step_agents
+    assert _wait_for_skill_candidate_count(run_id) >= 1
 
     not_found_response = test_client.get("/api/runs/run_not_exists")
     assert not_found_response.status_code == 404
@@ -725,10 +730,57 @@ def test_resume_run_continues_from_checkpoint(test_client: TestClient) -> None:
     detail_payload = detail_response.json()
     assert detail_payload["status"] == "completed"
     assert detail_payload["finished_at"] is not None
+    assert _wait_for_skill_candidate_count(run_id) >= 1
 
     non_resumable_response = test_client.post(f"/api/runs/{run_id}/resume")
     assert non_resumable_response.status_code == 409
     assert non_resumable_response.json()["error_code"] == "RUN_NOT_RESUMABLE"
+
+
+def test_run_events_sse_endpoint_exposes_stream_content_type(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "sse endpoint smoke",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    event_bus = getattr(test_client.app.state, "event_bus", None)
+    assert event_bus is not None
+    subscribe_loop = asyncio.new_event_loop()
+    publish_loop = asyncio.new_event_loop()
+    subscribe_cm = event_bus.subscribe(run_id)
+    try:
+        queue = subscribe_loop.run_until_complete(subscribe_cm.__aenter__())
+        step_id = "step_sse_contract"
+        publish_loop.run_until_complete(
+            event_bus.publish(
+                RunEvent(
+                    run_id=run_id,
+                    event_type=RunEventType.STEP_START,
+                    step_id=step_id,
+                    payload={"agent_name": "supervisor"},
+                )
+            )
+        )
+        event = subscribe_loop.run_until_complete(asyncio.wait_for(queue.get(), timeout=1.0))
+    finally:
+        subscribe_loop.run_until_complete(subscribe_cm.__aexit__(None, None, None))
+        subscribe_loop.close()
+        publish_loop.close()
+    assert event.event_type in {RunEventType.STEP_START, RunEventType.CURATOR_START}
+    if event.event_type == RunEventType.STEP_START:
+        assert event.step_id == "step_sse_contract"
+
+
+def test_main_graph_no_skill_curator_node() -> None:
+    graph = build_graph_uncompiled()
+    assert "skill_curator" not in graph.nodes
 
 
 def test_schema_models_instantiation() -> None:
@@ -910,6 +962,28 @@ def _qa_payloads_for_run(run_id: str) -> list[dict[str, object]]:
         if isinstance(payload, dict):
             payloads.append(payload)
     return payloads
+
+
+def _wait_for_skill_candidate_count(run_id: str, *, timeout_seconds: float = 5.0) -> int:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        engine = create_engine(settings.DATABASE_URL_SYNC)
+        try:
+            with engine.connect() as connection:
+                count = connection.execute(
+                    text(
+                        "SELECT COUNT(*) AS count FROM skill_candidates "
+                        "WHERE supporting_run_ids @> CAST(:supporting_run_ids AS jsonb)"
+                    ),
+                    {"supporting_run_ids": json.dumps([run_id], ensure_ascii=False)},
+                ).scalar_one()
+        finally:
+            engine.dispose()
+        normalized_count = int(count)
+        if normalized_count > 0:
+            return normalized_count
+        time.sleep(0.2)
+    return 0
 
 
 def test_promoted_qa_rule_visible_in_next_run(

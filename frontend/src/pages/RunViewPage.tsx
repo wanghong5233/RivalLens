@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 
 import { useRunDetail, useRunReport, useRunTrace } from "@/api/hooks";
+import { useRunEvents } from "@/api/sse";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { MetricsPanel } from "@/components/MetricsPanel";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -25,6 +26,7 @@ export function RunViewPage(): JSX.Element {
   const runId = runIdFromParams ?? "";
   const [isEvidenceDrawerOpen, setIsEvidenceDrawerOpen] = useState(false);
   const [activeEvidenceIds, setActiveEvidenceIds] = useState<string[]>([]);
+  useRunEvents(runId);
 
   const detailQuery = useRunDetail(runId);
   const traceQuery = useRunTrace(runId);
@@ -107,6 +109,9 @@ export function RunViewPage(): JSX.Element {
       return `${baseTime}  ${step.agent_name} 状态：${step.status}`;
     });
   }, [traceSteps]);
+  const hasCuratorStep = traceSteps.some((item) => item.agent_name === "skill_curator");
+  const showCuratorPending =
+    (runStatus === "completed" || runStatus === "degraded") && !hasCuratorStep;
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) {
@@ -232,6 +237,19 @@ export function RunViewPage(): JSX.Element {
               {latestEvents.length > 0 ? latestEvents.map((event, index) => <p key={`${event}-${index}`}>• {event}</p>) : <p>暂无事件</p>}
             </CardContent>
           </Card>
+          {showCuratorPending ? (
+            <Card className="border-primary/40">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Skill Curator 沉淀中...</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm text-muted-foreground">
+                <p>主流程已完成，候选规则正在后台生成并写入 Skill Staging Console。</p>
+                <Link className="text-primary hover:underline" to="/skills/staging">
+                  前往 Skill Staging Console
+                </Link>
+              </CardContent>
+            </Card>
+          ) : null}
         </>
       ) : null}
 

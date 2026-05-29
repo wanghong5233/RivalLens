@@ -8,7 +8,6 @@ from langgraph.types import Send
 from agents.nodes.analyst import analyst_node
 from agents.nodes.qa import qa_node
 from agents.nodes.researcher import researcher_node
-from agents.nodes.skill_curator import skill_curator_node
 from agents.nodes.supervisor import supervisor_node
 from agents.nodes.writer import writer_node
 from agents.state import AgentState
@@ -52,10 +51,10 @@ def _route_after_supervisor(
     return "researcher"
 
 
-def _route_after_qa(state: AgentState) -> Literal["supervisor", "skill_curator"]:
+def _route_after_qa(state: AgentState) -> Literal["supervisor", "finalize"]:
     qa_outcome = state.get("qa_outcome")
     if qa_outcome == "approved":
-        return "skill_curator"
+        return "finalize"
     return "supervisor"
 
 
@@ -66,7 +65,6 @@ def build_graph_uncompiled() -> StateGraph:
     graph.add_node("analyst", analyst_node)
     graph.add_node("writer", writer_node)
     graph.add_node("qa", qa_node)
-    graph.add_node("skill_curator", skill_curator_node)
     graph.set_entry_point("supervisor")
     graph.add_conditional_edges(
         "supervisor",
@@ -86,10 +84,9 @@ def build_graph_uncompiled() -> StateGraph:
         _route_after_qa,
         {
             "supervisor": "supervisor",
-            "skill_curator": "skill_curator",
+            "finalize": END,
         },
     )
-    graph.add_edge("skill_curator", END)
     return graph
 
 

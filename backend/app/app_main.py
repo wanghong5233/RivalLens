@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import inspect
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,7 @@ from core.config import settings
 from db.engine import dispose_engine, init_engine
 from exceptions.base import APIException
 from router import health_rt, pack_rt, run_rt, skill_rt
+from service.event_bus import EventBus, set_event_bus
 from service.industry_pack.registry import get_industry_pack_registry
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
 from utils.request_id import new_request_id, request_id_ctx
@@ -28,22 +31,41 @@ async def lifespan(app: FastAPI):
     init_engine()
     pack_registry = get_industry_pack_registry()
     pack_registry.load_all(Path(settings.INDUSTRY_PACKS_DIR))
+    background_tasks: set[asyncio.Task[Any]] = set()
+    app.state.background_tasks = background_tasks
+    event_bus = EventBus(dsn=settings.DATABASE_URL_SYNC)
+    await event_bus.start()
+    app.state.event_bus = event_bus
+    set_event_bus(event_bus)
     checkpoint_dsn = settings.LANGGRAPH_CHECKPOINT_DSN
     if checkpoint_dsn is None:
         raise RuntimeError("LANGGRAPH_CHECKPOINT_DSN must be configured before service startup.")
+    try:
+        async with AsyncPostgresSaver.from_conn_string(checkpoint_dsn) as checkpointer:
+            setup_result = checkpointer.setup()
+            if inspect.isawaitable(setup_result):
+                await setup_result
 
-    async with AsyncPostgresSaver.from_conn_string(checkpoint_dsn) as checkpointer:
-        setup_result = checkpointer.setup()
-        if inspect.isawaitable(setup_result):
-            await setup_result
-
-        app.state.checkpointer = checkpointer
-        app.state.compiled_graph = compile_graph(checkpointer=checkpointer)
-        log.info("service_start", service=settings.SERVICE_NAME, environment=settings.ENVIRONMENT)
-        yield
-
-    await dispose_engine()
-    log.info("service_stop", service=settings.SERVICE_NAME)
+            app.state.checkpointer = checkpointer
+            app.state.compiled_graph = compile_graph(checkpointer=checkpointer)
+            log.info("service_start", service=settings.SERVICE_NAME, environment=settings.ENVIRONMENT)
+            yield
+    finally:
+        log.info("service_stop.cleanup.start")
+        pending_tasks = list(background_tasks)
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            log.info("service_stop.cleanup.background_tasks_wait", task_count=len(pending_tasks))
+            await asyncio.wait(pending_tasks, timeout=1)
+        log.info("service_stop.cleanup.event_bus_stop.start")
+        await event_bus.stop()
+        log.info("service_stop.cleanup.event_bus_stop.finish")
+        set_event_bus(None)
+        log.info("service_stop.cleanup.dispose_engine.start")
+        await dispose_engine()
+        log.info("service_stop.cleanup.dispose_engine.finish")
+        log.info("service_stop", service=settings.SERVICE_NAME)
 
 
 app = FastAPI(
