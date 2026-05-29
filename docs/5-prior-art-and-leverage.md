@@ -16,7 +16,7 @@
 | Evidence 结论级溯源 | 开源仅段落级引用 | 自研，赛题硬性要求 |
 | QA 规则 DSL | 开源仅自然语言判断 | 自研，赛题"非伪闭环"杀手锏 |
 | 数据脱敏 | 开源不强调 | 自研，命中评分 10% 合规 |
-| 行业包配置 | 开源是通用调研 | 自研，赛题"通用核心 + 场景配置" |
+| 领域可扩展能力 | 开源是通用调研，无技能粒度热插拔 | 自研 Skill Library（`applies_to/tags` + `SkillStore` + HITL 进化闭环） |
 
 ## 2. 必看的开源近亲
 
@@ -134,7 +134,7 @@ LangGraph Supervisor Agent
 
 | 模块 | 评分对齐 | 文档位置 |
 |---|---|---|
-| 竞品知识 Schema + Skill Library 扩展机制 | 35% 多 Agent 可信度 | `docs/3-schema-and-protocol.md` 第 2–4、7 节 |
+| 竞品知识 Schema + Skill Library 扩展机制 | 35% 多 Agent 可信度 | `docs/3-schema-and-protocol.md` 第 2–3、7、10 节 |
 | Evidence 与 Conclusion 多对多结论级溯源 | 35% 多 Agent 可信度 + 业务体验 20% | `docs/3-schema-and-protocol.md` 第 5 节 |
 | 结构化 QA rejection 协议 + 轻量规则 DSL | 35% "非伪闭环"杀手锏 | `docs/3-schema-and-protocol.md` 第 4、6 节 |
 | 数据脱敏架构 | 10% 合规 | `docs/2-architecture-decision.md` 第 7 节 |

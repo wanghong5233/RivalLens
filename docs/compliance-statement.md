@@ -4,8 +4,8 @@
 
 ```mermaid
 flowchart LR
-    sourceInput["public sources<br/>official sites / docs / public articles / public reviews / offline snapshots"]
-    channelLayer["collector channels<br/>search_web / fetch_url / parse_page / extract_structured / lookup_offline_snapshot"]
+    sourceInput["public sources<br/>official sites / docs / public articles / public reviews / demo_fixtures seed"]
+    channelLayer["collector channels<br/>search_web / fetch_url / parse_page / extract_structured"]
     robotsGate["robots + qps + user-agent gate"]
     privacyGate["desensitize_text"]
     safetyGate["prompt_safety_sanitize"]
@@ -29,8 +29,7 @@ flowchart LR
 | `pricing_page` | 官方定价页 | `fetch_url` | 用于价格结论溯源 |
 | `article` | 新闻/博客/媒体公开文章 | `search_web`/`fetch_url` | 非官方来源，confidence 降级处理 |
 | `public_review` | 公开社区/论坛/评测站 | `search_web`/`fetch_url` | 强制过 prompt-safety |
-| `offline_snapshot` | 本地离线快照 | `lookup_offline_snapshot` | 在线失败兜底 |
-| `local_note` | 行业包内置片段 | `fixtures_lookup` | 初始演示基线数据 |
+| `local_note` | `backend/demo_fixtures/` 内置演示种子 | 启动时作为 Run 初始 evidence seed 注入 | 仅供演示基线，不再作为 Researcher 运行时 channel 调用 |
 
 ## 3. 抓取约束
 
@@ -40,7 +39,7 @@ flowchart LR
 | 单站点 QPS | `<= 1` | `service.collector.rate_limiter` |
 | User-Agent | `RivalLens-Researcher/0.1 (+research; bytedance-ai-fullstack-challenge)` | `service.collector.http_client` |
 | timeout | 默认 10 秒，可配置 | `COLLECTOR_FETCH_TIMEOUT_S` |
-| 失败降级 | 在线失败自动尝试 `lookup_offline_snapshot` | `agents.subgraphs.researcher` |
+| 失败降级 | 在线失败自动从 `observations_log` 已抓 snippet 中 salvage；无法 salvage 时落 partial fragment | `agents.subgraphs.researcher` + `agents.nodes.researcher._build_evidence_rows` |
 
 ## 4. 隐私与安全策略
 

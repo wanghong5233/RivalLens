@@ -9,7 +9,8 @@ Single-repository monorepo. Top-level packages:
 - `backend/` — Python 3.11 + FastAPI + LangGraph agent core, PostgreSQL persistence.
 - `frontend/` — React + Vite + TypeScript visualization console.
 - `docs/` — source-of-truth specs (problem, demo, architecture, schema, ownership, prior art).
-- `industry_packs/` — pluggable vertical-domain configurations.
+- `backend/skills/` — skill library (`applies_to` in `qa_rule`, `prompt_template`, `source_routing`) loaded via `load_skill` / `read_skill_file`.
+- `backend/demo_fixtures/` — demo seeds (competitor autocomplete source, not a hard constraint set).
 - `configs/` — shared YAML/JSON configuration.
 - `data/` — raw and processed competitive data (gitignored where appropriate).
 - `scripts/` — utility scripts.

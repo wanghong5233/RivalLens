@@ -22,7 +22,7 @@
 |---|---|---|
 | `wh/supervisor-loop` | L | Supervisor 主循环 |
 | `xx/fetch-url-tool` | B | Researcher 的 `fetch_url` 工具 |
-| `yy/ai-coding-pack` | C | AI Coding 行业包 YAML |
+| `yy/skill-seed` | C | Skill Library 种子（`backend/skills/<applies_to>/<id>/SKILL.md` + `backend/demo_fixtures/competitors_seed.yaml`） |
 
 不要把 `feat/` `fix/` `chore/` 当分支前缀——这是 commit type（见 §3），不是分支前缀。分支前缀作用是标识"谁在做什么"，让 `git branch -a` 能看出归属。
 
@@ -78,7 +78,7 @@ python scripts/scan_secrets.py --all-tracked
 | `feat` | 新功能 |
 | `fix` | bug 修复 |
 | `docs` | 文档 |
-| `config` | 行业包 / YAML / 环境配置 |
+| `config` | 技能库 SKILL.md / YAML / 环境配置 |
 | `data` | 演示数据 / seed |
 | `refactor` | 重构（无功能变化） |
 | `test` | 测试 |
@@ -86,7 +86,7 @@ python scripts/scan_secrets.py --all-tracked
 
 ### 3.2 scope
 
-`supervisor` / `researcher` / `analyst` / `writer` / `qa` / `curator` / `api` / `db` / `frontend` / `ai_coding`（行业包名） / `2`（文档编号） / `2.5` / `3` 等。
+`supervisor` / `researcher` / `analyst` / `writer` / `qa` / `curator` / `api` / `db` / `frontend` / `skill_store`（技能库） / `2`（文档编号） / `2.5` / `3` 等。
 
 ### 3.3 示例
 

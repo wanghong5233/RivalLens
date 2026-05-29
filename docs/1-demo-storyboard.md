@@ -73,8 +73,13 @@ flowchart LR
 │   │  Claude Code                                       │   │
 │   └───────────────────────────────────────────────────┘   │
 │                                                           │
-│   行业包                                                    │
-│   [ai_coding_tools ▼]   ⓘ 决定 evidence 来源 / 报告模板    │
+│   领域提示（domain_hint，自由文本，可选）                   │
+│   ┌───────────────────────────────────────────────────┐   │
+│   │ 知识管理工具，重点关注协作与本地优先              │   │
+│   └───────────────────────────────────────────────────┘   │
+│                                                           │
+│   参考链接（reference_urls，可选，回车追加）                │
+│   [https://notion.so/pricing ×] [https://obsidian.md ×]   │
 │                                                           │
 │   关注角色（多选）                                          │
 │   ☑ 产品经理   ☑ 创业者   ☐ 销售   ☐ 投资人               │
@@ -91,8 +96,8 @@ flowchart LR
 
 **交互要点**：
 
-- 默认填充上次的行业包和关注角色，降低重复输入成本
-- 行业包下拉显示每个 pack 的简介与可分析维度（hover）
+- 默认填充上次的 `domain_hint` / `reference_urls` / 关注角色，降低重复输入成本
+- 竞品输入框 autocomplete 联想 `GET /api/demo-fixtures/competitors`（仅作建议，不构成约束）
 - "启动分析"后立即跳转 `/runs/:run_id`，**不**让用户在新建页等待
 - 数据集模式默认"预置"，避免演示外网抖动
 
@@ -218,7 +223,7 @@ flowchart LR
 
 **交互要点**：
 
-- 按主题（来自行业包 `prospect_themes`）自动分组
+- 按主题（按 evidence cluster 自动聚类，必要时叠加 `source_routing` SKILL.md 中的偏好）自动分组
 - 每条 quote 必带：评分（如来源是 G2）+ buyer_persona + 来源 + 时间 + 跳转原文
 - 顶部 sentiment 概览条形图（正向 / 中性 / 负向 占比）
 
@@ -288,11 +293,11 @@ flowchart LR
 
 ### 3.6 Skill Staging Console（`/skills/staging`）
 
-**目标**：Skill Curator 沉淀的候选需要人工 approve 才会写入 industry pack。这是 RivalLens 自进化闭环的人机接口。
+**目标**：Skill Curator 沉淀的候选需要人工 approve 才会落到 `backend/skills/`。这是 RivalLens 自进化闭环的人机接口。
 
 ```text
 ┌────────────────────────────────────────────────────────────┐
-│  Skill 审核台 · 行业包: ai_coding_tools · 待审 5 条        │
+│  Skill 审核台 · 类型: qa_rule ▼  · 标签: pricing × citation × · 待审 5 条 │
 ├────────────────────────────────────────────────────────────┤
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │ 类型: QA 规则候选                                    │  │
@@ -317,7 +322,7 @@ flowchart LR
 **交互要点**：
 
 - 每条候选必须显示：类型 / 触发条件 / 建议内容 / 预期影响 / 触发证据链接
-- 通过的候选立即写入 `backend/skills/<applies_to>/<skill_id>/SKILL.md`（带 Git 友好的 diff 提示）
+- 通过的候选立即写入 `backend/skills/<applies_to>/<id>/SKILL.md`（带 Git 友好的 diff 提示）
 - 拒绝的候选保留 `status=rejected`，避免下次 Curator 重复推荐
 
 ### 3.7 Trace 详情（`/runs/:run_id/trace`，开发者视图）
@@ -348,7 +353,7 @@ sequenceDiagram
 
     U->>H: 打开 Home
     U->>N: 点击"新建分析"
-    U->>N: 填入竞品列表 + domain_hint/reference_urls
+    U->>N: 填入竞品列表 + domain_hint + reference_urls
     U->>R: 点击"启动分析"
     Note over R: 实时显示业务进度<br/>（不暴露 DAG）
     R-->>U: 完成通知
