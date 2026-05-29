@@ -9,7 +9,7 @@ from service.skill_curator.engine import generate_skill_candidates
 async def test_generate_skill_candidates_merges_three_generators() -> None:
     result = await generate_skill_candidates(
         run_id="run_test_curator_dispatch",
-        industry_pack="ai_coding_tools",
+        domain_hint="ai coding assistants",
         qa_rejection_count=1,
         qa_reasons=["pricing evidence missing"],
         supervisor_decisions=[],

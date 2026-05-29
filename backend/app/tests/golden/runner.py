@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
@@ -12,8 +12,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
 from core.config import settings
-from service.industry_pack.models import PromotedQARule
-from service.industry_pack.registry import get_industry_pack_registry
+from service.collector.registry import get_channel_registry
+from service.skill_store import get_skill_store
 from tests.golden.assertions import assert_contains, assert_equals, assert_gte
 
 
@@ -22,16 +22,23 @@ class GoldenCaseAssertions(BaseModel):
     qa_rejection_count_gte: int | None = None
     qa_reject_to_includes: list[str] = Field(default_factory=list)
     must_include_promoted_rule_id: str | None = None
+    must_include_collector_action: str | None = None
+
+
+class PromotedQARuleFixture(BaseModel):
+    rule_id: str
+    rule_yaml: str
 
 
 class GoldenCaseSetup(BaseModel):
-    promoted_qa_rules: list[PromotedQARule] = Field(default_factory=list)
+    promoted_qa_rules: list[PromotedQARuleFixture] = Field(default_factory=list)
 
 
 class GoldenCaseInput(BaseModel):
     user_query: str
     competitors: list[str]
-    industry_pack: str | None = "ai_coding_tools"
+    domain_hint: str | None = None
+    reference_urls: list[str] = Field(default_factory=list)
     target_roles: list[str] = Field(default_factory=lambda: ["pm"])
 
 
@@ -57,6 +64,7 @@ class GoldenCaseResult:
     llm_token_total: int | None
     run_wall_clock_seconds: int | None
     created_at: str
+    collector_actions: list[str] = field(default_factory=list)
 
 
 def _load_case(path: Path) -> GoldenCase:
@@ -129,28 +137,35 @@ def _last_qa_reject_to(payloads: list[dict[str, object]]) -> str | None:
     return None
 
 
+def _skills_root() -> Path:
+    return Path(__file__).resolve().parents[3] / "skills"
+
+
 def _write_promoted_rules_for_case(
     *,
-    pack_root: Path,
-    pack_id: str | None,
-    promoted_qa_rules: list[PromotedQARule],
+    skills_root: Path,
+    promoted_qa_rules: list[PromotedQARuleFixture],
 ) -> None:
-    if not isinstance(pack_id, str) or not pack_id.strip():
-        return
-    promoted_yaml_path = pack_root / pack_id / "skills" / "qa_rules_promoted.yaml"
-    promoted_yaml_path.parent.mkdir(parents=True, exist_ok=True)
     if not promoted_qa_rules:
-        if promoted_yaml_path.exists():
-            promoted_yaml_path.unlink()
         return
-    promoted_yaml_path.write_text(
-        yaml.safe_dump(
-            [item.model_dump() for item in promoted_qa_rules],
-            sort_keys=False,
-            allow_unicode=True,
-        ),
-        encoding="utf-8",
-    )
+    for item in promoted_qa_rules:
+        rule_dir = skills_root / "qa_rule" / item.rule_id
+        rule_dir.mkdir(parents=True, exist_ok=True)
+        frontmatter = {
+            "name": item.rule_id,
+            "description": "Golden-case promoted qa rule fixture.",
+            "version": "1.0.0",
+            "tags": ["golden_fixture"],
+            "applies_to": "qa_rule",
+        }
+        skill_markdown = (
+            f"---\n{yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()}\n---\n\n"
+            "## Rule DSL\n\n"
+            "```yaml\n"
+            f"{item.rule_yaml.strip()}\n"
+            "```\n"
+        )
+        (rule_dir / "SKILL.md").write_text(skill_markdown, encoding="utf-8")
 
 
 def _run_metrics_snapshot(*, run_id: str, client: TestClient) -> dict[str, object]:
@@ -162,26 +177,45 @@ def _run_metrics_snapshot(*, run_id: str, client: TestClient) -> dict[str, objec
 
 
 def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
-    source_pack_root = Path(settings.INDUSTRY_PACKS_DIR).resolve()
-    with tempfile.TemporaryDirectory(prefix="golden_case_pack_") as tmp_dir:
-        temp_pack_root = Path(tmp_dir) / "industry_packs"
-        shutil.copytree(source_pack_root, temp_pack_root)
+    skills_root = _skills_root()
+    invoked_actions: list[str] = []
+    registry = get_channel_registry()
+    original_invoke = registry.invoke
+
+    async def _tracking_invoke(action: str, *, args: dict[str, object]):
+        invoked_actions.append(action)
+        return await original_invoke(action, args=args)
+
+    registry.invoke = _tracking_invoke
+    with tempfile.TemporaryDirectory(prefix="golden_case_skills_") as tmp_dir:
+        backup_root = Path(tmp_dir) / "skills_backup"
+        had_skills_root = skills_root.exists()
+        if had_skills_root:
+            shutil.copytree(skills_root, backup_root)
+            shutil.rmtree(skills_root)
+        skills_root.mkdir(parents=True, exist_ok=True)
         _write_promoted_rules_for_case(
-            pack_root=temp_pack_root,
-            pack_id=case.input.industry_pack,
+            skills_root=skills_root,
             promoted_qa_rules=case.setup.promoted_qa_rules,
         )
-        get_industry_pack_registry().load_all(temp_pack_root)
-        response = client.post(
-            "/api/runs",
-            json={
-                "user_query": case.input.user_query,
-                "competitors": case.input.competitors,
-                "industry_pack": case.input.industry_pack,
-                "target_roles": case.input.target_roles,
-            },
-        )
-        get_industry_pack_registry().load_all(source_pack_root)
+        get_skill_store().scan()
+        try:
+            response = client.post(
+                "/api/runs",
+                json={
+                    "user_query": case.input.user_query,
+                    "competitors": case.input.competitors,
+                    "domain_hint": case.input.domain_hint,
+                    "reference_urls": list(case.input.reference_urls),
+                    "target_roles": case.input.target_roles,
+                },
+            )
+        finally:
+            registry.invoke = original_invoke
+        shutil.rmtree(skills_root)
+        if had_skills_root:
+            shutil.copytree(backup_root, skills_root)
+        get_skill_store().scan()
     if response.status_code != 200:
         return GoldenCaseResult(
             case_id=case.id,
@@ -196,6 +230,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
             llm_token_total=None,
             run_wall_clock_seconds=None,
             created_at=datetime.now(timezone.utc).isoformat(),
+            collector_actions=invoked_actions,
         )
 
     run_id = str(response.json()["run_id"])
@@ -279,6 +314,14 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         )
         if failed is not None:
             failures.append(failed)
+    if case.assertions.must_include_collector_action is not None:
+        failed = assert_contains(
+            values=invoked_actions,
+            expected=case.assertions.must_include_collector_action,
+            field="collector_actions",
+        )
+        if failed is not None:
+            failures.append(failed)
 
     return GoldenCaseResult(
         case_id=case.id,
@@ -293,6 +336,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         llm_token_total=llm_token_total,
         run_wall_clock_seconds=run_wall_clock_seconds,
         created_at=datetime.now(timezone.utc).isoformat(),
+        collector_actions=invoked_actions,
     )
 
 
@@ -324,6 +368,7 @@ def dump_markdown_report(*, results: list[GoldenCaseResult], report_path: Path) 
         lines.append(f"- coverage_rate: {item.coverage_rate}")
         lines.append(f"- llm_token_total: {item.llm_token_total}")
         lines.append(f"- run_wall_clock_seconds: {item.run_wall_clock_seconds}")
+        lines.append(f"- collector_actions: {item.collector_actions}")
         if item.failures:
             lines.append("- failures:")
             for failure in item.failures:

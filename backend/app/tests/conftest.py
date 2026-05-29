@@ -54,6 +54,7 @@ class _FakeLLMClient:
         self._writer_no_evidence_demo_served = False
         self._qa_semantic_retry_demo_served = False
         self._qa_writer_no_evidence_demo_served = False
+        self._load_skill_demo_served = False
 
     @staticmethod
     def _derive_dimensions(user_query: str) -> list[str]:
@@ -181,6 +182,7 @@ class _FakeLLMClient:
 
     def _build_researcher_response(self, user_prompt: str) -> LLMResponse:
         pending_dimensions = self._extract_json_list(user_prompt, "pending_dimensions")
+        prompt_lower = user_prompt.casefold()
         competitor_match = re.search(r"- competitor_id: ([^\n]+)", user_prompt)
         competitor_id = (
             competitor_match.group(1).strip()
@@ -188,33 +190,28 @@ class _FakeLLMClient:
             else "comp_cursor"
         )
         if pending_dimensions:
-            if not competitor_id.startswith("comp_"):
+            if (
+                "progressive-disclosure-demo" in prompt_lower
+                and not self._load_skill_demo_served
+            ):
+                self._load_skill_demo_served = True
                 content = {
-                    "action": "extract_structured",
-                    "action_args": {
-                        "text": (
-                            f"{competitor_id} {pending_dimensions[0]} signal extracted in generic mode."
-                        ),
-                        "source_title": f"{competitor_id} {pending_dimensions[0]}",
-                        "source_type": "article",
-                        "dimension": pending_dimensions[0],
-                        "competitor_id": competitor_id,
-                    },
-                    "reasoning_summary": "Use synthetic extract_structured seed for generic competitor mode.",
+                    "action": "load_skill",
+                    "action_args": {"skill_id": "evidence-must-cite-source"},
+                    "reasoning_summary": "Load reusable QA knowledge before collecting evidence.",
                 }
                 return self._build_response(model_slot="research", content=content)
-            reasoning_summary = (
-                "Force offline snapshot path for deterministic fallback case."
-                if "online-fail fallback demo" in user_prompt.casefold()
-                else "Use offline snapshot for deterministic researcher path."
-            )
             content = {
-                "action": "lookup_offline_snapshot",
+                "action": "extract_structured",
                 "action_args": {
+                    "text": f"{competitor_id} {pending_dimensions[0]} signal extracted in deterministic test mode.",
+                    "source_url": f"https://example.com/{competitor_id}/{pending_dimensions[0]}",
+                    "source_title": f"{competitor_id} {pending_dimensions[0]}",
+                    "source_type": "article",
                     "competitor_id": competitor_id,
                     "dimension": pending_dimensions[0],
                 },
-                "reasoning_summary": reasoning_summary,
+                "reasoning_summary": "Use deterministic extract_structured path for researcher tests.",
             }
             return self._build_response(model_slot="research", content=content)
         return self._build_response(model_slot="research", content={})

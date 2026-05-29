@@ -4,7 +4,6 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import inspect
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -16,9 +15,9 @@ from agents.graph import compile_graph
 from core.config import settings
 from db.engine import dispose_engine, init_engine
 from exceptions.base import APIException
-from router import health_rt, pack_rt, run_rt, skill_rt
+from router import health_rt, run_rt, skill_rt
 from service.event_bus import EventBus, set_event_bus
-from service.industry_pack.registry import get_industry_pack_registry
+from service.skill_store import get_skill_store
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
 from utils.request_id import new_request_id, request_id_ctx
 
@@ -29,8 +28,7 @@ log = get_logger("app_main")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_engine()
-    pack_registry = get_industry_pack_registry()
-    pack_registry.load_all(Path(settings.INDUSTRY_PACKS_DIR))
+    get_skill_store().scan()
     background_tasks: set[asyncio.Task[Any]] = set()
     app.state.background_tasks = background_tasks
     event_bus = EventBus(dsn=settings.DATABASE_URL_SYNC)
@@ -119,6 +117,5 @@ async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONRespons
 
 
 app.include_router(health_rt.router)
-app.include_router(pack_rt.router)
 app.include_router(run_rt.router)
 app.include_router(skill_rt.router)

@@ -277,6 +277,9 @@ def _decision_from_qa_feedback(
     qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
     qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
     qa_reasons: list[str],
+    user_query: str,
+    competitors: list[str],
+    fallback_dimensions: list[str],
     fallback_sections: list[str],
 ) -> tuple[SupervisorDecision, LLMResponse, bool] | None:
     if qa_outcome is None or qa_outcome == "approved":
@@ -311,6 +314,10 @@ def _decision_from_qa_feedback(
             True,
         )
 
+    if qa_reject_to == "supervisor":
+        # Let the planner decide next action with full context instead of forcing degraded finalize.
+        return None
+
     if qa_reject_to == "writer":
         qa_reason_summary = "; ".join(qa_reasons[:3]) or "QA blocking rules failed."
         decision = SupervisorDecision(
@@ -334,6 +341,89 @@ def _decision_from_qa_feedback(
                 provider="qa_guardrail",
                 model_name="qa_guardrail",
                 prompt_preview="qa_rejected_to_writer",
+                error=None,
+            ),
+            False,
+        )
+
+    if qa_reject_to == "analyst":
+        qa_reason_summary = "; ".join(qa_reasons[:3]) or "QA requests deeper analysis."
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="Analyze",
+            tool_args=Analyze(
+                focus_dimensions=fallback_dimensions,
+                parallel_by_dimension=True,
+                require_cross_competitor=True,
+            ).model_dump(),
+            reasoning_summary=(
+                "QA rejected current report and requests analyst re-check: "
+                f"{qa_reason_summary}"
+            ),
+            triggered_by=triggered_by,
+            outcome="dispatched",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+        return (
+            decision,
+            _pseudo_llm_response(
+                provider="qa_guardrail",
+                model_name="qa_guardrail",
+                prompt_preview="qa_rejected_to_analyst",
+                error=None,
+            ),
+            False,
+        )
+
+    if qa_reject_to == "researcher":
+        qa_reason_summary = "; ".join(qa_reasons[:3]) or "QA requests additional evidence."
+        topics = [
+            ConductResearch(
+                research_topic=(
+                    "Collect additional evidence to address QA findings for "
+                    f"{competitor_id} on query: {user_query}"
+                ),
+                competitor_id=competitor_id,
+                focus_dimensions=fallback_dimensions,
+                max_iterations=3,
+                fallback_to_offline=True,
+            )
+            for competitor_id in competitors
+        ]
+        if not topics:
+            return None
+        if len(topics) == 1:
+            chosen_tool: Literal["ConductResearch", "ConductResearchBatch"] = "ConductResearch"
+            tool_args = topics[0].model_dump()
+        else:
+            chosen_tool = "ConductResearchBatch"
+            tool_args = ConductResearchBatch(
+                topics=topics,
+                parallelism_rationale=(
+                    "QA requested additional evidence, rerun research across competitors in parallel."
+                ),
+            ).model_dump()
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool=chosen_tool,
+            tool_args=tool_args,
+            reasoning_summary=f"QA requires additional research evidence: {qa_reason_summary}",
+            triggered_by=triggered_by,
+            outcome="dispatched",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+        return (
+            decision,
+            _pseudo_llm_response(
+                provider="qa_guardrail",
+                model_name="qa_guardrail",
+                prompt_preview="qa_rejected_to_researcher",
                 error=None,
             ),
             False,
@@ -535,11 +625,12 @@ async def supervisor_node(state: AgentState) -> AgentState:
         last_completed_node=last_completed_node,
         qa_outcome=qa_outcome,
     )
+    fallback_dimensions = _derive_focus_dimensions(
+        user_query=user_query,
+        competitors=competitors,
+    )
     fallback_sections = _derive_write_sections(
-        focus_dimensions=_derive_focus_dimensions(
-            user_query=user_query,
-            competitors=competitors,
-        )
+        focus_dimensions=fallback_dimensions,
     )
 
     forced_degraded_by_qa = False
@@ -550,6 +641,9 @@ async def supervisor_node(state: AgentState) -> AgentState:
         qa_outcome=qa_outcome,
         qa_reject_to=qa_reject_to,
         qa_reasons=qa_reasons,
+        user_query=user_query,
+        competitors=competitors,
+        fallback_dimensions=fallback_dimensions,
         fallback_sections=fallback_sections,
     )
     if qa_driven_decision is not None:
@@ -652,6 +746,16 @@ async def supervisor_node(state: AgentState) -> AgentState:
 
     next_action = _map_next_action(decision.chosen_tool)
     completion_reason = str(decision.tool_args.get("completion_reason", ""))
+    next_analysis_done = analysis_done
+    next_report_draft_done = report_draft_done
+    if decision.chosen_tool in {"ConductResearch", "ConductResearchBatch"}:
+        # Fresh research invalidates prior downstream artifacts; force analysis+write rerun.
+        next_analysis_done = False
+        next_report_draft_done = False
+    elif decision.chosen_tool == "Analyze":
+        # Re-analysis requires a fresh writer pass before finalize.
+        next_report_draft_done = False
+
     if decision.chosen_tool == "Finalize":
         if completion_reason == "max_iterations_hit" or forced_degraded_by_qa:
             status = "degraded"
@@ -668,8 +772,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
         "pending_tool_args": decision.tool_args,
         "next_action": next_action,
         "last_completed_node": None,
-        "analysis_done": analysis_done,
-        "report_draft_done": report_draft_done,
+        "analysis_done": next_analysis_done,
+        "report_draft_done": next_report_draft_done,
         "qa_outcome": None,
         "qa_reject_to": None,
         "qa_reasons": [],

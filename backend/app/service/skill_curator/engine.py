@@ -46,7 +46,7 @@ def _pick_primary_llm_response(
 async def generate_skill_candidates(
     *,
     run_id: str,
-    industry_pack: str,
+    domain_hint: str | None,
     qa_rejection_count: int,
     qa_reasons: Sequence[str],
     supervisor_decisions: Sequence[dict[str, object]],
@@ -56,14 +56,14 @@ async def generate_skill_candidates(
     log.info(
         "skill_curator.candidate.start",
         run_id=run_id,
-        industry_pack=industry_pack,
+        domain_hint=domain_hint,
         qa_rejection_count=qa_rejection_count,
         total_evidence_count=total_evidence_count,
     )
     qa_rule_result, prompt_template_result, source_routing_result = await asyncio.gather(
         generate_qa_rule_candidates(
             run_id=run_id,
-            industry_pack=industry_pack,
+            domain_hint=domain_hint,
             qa_rejection_count=qa_rejection_count,
             qa_reasons=qa_reasons,
             supervisor_decisions=supervisor_decisions,
@@ -72,7 +72,7 @@ async def generate_skill_candidates(
         ),
         generate_prompt_template_candidates(
             run_id=run_id,
-            industry_pack=industry_pack,
+            domain_hint=domain_hint,
             qa_rejection_count=qa_rejection_count,
             qa_reasons=qa_reasons,
             supervisor_decisions=supervisor_decisions,
@@ -81,7 +81,7 @@ async def generate_skill_candidates(
         ),
         generate_source_routing_candidates(
             run_id=run_id,
-            industry_pack=industry_pack,
+            domain_hint=domain_hint,
             qa_rejection_count=qa_rejection_count,
             qa_reasons=qa_reasons,
             supervisor_decisions=supervisor_decisions,

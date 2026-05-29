@@ -317,7 +317,7 @@ flowchart LR
 **交互要点**：
 
 - 每条候选必须显示：类型 / 触发条件 / 建议内容 / 预期影响 / 触发证据链接
-- 通过的候选立即写入 `industry_packs/<pack>/skills/<file>.yaml`（带 Git 友好的 diff 提示）
+- 通过的候选立即写入 `backend/skills/<applies_to>/<skill_id>/SKILL.md`（带 Git 友好的 diff 提示）
 - 拒绝的候选保留 `status=rejected`，避免下次 Curator 重复推荐
 
 ### 3.7 Trace 详情（`/runs/:run_id/trace`，开发者视图）
@@ -348,7 +348,7 @@ sequenceDiagram
 
     U->>H: 打开 Home
     U->>N: 点击"新建分析"
-    U->>N: 填入竞品列表 + 选行业包
+    U->>N: 填入竞品列表 + domain_hint/reference_urls
     U->>R: 点击"启动分析"
     Note over R: 实时显示业务进度<br/>（不暴露 DAG）
     R-->>U: 完成通知
@@ -385,14 +385,14 @@ sequenceDiagram
     actor U as 用户（PM 或运维）
     participant H as Home
     participant S as Skill Staging
-    participant P as industry_packs/
+    participant P as backend/skills/
 
     Note over S: Skill Curator 异步 run 完后<br/>Home 侧边栏出现红点"5 条待审"
     U->>H: 看到红点
     U->>S: 打开 Skill Staging
     U->>S: 浏览候选（类型 / 影响 / 证据）
     U->>S: 点击"通过并生效"
-    S->>P: 写入 industry_packs/ai_coding_tools/skills/qa_rules.yaml
+    S->>P: 写入 backend/skills/qa_rule/<skill_id>/SKILL.md
     S-->>U: "已生效，下次 run 自动加载"
 ```
 

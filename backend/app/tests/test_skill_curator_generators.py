@@ -15,7 +15,7 @@ from service.skill_curator.generators.source_routing import (
 async def test_generate_qa_rule_candidates() -> None:
     result = await generate_qa_rule_candidates(
         run_id="run_test_curator_qa",
-        industry_pack="ai_coding_tools",
+        domain_hint="ai coding assistants",
         qa_rejection_count=1,
         qa_reasons=["missing pricing source"],
         supervisor_decisions=[],
@@ -31,7 +31,7 @@ async def test_generate_qa_rule_candidates() -> None:
 async def test_generate_prompt_template_candidates() -> None:
     result = await generate_prompt_template_candidates(
         run_id="run_test_curator_prompt",
-        industry_pack="ai_coding_tools",
+        domain_hint="ai coding assistants",
         qa_rejection_count=0,
         qa_reasons=[],
         supervisor_decisions=[],
@@ -47,7 +47,7 @@ async def test_generate_prompt_template_candidates() -> None:
 async def test_generate_source_routing_candidates() -> None:
     result = await generate_source_routing_candidates(
         run_id="run_test_curator_source",
-        industry_pack="ai_coding_tools",
+        domain_hint="ai coding assistants",
         qa_rejection_count=0,
         qa_reasons=[],
         supervisor_decisions=[],

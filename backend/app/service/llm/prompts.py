@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
+from service.skill_store import get_skill_store
+
 QA_SEMANTIC_ALLOWED_REJECT_TO: tuple[str, ...] = (
     "supervisor",
     "researcher",
@@ -14,6 +16,55 @@ SKILL_CURATOR_ALLOWED_TYPES: tuple[str, ...] = (
     "prompt_template",
     "source_routing",
 )
+
+
+def build_skill_catalog_block(
+    *,
+    applies_to_filter: Sequence[str] | None = None,
+    max_entries: int = 24,
+) -> str:
+    store = get_skill_store()
+    metadata_map = store.scan()
+    metadata_items = sorted(metadata_map.values(), key=lambda item: item.name.lower())
+    if applies_to_filter is not None:
+        normalized_filters = {item.strip().lower() for item in applies_to_filter if item.strip()}
+        metadata_items = [
+            item for item in metadata_items if item.applies_to.strip().lower() in normalized_filters
+        ]
+    selected_items = metadata_items[:max_entries]
+    if not selected_items:
+        return "<skill_catalog>\n<skill><name>none</name><description>No skills loaded.</description></skill>\n</skill_catalog>"
+
+    lines = ["<skill_catalog>"]
+    for item in selected_items:
+        files = store.list_supporting_files(item.name)
+        files_text = ",".join(files) if files else "none"
+        tags_text = ",".join(item.tags) if item.tags else "none"
+        lines.append(
+            (
+                "<skill>"
+                f"<name>{item.name}</name>"
+                f"<description>{item.description}</description>"
+                f"<applies_to>{item.applies_to}</applies_to>"
+                f"<tags>{tags_text}</tags>"
+                f"<supporting_files>{files_text}</supporting_files>"
+                "</skill>"
+            )
+        )
+    lines.append("</skill_catalog>")
+    return "\n".join(lines)
+
+
+def _inject_catalog(base_prompt: str, *, applies_to_filter: Sequence[str] | None = None) -> str:
+    catalog_block = build_skill_catalog_block(applies_to_filter=applies_to_filter)
+    return (
+        f"{base_prompt}\n\n"
+        "Skill guidance:\n"
+        "- Use load_skill when you need domain-specific constraints/templates before finalizing output.\n"
+        "- Use read_skill_file only after load_skill indicates a required supporting file.\n"
+        "- Do not fabricate skill names; choose from skill_catalog.\n\n"
+        f"{catalog_block}"
+    )
 
 SUPERVISOR_SYSTEM_PROMPT = """You are the RivalLens Supervisor planner.
 You must choose exactly one tool in each iteration and return STRICT JSON.
@@ -86,12 +137,14 @@ Allowed actions:
    - args schema:
      {
        "query": str,
-       "max_results": int
+       "max_results": int,
+       "dimension": str | null
      }
 2) fetch_url
    - args schema:
      {
-       "url": str
+       "url": str,
+       "dimension": str | null
      }
 3) parse_page
    - args schema:
@@ -105,15 +158,23 @@ Allowed actions:
      {
        "text": str,
        "source_url": str | null,
-       "source_title": str | null
+       "source_title": str | null,
+       "source_type": str | null,
+       "dimension": str | null,
+       "competitor_id": str | null
      }
-5) lookup_offline_snapshot
+5) load_skill
    - args schema:
      {
-       "competitor_id": str,
-       "dimension": str
+       "skill_id": str
      }
-6) finalize
+6) read_skill_file
+   - args schema:
+     {
+       "skill_id": str,
+       "filename": str
+     }
+7) finalize
    - args schema:
      {
        "summary": str
@@ -121,7 +182,7 @@ Allowed actions:
 
 Output JSON schema:
 {
-  "action": "search_web" | "fetch_url" | "parse_page" | "extract_structured" | "lookup_offline_snapshot" | "finalize",
+  "action": "search_web" | "fetch_url" | "parse_page" | "extract_structured" | "load_skill" | "read_skill_file" | "finalize",
   "action_args": { ... valid for action ... },
   "reasoning_summary": "short and concrete rationale"
 }
@@ -130,7 +191,7 @@ Hard constraints:
 - Never fabricate evidence quotes, source_url, or source_title.
 - Evidence can only come from tool observations.
 - If enough dimensions are already covered, call finalize.
-- Prefer lookup_offline_snapshot for hard fallback when online channels fail.
+- Prefer online collection first; use load_skill when domain-specific extraction guidance is needed.
 - Return JSON object only, no markdown.
 """
 
@@ -217,6 +278,23 @@ Rules:
 - Return JSON object only.
 """
 
+RESEARCHER_SYSTEM_PROMPT = _inject_catalog(
+    RESEARCHER_SYSTEM_PROMPT,
+    applies_to_filter=("general", "prompt_template", "source_routing"),
+)
+ANALYST_SYSTEM_PROMPT = _inject_catalog(
+    ANALYST_SYSTEM_PROMPT,
+    applies_to_filter=("general", "prompt_template"),
+)
+WRITER_SYSTEM_PROMPT = _inject_catalog(
+    WRITER_SYSTEM_PROMPT,
+    applies_to_filter=("general", "prompt_template"),
+)
+QA_SEMANTIC_SYSTEM_PROMPT = _inject_catalog(
+    QA_SEMANTIC_SYSTEM_PROMPT,
+    applies_to_filter=("general", "qa_rule"),
+)
+
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -298,7 +376,10 @@ def build_researcher_user_prompt(
     turn_count: int,
     max_turns: int,
     observations_log: Sequence[dict[str, object]],
+    domain_hint: str | None = None,
+    reference_urls: Sequence[str] | None = None,
 ) -> str:
+    reference_urls_row = list(reference_urls) if reference_urls is not None else []
     return (
         "Research assignment:\n"
         f"- research_topic: {research_topic}\n"
@@ -308,12 +389,14 @@ def build_researcher_user_prompt(
         f"- queried_dimensions: {_json(list(queried_dimensions))}\n"
         f"- turn_count: {turn_count}\n"
         f"- max_turns: {max_turns}\n"
+        f"- domain_hint: {domain_hint}\n"
+        f"- reference_urls: {_json(reference_urls_row)}\n"
         f"- observations_log: {_json(list(observations_log)[-6:])}\n\n"
         "Action guidance:\n"
         "1) Prefer search_web -> fetch_url -> parse_page -> extract_structured for online collection.\n"
-        "2) Use lookup_offline_snapshot for pending dimensions when online sources are missing/unreliable.\n"
+        "2) Use load_skill when domain_hint implies specialized schema or source routing.\n"
         "3) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
-        "4) action_args.dimension must come from focus_dimensions for lookup_offline_snapshot.\n"
+        "4) action_args.dimension should come from focus_dimensions whenever possible.\n"
     )
 
 
@@ -324,6 +407,7 @@ def build_researcher_fallback_user_prompt(
     queried_dimensions: Sequence[str],
     turn_count: int,
     max_turns: int,
+    domain_hint: str | None = None,
 ) -> str:
     return (
         "Fallback researcher action request:\n"
@@ -332,7 +416,8 @@ def build_researcher_fallback_user_prompt(
         f"- queried_dimensions: {_json(list(queried_dimensions))}\n"
         f"- turn_count: {turn_count}\n"
         f"- max_turns: {max_turns}\n\n"
-        "Return one action with valid action_args. Prefer lookup_offline_snapshot on pending dimensions."
+        f"- domain_hint: {domain_hint}\n\n"
+        "Return one action with valid action_args. Prefer search_web/fetch_url/extract_structured or load_skill."
     )
 
 
@@ -369,12 +454,14 @@ def build_analyst_user_prompt(
     competitors: Sequence[str],
     focus_dimensions: Sequence[str],
     evidence_briefs: Sequence[dict[str, object]],
+    domain_hint: str | None = None,
 ) -> str:
     return (
         "Analysis context:\n"
         f"- user_query: {user_query}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- domain_hint: {domain_hint}\n"
         f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n\n"
         "Produce cross-competitor insights with explicit evidence_ids."
     )
@@ -436,11 +523,13 @@ def build_writer_user_prompt(
     analyst_insights: Sequence[dict[str, object]],
     risk_flags: Sequence[str],
     recommended_sections: Sequence[str],
+    domain_hint: str | None = None,
 ) -> str:
     return (
         "Writer context:\n"
         f"- user_query: {user_query}\n"
         f"- template_id: {template_id}\n"
+        f"- domain_hint: {domain_hint}\n"
         f"- requested_sections: {_json(list(requested_sections))}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n"

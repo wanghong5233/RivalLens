@@ -128,7 +128,7 @@ class CompetitorKnowledgeFragment(BaseModel):
 class CompetitorKnowledgeAggregate(BaseModel):
     schema_version: str = "schema_v0.2"
     run_id: str
-    industry_pack: str
+    domain_hint: str | None = None
     fragments: list[CompetitorKnowledgeFragment] = Field(default_factory=list)
     personas: list[Persona] = Field(default_factory=list)
     coverage_summary: dict[str, str] = Field(default_factory=dict)

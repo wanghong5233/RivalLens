@@ -63,7 +63,6 @@ def _llm_response(model_slot: str, content: dict[str, object]) -> LLMResponse:
 def _base_state() -> ResearcherSubState:
     return {
         "run_id": "run_test",
-        "industry_pack_id": "ai_coding_tools",
         "research_topic": "cursor pricing",
         "competitor_id": "comp_cursor",
         "focus_dimensions": ["pricing"],
@@ -79,6 +78,8 @@ def _base_state() -> ResearcherSubState:
         "llm_calls": [],
         "next_action": "tool_exec",
         "final_summary": "",
+        "domain_hint": None,
+        "reference_urls": [],
     }
 
 
@@ -93,8 +94,14 @@ async def test_researcher_subgraph_collects_evidence_from_observation(
                 _llm_response(
                     "research",
                     {
-                        "action": "lookup_offline_snapshot",
-                        "action_args": {"competitor_id": "comp_cursor", "dimension": "pricing"},
+                        "action": "extract_structured",
+                        "action_args": {
+                            "text": "Cursor starts at $20 per user/month.",
+                            "source_url": "https://cursor.com/pricing",
+                            "source_title": "Cursor Pricing",
+                            "dimension": "pricing",
+                            "competitor_id": "comp_cursor",
+                        },
                         "reasoning_summary": "collect pricing evidence",
                     },
                 ),
@@ -115,12 +122,11 @@ async def test_researcher_subgraph_collects_evidence_from_observation(
 
     class _FakeRegistry:
         async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
-            assert action == "lookup_offline_snapshot"
-            assert args["industry_pack_id"] == "ai_coding_tools"
+            assert action == "extract_structured"
             assert args["competitor_id"] == "comp_cursor"
             assert args["dimension"] == "pricing"
             return CollectorObservation(
-                channel="lookup_offline_snapshot",
+                channel="extract_structured",
                 args=args,
                 result=ToolObservationResult(
                     snippets=[

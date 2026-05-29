@@ -14,7 +14,8 @@ class Run(Base):
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_query: Mapped[str] = mapped_column(Text, nullable=False)
-    industry_pack: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    domain_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_urls: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     target_roles: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     competitors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)

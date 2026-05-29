@@ -15,7 +15,8 @@ export interface EvidenceDrawerProps {
 
 const SOURCE_TYPE_ICON: Record<string, string> = {
   pricing_page: "📄",
-  industry_pack_snapshot: "📦",
+  local_note: "📝",
+  unknown_source: "📦",
   g2_review: "⭐",
   reddit: "💬",
   hn_thread: "🟧",

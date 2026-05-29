@@ -118,7 +118,7 @@ LangGraph Supervisor Agent
 | 借鉴自 | 借什么 | 落到 RivalLens 哪里 |
 |---|---|---|
 | Klue Battlecard | 单竞品紧凑卡片 UI | `frontend/src/components/CompetitorCard.tsx` |
-| Crayon Leadership Report | 报告章节模板 | `industry_packs/ai_coding_tools/report_template.yaml` |
+| Crayon Leadership Report | 报告章节模板 | `backend/skills/prompt_template/competitive-brief-structure/SKILL.md` |
 | Crayon | confidence / importance 评分呈现 | Schema 的 `Conclusion.confidence` 字段 |
 
 ### 4.3 禁止动作
@@ -134,7 +134,7 @@ LangGraph Supervisor Agent
 
 | 模块 | 评分对齐 | 文档位置 |
 |---|---|---|
-| 竞品知识 Schema + 行业包扩展机制 | 35% 多 Agent 可信度 | `docs/3-schema-and-protocol.md` 第 2–3、7 节 |
+| 竞品知识 Schema + Skill Library 扩展机制 | 35% 多 Agent 可信度 | `docs/3-schema-and-protocol.md` 第 2–4、7 节 |
 | Evidence 与 Conclusion 多对多结论级溯源 | 35% 多 Agent 可信度 + 业务体验 20% | `docs/3-schema-and-protocol.md` 第 5 节 |
 | 结构化 QA rejection 协议 + 轻量规则 DSL | 35% "非伪闭环"杀手锏 | `docs/3-schema-and-protocol.md` 第 4、6 节 |
 | 数据脱敏架构 | 10% 合规 | `docs/2-architecture-decision.md` 第 7 节 |

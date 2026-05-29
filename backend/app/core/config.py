@@ -57,7 +57,6 @@ class Settings(BaseSettings):
     COLLECTOR_FETCH_TIMEOUT_S: int = 10
     COLLECTOR_ROBOTS_CACHE_TTL_S: int = 3600
     WRITER_READ_CONCLUSIONS_FROM_TABLE: bool = True
-    INDUSTRY_PACKS_DIR: str = "/app/industry_packs"
 
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
 

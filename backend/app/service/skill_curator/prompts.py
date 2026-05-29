@@ -78,7 +78,8 @@ Rules:
 def build_skill_curator_qa_rule_user_prompt(
     *,
     run_id: str,
-    industry_pack: str,
+    domain_hint: str | None,
+    inferred_tags: Sequence[str],
     qa_rejection_count: int,
     qa_reasons: Sequence[str],
     supervisor_decisions: Sequence[dict[str, object]],
@@ -88,7 +89,8 @@ def build_skill_curator_qa_rule_user_prompt(
     return (
         "Curator context (qa_rule):\n"
         f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
+        f"- domain_hint: {domain_hint}\n"
+        f"- inferred_tags: {_json(list(inferred_tags))}\n"
         f"- qa_rejection_count: {qa_rejection_count}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
         f"- supervisor_decisions_tail: {_json(list(supervisor_decisions)[-8:])}\n"
@@ -100,7 +102,8 @@ def build_skill_curator_qa_rule_user_prompt(
 def build_skill_curator_qa_rule_fallback_user_prompt(
     *,
     run_id: str,
-    industry_pack: str,
+    domain_hint: str | None,
+    inferred_tags: Sequence[str],
     qa_rejection_count: int,
     evidence_source_counts: dict[str, int],
     total_evidence_count: int,
@@ -108,7 +111,8 @@ def build_skill_curator_qa_rule_fallback_user_prompt(
     return (
         "Fallback curator request (qa_rule):\n"
         f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
+        f"- domain_hint: {domain_hint}\n"
+        f"- inferred_tags: {_json(list(inferred_tags))}\n"
         f"- qa_rejection_count: {qa_rejection_count}\n"
         f"- evidence_source_counts: {_json(evidence_source_counts)}\n"
         f"- total_evidence_count: {total_evidence_count}\n"
@@ -119,7 +123,8 @@ def build_skill_curator_qa_rule_fallback_user_prompt(
 def build_skill_curator_prompt_template_user_prompt(
     *,
     run_id: str,
-    industry_pack: str,
+    domain_hint: str | None,
+    inferred_tags: Sequence[str],
     qa_rejection_count: int,
     qa_reasons: Sequence[str],
     supervisor_decisions: Sequence[dict[str, object]],
@@ -129,7 +134,8 @@ def build_skill_curator_prompt_template_user_prompt(
     return (
         "Curator context (prompt_template):\n"
         f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
+        f"- domain_hint: {domain_hint}\n"
+        f"- inferred_tags: {_json(list(inferred_tags))}\n"
         f"- qa_rejection_count: {qa_rejection_count}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
         f"- supervisor_decisions_tail: {_json(list(supervisor_decisions)[-8:])}\n"
@@ -141,7 +147,8 @@ def build_skill_curator_prompt_template_user_prompt(
 def build_skill_curator_prompt_template_fallback_user_prompt(
     *,
     run_id: str,
-    industry_pack: str,
+    domain_hint: str | None,
+    inferred_tags: Sequence[str],
     qa_rejection_count: int,
     evidence_source_counts: dict[str, int],
     total_evidence_count: int,
@@ -149,7 +156,8 @@ def build_skill_curator_prompt_template_fallback_user_prompt(
     return (
         "Fallback curator request (prompt_template):\n"
         f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
+        f"- domain_hint: {domain_hint}\n"
+        f"- inferred_tags: {_json(list(inferred_tags))}\n"
         f"- qa_rejection_count: {qa_rejection_count}\n"
         f"- evidence_source_counts: {_json(evidence_source_counts)}\n"
         f"- total_evidence_count: {total_evidence_count}\n"
@@ -160,7 +168,8 @@ def build_skill_curator_prompt_template_fallback_user_prompt(
 def build_skill_curator_source_routing_user_prompt(
     *,
     run_id: str,
-    industry_pack: str,
+    domain_hint: str | None,
+    inferred_tags: Sequence[str],
     qa_rejection_count: int,
     qa_reasons: Sequence[str],
     supervisor_decisions: Sequence[dict[str, object]],
@@ -170,7 +179,8 @@ def build_skill_curator_source_routing_user_prompt(
     return (
         "Curator context (source_routing):\n"
         f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
+        f"- domain_hint: {domain_hint}\n"
+        f"- inferred_tags: {_json(list(inferred_tags))}\n"
         f"- qa_rejection_count: {qa_rejection_count}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
         f"- supervisor_decisions_tail: {_json(list(supervisor_decisions)[-8:])}\n"
@@ -182,7 +192,8 @@ def build_skill_curator_source_routing_user_prompt(
 def build_skill_curator_source_routing_fallback_user_prompt(
     *,
     run_id: str,
-    industry_pack: str,
+    domain_hint: str | None,
+    inferred_tags: Sequence[str],
     qa_rejection_count: int,
     evidence_source_counts: dict[str, int],
     total_evidence_count: int,
@@ -190,7 +201,8 @@ def build_skill_curator_source_routing_fallback_user_prompt(
     return (
         "Fallback curator request (source_routing):\n"
         f"- run_id: {run_id}\n"
-        f"- industry_pack: {industry_pack}\n"
+        f"- domain_hint: {domain_hint}\n"
+        f"- inferred_tags: {_json(list(inferred_tags))}\n"
         f"- qa_rejection_count: {qa_rejection_count}\n"
         f"- evidence_source_counts: {_json(evidence_source_counts)}\n"
         f"- total_evidence_count: {total_evidence_count}\n"

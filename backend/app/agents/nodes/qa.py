@@ -13,10 +13,6 @@ from models.step import Step
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection
 from service.event_bus import RunEventType, emit_run_event
-from service.industry_pack.registry import (
-    IndustryPackNotFound,
-    get_industry_pack_registry,
-)
 from service.qa.engine import MAX_QA_REJECTIONS, evaluate_report
 from utils.log_node import log_node
 from utils.logger import get_logger
@@ -29,13 +25,6 @@ def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
     if session_factory is not None:
         return session_factory
     return get_session_factory()
-
-
-def _resolve_industry_pack_for_curator(state: AgentState) -> str:
-    industry_pack = state.get("industry_pack")
-    if isinstance(industry_pack, str) and industry_pack.strip():
-        return industry_pack
-    return "generic"
 
 
 async def _load_review_targets(
@@ -125,12 +114,6 @@ async def qa_node(state: AgentState) -> AgentState:
     pending_review_target_step_id = state.get("pending_review_target_step_id")
     qa_rejection_count = int(state.get("qa_rejection_count", 0))
     qa_step_id = make_id("step_")
-    industry_pack = _resolve_industry_pack_for_curator(state)
-    promoted_qa_rules = []
-    try:
-        promoted_qa_rules = get_industry_pack_registry().get(industry_pack).promoted_qa_rules
-    except IndustryPackNotFound:
-        promoted_qa_rules = []
 
     writer_step, report = await _load_review_targets(
         session_factory=session_factory,
@@ -144,12 +127,13 @@ async def qa_node(state: AgentState) -> AgentState:
         reviewer_step_id=qa_step_id,
         session_factory=session_factory,
         qa_rejection_count=qa_rejection_count,
-        promoted_qa_rules=promoted_qa_rules,
     )
-    promoted_qa_rule_ids = [
-        item.rule_id
-        for item in promoted_qa_rules
-    ]
+    promoted_qa_rule_ids_raw = semantic_metadata.get("promoted_qa_rule_ids", [])
+    promoted_qa_rule_ids = (
+        [item for item in promoted_qa_rule_ids_raw if isinstance(item, str)]
+        if isinstance(promoted_qa_rule_ids_raw, list)
+        else []
+    )
     enforced_count_raw = semantic_metadata.get("promoted_qa_enforced_count", 0)
     parse_error_count_raw = semantic_metadata.get("promoted_qa_parse_error_count", 0)
     blocked_rule_ids_raw = semantic_metadata.get("promoted_qa_blocked_rule_ids", [])

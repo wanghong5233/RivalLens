@@ -15,7 +15,8 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
         json={
             "user_query": "metrics endpoint smoke",
             "competitors": ["comp_cursor", "comp_windsurf"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
+            "reference_urls": ["https://cursor.com/pricing"],
             "target_roles": ["pm"],
         },
     )
@@ -55,14 +56,15 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         with engine.begin() as connection:
             connection.execute(
                 text(
-                    "INSERT INTO runs (run_id, user_query, industry_pack, status, target_roles, competitors) "
-                    "VALUES (:run_id, :user_query, :industry_pack, :status, "
+                    "INSERT INTO runs (run_id, user_query, domain_hint, reference_urls, status, target_roles, competitors) "
+                    "VALUES (:run_id, :user_query, :domain_hint, CAST(:reference_urls AS jsonb), :status, "
                     "CAST(:target_roles AS jsonb), CAST(:competitors AS jsonb))"
                 ),
                 {
                     "run_id": run_id,
                     "user_query": "empty run for metrics boundary",
-                    "industry_pack": "",
+                    "domain_hint": "",
+                    "reference_urls": json.dumps([]),
                     "status": "running",
                     "target_roles": json.dumps(["pm"]),
                     "competitors": json.dumps(["comp_cursor"]),

@@ -70,14 +70,15 @@ async def _load_evidence_source_stats(
 def _build_error_candidate(
     *,
     run_id: str,
-    industry_pack: str,
+    tags: list[str],
     error_message: str,
 ) -> SkillCandidateRecord:
     trimmed_error = error_message[:2000]
     return SkillCandidateRecord(
         id=make_id("skill_"),
         candidate_type="qa_rule",
-        industry_pack=industry_pack,
+        applies_to="qa_rule",
+        tags=tags,
         payload={
             "error_type": "skill_curator_generation_failed",
             "run_id": run_id,
@@ -94,12 +95,13 @@ def _to_record(
     *,
     candidate: SkillCuratorCandidate,
     run_id: str,
-    industry_pack: str,
+    default_tags: list[str],
 ) -> SkillCandidateRecord:
     return SkillCandidateRecord(
         id=make_id("skill_"),
         candidate_type=candidate.candidate_type,
-        industry_pack=industry_pack,
+        applies_to=candidate.candidate_type,
+        tags=candidate.tags or default_tags,
         payload=candidate.payload,
         rationale=candidate.rationale,
         supporting_run_ids=candidate.supporting_run_ids or [run_id],
@@ -109,14 +111,23 @@ def _to_record(
     )
 
 
+def _default_tags(domain_hint: str | None) -> list[str]:
+    if domain_hint is None:
+        return ["generic", "curator_node"]
+    normalized = domain_hint.strip().lower().replace(" ", "_")
+    if not normalized:
+        return ["generic", "curator_node"]
+    return [normalized[:48], "curator_node"]
+
+
 @log_node("skill_curator")
 async def skill_curator_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
     if run_id is None:
         raise RuntimeError("AgentState.run_id is required for skill_curator node.")
-    industry_pack = state.get("industry_pack")
-    if industry_pack is None:
-        raise RuntimeError("AgentState.industry_pack is required for skill_curator node.")
+    domain_hint_raw = state.get("domain_hint")
+    domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
+    default_tags = _default_tags(domain_hint)
 
     session_factory = _require_session_factory(state)
     step_id = make_id("step_")
@@ -129,7 +140,7 @@ async def skill_curator_node(state: AgentState) -> AgentState:
     )
     generation_result = await generate_skill_candidates(
         run_id=run_id,
-        industry_pack=industry_pack,
+        domain_hint=domain_hint,
         qa_rejection_count=qa_rejection_count,
         qa_reasons=qa_reasons,
         supervisor_decisions=decisions,
@@ -188,7 +199,7 @@ async def skill_curator_node(state: AgentState) -> AgentState:
                 session.add(
                     _build_error_candidate(
                         run_id=run_id,
-                        industry_pack=industry_pack,
+                        tags=default_tags,
                         error_message=llm_call_error_trimmed,
                     )
                 )
@@ -198,7 +209,7 @@ async def skill_curator_node(state: AgentState) -> AgentState:
                         _to_record(
                             candidate=candidate,
                             run_id=run_id,
-                            industry_pack=industry_pack,
+                            default_tags=default_tags,
                         )
                     )
             step.status = "completed"

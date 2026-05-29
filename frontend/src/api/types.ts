@@ -3,7 +3,8 @@ export type RunStatus = "running" | "completed" | "degraded" | "failed" | string
 export interface RunCreateRequest {
   user_query: string;
   competitors: string[];
-  industry_pack?: string | null;
+  domain_hint?: string | null;
+  reference_urls?: string[] | null;
   target_roles: string[];
 }
 
@@ -20,7 +21,8 @@ export interface RunResetRequest {
 export interface RunDetailResponse {
   run_id: string;
   user_query: string;
-  industry_pack: string | null;
+  domain_hint: string | null;
+  reference_urls: string[];
   status: RunStatus;
   target_roles: string[];
   competitors: string[];
@@ -32,7 +34,7 @@ export interface RunDetailResponse {
 export interface RunListItemResponse {
   run_id: string;
   user_query: string;
-  industry_pack: string | null;
+  domain_hint: string | null;
   status: RunStatus;
   started_at: string;
   finished_at: string | null;
@@ -129,23 +131,19 @@ export interface EvidenceListItemResponse {
   created_at: string;
 }
 
-export interface IndustryPackCompetitorResponse {
+export interface CompetitorSeedResponse {
   id: string;
   display_name: string;
-}
-
-export interface IndustryPackListItemResponse {
-  id: string;
-  display_name: string;
-  description: string;
-  competitors: IndustryPackCompetitorResponse[];
-  research_dimensions: string[];
+  aliases: string[];
+  official_url: string | null;
+  category: string | null;
 }
 
 export interface SkillCandidateResponse {
   id: string;
   candidate_type: string;
-  industry_pack: string;
+  applies_to: string;
+  tags: string[];
   payload: Record<string, unknown>;
   rationale: string;
   supporting_run_ids: string[];
@@ -178,6 +176,6 @@ export interface SkillCandidateReviewResponse {
 
 export interface PromotedArtifactResponse {
   path: string;
-  action: "created" | "appended" | string;
+  action: "created" | "updated" | string;
   entry_id: string;
 }

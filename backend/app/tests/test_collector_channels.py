@@ -93,7 +93,6 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
 
     observation = await channel.invoke(
         url="https://cursor.com/pricing",
-        industry_pack_id="ai_coding_tools",
         competitor_id="comp_cursor",
     )
     assert limiter.host == "cursor.com"

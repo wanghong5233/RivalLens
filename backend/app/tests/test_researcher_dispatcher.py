@@ -63,7 +63,6 @@ def _llm_response(model_slot: str, content: dict[str, object]) -> LLMResponse:
 def _base_state() -> ResearcherSubState:
     return {
         "run_id": "run_test_dispatcher",
-        "industry_pack_id": "ai_coding_tools",
         "research_topic": "cursor pricing",
         "competitor_id": "comp_cursor",
         "focus_dimensions": ["pricing"],
@@ -79,6 +78,8 @@ def _base_state() -> ResearcherSubState:
         "llm_calls": [],
         "next_action": "tool_exec",
         "final_summary": "",
+        "domain_hint": None,
+        "reference_urls": [],
     }
 
 

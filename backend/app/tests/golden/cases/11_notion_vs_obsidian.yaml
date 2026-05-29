@@ -7,7 +7,10 @@ input:
   competitors:
     - Notion
     - Obsidian
-  industry_pack: null
+  domain_hint: null
+  reference_urls:
+    - https://www.notion.so/product
+    - https://obsidian.md
   target_roles:
     - pm
 assertions:

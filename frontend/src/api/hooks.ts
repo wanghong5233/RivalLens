@@ -8,8 +8,8 @@ import {
 import { apiClient } from "@/api/client";
 import { getRunFallbackPollMs, useRunEvents } from "@/api/sse";
 import type {
+  CompetitorSeedResponse,
   EvidenceListItemResponse,
-  IndustryPackListItemResponse,
   RunCreateRequest,
   RunCreateResponse,
   RunDetailResponse,
@@ -43,7 +43,8 @@ export interface QueryBehaviorOptions {
 
 export interface SkillCandidatesQuery {
   status?: string;
-  industry_pack?: string;
+  applies_to?: string;
+  tag?: string;
   limit?: number;
   offset?: number;
 }
@@ -94,8 +95,8 @@ async function fetchRunEvidence(
   return data;
 }
 
-async function fetchIndustryPacks(): Promise<IndustryPackListItemResponse[]> {
-  const { data } = await apiClient.get<IndustryPackListItemResponse[]>("/api/industry-packs");
+async function fetchCompetitorSeeds(): Promise<CompetitorSeedResponse[]> {
+  const { data } = await apiClient.get<CompetitorSeedResponse[]>("/api/demo-fixtures/competitors");
   return data;
 }
 
@@ -120,7 +121,8 @@ async function fetchSkillCandidates(
   const { data } = await apiClient.get<SkillCandidateListResponse>("/api/skill-candidates", {
     params: {
       status: query.status,
-      industry_pack: query.industry_pack,
+      applies_to: query.applies_to,
+      tag: query.tag,
       limit: query.limit ?? 20,
       offset: query.offset ?? 0,
     },
@@ -216,10 +218,10 @@ export function useRunEvidence(
   });
 }
 
-export function useIndustryPacks(): UseQueryResult<IndustryPackListItemResponse[], Error> {
+export function useCompetitorSeeds(): UseQueryResult<CompetitorSeedResponse[], Error> {
   return useQuery({
-    queryKey: ["industry-packs"],
-    queryFn: fetchIndustryPacks,
+    queryKey: ["competitor-seeds"],
+    queryFn: fetchCompetitorSeeds,
   });
 }
 
@@ -253,7 +255,8 @@ export function useSkillCandidates(
     queryKey: [
       "skill-candidates",
       query.status ?? "",
-      query.industry_pack ?? "",
+      query.applies_to ?? "",
+      query.tag ?? "",
       query.limit ?? 20,
       query.offset ?? 0,
     ],

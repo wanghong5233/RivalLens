@@ -111,11 +111,21 @@ async def _load_curator_context(run_id: str) -> dict[str, Any]:
     }
 
 
-def _to_error_candidate(*, run_id: str, industry_pack: str, error: str) -> SkillCandidateRecord:
+def _default_tags(domain_hint: str | None) -> list[str]:
+    if domain_hint is None:
+        return ["generic", "curator_error"]
+    normalized = domain_hint.strip().lower().replace(" ", "_")
+    if not normalized:
+        return ["generic", "curator_error"]
+    return [normalized[:48], "curator_error"]
+
+
+def _to_error_candidate(*, run_id: str, tags: list[str], error: str) -> SkillCandidateRecord:
     return SkillCandidateRecord(
         id=make_id("skill_"),
         candidate_type="qa_rule",
-        industry_pack=industry_pack,
+        applies_to="qa_rule",
+        tags=tags,
         payload={"error_type": "skill_curator_task_failed", "run_id": run_id},
         rationale="Skill curator async task failed to generate candidates.",
         supporting_run_ids=[run_id],
@@ -125,28 +135,28 @@ def _to_error_candidate(*, run_id: str, industry_pack: str, error: str) -> Skill
     )
 
 
-def _normalize_industry_pack_id(industry_pack: str) -> str:
-    normalized = industry_pack.strip()
-    if normalized:
-        return normalized
-    return "generic"
+def _normalize_domain_hint(domain_hint: str | None) -> str | None:
+    if domain_hint is None:
+        return None
+    normalized = domain_hint.strip()
+    return normalized or None
 
 
-async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
-    normalized_pack = _normalize_industry_pack_id(industry_pack)
+async def run_skill_curator_for_run(*, run_id: str, domain_hint: str | None) -> None:
+    normalized_domain_hint = _normalize_domain_hint(domain_hint)
     await emit_run_event(
         run_id=run_id,
         event_type=RunEventType.CURATOR_START,
-        payload={"industry_pack": normalized_pack},
+        payload={"domain_hint": normalized_domain_hint},
     )
     with bind_run(run_id):
-        log.info("skill_curator.task.start", industry_pack=normalized_pack)
+        log.info("skill_curator.task.start", domain_hint=normalized_domain_hint)
         session_factory = get_session_factory()
         try:
             context = await _load_curator_context(run_id)
             generation_result = await generate_skill_candidates(
                 run_id=run_id,
-                industry_pack=normalized_pack,
+                domain_hint=normalized_domain_hint,
                 qa_rejection_count=int(context["qa_rejection_count"]),
                 qa_reasons=list(context["qa_reasons"]),
                 supervisor_decisions=list(context["supervisor_decisions"]),
@@ -194,7 +204,7 @@ async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
                     session.add(
                         _to_error_candidate(
                             run_id=run_id,
-                            industry_pack=normalized_pack,
+                            tags=_default_tags(normalized_domain_hint),
                             error=llm_error_trimmed,
                         )
                     )
@@ -204,7 +214,8 @@ async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
                             SkillCandidateRecord(
                                 id=make_id("skill_"),
                                 candidate_type=candidate.candidate_type,
-                                industry_pack=normalized_pack,
+                                applies_to=candidate.candidate_type,
+                                tags=candidate.tags or _default_tags(normalized_domain_hint),
                                 payload=candidate.payload,
                                 rationale=candidate.rationale,
                                 supporting_run_ids=candidate.supporting_run_ids or [run_id],
@@ -225,7 +236,7 @@ async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
                 session.add(
                     _to_error_candidate(
                         run_id=run_id,
-                        industry_pack=normalized_pack,
+                        tags=_default_tags(normalized_domain_hint),
                         error=str(exc),
                     )
                 )

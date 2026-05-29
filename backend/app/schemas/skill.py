@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 class SkillCandidate(BaseModel):
     id: str
     candidate_type: Literal["qa_rule", "prompt_template", "source_routing"]
-    industry_pack: str
+    applies_to: Literal["qa_rule", "prompt_template", "source_routing"]
+    tags: list[str] = Field(default_factory=list)
     payload: dict[str, Any]
     rationale: str
     supporting_run_ids: list[str] = Field(default_factory=list)

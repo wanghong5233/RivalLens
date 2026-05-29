@@ -12,7 +12,8 @@ import { formatDateTime } from "@/lib/format";
 
 export function SkillStagingPage(): JSX.Element {
   const [statusFilter, setStatusFilter] = useState("staging");
-  const [industryPackFilter, setIndustryPackFilter] = useState("ai_coding_tools");
+  const [appliesToFilter, setAppliesToFilter] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
   const [reviewedBy, setReviewedBy] = useState("owner_wh");
   const [pendingCandidateId, setPendingCandidateId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -20,7 +21,8 @@ export function SkillStagingPage(): JSX.Element {
 
   const candidatesQuery = useSkillCandidates({
     status: statusFilter === "all" ? undefined : statusFilter,
-    industry_pack: industryPackFilter.trim() || undefined,
+    applies_to: appliesToFilter.trim() || undefined,
+    tag: tagFilter.trim() || undefined,
     limit: 50,
     offset: 0,
   });
@@ -69,7 +71,7 @@ export function SkillStagingPage(): JSX.Element {
       </header>
 
       <Card>
-        <CardContent className="grid gap-3 pt-6 md:grid-cols-3">
+        <CardContent className="grid gap-3 pt-6 md:grid-cols-4">
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">状态筛选</span>
             <select
@@ -84,11 +86,19 @@ export function SkillStagingPage(): JSX.Element {
             </select>
           </label>
           <label className="space-y-1 text-sm">
-            <span className="text-muted-foreground">industry_pack</span>
+            <span className="text-muted-foreground">applies_to</span>
             <Input
-              onChange={(event) => setIndustryPackFilter(event.target.value)}
-              placeholder="ai_coding_tools"
-              value={industryPackFilter}
+              onChange={(event) => setAppliesToFilter(event.target.value)}
+              placeholder="qa_rule / prompt_template / source_routing"
+              value={appliesToFilter}
+            />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="text-muted-foreground">tag</span>
+            <Input
+              onChange={(event) => setTagFilter(event.target.value)}
+              placeholder="generic"
+              value={tagFilter}
             />
           </label>
           <label className="space-y-1 text-sm">
@@ -111,7 +121,7 @@ export function SkillStagingPage(): JSX.Element {
       {promotionHints.length > 0 ? (
         <Card className="border-primary/40">
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">已写回 industry_packs</CardTitle>
+            <CardTitle className="text-base">已写回 backend/skills</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-xs">
             <p className="text-muted-foreground">
@@ -174,7 +184,10 @@ export function SkillStagingPage(): JSX.Element {
                 <CardContent className="space-y-3 text-sm">
                   <p className="text-muted-foreground">{candidate.rationale}</p>
                   <p className="text-xs text-muted-foreground">
-                    pack: {candidate.industry_pack} · created: {formatDateTime(candidate.created_at)}
+                    applies_to: {candidate.applies_to} · created: {formatDateTime(candidate.created_at)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    tags: {candidate.tags.join(", ") || "none"}
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {candidate.supporting_run_ids.map((runId) => (

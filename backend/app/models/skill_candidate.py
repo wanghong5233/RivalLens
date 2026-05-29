@@ -20,7 +20,8 @@ class SkillCandidateRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     candidate_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    industry_pack: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    applies_to: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tags: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict)
     rationale: Mapped[str] = mapped_column(Text, nullable=False)
     supporting_run_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)

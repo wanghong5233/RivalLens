@@ -6,7 +6,8 @@ input:
   user_query: "semantic-force-degraded-demo"
   competitors:
     - comp_cursor
-  industry_pack: ai_coding_tools
+  domain_hint: ai coding assistants
+  reference_urls: []
   target_roles:
     - pm
 assertions:

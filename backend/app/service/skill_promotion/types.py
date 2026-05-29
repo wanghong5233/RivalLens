@@ -5,5 +5,5 @@ from typing import Literal, TypedDict
 
 class PromotedArtifact(TypedDict):
     path: str
-    action: Literal["created", "appended"]
+    action: Literal["created", "updated"]
     entry_id: str

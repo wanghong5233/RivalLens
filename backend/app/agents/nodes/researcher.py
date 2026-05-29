@@ -15,8 +15,6 @@ from schemas.contracts import validate_dimension, validate_source_type
 from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
 from service.event_bus import RunEventType, emit_run_event
-from service.industry_pack.models import IndustryPack
-from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 from utils.log_node import log_node
 
 
@@ -27,33 +25,15 @@ def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
     return get_session_factory()
 
 
-def _require_industry_pack_id(state: AgentState) -> str:
-    industry_pack_id = state.get("industry_pack")
-    if isinstance(industry_pack_id, str) and industry_pack_id.strip():
-        return industry_pack_id
-    return ""
-
-
-def _resolve_pack(industry_pack_id: str) -> IndustryPack:
-    pack_registry = get_industry_pack_registry()
-    try:
-        return pack_registry.get(industry_pack_id)
-    except IndustryPackNotFound as exc:
-        raise RuntimeError(f"industry_pack={industry_pack_id} is not loaded.") from exc
-
-
 def _resolve_focus_dimensions(
     *,
     request: ConductResearch,
-    pack: IndustryPack,
 ) -> list[FocusDimension]:
-    focus_dimensions = list(request.focus_dimensions or pack.default_focus_dimensions)
+    focus_dimensions = list(request.focus_dimensions or [])
     if not focus_dimensions:
         focus_dimensions = ["feature", "pricing", "user_feedback"]
     if not focus_dimensions:
-        raise RuntimeError(
-            f"No focus_dimensions available for industry_pack={pack.id} and competitor_id={request.competitor_id}."
-        )
+        raise RuntimeError(f"No focus_dimensions available for competitor_id={request.competitor_id}.")
     normalized: list[str] = []
     seen: set[str] = set()
     for dimension in focus_dimensions:
@@ -68,13 +48,13 @@ def _resolve_focus_dimensions(
 def _build_initial_substate(
     *,
     run_id: str,
-    pack_id: str | None,
     request: ConductResearch,
     focus_dimensions: list[FocusDimension],
+    domain_hint: str | None,
+    reference_urls: list[str],
 ) -> ResearcherSubState:
     return {
         "run_id": run_id,
-        "industry_pack_id": pack_id,
         "research_topic": request.research_topic,
         "competitor_id": request.competitor_id,
         "focus_dimensions": list(focus_dimensions),
@@ -84,12 +64,15 @@ def _build_initial_substate(
         "turn_count": 0,
         "max_turns": request.max_iterations or MAX_REACT_TURNS,
         "compression_count": 0,
+        "last_compressed_turn": -1,
         "messages": [],
         "observations_log": [],
         "evidence_drafts": [],
         "llm_calls": [],
         "next_action": "tool_exec",
         "final_summary": "",
+        "domain_hint": domain_hint,
+        "reference_urls": reference_urls,
     }
 
 
@@ -98,14 +81,97 @@ def _build_evidence_rows(
     run_id: str,
     step_id: str,
     collected_at: datetime,
-    pack_id: str,
     focus_dimensions: list[FocusDimension],
     evidence_drafts: list[dict[str, object]],
+    observations_log: list[dict[str, object]],
+    default_competitor_id: str,
 ) -> tuple[list[EvidenceRecord], list[str]]:
+    allowed_dimensions = set(focus_dimensions)
+    effective_drafts = list(evidence_drafts)
+    if True:
+        seen_keys: set[tuple[str, str, str, str]] = set()
+        for observation in observations_log:
+            if not isinstance(observation, dict):
+                continue
+            result_raw = observation.get("result")
+            if not isinstance(result_raw, dict):
+                continue
+            snippets_raw = result_raw.get("snippets")
+            if not isinstance(snippets_raw, list):
+                continue
+            args_raw = observation.get("args")
+            args = args_raw if isinstance(args_raw, dict) else {}
+            fallback_dimension_raw = args.get("dimension")
+            fallback_dimension = (
+                fallback_dimension_raw
+                if isinstance(fallback_dimension_raw, str) and fallback_dimension_raw.strip()
+                else "feature"
+            )
+            fallback_competitor_raw = args.get("competitor_id")
+            fallback_competitor = (
+                fallback_competitor_raw
+                if isinstance(fallback_competitor_raw, str) and fallback_competitor_raw.strip()
+                else default_competitor_id
+            )
+            for snippet_raw in snippets_raw:
+                if not isinstance(snippet_raw, dict):
+                    continue
+                quote_raw = snippet_raw.get("quote")
+                if not isinstance(quote_raw, str) or not quote_raw.strip():
+                    continue
+                metadata_raw = snippet_raw.get("metadata", {})
+                metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+                dimension_raw = snippet_raw.get("dimension")
+                if not isinstance(dimension_raw, str):
+                    dimension_candidate_raw = metadata.get("dimension")
+                    if isinstance(dimension_candidate_raw, str):
+                        dimension_raw = dimension_candidate_raw
+                    else:
+                        dimension_raw = fallback_dimension
+                try:
+                    normalized_dimension = validate_dimension(dimension_raw)
+                except ValueError:
+                    normalized_dimension = "feature"
+                if normalized_dimension not in allowed_dimensions:
+                    if focus_dimensions:
+                        normalized_dimension = focus_dimensions[0]
+                    else:
+                        continue
+                competitor_id_raw = snippet_raw.get("competitor_id")
+                if not isinstance(competitor_id_raw, str):
+                    competitor_candidate_raw = metadata.get("competitor_id")
+                    if isinstance(competitor_candidate_raw, str):
+                        competitor_id_raw = competitor_candidate_raw
+                    else:
+                        competitor_id_raw = fallback_competitor
+                source_url_raw = snippet_raw.get("source_url")
+                source_url = source_url_raw if isinstance(source_url_raw, str) else ""
+                dedupe_key = (
+                    competitor_id_raw,
+                    normalized_dimension,
+                    quote_raw[:80],
+                    source_url,
+                )
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+                effective_drafts.append(
+                    {
+                        "dimension": normalized_dimension,
+                        "competitor_id": competitor_id_raw,
+                        "quote": quote_raw,
+                        "sanitized_text": snippet_raw.get("sanitized_text", quote_raw),
+                        "source_type": snippet_raw.get("source_type", "article"),
+                        "source_url": snippet_raw.get("source_url"),
+                        "source_title": snippet_raw.get("source_title"),
+                        "desensitized": snippet_raw.get("desensitized", True),
+                        "metadata": metadata,
+                    }
+                )
+
     evidence_rows: list[EvidenceRecord] = []
     evidence_ids: list[str] = []
-    allowed_dimensions = set(focus_dimensions)
-    for draft in evidence_drafts:
+    for draft in effective_drafts:
         if not isinstance(draft, dict):
             continue
         dimension_raw = draft.get("dimension")
@@ -120,7 +186,10 @@ def _build_evidence_rows(
             continue
         normalized_dimension = validate_dimension(dimension_raw)
         if normalized_dimension not in allowed_dimensions:
-            continue
+            if focus_dimensions:
+                normalized_dimension = focus_dimensions[0]
+            else:
+                continue
         if isinstance(source_type_raw, str):
             try:
                 normalized_source_type = validate_source_type(source_type_raw)
@@ -147,7 +216,6 @@ def _build_evidence_rows(
                     **metadata,
                     "dimension": normalized_dimension,
                     "competitor_id": competitor_id_raw,
-                    "pack_id": pack_id,
                 },
                 collected_by=step_id,
                 collected_at=collected_at,
@@ -202,34 +270,25 @@ async def researcher_node(state: AgentState) -> AgentState:
     if run_id is None:
         raise RuntimeError("AgentState.run_id is required for researcher node.")
 
-    industry_pack_id = _require_industry_pack_id(state)
     session_factory = _require_session_factory(state)
     request = ConductResearch.model_validate(state.get("pending_tool_args", {}))
-    pack: IndustryPack | None
-    if industry_pack_id:
-        pack = _resolve_pack(industry_pack_id)
-        competitor = pack.competitors.get(request.competitor_id)
-        if competitor is None:
-            raise RuntimeError(
-                f"competitor_id={request.competitor_id} not found in industry_pack={pack.id}."
-            )
-    else:
-        pack = IndustryPack(
-            id="generic",
-            name="Generic",
-            version="0",
-            default_focus_dimensions=[],
-            description="Generic pack-free execution mode.",
-            competitors={},
-        )
+    domain_hint_raw = state.get("domain_hint")
+    domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
+    reference_urls_raw = state.get("reference_urls", [])
+    reference_urls = (
+        [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
+        if isinstance(reference_urls_raw, list)
+        else []
+    )
 
-    focus_dimensions = _resolve_focus_dimensions(request=request, pack=pack)
+    focus_dimensions = _resolve_focus_dimensions(request=request)
     subgraph = get_researcher_subgraph()
     subgraph_input = _build_initial_substate(
         run_id=run_id,
-        pack_id=(industry_pack_id if industry_pack_id else None),
         request=request,
         focus_dimensions=focus_dimensions,
+        domain_hint=domain_hint,
+        reference_urls=reference_urls,
     )
     subgraph_output = await subgraph.ainvoke(subgraph_input)
 
@@ -248,9 +307,10 @@ async def researcher_node(state: AgentState) -> AgentState:
         run_id=run_id,
         step_id=step_id,
         collected_at=collected_at,
-        pack_id=pack.id,
         focus_dimensions=focus_dimensions,
         evidence_drafts=list(subgraph_output.get("evidence_drafts", [])),
+        observations_log=list(subgraph_output.get("observations_log", [])),
+        default_competitor_id=request.competitor_id,
     )
     llm_call_rows = _build_llm_call_rows(
         step_id=step_id,
@@ -258,7 +318,8 @@ async def researcher_node(state: AgentState) -> AgentState:
     )
     step_payload = {
         **request.model_dump(),
-        "pack_id": pack.id,
+        "domain_hint": domain_hint,
+        "reference_urls": reference_urls,
         "focus_dimensions": focus_dimensions,
         "evidence_ids": evidence_ids,
         "react_turn_count": int(subgraph_output.get("turn_count", 0)),

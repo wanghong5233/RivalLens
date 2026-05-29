@@ -1,0 +1,16 @@
+id: 12_load_skill_progressive_disclosure
+description: Researcher should invoke load_skill before structured extraction.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "progressive-disclosure-demo"
+  competitors:
+    - comp_cursor
+  domain_hint: progressive-disclosure-demo
+  reference_urls: []
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 0
+  must_include_collector_action: load_skill

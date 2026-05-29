@@ -103,7 +103,7 @@ export function HomePage(): JSX.Element {
               <CardContent className="space-y-1 text-sm text-muted-foreground">
                 <p className="font-mono text-xs text-foreground">{run.run_id}</p>
                 <p>
-                  pack: {run.industry_pack} · steps {run.step_count} · evidence {run.evidence_count}
+                  domain_hint: {run.domain_hint ?? "none"} · steps {run.step_count} · evidence {run.evidence_count}
                 </p>
                 <p>
                   started: {formatDateTime(run.started_at)} ({formatRelativeTime(run.started_at)})

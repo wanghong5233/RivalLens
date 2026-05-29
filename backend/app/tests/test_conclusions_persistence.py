@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import sys
 from uuid import uuid4
 
 import pytest
@@ -13,6 +14,11 @@ from models.evidence import EvidenceRecord
 from models.run import Run
 from models.step import Step
 from service.conclusion.persistence import load_conclusions_for_run, persist_conclusions_for_step
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="psycopg async engine is incompatible with Proactor loop on Windows CI.",
+)
 
 
 @pytest.mark.asyncio
@@ -28,7 +34,8 @@ async def test_conclusions_persistence_and_cascade() -> None:
             run = Run(
                 run_id=run_id,
                 user_query="conclusion persistence test",
-                industry_pack="ai_coding_tools",
+                domain_hint="ai_coding_tools",
+                reference_urls=[],
                 status="running",
                 target_roles=["pm"],
                 competitors=["comp_cursor", "comp_windsurf"],

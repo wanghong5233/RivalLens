@@ -1,30 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
-def build_skills_dir(*, pack_root: Path, pack_id: str) -> Path:
-    return pack_root / pack_id / "skills"
+_SEGMENT_PATTERN = re.compile(r"[^a-z0-9_\\-]+")
 
 
-def build_qa_rule_path(*, pack_root: Path, pack_id: str) -> Path:
-    return build_skills_dir(pack_root=pack_root, pack_id=pack_id) / "qa_rules_promoted.yaml"
+def _normalize_segment(raw: str, *, fallback: str) -> str:
+    normalized = _SEGMENT_PATTERN.sub("_", raw.strip().lower()).strip("_")
+    return normalized or fallback
 
 
-def build_source_routing_path(*, pack_root: Path, pack_id: str) -> Path:
-    return build_skills_dir(pack_root=pack_root, pack_id=pack_id) / "source_routing.yaml"
-
-
-def build_prompt_template_path(
-    *,
-    pack_root: Path,
-    pack_id: str,
-    template_name: str,
-    candidate_id: str,
-) -> Path:
-    filename = f"{template_name}__{candidate_id}.yaml"
-    return (
-        build_skills_dir(pack_root=pack_root, pack_id=pack_id)
-        / "prompt_templates"
-        / filename
-    )
+def build_skill_path(*, skills_root: Path, applies_to: str, skill_id: str) -> Path:
+    applies_to_segment = _normalize_segment(applies_to, fallback="general")
+    skill_segment = _normalize_segment(skill_id, fallback="skill")
+    return skills_root / applies_to_segment / skill_segment / "SKILL.md"

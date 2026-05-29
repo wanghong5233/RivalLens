@@ -3,7 +3,6 @@ import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import shutil
 import time
 from uuid import uuid4
 
@@ -25,6 +24,7 @@ from schemas.skill import SkillCandidate
 from schemas.supervisor import SupervisorDecision
 from service.event_bus import RunEvent, RunEventType
 from service.conclusion import persist_conclusions_for_step
+from service.skill_store import get_skill_store
 
 
 @pytest.fixture(autouse=True)
@@ -213,10 +213,10 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
                 text("SELECT COUNT(*) AS count FROM evidence WHERE run_id = :run_id"),
                 {"run_id": run_id},
             ).scalar_one()
-            industry_pack_evidence_count = connection.execute(
+            structured_evidence_count = connection.execute(
                 text(
                     "SELECT COUNT(*) AS count FROM evidence "
-                    "WHERE run_id = :run_id AND source_type = 'industry_pack_snapshot'"
+                    "WHERE run_id = :run_id AND source_type = 'article'"
                 ),
                 {"run_id": run_id},
             ).scalar_one()
@@ -231,12 +231,11 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
                 text(
                     "SELECT COUNT(*) AS count FROM evidence "
                     "WHERE run_id = :run_id AND "
-                    "(sanitized_text ILIKE :cursor_phrase OR sanitized_text ILIKE :windsurf_phrase)"
+                    "sanitized_text ILIKE :deterministic_phrase"
                 ),
                 {
                     "run_id": run_id,
-                    "cursor_phrase": "%repository-level context indexing%",
-                    "windsurf_phrase": "%inline AI pair programming%",
+                    "deterministic_phrase": "%signal extracted in deterministic test mode%",
                 },
             ).scalar_one()
             latest_report_row = connection.execute(
@@ -249,15 +248,14 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
             skill_candidate_count = connection.execute(
                 text(
                     "SELECT COUNT(*) AS count FROM skill_candidates "
-                    "WHERE industry_pack = 'ai_coding_tools' "
-                    "AND supporting_run_ids @> CAST(:supporting_run_ids AS jsonb)"
+                    "WHERE supporting_run_ids @> CAST(:supporting_run_ids AS jsonb)"
                 ),
                 {"supporting_run_ids": f'["{run_id}"]'},
             ).scalar_one()
             skill_candidate_staging_count = connection.execute(
                 text(
                     "SELECT COUNT(*) AS count FROM skill_candidates "
-                    "WHERE industry_pack = 'ai_coding_tools' AND status = 'staging' "
+                    "WHERE status = 'staging' "
                     "AND supporting_run_ids @> CAST(:supporting_run_ids AS jsonb)"
                 ),
                 {"supporting_run_ids": f'["{run_id}"]'},
@@ -329,7 +327,7 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
         "checkpoint_row_count": int(checkpoint_row_count),
         "checkpoint_writes_row_count": int(checkpoint_writes_row_count),
         "evidence_count": int(evidence_count),
-        "industry_pack_evidence_count": int(industry_pack_evidence_count),
+        "structured_evidence_count": int(structured_evidence_count),
         "evidence_url_count": int(evidence_url_count),
         "expected_phrase_count": int(expected_phrase_count),
         "report_sections_content_count": int(report_sections_content_count),
@@ -392,7 +390,8 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
         json={
             "user_query": "compare cursor and windsurf for founders",
             "competitors": ["comp_cursor", "comp_windsurf"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
+            "reference_urls": ["https://cursor.com/pricing"],
             "target_roles": ["pm", "founder"],
         },
     )
@@ -426,7 +425,7 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["checkpoint_row_count"] >= 1
     assert snapshot["checkpoint_writes_row_count"] >= 1
     assert snapshot["evidence_count"] >= 1
-    assert snapshot["industry_pack_evidence_count"] >= 1 or snapshot["evidence_url_count"] >= 1
+    assert snapshot["structured_evidence_count"] >= 1 or snapshot["evidence_url_count"] >= 1
     assert snapshot["evidence_url_count"] >= 1
     assert snapshot["expected_phrase_count"] >= 1
     assert snapshot["report_sections_content_count"] >= 3
@@ -443,7 +442,8 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
         json={
             "user_query": "what is the pricing differentiation",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
+            "reference_urls": ["https://cursor.com/pricing"],
             "target_roles": ["pm"],
         },
     )
@@ -455,7 +455,8 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     detail_payload = detail_response.json()
     assert detail_payload["run_id"] == run_id
     assert detail_payload["status"] == "completed"
-    assert detail_payload["industry_pack"] == "ai_coding_tools"
+    assert detail_payload["domain_hint"] == "ai coding assistants"
+    assert detail_payload["reference_urls"] == ["https://cursor.com/pricing"]
     assert detail_payload["user_query"] == "what is the pricing differentiation"
 
     trace_response = test_client.get(f"/api/runs/{run_id}/trace")
@@ -488,7 +489,7 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
         json={
             "user_query": "integration endpoints check",
             "competitors": ["comp_cursor", "comp_windsurf"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -533,12 +534,12 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
 
     source_type_filtered_response = test_client.get(
         f"/api/runs/{run_id}/evidence",
-        params={"source_type": "industry_pack_snapshot"},
+        params={"source_type": "article"},
     )
     assert source_type_filtered_response.status_code == 200
     source_type_filtered_payload = source_type_filtered_response.json()
     if source_type_filtered_payload:
-        assert all(item["source_type"] == "industry_pack_snapshot" for item in source_type_filtered_payload)
+        assert all(item["source_type"] == "article" for item in source_type_filtered_payload)
 
     conclusions_response = test_client.get(f"/api/runs/{run_id}/conclusions")
     assert conclusions_response.status_code == 200
@@ -549,16 +550,13 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
     assert all(item["run_id"] == run_id for item in conclusions_payload["items"])
     assert all(isinstance(item["evidence_ids"], list) and item["evidence_ids"] for item in conclusions_payload["items"])
 
-    packs_response = test_client.get("/api/industry-packs")
+    packs_response = test_client.get("/api/demo-fixtures/competitors")
     assert packs_response.status_code == 200
     packs_payload = packs_response.json()
     assert isinstance(packs_payload, list)
-    target_pack = next((item for item in packs_payload if item["id"] == "ai_coding_tools"), None)
-    assert target_pack is not None
-    assert target_pack["display_name"] == "AI Coding Tools"
-    competitor_ids = {item["id"] for item in target_pack["competitors"]}
-    assert {"comp_cursor", "comp_windsurf"}.issubset(competitor_ids)
-    assert set(target_pack["research_dimensions"]) >= {"feature", "pricing", "user_feedback"}
+    competitor_ids = {item["id"] for item in packs_payload if isinstance(item, dict) and isinstance(item.get("id"), str)}
+    if competitor_ids:
+        assert {"comp_cursor", "comp_windsurf"}.issubset(competitor_ids)
 
 
 @pytest.mark.asyncio
@@ -580,7 +578,7 @@ async def test_writer_report_evidence_refs_stable_with_table_toggle(
         EvidenceRecord(
             id=f"ev_toggle_{uuid4().hex[:8]}",
             run_id=run_id,
-            source_type="industry_pack_snapshot",
+            source_type="article",
             source_url="https://example.com/cursor-feature",
             source_title="cursor feature",
             quote="Cursor feature evidence.",
@@ -593,7 +591,7 @@ async def test_writer_report_evidence_refs_stable_with_table_toggle(
         EvidenceRecord(
             id=f"ev_toggle_{uuid4().hex[:8]}",
             run_id=run_id,
-            source_type="industry_pack_snapshot",
+            source_type="article",
             source_url="https://example.com/windsurf-pricing",
             source_title="windsurf pricing",
             quote="Windsurf pricing evidence.",
@@ -630,7 +628,8 @@ async def test_writer_report_evidence_refs_stable_with_table_toggle(
                 Run(
                     run_id=run_id,
                     user_query="writer conclusions toggle comparison",
-                    industry_pack="ai_coding_tools",
+                    domain_hint="ai coding assistants",
+                    reference_urls=[],
                     status="running",
                     target_roles=["pm"],
                     competitors=["comp_cursor", "comp_windsurf"],
@@ -705,7 +704,7 @@ def test_resume_run_continues_from_checkpoint(test_client: TestClient) -> None:
         json={
             "user_query": "resume from checkpoint",
             "competitors": ["comp_cursor", "comp_windsurf"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -749,7 +748,7 @@ def test_reset_to_writer_replays_report(test_client: TestClient) -> None:
         json={
             "user_query": "reset writer replay",
             "competitors": ["comp_cursor", "comp_windsurf"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -809,7 +808,7 @@ def test_reset_to_analyst_regenerates_conclusions(test_client: TestClient) -> No
         json={
             "user_query": "reset analyst replay",
             "competitors": ["comp_cursor", "comp_windsurf"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -869,7 +868,7 @@ def test_reset_rejects_running_run(test_client: TestClient) -> None:
         json={
             "user_query": "reset running run reject",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -903,7 +902,7 @@ def test_reset_rejects_invalid_stage(test_client: TestClient) -> None:
         json={
             "user_query": "reset invalid stage reject",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -923,7 +922,7 @@ def test_run_events_sse_endpoint_exposes_stream_content_type(test_client: TestCl
         json={
             "user_query": "sse endpoint smoke",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -1028,7 +1027,8 @@ def test_schema_models_instantiation() -> None:
     candidate = SkillCandidate(
         id="skill_001",
         candidate_type="qa_rule",
-        industry_pack="ai_coding_tools",
+        applies_to="qa_rule",
+        tags=["ai_coding", "pricing"],
         payload={"rule_yaml": "id: rule_x"},
         rationale="Recurring QA failure pattern",
         supporting_run_ids=["run_demo_001"],
@@ -1038,19 +1038,23 @@ def test_schema_models_instantiation() -> None:
     assert candidate.status == "staging"
 
 
-def test_create_run_rejects_missing_industry_pack(test_client: TestClient) -> None:
+def test_create_run_accepts_reference_urls_as_runtime_hints(test_client: TestClient) -> None:
     response = test_client.post(
         "/api/runs",
         json={
-            "user_query": "invalid industry pack",
+            "user_query": "reference url normalization",
             "competitors": ["comp_cursor"],
-            "industry_pack": "not_existing_pack",
+            "reference_urls": ["  not-a-valid-url  ", "", "not-a-valid-url"],
             "target_roles": ["pm"],
         },
     )
     payload = response.json()
-    assert response.status_code == 400
-    assert payload["error_code"] == "INDUSTRY_PACK_NOT_FOUND"
+    assert response.status_code == 200
+    run_id = payload["run_id"]
+    detail_response = test_client.get(f"/api/runs/{run_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["reference_urls"] == ["not-a-valid-url"]
 
 
 def test_create_run_accepts_free_competitor_names(test_client: TestClient) -> None:
@@ -1059,7 +1063,7 @@ def test_create_run_accepts_free_competitor_names(test_client: TestClient) -> No
         json={
             "user_query": "free competitor mode",
             "competitors": ["Notion", "Obsidian"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "knowledge management and notes",
             "target_roles": ["pm"],
         },
     )
@@ -1074,7 +1078,7 @@ def test_run_without_pack_with_arbitrary_competitors(test_client: TestClient) ->
         json={
             "user_query": "比较两款笔记产品的功能/定价/用户口碑",
             "competitors": ["Notion", "Obsidian"],
-            "industry_pack": None,
+            "domain_hint": None,
             "target_roles": ["pm"],
         },
     )
@@ -1099,16 +1103,38 @@ def test_run_without_pack_with_arbitrary_competitors(test_client: TestClient) ->
     assert final_qa_outcome == "approved"
 
 
-def _prepare_promoted_pack_copy(
+def _prepare_temp_skills_root(
     *,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> Path:
-    source_root = Path(settings.INDUSTRY_PACKS_DIR).resolve()
-    copied_root = tmp_path / "industry_packs"
-    shutil.copytree(source_root, copied_root)
-    monkeypatch.setattr(settings, "INDUSTRY_PACKS_DIR", str(copied_root))
-    return copied_root
+    skills_root = (tmp_path / "skills").resolve()
+    skills_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("router.skill_rt._skills_root", lambda: skills_root)
+    store = get_skill_store()
+    monkeypatch.setattr(store, "skills_dir", skills_root)
+    store.scan()
+    return skills_root
+
+
+def _write_qa_rule_skill(*, skills_root: Path, skill_id: str, rule_yaml: str) -> None:
+    skill_dir = skills_root / "qa_rule" / skill_id
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    content = (
+        "---\n"
+        f"name: {skill_id}\n"
+        "description: Smoke-test promoted qa rule.\n"
+        "version: 1.0.0\n"
+        "tags:\n"
+        "  - promoted\n"
+        "applies_to: qa_rule\n"
+        "---\n\n"
+        "## Rule DSL\n\n"
+        "```yaml\n"
+        f"{rule_yaml.strip()}\n"
+        "```\n"
+    )
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
 
 def _latest_staging_skill_candidate_id_for_run(run_id: str, *, timeout_seconds: float = 5.0) -> str:
@@ -1205,16 +1231,13 @@ def test_promoted_qa_rule_visible_in_next_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    copied_pack_root = _prepare_promoted_pack_copy(monkeypatch=monkeypatch, tmp_path=tmp_path)
-    from service.industry_pack.registry import get_industry_pack_registry
-
-    get_industry_pack_registry().load_all(copied_pack_root)
+    _prepare_temp_skills_root(monkeypatch=monkeypatch, tmp_path=tmp_path)
     first_run = test_client.post(
         "/api/runs",
         json={
             "user_query": "generate candidate for promotion smoke",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -1231,13 +1254,13 @@ def test_promoted_qa_rule_visible_in_next_run(
     promoted_artifacts = approve_payload.get("promoted_artifacts", [])
     assert isinstance(promoted_artifacts, list) and promoted_artifacts
 
-    get_industry_pack_registry().load_all(copied_pack_root)
+    get_skill_store().scan()
     second_run = test_client.post(
         "/api/runs",
         json={
             "user_query": "verify promoted qa rules visibility",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -1256,39 +1279,28 @@ def test_promoted_qa_rule_blocks_report_with_enforced_yaml(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    copied_pack_root = _prepare_promoted_pack_copy(monkeypatch=monkeypatch, tmp_path=tmp_path)
-    promoted_yaml_path = copied_pack_root / "ai_coding_tools" / "skills" / "qa_rules_promoted.yaml"
-    promoted_yaml_path.parent.mkdir(parents=True, exist_ok=True)
-    promoted_yaml_path.write_text(
-        (
-            "- rule_id: rule_pricing_requires_recent_source\n"
-            "  rule_yaml: |\n"
-            "    id: rule_pricing_requires_recent_source\n"
-            "    require:\n"
-            "      has_evidence_with:\n"
-            "        source_type_in: [pricing_page]\n"
-            "        collected_within_days: 30\n"
-            "    severity: blocking\n"
-            "    reject_to: writer\n"
-            "    message: \"Pricing section must cite recent pricing evidence.\"\n"
-            "  candidate_id: skill_manual_promoted\n"
-            "  approved_by: owner_wh\n"
-            "  approved_at: '2026-05-27T16:54:08.244952+00:00'\n"
-            "  supporting_run_ids:\n"
-            "  - run_manual_promoted\n"
+    skills_root = _prepare_temp_skills_root(monkeypatch=monkeypatch, tmp_path=tmp_path)
+    _write_qa_rule_skill(
+        skills_root=skills_root,
+        skill_id="rule_pricing_requires_recent_source",
+        rule_yaml=(
+            "id: rule_pricing_requires_recent_source\n"
+            "require:\n"
+            "  has_evidence_with:\n"
+            "    source_type_in: [pricing_page]\n"
+            "    collected_within_days: 30\n"
+            "severity: blocking\n"
+            "reject_to: writer\n"
+            "message: \"Pricing section must cite recent pricing evidence.\""
         ),
-        encoding="utf-8",
     )
-
-    from service.industry_pack.registry import get_industry_pack_registry
-
-    get_industry_pack_registry().load_all(copied_pack_root)
+    get_skill_store().scan()
     run_response = test_client.post(
         "/api/runs",
         json={
             "user_query": "verify promoted qa rule enforce mode",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )
@@ -1316,38 +1328,28 @@ def test_promoted_qa_rule_blocks_then_writer_redo_passes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    copied_pack_root = _prepare_promoted_pack_copy(monkeypatch=monkeypatch, tmp_path=tmp_path)
-    promoted_yaml_path = copied_pack_root / "ai_coding_tools" / "skills" / "qa_rules_promoted.yaml"
-    promoted_yaml_path.parent.mkdir(parents=True, exist_ok=True)
-    promoted_yaml_path.write_text(
-        (
-            "- rule_id: rule_pricing_retry_demo\n"
-            "  rule_yaml: |\n"
-            "    id: rule_pricing_retry_demo\n"
-            "    require:\n"
-            "      has_evidence_with:\n"
-            "        source_type_in: [pricing_page]\n"
-            "        collected_within_days: 1\n"
-            "    severity: blocking\n"
-            "    reject_to: writer\n"
-            "    message: \"Writer must include recent pricing source.\"\n"
-            "  candidate_id: skill_retry_demo\n"
-            "  approved_by: owner_wh\n"
-            "  approved_at: '2026-05-27T16:54:08.244952+00:00'\n"
-            "  supporting_run_ids:\n"
-            "  - run_retry_demo\n"
+    skills_root = _prepare_temp_skills_root(monkeypatch=monkeypatch, tmp_path=tmp_path)
+    _write_qa_rule_skill(
+        skills_root=skills_root,
+        skill_id="rule_pricing_retry_demo",
+        rule_yaml=(
+            "id: rule_pricing_retry_demo\n"
+            "require:\n"
+            "  has_evidence_with:\n"
+            "    source_type_in: [pricing_page]\n"
+            "    collected_within_days: 1\n"
+            "severity: blocking\n"
+            "reject_to: writer\n"
+            "message: \"Writer must include recent pricing source.\""
         ),
-        encoding="utf-8",
     )
-    from service.industry_pack.registry import get_industry_pack_registry
-
-    get_industry_pack_registry().load_all(copied_pack_root)
+    get_skill_store().scan()
     run_response = test_client.post(
         "/api/runs",
         json={
             "user_query": "promoted retry-demo source gate",
             "competitors": ["comp_cursor"],
-            "industry_pack": "ai_coding_tools",
+            "domain_hint": "ai coding assistants",
             "target_roles": ["pm"],
         },
     )

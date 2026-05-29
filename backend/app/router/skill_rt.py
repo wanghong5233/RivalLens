@@ -7,7 +7,6 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from core.config import settings
 from db.engine import get_session_factory
 from exceptions.base import APIException
 from models.skill_candidate import SkillCandidateRecord
@@ -24,7 +23,8 @@ log = get_logger("router.skill_rt")
 class SkillCandidateResponse(BaseModel):
     id: str
     candidate_type: str
-    industry_pack: str
+    applies_to: str
+    tags: list[str]
     payload: dict[str, object]
     rationale: str
     supporting_run_ids: list[str]
@@ -71,7 +71,8 @@ def _to_item(record: SkillCandidateRecord) -> SkillCandidateResponse:
     return SkillCandidateResponse(
         id=record.id,
         candidate_type=record.candidate_type,
-        industry_pack=record.industry_pack,
+        applies_to=record.applies_to,
+        tags=list(record.tags),
         payload=record.payload,
         rationale=record.rationale,
         supporting_run_ids=list(record.supporting_run_ids),
@@ -84,19 +85,26 @@ def _to_item(record: SkillCandidateRecord) -> SkillCandidateResponse:
     )
 
 
+def _skills_root() -> Path:
+    return Path(__file__).resolve().parents[2] / "skills"
+
+
 @router.get("/api/skill-candidates", response_model=SkillCandidateListResponse)
 async def list_skill_candidates(
     status: str | None = Query(default=None),
-    industry_pack: str | None = Query(default=None),
+    applies_to: str | None = Query(default=None),
+    tag: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> SkillCandidateListResponse:
     normalized_status = status.strip() if isinstance(status, str) else None
-    normalized_pack = industry_pack.strip() if isinstance(industry_pack, str) else None
+    normalized_applies_to = applies_to.strip() if isinstance(applies_to, str) else None
+    normalized_tag = tag.strip() if isinstance(tag, str) else None
     log.info(
         "api.skill.list.start",
         status=normalized_status,
-        industry_pack=normalized_pack,
+        applies_to=normalized_applies_to,
+        tag=normalized_tag,
         limit=limit,
         offset=offset,
     )
@@ -108,9 +116,12 @@ async def list_skill_candidates(
         if normalized_status:
             list_query = list_query.where(SkillCandidateRecord.status == normalized_status)
             total_query = total_query.where(SkillCandidateRecord.status == normalized_status)
-        if normalized_pack:
-            list_query = list_query.where(SkillCandidateRecord.industry_pack == normalized_pack)
-            total_query = total_query.where(SkillCandidateRecord.industry_pack == normalized_pack)
+        if normalized_applies_to:
+            list_query = list_query.where(SkillCandidateRecord.applies_to == normalized_applies_to)
+            total_query = total_query.where(SkillCandidateRecord.applies_to == normalized_applies_to)
+        if normalized_tag:
+            list_query = list_query.where(SkillCandidateRecord.tags.contains([normalized_tag]))
+            total_query = total_query.where(SkillCandidateRecord.tags.contains([normalized_tag]))
 
         list_query = list_query.order_by(SkillCandidateRecord.created_at.desc()).limit(limit).offset(offset)
         rows = (await session.execute(list_query)).scalars().all()
@@ -154,7 +165,7 @@ async def approve_skill_candidate(
         try:
             promoted_artifact_rows = promote_approved_candidate(
                 record=record,
-                pack_root=Path(settings.INDUSTRY_PACKS_DIR),
+                skills_root=_skills_root(),
                 reviewed_by=payload.reviewed_by,
                 reviewed_at=reviewed_at,
             )

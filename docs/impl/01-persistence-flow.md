@@ -22,7 +22,7 @@ sequenceDiagram
   participant SN as supervisor_node
   participant DB as PostgreSQL
 
-  FE->>RT: payload(competitors, industry_pack, target_roles)
+  FE->>RT: payload(competitors, domain_hint, reference_urls, target_roles)
   RT->>DB: INSERT runs(status=running)
   RT->>LG: ainvoke(state{run_id, session_factory})
   LG->>SN: invoke
@@ -116,7 +116,8 @@ erDiagram
   }
   SKILL_CANDIDATES {
     string id PK
-    string industry_pack
+    string applies_to
+    jsonb tags
     string candidate_type
     jsonb payload
     jsonb supporting_run_ids

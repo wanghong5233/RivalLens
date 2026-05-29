@@ -7,7 +7,8 @@ input:
   competitors:
     - comp_cursor
     - comp_windsurf
-  industry_pack: ai_coding_tools
+  domain_hint: ai coding assistants
+  reference_urls: []
   target_roles:
     - founder
 assertions:

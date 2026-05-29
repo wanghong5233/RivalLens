@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from typing import Literal
 from uuid import uuid4
 
@@ -11,7 +13,6 @@ from models.evidence import EvidenceRecord
 from models.report import Report
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection, RetryPolicy
-from service.industry_pack.models import PromotedQARule
 from service.llm import (
     QA_SEMANTIC_ALLOWED_REJECT_TO,
     QA_SEMANTIC_SYSTEM_PROMPT,
@@ -22,6 +23,7 @@ from service.llm.client import get_llm_client
 from service.llm.response import LLMResponse
 from service.qa.promoted_rules import evaluate_promoted_rule_yaml
 from service.qa.rules import RuleResult, evaluate_fast_path_rules
+from service.skill_store import get_skill_store
 from utils.logger import get_logger
 
 MAX_QA_REJECTIONS = 3
@@ -42,6 +44,14 @@ _PROMOTED_RULE_REQUIRED_FIELDS = [
     "reports.content_json.sections[].evidence_refs",
     "reports.content_json.sections[].content_markdown",
 ]
+_RULE_YAML_BLOCK_PATTERN = re.compile(r"```yaml\s*(?P<rule_yaml>.*?)```", re.DOTALL | re.IGNORECASE)
+_RULE_ID_PATTERN = re.compile(r"^\s*id:\s*(?P<rule_id>[a-z0-9_:-]+)\s*$", re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class PromotedQARulePayload:
+    rule_id: str
+    rule_yaml: str
 
 
 def _now_iso() -> str:
@@ -141,6 +151,42 @@ def _build_evidence_briefs(evidence_items: list[EvidenceRecord]) -> list[dict[st
     return briefs
 
 
+def _extract_rule_yaml_from_skill_content(content: str) -> str | None:
+    matched = _RULE_YAML_BLOCK_PATTERN.search(content)
+    if matched is None:
+        stripped = content.strip()
+        return stripped if stripped else None
+    rule_yaml = matched.group("rule_yaml").strip()
+    return rule_yaml or None
+
+
+def _extract_rule_id(rule_yaml: str, *, fallback_id: str) -> str:
+    for line in rule_yaml.splitlines():
+        matched = _RULE_ID_PATTERN.match(line)
+        if matched is not None:
+            return matched.group("rule_id")
+    return fallback_id
+
+
+def _load_promoted_qa_rules_from_skill_store() -> list[PromotedQARulePayload]:
+    store = get_skill_store()
+    promoted_rules: list[PromotedQARulePayload] = []
+    for skill_name in store.list_by_applies_to("qa_rule"):
+        parsed = store.load(skill_name)
+        if parsed is None:
+            continue
+        rule_yaml = _extract_rule_yaml_from_skill_content(parsed.content)
+        if rule_yaml is None:
+            continue
+        promoted_rules.append(
+            PromotedQARulePayload(
+                rule_id=_extract_rule_id(rule_yaml, fallback_id=skill_name),
+                rule_yaml=rule_yaml,
+            )
+        )
+    return promoted_rules
+
+
 def _normalize_semantic_content(
     content: dict[str, object],
 ) -> dict[str, object] | None:
@@ -198,7 +244,7 @@ def _semantic_rule_result(semantic_output: dict[str, object]) -> RuleResult:
 
 def _build_promoted_rule_results(
     *,
-    promoted_qa_rules: list[PromotedQARule],
+    promoted_qa_rules: list[PromotedQARulePayload],
     content_json: dict[str, object],
     evidence_items: list[EvidenceRecord],
     now: datetime | None = None,
@@ -249,9 +295,9 @@ async def evaluate_report(
     reviewer_step_id: str,
     session_factory: async_sessionmaker[AsyncSession],
     qa_rejection_count: int,
-    promoted_qa_rules: list[PromotedQARule] | None = None,
+    promoted_qa_rules: list[PromotedQARulePayload] | None = None,
 ) -> tuple[Approval | Rejection, LLMResponse | None, dict[str, object]]:
-    promoted_rules = promoted_qa_rules or []
+    promoted_rules = promoted_qa_rules or _load_promoted_qa_rules_from_skill_store()
     promoted_rule_ids = [item.rule_id for item in promoted_rules]
     async with session_factory() as session:
         report = await session.get(Report, report_id)
@@ -299,6 +345,9 @@ async def evaluate_report(
         evidence_items=evidence_items,
     )
     rule_results.extend(promoted_rule_results)
+    has_blocking_failures_pre_semantic = any(
+        (not item.passed and item.severity == "blocking") for item in rule_results
+    )
     failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
     log.info(
         "qa.fast_path",
@@ -336,6 +385,38 @@ async def evaluate_report(
     semantic_audit_passed = False
     if semantic_output is not None:
         semantic_mode = "applied"
+        semantic_reject_to_raw = semantic_output.get("reject_to")
+        semantic_audit_passed_raw = semantic_output.get("semantic_audit_passed")
+        if (
+            semantic_audit_passed_raw is False
+            and semantic_reject_to_raw in {"researcher", "analyst"}
+            and len(evidence_items) >= 3
+        ):
+            # When evidence is already sufficient, route rewrite to writer first to avoid costly
+            # re-research loops that rarely improve report grounding quality.
+            semantic_output = {
+                **semantic_output,
+                "reject_to": "writer",
+            }
+        if (
+            semantic_audit_passed_raw is False
+            and semantic_reject_to_raw in {"researcher", "analyst", "writer"}
+            and qa_rejection_count >= 1
+            and len(evidence_items) >= 12
+            and not has_blocking_failures_pre_semantic
+        ):
+            # If deterministic QA already passed and semantic retry still bounces between
+            # analyst/researcher, stop the loop and accept with warning-level metadata.
+            semantic_output = {
+                **semantic_output,
+                "semantic_audit_passed": True,
+                "severity": "warning",
+                "reject_to": "writer",
+                "finding": (
+                    "Semantic audit remained unstable after retry; accepted because "
+                    "deterministic QA passed and evidence coverage is sufficient."
+                ),
+            }
         semantic_rule = _semantic_rule_result(semantic_output)
         rule_results.append(semantic_rule)
         semantic_audit_passed = bool(semantic_output["semantic_audit_passed"])

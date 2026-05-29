@@ -11,7 +11,7 @@
 本切片不做：
 
 - Curator 真异步化 worker（仍为同步节点）；
-- `approved` 候选自动写回 `industry_packs/*/skills/` 落盘生效；
+- `approved` 候选自动写回 `backend/skills/*/SKILL.md` 落盘生效；
 - 评审亮点 UI（Battlecard 卡片网格 / Voice / Compare / DAG Run View）。
 
 ## 2. 编排改动（QA -> Curator -> END）
@@ -44,7 +44,7 @@
 
 新增 `backend/app/router/skill_rt.py` 并挂载到 `app_main`：
 
-- `GET /api/skill-candidates?status=&industry_pack=&limit=&offset=`
+- `GET /api/skill-candidates?status=&applies_to=&tag=&limit=&offset=`
   - 返回分页候选列表；
 - `POST /api/skill-candidates/{candidate_id}/approve`
   - 仅允许 `staging -> approved`；
@@ -65,7 +65,7 @@
 - 新增页面：`frontend/src/pages/SkillStagingPage.tsx`
 - 路由：`/skills/staging`
 - 能力：
-  - 按 `status/industry_pack` 过滤；
+  - 按 `status/applies_to/tag` 过滤；
   - 展示候选详情、支撑 run 链接、payload；
   - 执行 approve/reject。
 
@@ -109,4 +109,4 @@ flowchart LR
 仍待后续版本完成：
 
 - Curator 真异步化（减少主流程 wall-clock）；
-- `approved` 候选写回 `industry_packs` 生效池并输出可审计 diff。
+- `approved` 候选写回 `backend/skills` 生效池并输出可审计 diff。

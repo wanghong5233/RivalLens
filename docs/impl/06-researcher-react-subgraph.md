@@ -28,7 +28,7 @@ flowchart LR
   - 解析 `action/action_args`
   - 非法输出走 fallback：优先补齐 `pending_dimensions`，否则 finalize
 - `tool_exec`
-  - 执行 `pack_lookup(industry_pack_id, competitor_id, dimension)`
+  - 执行 `search_web/fetch_url/parse_page/extract_structured/load_skill/read_skill_file`
   - 仅从 observation.snippets 累积 `evidence_drafts`
   - 更新 `pending_dimensions/queried_dimensions`
 - `compress`

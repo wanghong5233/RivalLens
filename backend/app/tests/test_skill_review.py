@@ -27,13 +27,14 @@ def _insert_staging_candidate(*, run_id: str, candidate_id: str) -> None:
             connection.execute(
                 text(
                     "INSERT INTO skill_candidates "
-                    "(id, candidate_type, industry_pack, payload, rationale, supporting_run_ids, confidence, status, error) "
-                    "VALUES (:id, :candidate_type, :industry_pack, CAST(:payload AS jsonb), :rationale, CAST(:supporting_run_ids AS jsonb), :confidence, :status, :error)"
+                    "(id, candidate_type, applies_to, tags, payload, rationale, supporting_run_ids, confidence, status, error) "
+                    "VALUES (:id, :candidate_type, :applies_to, CAST(:tags AS jsonb), CAST(:payload AS jsonb), :rationale, CAST(:supporting_run_ids AS jsonb), :confidence, :status, :error)"
                 ),
                 {
                     "id": candidate_id,
                     "candidate_type": "qa_rule",
-                    "industry_pack": "ai_coding_tools",
+                    "applies_to": "qa_rule",
+                    "tags": json.dumps(["pricing", "quality"], ensure_ascii=False),
                     "payload": payload_json,
                     "rationale": "skill review route test",
                     "supporting_run_ids": supporting_run_ids,
@@ -65,14 +66,15 @@ def test_list_skill_candidates(test_client: TestClient) -> None:
     try:
         response = test_client.get(
             "/api/skill-candidates",
-            params={"status": "staging", "industry_pack": "ai_coding_tools", "limit": 20, "offset": 0},
+            params={"status": "staging", "applies_to": "qa_rule", "limit": 20, "offset": 0},
         )
         payload = response.json()
         assert response.status_code == 200
         assert payload["total"] >= 1
         listed = next((item for item in payload["items"] if item["id"] == candidate_id), None)
         assert listed is not None
-        assert listed["industry_pack"] == "ai_coding_tools"
+        assert listed["applies_to"] == "qa_rule"
+        assert "pricing" in listed["tags"]
         assert run_id in listed["supporting_run_ids"]
         assert listed["status"] == "staging"
     finally:
@@ -87,7 +89,7 @@ def test_approve_skill_candidate(
     run_id = make_id("run_")
     candidate_id = make_id("skill_")
     _insert_staging_candidate(run_id=run_id, candidate_id=candidate_id)
-    monkeypatch.setattr(settings, "INDUSTRY_PACKS_DIR", str(tmp_path))
+    monkeypatch.setattr("router.skill_rt._skills_root", lambda: tmp_path)
     try:
         approve_response = test_client.post(
             f"/api/skill-candidates/{candidate_id}/approve",
@@ -133,7 +135,7 @@ def test_approve_skill_candidate_rejects_non_staging(
     run_id = make_id("run_")
     candidate_id = make_id("skill_")
     _insert_staging_candidate(run_id=run_id, candidate_id=candidate_id)
-    monkeypatch.setattr(settings, "INDUSTRY_PACKS_DIR", str(tmp_path))
+    monkeypatch.setattr("router.skill_rt._skills_root", lambda: tmp_path)
     try:
         first_response = test_client.post(
             f"/api/skill-candidates/{candidate_id}/approve",

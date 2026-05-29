@@ -218,6 +218,22 @@ async def analyst_node(state: AgentState) -> AgentState:
         evidence_rows=evidence_rows,
         focus_dimensions=focus_dimensions,
     )
+    if not evidence_briefs and evidence_rows:
+        # If requested dimensions do not align with collected span labels, keep evidence instead of
+        # dropping to an empty analyst context, otherwise QA tends to reject in loops.
+        evidence_briefs = _build_evidence_briefs(
+            evidence_rows=evidence_rows,
+            focus_dimensions=[],
+        )
+        inferred_dimensions = sorted(
+            {
+                item["dimension"]
+                for item in evidence_briefs
+                if isinstance(item.get("dimension"), str) and item["dimension"] != "unknown"
+            }
+        )
+        if inferred_dimensions:
+            focus_dimensions = inferred_dimensions
     if not focus_dimensions:
         focus_dimensions = sorted(
             {

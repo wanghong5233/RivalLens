@@ -16,14 +16,16 @@ def test_golden_case_schema_parses_minimal_case() -> None:
             "input": {
                 "user_query": "test",
                 "competitors": ["comp_cursor"],
-                "industry_pack": "ai_coding_tools",
+                "domain_hint": "ai_coding_tools",
+                "reference_urls": ["https://example.com/pricing"],
                 "target_roles": ["pm"],
             },
             "assertions": {"final_qa_outcome": "approved"},
         }
     )
     assert case.id == "golden_case_schema_test"
-    assert case.input.industry_pack == "ai_coding_tools"
+    assert case.input.domain_hint == "ai_coding_tools"
+    assert case.input.reference_urls == ["https://example.com/pricing"]
     assert case.assertions.final_qa_outcome == "approved"
     assert case.setup.promoted_qa_rules == []
 
@@ -36,13 +38,14 @@ def test_golden_case_schema_accepts_null_pack() -> None:
             "input": {
                 "user_query": "generic note app comparison",
                 "competitors": ["Notion", "Obsidian"],
-                "industry_pack": None,
+                "domain_hint": None,
+                "reference_urls": [],
                 "target_roles": ["pm"],
             },
             "assertions": {"final_qa_outcome": "approved"},
         }
     )
-    assert case.input.industry_pack is None
+    assert case.input.domain_hint is None
 
 
 def test_dump_markdown_report_writes_file(tmp_path: Path) -> None:

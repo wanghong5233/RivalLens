@@ -28,7 +28,8 @@ def _route_after_supervisor(
         return "researcher"
 
     run_id = state.get("run_id")
-    industry_pack = state.get("industry_pack")
+    domain_hint = state.get("domain_hint")
+    reference_urls = state.get("reference_urls", [])
     if run_id is None:
         return "researcher"
 
@@ -41,7 +42,8 @@ def _route_after_supervisor(
                 "researcher",
                 {
                     "run_id": run_id,
-                    "industry_pack": industry_pack,
+                    "domain_hint": domain_hint,
+                    "reference_urls": reference_urls,
                     "pending_tool_args": topic,
                 },
             )

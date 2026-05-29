@@ -5,12 +5,14 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
+import yaml
 
 from db.engine import get_session_factory
 from exceptions.base import APIException
@@ -25,7 +27,6 @@ from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
-from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 from service.metrics import build_run_metrics_snapshot
 from service.skill_curator.tasks import run_skill_curator_for_run
 from utils.logger import bind_run, get_logger
@@ -48,16 +49,32 @@ RESET_STAGE_DECISION_TOOLS: dict[ResetToStage, tuple[str, ...]] = {
 class RunCreateRequest(BaseModel):
     user_query: str = "skeleton"
     competitors: list[str] = Field(default_factory=list)
-    industry_pack: str | None = None
+    domain_hint: str | None = None
+    reference_urls: list[str] | None = None
     target_roles: list[str] = Field(default_factory=list)
 
-    @field_validator("industry_pack")
+    @field_validator("domain_hint")
     @classmethod
-    def _normalize_industry_pack(cls, value: str | None) -> str | None:
+    def _normalize_domain_hint(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
         return normalized if normalized else None
+
+    @field_validator("reference_urls")
+    @classmethod
+    def _normalize_reference_urls(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            cleaned = item.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            normalized.append(cleaned)
+        return normalized
 
 
 class RunCreateResponse(BaseModel):
@@ -73,7 +90,8 @@ class RunResetRequest(BaseModel):
 class RunDetailResponse(BaseModel):
     run_id: str
     user_query: str
-    industry_pack: str | None
+    domain_hint: str | None
+    reference_urls: list[str]
     status: str
     target_roles: list[str]
     competitors: list[str]
@@ -85,7 +103,7 @@ class RunDetailResponse(BaseModel):
 class RunListItemResponse(BaseModel):
     run_id: str
     user_query: str
-    industry_pack: str | None
+    domain_hint: str | None
     status: str
     started_at: str
     finished_at: str | None
@@ -161,6 +179,14 @@ class EvidenceListItemResponse(BaseModel):
     metadata: dict[str, object] | None
     collected_at: str
     created_at: str
+
+
+class CompetitorSeedResponse(BaseModel):
+    id: str
+    display_name: str
+    aliases: list[str] = Field(default_factory=list)
+    official_url: str | None = None
+    category: str | None = None
 
 
 class RunMetricsResponse(BaseModel):
@@ -345,7 +371,8 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
     return RunDetailResponse(
         run_id=run.run_id,
         user_query=run.user_query,
-        industry_pack=run.industry_pack if run.industry_pack else None,
+        domain_hint=run.domain_hint if run.domain_hint else None,
+        reference_urls=list(run.reference_urls or []),
         status=run.status,
         target_roles=list(run.target_roles),
         competitors=list(run.competitors),
@@ -376,7 +403,31 @@ def _normalize_competitor_inputs(values: list[str]) -> list[str]:
     return normalized
 
 
-def _validate_pack_and_competitors(payload: RunCreateRequest) -> tuple[str | None, list[str]]:
+def _competitor_seed_file_path() -> Path:
+    return Path(__file__).resolve().parents[3] / "demo_fixtures" / "competitors_seed.yaml"
+
+
+def _load_competitor_seed_rows() -> list[dict[str, object]]:
+    path = _competitor_seed_file_path()
+    if not path.exists():
+        return []
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return []
+    if not isinstance(loaded, dict):
+        return []
+    competitors_raw = loaded.get("competitors")
+    if not isinstance(competitors_raw, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for item in competitors_raw:
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _validate_competitors(payload: RunCreateRequest) -> list[str]:
     normalized_competitors = _normalize_competitor_inputs(payload.competitors)
     if not normalized_competitors:
         raise APIException(
@@ -384,37 +435,7 @@ def _validate_pack_and_competitors(payload: RunCreateRequest) -> tuple[str | Non
             error_code="COMPETITORS_REQUIRED",
             message="competitors must contain at least one non-empty item.",
         )
-
-    pack_id_raw = payload.industry_pack.strip() if isinstance(payload.industry_pack, str) else ""
-    if not pack_id_raw:
-        return None, normalized_competitors
-
-    pack_registry = get_industry_pack_registry()
-    if not pack_registry.has(pack_id_raw):
-        raise APIException(
-            status_code=400,
-            error_code="INDUSTRY_PACK_NOT_FOUND",
-            message=f"industry_pack={pack_id_raw} is not loaded.",
-        )
-
-    try:
-        pack = pack_registry.get(pack_id_raw)
-    except IndustryPackNotFound as exc:
-        raise APIException(
-            status_code=400,
-            error_code="INDUSTRY_PACK_NOT_FOUND",
-            message=f"industry_pack={pack_id_raw} is not loaded.",
-        ) from exc
-
-    missing_competitors = [item for item in normalized_competitors if item not in pack.competitors]
-    if missing_competitors:
-        log.info(
-            "api.run.create.free_competitor_mode",
-            industry_pack=pack_id_raw,
-            missing_competitor_count=len(missing_competitors),
-        )
-        return None, normalized_competitors
-    return pack_id_raw, normalized_competitors
+    return normalized_competitors
 
 
 @router.get("/api/runs", response_model=RunListResponse)
@@ -464,7 +485,7 @@ async def list_runs(
             RunListItemResponse(
                 run_id=run.run_id,
                 user_query=run.user_query,
-                industry_pack=run.industry_pack if run.industry_pack else None,
+                domain_hint=run.domain_hint if run.domain_hint else None,
                 status=run.status,
                 started_at=run.started_at.isoformat(),
                 finished_at=_to_iso(run.finished_at),
@@ -482,15 +503,22 @@ async def list_runs(
     )
 
 
+@router.get("/api/demo-fixtures/competitors", response_model=list[CompetitorSeedResponse])
+async def list_competitor_seeds() -> list[CompetitorSeedResponse]:
+    return [CompetitorSeedResponse.model_validate(item) for item in _load_competitor_seed_rows()]
+
+
 @router.post("/api/runs", response_model=RunCreateResponse)
 async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateResponse:
-    run_pack_id, normalized_competitors = _validate_pack_and_competitors(payload)
+    normalized_competitors = _validate_competitors(payload)
+    normalized_reference_urls = list(payload.reference_urls or [])
     run_id = make_id("run_")
     session_factory = get_session_factory()
     with bind_run(run_id):
         log.info(
             "api.run.create.start",
-            industry_pack=run_pack_id,
+            domain_hint=payload.domain_hint,
+            reference_url_count=len(normalized_reference_urls),
             competitor_count=len(normalized_competitors),
             target_role_count=len(payload.target_roles),
         )
@@ -500,7 +528,8 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
                 Run(
                     run_id=run_id,
                     user_query=payload.user_query,
-                    industry_pack=run_pack_id or "",
+                    domain_hint=payload.domain_hint,
+                    reference_urls=normalized_reference_urls,
                     status="running",
                     target_roles=payload.target_roles,
                     competitors=normalized_competitors,
@@ -518,7 +547,8 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
         graph_state = await graph.ainvoke(
             {
                 "run_id": run_id,
-                "industry_pack": run_pack_id,
+                "domain_hint": payload.domain_hint,
+                "reference_urls": normalized_reference_urls,
                 "competitors": normalized_competitors,
                 "user_query": payload.user_query,
                 "researched_competitors": [],
@@ -554,7 +584,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             payload=_build_run_finish_payload(run_id=run_id, status=run.status),
         )
         task = asyncio.create_task(
-            run_skill_curator_for_run(run_id=run_id, industry_pack=run_pack_id or ""),
+            run_skill_curator_for_run(run_id=run_id, domain_hint=payload.domain_hint),
             name=f"skill_curator_{run_id}",
         )
         _register_background_task(request, task)
@@ -604,7 +634,7 @@ async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
                     error_code="RUN_NOT_FOUND",
                     message=f"run_id={run_id} should exist before resume update",
                 )
-            run_industry_pack = run.industry_pack
+            run_domain_hint = run.domain_hint
             run_status = str(graph_state.get("status", "completed"))
             run.status = run_status if run_status in {"completed", "degraded"} else "completed"
             run.finished_at = datetime.now(timezone.utc)
@@ -615,7 +645,7 @@ async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
             payload=_build_run_finish_payload(run_id=run_id, status=run.status),
         )
         task = asyncio.create_task(
-            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack or ""),
+            run_skill_curator_for_run(run_id=run_id, domain_hint=run_domain_hint),
             name=f"skill_curator_{run_id}",
         )
         _register_background_task(request, task)
@@ -647,7 +677,7 @@ async def reset_run(run_id: str, payload: RunResetRequest, request: Request) -> 
                     error_code="RUN_NOT_RESETTABLE",
                     message=f"run_id={run_id} status={run.status} cannot reset",
                 )
-            run_industry_pack = run.industry_pack
+            run_domain_hint = run.domain_hint
 
         graph = getattr(request.app.state, "compiled_graph", None)
         if graph is None:
@@ -701,7 +731,7 @@ async def reset_run(run_id: str, payload: RunResetRequest, request: Request) -> 
             payload=_build_run_finish_payload(run_id=run_id, status=run.status),
         )
         task = asyncio.create_task(
-            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack or ""),
+            run_skill_curator_for_run(run_id=run_id, domain_hint=run_domain_hint),
             name=f"skill_curator_{run_id}",
         )
         _register_background_task(request, task)
@@ -907,12 +937,13 @@ async def get_run_metrics(run_id: str) -> RunMetricsResponse:
             )
         ).scalars().all()
         candidate_rows = (
-            await session.execute(
-                select(SkillCandidateRecord).where(
-                    SkillCandidateRecord.industry_pack == (run.industry_pack or "generic")
-                )
-            )
+            await session.execute(select(SkillCandidateRecord))
         ).scalars().all()
+        candidate_rows = [
+            row
+            for row in candidate_rows
+            if run_id in (row.supporting_run_ids if isinstance(row.supporting_run_ids, list) else [])
+        ]
 
     snapshot = build_run_metrics_snapshot(
         run=run,

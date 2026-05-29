@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import re
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -10,7 +11,6 @@ from schemas.contracts import validate_dimension, validate_source_type
 from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError
-from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 from service.llm import (
     RESEARCHER_COMPRESSION_PROMPT,
     RESEARCHER_SYSTEM_PROMPT,
@@ -20,36 +20,33 @@ from service.llm import (
     build_researcher_user_prompt,
 )
 from service.llm.client import get_llm_client
+from service.skill_store import get_skill_store
 from utils.logger import get_logger
 
 MAX_REACT_TURNS = 6
 COMPRESS_AFTER_TURNS = 4
 COMPRESS_AFTER_CHARS = 2400
 TOOL_ACTIONS = {
-    "lookup_offline_snapshot",
-    "fixtures_lookup",
     "search_web",
     "fetch_url",
     "parse_page",
     "extract_structured",
-    "pack_lookup",
+    "load_skill",
+    "read_skill_file",
 }
 ACTION_TO_CHANNEL = {
-    "lookup_offline_snapshot": "lookup_offline_snapshot",
-    "fixtures_lookup": "fixtures_lookup",
     "search_web": "search_web",
     "fetch_url": "fetch_url",
     "parse_page": "parse_page",
     "extract_structured": "extract_structured",
-    # backward compatibility for tests and old prompt outputs
-    "pack_lookup": "fixtures_lookup",
+    "load_skill": "load_skill",
+    "read_skill_file": "read_skill_file",
 }
 log = get_logger("agents.researcher_subgraph")
 
 
 class ResearcherSubState(TypedDict, total=False):
     run_id: str
-    industry_pack_id: str | None
     research_topic: str
     competitor_id: str
     focus_dimensions: list[FocusDimension]
@@ -59,16 +56,65 @@ class ResearcherSubState(TypedDict, total=False):
     turn_count: int
     max_turns: int
     compression_count: int
+    last_compressed_turn: int
     messages: list[dict[str, str]]
     observations_log: list[dict[str, object]]
     evidence_drafts: list[dict[str, object]]
     llm_calls: list[dict[str, object]]
     next_action: Literal["tool_exec", "compress", "finalize"]
     final_summary: str
+    domain_hint: str | None
+    reference_urls: list[str]
 
 
 def _approx_chars(messages: list[dict[str, str]]) -> int:
     return sum(len(item.get("content", "")) for item in messages)
+
+
+def _guess_skill_id(domain_hint: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", domain_hint.strip().lower()).strip("_")
+    if not normalized:
+        return "general_research"
+    return normalized[:64]
+
+
+def _has_tool_attempt(state: ResearcherSubState, tool_name: str) -> bool:
+    observations_log = list(state.get("observations_log", []))
+    for item in observations_log:
+        if not isinstance(item, dict):
+            continue
+        if item.get("tool") == tool_name:
+            return True
+    return False
+
+
+def _resolve_bootstrap_skill_id(domain_hint: str | None) -> str | None:
+    store = get_skill_store()
+    metadata = store.scan()
+    if not metadata:
+        if domain_hint is None:
+            return None
+        guessed = _guess_skill_id(domain_hint)
+        return guessed if guessed else None
+
+    skill_names = sorted(metadata.keys())
+    if domain_hint is not None:
+        guessed = _guess_skill_id(domain_hint)
+        if guessed:
+            for name in skill_names:
+                if guessed in name or name in guessed:
+                    return name
+            hint_tokens = [token for token in guessed.split("_") if token]
+            for token in hint_tokens:
+                for name in skill_names:
+                    if token in name:
+                        return name
+
+    for applies_to in ("general", "prompt_template", "source_routing"):
+        names = sorted(store.list_by_applies_to(applies_to))
+        if names:
+            return names[0]
+    return skill_names[0] if skill_names else None
 
 
 def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
@@ -76,8 +122,12 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
     if pending_dimensions:
         dimension = pending_dimensions[0]
         observations_log = list(state.get("observations_log", []))
+        domain_hint_raw = state.get("domain_hint")
+        domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
 
         def _has_attempt(tool_name: str) -> bool:
+            if tool_name == "load_skill":
+                return _has_tool_attempt(state, "load_skill")
             for item in observations_log:
                 if not isinstance(item, dict):
                     continue
@@ -87,23 +137,34 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                 args = args_raw if isinstance(args_raw, dict) else {}
                 if args.get("dimension") == dimension:
                     return True
-                if tool_name in {"search_web", "fetch_url"}:
-                    # online tools may not include explicit dimension argument.
+                if tool_name in {"search_web", "fetch_url"} and args.get("dimension") is None:
                     return True
             return False
 
+        if domain_hint is not None and not _has_attempt("load_skill"):
+            skill_id = _resolve_bootstrap_skill_id(domain_hint)
+            if skill_id is not None:
+                return ("load_skill", {"skill_id": skill_id})
         if not _has_attempt("search_web"):
+            query_prefix = f"{domain_hint} " if domain_hint else ""
             return (
                 "search_web",
                 {
-                    "query": f"{state['competitor_id']} {dimension} {state['research_topic']}",
+                    "query": f"{query_prefix}{state['competitor_id']} {dimension} {state['research_topic']}",
                     "max_results": 5,
                     "dimension": dimension,
                 },
             )
-        industry_pack_id = state.get("industry_pack_id")
-        has_pack = isinstance(industry_pack_id, str) and bool(industry_pack_id.strip())
-        if not has_pack and not _has_attempt("extract_structured"):
+        if not _has_attempt("fetch_url"):
+            return (
+                "fetch_url",
+                {
+                    "url": _fallback_fetch_url(state=state, dimension=dimension),
+                    "competitor_id": state["competitor_id"],
+                    "dimension": dimension,
+                },
+            )
+        if not _has_attempt("extract_structured"):
             return (
                 "extract_structured",
                 {
@@ -117,76 +178,35 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                     "competitor_id": state["competitor_id"],
                 },
             )
-        if not _has_attempt("fetch_url"):
-            return (
-                "fetch_url",
-                {
-                    "url": _fallback_fetch_url(state=state, dimension=dimension),
-                    "industry_pack_id": industry_pack_id if has_pack else None,
-                    "competitor_id": state["competitor_id"],
-                    "dimension": dimension,
-                },
-            )
-        if has_pack:
-            return (
-                "lookup_offline_snapshot",
-                {
-                    "industry_pack_id": industry_pack_id,
-                    "competitor_id": state["competitor_id"],
-                    "dimension": dimension,
-                },
-            )
-        return ("finalize", {"summary": "fallback finalize because no industry pack snapshot is available"})
+        return ("finalize", {"summary": "fallback finalize after online attempts exhausted"})
     return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 
 
 def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension) -> str:
-    default_url = f"https://{state['competitor_id']}.example.com"
-    try:
-        industry_pack_id = state.get("industry_pack_id")
-        if not isinstance(industry_pack_id, str) or not industry_pack_id:
-            raise IndustryPackNotFound("industry_pack missing")
-        pack = get_industry_pack_registry().get(industry_pack_id)
-    except IndustryPackNotFound:
-        pack = None
-    competitor = pack.competitors.get(state["competitor_id"]) if pack is not None else None
-    official_url = (
-        competitor.official_url.rstrip("/")
-        if competitor is not None and competitor.official_url
-        else default_url.rstrip("/")
+    reference_urls_raw = state.get("reference_urls", [])
+    reference_urls = (
+        [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
+        if isinstance(reference_urls_raw, list)
+        else []
     )
+    if reference_urls:
+        dimension_lower = dimension.lower()
+        if "pricing" in dimension_lower:
+            for url in reference_urls:
+                if "pricing" in url.lower() or "plan" in url.lower():
+                    return url
+        if "feature" in dimension_lower or "tech" in dimension_lower or "integration" in dimension_lower:
+            for url in reference_urls:
+                if "docs" in url.lower() or "help" in url.lower():
+                    return url
+        return reference_urls[0]
+
+    default_url = f"https://{state['competitor_id']}.example.com".rstrip("/")
     if "pricing" in dimension:
-        return f"{official_url}/pricing"
+        return f"{default_url}/pricing"
     if "feature" in dimension or "tech" in dimension or "integration" in dimension:
-        return f"{official_url}/docs"
-    return official_url
-
-
-def _validate_lookup_action(
-    *,
-    action_args: dict[str, object],
-    state: ResearcherSubState,
-) -> tuple[str, dict[str, object]] | None:
-    industry_pack_id = state.get("industry_pack_id")
-    if not isinstance(industry_pack_id, str) or not industry_pack_id:
-        return None
-    dimension_raw = action_args.get("dimension")
-    competitor_raw = action_args.get("competitor_id")
-    if (
-        isinstance(dimension_raw, str)
-        and dimension_raw in state.get("focus_dimensions", [])
-        and isinstance(competitor_raw, str)
-        and competitor_raw == state["competitor_id"]
-    ):
-        return (
-            competitor_raw,
-            {
-                "industry_pack_id": industry_pack_id,
-                "competitor_id": competitor_raw,
-                "dimension": dimension_raw,
-            },
-        )
-    return None
+        return f"{default_url}/docs"
+    return default_url
 
 
 def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
@@ -206,12 +226,6 @@ def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
     if action == "finalize":
         return ("finalize", action_args)
 
-    if action in {"pack_lookup", "lookup_offline_snapshot", "fixtures_lookup"}:
-        validated = _validate_lookup_action(action_args=action_args, state=state)
-        if validated is not None:
-            _competitor, normalized_args = validated
-            return (action, normalized_args)
-
     if action == "search_web":
         query_raw = action_args.get("query")
         max_results_raw = action_args.get("max_results")
@@ -230,10 +244,8 @@ def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
     if action == "fetch_url":
         url_raw = action_args.get("url")
         if isinstance(url_raw, str) and url_raw.strip():
-            industry_pack_id = state.get("industry_pack_id")
             normalized_args: dict[str, object] = {
                 "url": url_raw.strip(),
-                "industry_pack_id": industry_pack_id if isinstance(industry_pack_id, str) and industry_pack_id else None,
                 "competitor_id": state["competitor_id"],
             }
             dimension_raw = action_args.get("dimension")
@@ -266,6 +278,9 @@ def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
                 normalized_args["source_url"] = source_url_raw
             if isinstance(source_title_raw, str):
                 normalized_args["source_title"] = source_title_raw
+            source_type_raw = action_args.get("source_type")
+            if isinstance(source_type_raw, str):
+                normalized_args["source_type"] = source_type_raw
             dimension_raw = action_args.get("dimension")
             if isinstance(dimension_raw, str):
                 try:
@@ -279,12 +294,36 @@ def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
                 normalized_args["competitor_id"] = state["competitor_id"]
             return ("extract_structured", normalized_args)
 
+    if action == "load_skill":
+        skill_id_raw = action_args.get("skill_id")
+        if isinstance(skill_id_raw, str) and skill_id_raw.strip():
+            return ("load_skill", {"skill_id": skill_id_raw.strip()})
+
+    if action == "read_skill_file":
+        skill_id_raw = action_args.get("skill_id")
+        filename_raw = action_args.get("filename")
+        if (
+            isinstance(skill_id_raw, str)
+            and skill_id_raw.strip()
+            and isinstance(filename_raw, str)
+            and filename_raw.strip()
+        ):
+            return (
+                "read_skill_file",
+                {
+                    "skill_id": skill_id_raw.strip(),
+                    "filename": filename_raw.strip(),
+                },
+            )
+
     return _fallback_action(state)
 
 
 def _needs_compress(state: ResearcherSubState) -> bool:
     turn_count = int(state.get("turn_count", 0))
     if turn_count < COMPRESS_AFTER_TURNS:
+        return False
+    if int(state.get("last_compressed_turn", -1)) == turn_count:
         return False
 
     messages = list(state.get("messages", []))
@@ -308,6 +347,15 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
             "next_action": "compress",
         }
 
+    domain_hint_raw = state.get("domain_hint")
+    domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
+    reference_urls_raw = state.get("reference_urls", [])
+    reference_urls = (
+        [item for item in reference_urls_raw if isinstance(item, str)]
+        if isinstance(reference_urls_raw, list)
+        else []
+    )
+
     user_prompt = build_researcher_user_prompt(
         research_topic=state["research_topic"],
         competitor_id=state["competitor_id"],
@@ -317,6 +365,8 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         turn_count=int(state.get("turn_count", 0)),
         max_turns=max_turns,
         observations_log=list(state.get("observations_log", [])),
+        domain_hint=domain_hint,
+        reference_urls=reference_urls,
     )
     llm_response = await get_llm_client().complete_json(
         model_slot="research",
@@ -329,6 +379,7 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
             queried_dimensions=list(state.get("queried_dimensions", [])),
             turn_count=int(state.get("turn_count", 0)),
             max_turns=max_turns,
+            domain_hint=domain_hint,
         ),
     )
 
@@ -345,6 +396,16 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
             "llm_calls": llm_calls,
         }
     )
+    if (
+        domain_hint is not None
+        and int(state.get("turn_count", 0)) == 0
+        and action != "load_skill"
+        and not _has_tool_attempt(state, "load_skill")
+    ):
+        bootstrap_skill_id = _resolve_bootstrap_skill_id(domain_hint)
+        if bootstrap_skill_id is not None:
+            action = "load_skill"
+            action_args = {"skill_id": bootstrap_skill_id}
     pending_action_args = {"_action": action, **action_args}
     next_action: Literal["tool_exec", "compress", "finalize"]
     if action in TOOL_ACTIONS:
@@ -484,7 +545,11 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         result_payload = {
             **result_payload_raw,
             "metadata": {
-                **(result_payload_raw.get("metadata", {}) if isinstance(result_payload_raw.get("metadata"), dict) else {}),
+                **(
+                    result_payload_raw.get("metadata", {})
+                    if isinstance(result_payload_raw.get("metadata"), dict)
+                    else {}
+                ),
                 "dimension": dimension,
                 "competitor_id": state["competitor_id"],
             },
@@ -564,6 +629,7 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
     return {
         **state,
         "compression_count": next_compression_count,
+        "last_compressed_turn": int(state.get("turn_count", 0)),
         "llm_calls": llm_calls,
         "messages": [
             {"role": "system", "content": "compressed researcher context"},

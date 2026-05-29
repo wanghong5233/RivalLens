@@ -36,7 +36,7 @@
 
 - `backend/app/agents/graph.py` 中 `_route_after_supervisor`：
   - 当 `pending_tool_args.topics` 为多项时，返回 `list[Send]`；
-  - 每个 `Send` 分支注入最小执行上下文：`run_id`、`industry_pack`、单个 topic 的 `pending_tool_args`；
+  - 每个 `Send` 分支注入最小执行上下文：`run_id`、`domain_hint`、`reference_urls`、单个 topic 的 `pending_tool_args`；
   - 非 batch 情况仍按原路径返回 `researcher` / `analyst` / `writer` / `finalize`。
 
 ### 2.4 Resume 范式（B1）

@@ -28,13 +28,14 @@ def _insert_staging_candidate(candidate_id: str) -> None:
             connection.execute(
                 text(
                     "INSERT INTO skill_candidates "
-                    "(id, candidate_type, industry_pack, payload, rationale, supporting_run_ids, confidence, status, error) "
-                    "VALUES (:id, :candidate_type, :industry_pack, CAST(:payload AS jsonb), :rationale, CAST(:supporting_run_ids AS jsonb), :confidence, :status, :error)"
+                    "(id, candidate_type, applies_to, tags, payload, rationale, supporting_run_ids, confidence, status, error) "
+                    "VALUES (:id, :candidate_type, :applies_to, CAST(:tags AS jsonb), CAST(:payload AS jsonb), :rationale, CAST(:supporting_run_ids AS jsonb), :confidence, :status, :error)"
                 ),
                 {
                     "id": candidate_id,
                     "candidate_type": "qa_rule",
-                    "industry_pack": "ai_coding_tools",
+                    "applies_to": "qa_rule",
+                    "tags": json.dumps(["pricing", "quality"], ensure_ascii=False),
                     "payload": payload_json,
                     "rationale": "router promotion test",
                     "supporting_run_ids": supporting_run_ids,
@@ -81,7 +82,7 @@ def test_approve_skill_candidate_promotes_artifacts(
 ) -> None:
     candidate_id = make_id("skill_")
     _insert_staging_candidate(candidate_id)
-    monkeypatch.setattr(settings, "INDUSTRY_PACKS_DIR", str(tmp_path))
+    monkeypatch.setattr("router.skill_rt._skills_root", lambda: tmp_path)
     try:
         response = test_client.post(
             f"/api/skill-candidates/{candidate_id}/approve",
@@ -91,8 +92,9 @@ def test_approve_skill_candidate_promotes_artifacts(
         assert response.status_code == 200
         assert payload["status"] == "approved"
         assert payload["promoted_artifacts"]
-        assert payload["promoted_artifacts"][0]["path"].endswith("qa_rules_promoted.yaml")
-        promoted_file = tmp_path / "ai_coding_tools" / "skills" / "qa_rules_promoted.yaml"
+        assert payload["promoted_artifacts"][0]["path"].endswith("SKILL.md")
+        entry_id = str(payload["promoted_artifacts"][0]["entry_id"])
+        promoted_file = tmp_path / "qa_rule" / entry_id / "SKILL.md"
         assert promoted_file.exists()
     finally:
         _delete_candidate(candidate_id)
