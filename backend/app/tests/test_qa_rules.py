@@ -10,7 +10,8 @@ from service.qa.rules import (
     rule_evidence_must_be_desensitized,
     rule_report_must_have_at_least_one_section,
     rule_report_must_have_markdown_content,
-    rule_report_template_id_valid,
+    rule_report_section_count_in_bounds,
+    rule_report_template_id_present,
     rule_writer_must_cite_evidence,
     rule_writer_sections_must_have_content,
 )
@@ -37,14 +38,20 @@ def test_rule_report_must_have_markdown_content_pass_and_fail() -> None:
     assert rule_report_must_have_markdown_content("  ").passed is False
 
 
-def test_rule_report_template_id_valid_pass_and_fail() -> None:
-    assert rule_report_template_id_valid(content_json={"template_id": "battlecard_default"}).passed is True
-    assert rule_report_template_id_valid(content_json={"template_id": "invalid_template"}).passed is False
+def test_rule_report_template_id_present_pass_and_fail() -> None:
+    assert rule_report_template_id_present(content_json={"template_id": "battlecard_default"}).passed is True
+    assert rule_report_template_id_present(content_json={"template_id": "   "}).passed is False
 
 
 def test_rule_report_must_have_at_least_one_section_pass_and_fail() -> None:
     assert rule_report_must_have_at_least_one_section({"sections": ["feature"]}).passed is True
     assert rule_report_must_have_at_least_one_section({"sections": []}).passed is False
+
+
+def test_rule_report_section_count_in_bounds() -> None:
+    assert rule_report_section_count_in_bounds({"sections": [{"section_id": "feature"}]}).passed is True
+    assert rule_report_section_count_in_bounds({"sections": []}).passed is False
+    assert rule_report_section_count_in_bounds({"sections": [{} for _ in range(13)]}).passed is False
 
 
 def test_rule_writer_sections_must_have_content_pass_and_fail() -> None:
@@ -148,7 +155,7 @@ def test_engine_aggregation_approves_when_all_rules_pass() -> None:
             message="ok",
         ),
         RuleResult(
-            rule_id="rule_report_template_id_valid",
+            rule_id="rule_report_template_id_present",
             passed=True,
             severity="blocking",
             reject_to="writer",

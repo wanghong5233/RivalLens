@@ -118,7 +118,7 @@ class UserFeedback(BaseModel):
 class Evidence(BaseModel):
     id: str
     run_id: str
-    source_type: Literal["official_site", "docs", "pricing_page", "public_review", "article", "local_note", "offline_snapshot"]
+    source_type: str                    # 通用字符串契约，运行时校验 ^[a-z][a-z0-9_]{1,31}$
     source_url: str | None = None
     source_title: str | None = None
     quote: str
@@ -131,7 +131,7 @@ class Evidence(BaseModel):
 
 - `quote` 不放敏感个人信息。
 - `desensitized` 必须为 `true` 后才能进入报告或被其他 Agent 引用。
-- `source_type` 枚举可在行业包中扩展（如 AI Coding 行业的 `github_release` / `github_issue`）。
+- `source_type` 为开放字符串契约，可在运行时或行业包中扩展（如 AI Coding 行业的 `github_release` / `github_issue`）。
 
 ### 2.7 Conclusion
 
@@ -180,7 +180,7 @@ Analyst 输入的聚合视图，由后端从所有 fragments 自动合成：
 class CompetitorKnowledgeAggregate(BaseModel):
     schema_version: str = "schema_v0.2"
     run_id: str
-    industry_pack: str
+    industry_pack: str | None
     fragments: list[CompetitorKnowledgeFragment]
     personas: list[Persona]             # run 级别，非单竞品
     coverage_summary: dict              # 跨竞品维度覆盖率
@@ -299,7 +299,7 @@ class ConductResearch(BaseModel):
     """Delegate one Researcher subgraph to study a single research topic."""
     research_topic: str                 # 单个竞品名 + 关注维度
     competitor_id: str
-    focus_dimensions: list[Literal["feature", "pricing", "user_feedback", "positioning", "tech_stack"]]
+    focus_dimensions: list[str]         # 通用字符串契约，运行时校验 ^[a-z][a-z0-9_]{1,31}$
     max_iterations: int = 6
     fallback_to_offline: bool = True
 
@@ -311,7 +311,7 @@ class Analyze(BaseModel):
 
 class Write(BaseModel):
     """Trigger Writer to assemble final report."""
-    template_id: str                    # 来自 industry_pack 的 report_template
+    template_id: str | None             # 可为空；为空时由 Writer 生成默认模板 ID
     sections: list[str] | None = None
 
 class Finalize(BaseModel):
@@ -334,7 +334,7 @@ class SupervisorDecision(BaseModel):
     id: str
     run_id: str
     iteration: int                      # 第几次决策
-    chosen_tool: Literal["ConductResearch", "Analyze", "Write", "Finalize"]
+    chosen_tool: Literal["ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"]
     tool_args: dict                     # 工具调用的完整参数（与上述 Pydantic 模型对应）
     reasoning_summary: str              # LLM 自陈"为什么做这个决定"，必填
     triggered_by: Literal[
@@ -596,7 +596,7 @@ class AICodingExtension(BaseModel):
 
 - Schema 变更必须先改本文，再改 Pydantic 模型代码；
 - 后端、前端、Agent 任一方需要新增字段，必须写清字段语义和是否必填；
-- 任何 `Literal` 枚举新增必须更新本文；
+- 任何强约束枚举新增必须更新本文；运行时开放字段（如 `focus_dimensions` / `source_type` / `section_id`）按字符串契约演进；
 - 任何 Agent 输出的顶层对象必须带 `schema_version`，便于跨版本兼容性识别；
 - 每次发布前冻结 schema 版本，避免临时改字段导致前端崩溃；
 - Skill Curator 产出的 `qa_rule_candidate` 在审核通过自动写入 pack 时，**不改变 schema 版本**（属于规则集变更，不是 schema 变更）。

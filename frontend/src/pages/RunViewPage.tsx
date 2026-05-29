@@ -183,7 +183,7 @@ export function RunViewPage(): JSX.Element {
             <CardContent className="space-y-2 text-sm text-muted-foreground">
               <p>query: {detailQuery.data.user_query}</p>
               <p>
-                pack: {detailQuery.data.industry_pack} · competitors: {detailQuery.data.competitors.length}
+                pack: {detailQuery.data.industry_pack ?? "generic"} · competitors: {detailQuery.data.competitors.length}
               </p>
               <p>
                 started: {formatDateTime(detailQuery.data.started_at)} ({formatRelativeTime(detailQuery.data.started_at)})

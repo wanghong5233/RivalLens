@@ -125,20 +125,28 @@ def _to_error_candidate(*, run_id: str, industry_pack: str, error: str) -> Skill
     )
 
 
+def _normalize_industry_pack_id(industry_pack: str) -> str:
+    normalized = industry_pack.strip()
+    if normalized:
+        return normalized
+    return "generic"
+
+
 async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
+    normalized_pack = _normalize_industry_pack_id(industry_pack)
     await emit_run_event(
         run_id=run_id,
         event_type=RunEventType.CURATOR_START,
-        payload={"industry_pack": industry_pack},
+        payload={"industry_pack": normalized_pack},
     )
     with bind_run(run_id):
-        log.info("skill_curator.task.start", industry_pack=industry_pack)
+        log.info("skill_curator.task.start", industry_pack=normalized_pack)
         session_factory = get_session_factory()
         try:
             context = await _load_curator_context(run_id)
             generation_result = await generate_skill_candidates(
                 run_id=run_id,
-                industry_pack=industry_pack,
+                industry_pack=normalized_pack,
                 qa_rejection_count=int(context["qa_rejection_count"]),
                 qa_reasons=list(context["qa_reasons"]),
                 supervisor_decisions=list(context["supervisor_decisions"]),
@@ -186,7 +194,7 @@ async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
                     session.add(
                         _to_error_candidate(
                             run_id=run_id,
-                            industry_pack=industry_pack,
+                            industry_pack=normalized_pack,
                             error=llm_error_trimmed,
                         )
                     )
@@ -196,7 +204,7 @@ async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
                             SkillCandidateRecord(
                                 id=make_id("skill_"),
                                 candidate_type=candidate.candidate_type,
-                                industry_pack=industry_pack,
+                                industry_pack=normalized_pack,
                                 payload=candidate.payload,
                                 rationale=candidate.rationale,
                                 supporting_run_ids=candidate.supporting_run_ids or [run_id],
@@ -217,7 +225,7 @@ async def run_skill_curator_for_run(*, run_id: str, industry_pack: str) -> None:
                 session.add(
                     _to_error_candidate(
                         run_id=run_id,
-                        industry_pack=industry_pack,
+                        industry_pack=normalized_pack,
                         error=str(exc),
                     )
                 )

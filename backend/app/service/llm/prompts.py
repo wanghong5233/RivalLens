@@ -3,25 +3,11 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-SUPERVISOR_ALLOWED_DIMENSIONS: tuple[str, ...] = (
-    "feature",
-    "pricing",
-    "user_feedback",
-    "positioning",
-    "tech_stack",
-)
 QA_SEMANTIC_ALLOWED_REJECT_TO: tuple[str, ...] = (
     "supervisor",
     "researcher",
     "analyst",
     "writer",
-)
-WRITER_ALLOWED_SECTION_IDS: tuple[str, ...] = (
-    "feature",
-    "pricing",
-    "user_feedback",
-    "differentiation",
-    "swot",
 )
 SKILL_CURATOR_ALLOWED_TYPES: tuple[str, ...] = (
     "qa_rule",
@@ -86,8 +72,8 @@ Output JSON schema:
 Rules:
 - Always return a JSON object and nothing else.
 - Never invent competitor ids not present in the allowed list from user prompt.
-- For ConductResearch, focus_dimensions must be a subset of the allowed dimensions list.
-- For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors, and each topic.focus_dimensions must be a subset of the allowed dimensions list.
+- For ConductResearch and ConductResearchBatch, choose 3-5 focus_dimensions in snake_case and aligned with user_query.
+- For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors.
 - Prefer ConductResearchBatch when pending_competitors has 2+ independent competitors and analysis_done is false.
 - Keep reasoning_summary concise and operational, no markdown.
 """
@@ -125,7 +111,7 @@ Allowed actions:
    - args schema:
      {
        "competitor_id": str,
-       "dimension": "feature" | "pricing" | "user_feedback" | "positioning" | "tech_stack"
+       "dimension": str
      }
 6) finalize
    - args schema:
@@ -168,7 +154,7 @@ Output JSON schema:
   "summary": str,
   "insights": [
     {
-      "dimension": "feature" | "pricing" | "user_feedback" | "positioning" | "tech_stack",
+      "dimension": str,
       "finding": str,
       "evidence_ids": list[str],
       "confidence": "high" | "medium" | "low"
@@ -203,7 +189,7 @@ Rules:
 """
 
 WRITER_SYSTEM_PROMPT = """You are RivalLens Writer.
-Generate a battlecard report in STRICT JSON with evidence-grounded sections.
+Generate an evidence-grounded report in STRICT JSON.
 
 Output JSON schema:
 {
@@ -212,7 +198,7 @@ Output JSON schema:
   "executive_summary": str,
   "sections": [
     {
-      "section_id": "feature" | "pricing" | "user_feedback" | "differentiation" | "swot",
+      "section_id": str,
       "title": str,
       "content_markdown": str,
       "evidence_refs": list[str],
@@ -223,10 +209,11 @@ Output JSON schema:
 }
 
 Rules:
-- template_id must match the requested template_id from user prompt.
+- If template_id is provided in user prompt, keep it unchanged. If not provided, set template_id to "default".
 - Every section must include non-empty content_markdown.
 - Every section must cite evidence_refs using ids provided in user prompt.
 - Do not fabricate evidence ids or insight refs.
+- section_id must be snake_case and meaningful for the user query.
 - Return JSON object only.
 """
 
@@ -263,8 +250,7 @@ def build_supervisor_user_prompt(
         f"1) ConductResearch.tool_args.competitor_id must be in {_json(list(competitors))}.\n"
         "2) ConductResearchBatch.tool_args.topics[*].competitor_id must be unique and all in "
         f"{_json(list(competitors))}.\n"
-        "3) ConductResearch.tool_args.focus_dimensions and ConductResearchBatch.tool_args.topics[*].focus_dimensions must be subsets of "
-        f"{_json(list(SUPERVISOR_ALLOWED_DIMENSIONS))}.\n"
+        "3) focus_dimensions must be 3-5 snake_case dimensions relevant to user_query; avoid hardcoded templates.\n"
         "4) Return exactly one tool decision in this iteration.\n"
     )
 
@@ -442,7 +428,7 @@ def build_qa_semantic_fallback_user_prompt(
 def build_writer_user_prompt(
     *,
     user_query: str,
-    template_id: str,
+    template_id: str | None,
     requested_sections: Sequence[str],
     competitors: Sequence[str],
     evidence_briefs: Sequence[dict[str, object]],
@@ -456,7 +442,6 @@ def build_writer_user_prompt(
         f"- user_query: {user_query}\n"
         f"- template_id: {template_id}\n"
         f"- requested_sections: {_json(list(requested_sections))}\n"
-        f"- allowed_section_ids: {_json(list(WRITER_ALLOWED_SECTION_IDS))}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n"
         f"- analyst_summary: {analyst_summary}\n"
@@ -470,7 +455,7 @@ def build_writer_user_prompt(
 
 def build_writer_fallback_user_prompt(
     *,
-    template_id: str,
+    template_id: str | None,
     requested_sections: Sequence[str],
     evidence_ids: Sequence[str],
     analyst_summary: str,
@@ -480,9 +465,8 @@ def build_writer_fallback_user_prompt(
         f"- template_id: {template_id}\n"
         f"- requested_sections: {_json(list(requested_sections))}\n"
         f"- evidence_ids: {_json(list(evidence_ids))}\n"
-        f"- allowed_section_ids: {_json(list(WRITER_ALLOWED_SECTION_IDS))}\n"
         f"- analyst_summary: {analyst_summary}\n\n"
-        "Return minimal valid battlecard JSON with at least one section and evidence_refs."
+        "Return minimal valid JSON report with at least one section and evidence_refs."
     )
 
 

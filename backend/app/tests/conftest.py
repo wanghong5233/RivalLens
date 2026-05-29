@@ -55,6 +55,22 @@ class _FakeLLMClient:
         self._qa_semantic_retry_demo_served = False
         self._qa_writer_no_evidence_demo_served = False
 
+    @staticmethod
+    def _derive_dimensions(user_query: str) -> list[str]:
+        query = user_query.lower()
+        dimensions: list[str] = []
+        if "pricing" in query or "定价" in query:
+            dimensions.append("pricing")
+        if "review" in query or "feedback" in query or "口碑" in query:
+            dimensions.append("user_feedback")
+        if "feature" in query or "功能" in query:
+            dimensions.append("feature")
+        if not dimensions:
+            dimensions = ["feature", "pricing", "user_feedback"]
+        if len(dimensions) < 3:
+            dimensions = ["feature", "pricing", "user_feedback"]
+        return dimensions[:5]
+
     def override_response(self, response: LLMResponse) -> None:
         self._response = response
         self._override_enabled = True
@@ -95,6 +111,9 @@ class _FakeLLMClient:
         pending_competitors = self._extract_json_list(user_prompt, "pending_competitors")
         analysis_done = "- analysis_done: True" in user_prompt
         report_draft_done = "- report_draft_done: True" in user_prompt
+        user_query_match = re.search(r"- user_query: ([^\n]+)", user_prompt)
+        user_query = user_query_match.group(1).strip() if user_query_match is not None else "generic analysis"
+        dynamic_dimensions = self._derive_dimensions(user_query)
 
         if self._supervisor_call_count == 0 and len(pending_competitors) >= 2:
             topics: list[dict[str, object]] = []
@@ -103,7 +122,7 @@ class _FakeLLMClient:
                     {
                         "research_topic": f"{competitor_id} vs user_query=fake",
                         "competitor_id": competitor_id,
-                        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                        "focus_dimensions": dynamic_dimensions,
                         "max_iterations": 6,
                         "fallback_to_offline": True,
                     }
@@ -123,7 +142,7 @@ class _FakeLLMClient:
                 "tool_args": {
                     "research_topic": f"{competitor_id} vs user_query=fake",
                     "competitor_id": competitor_id,
-                    "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                    "focus_dimensions": dynamic_dimensions,
                     "max_iterations": 6,
                     "fallback_to_offline": True,
                 },
@@ -133,7 +152,7 @@ class _FakeLLMClient:
             content = {
                 "chosen_tool": "Analyze",
                 "tool_args": {
-                    "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                    "focus_dimensions": dynamic_dimensions,
                     "parallel_by_dimension": False,
                     "require_cross_competitor": True,
                 },
@@ -143,8 +162,8 @@ class _FakeLLMClient:
             content = {
                 "chosen_tool": "Write",
                 "tool_args": {
-                    "template_id": "battlecard_default",
-                    "sections": ["feature", "pricing", "user_feedback", "differentiation", "swot"],
+                    "template_id": None,
+                    "sections": [*dynamic_dimensions, "differentiation"],
                 },
                 "reasoning_summary": "Analysis completed; move to writer.",
             }
@@ -169,6 +188,21 @@ class _FakeLLMClient:
             else "comp_cursor"
         )
         if pending_dimensions:
+            if not competitor_id.startswith("comp_"):
+                content = {
+                    "action": "extract_structured",
+                    "action_args": {
+                        "text": (
+                            f"{competitor_id} {pending_dimensions[0]} signal extracted in generic mode."
+                        ),
+                        "source_title": f"{competitor_id} {pending_dimensions[0]}",
+                        "source_type": "article",
+                        "dimension": pending_dimensions[0],
+                        "competitor_id": competitor_id,
+                    },
+                    "reasoning_summary": "Use synthetic extract_structured seed for generic competitor mode.",
+                }
+                return self._build_response(model_slot="research", content=content)
             reasoning_summary = (
                 "Force offline snapshot path for deterministic fallback case."
                 if "online-fail fallback demo" in user_prompt.casefold()
@@ -187,7 +221,11 @@ class _FakeLLMClient:
 
     def _build_writer_response(self, user_prompt: str) -> LLMResponse:
         template_id_match = re.search(r"- template_id: ([^\n]+)", user_prompt)
-        template_id = template_id_match.group(1).strip() if template_id_match is not None else "battlecard_default"
+        template_id = (
+            template_id_match.group(1).strip()
+            if template_id_match is not None and template_id_match.group(1).strip() not in {"", "None", "null"}
+            else "default"
+        )
         requested_sections = self._extract_json_list(user_prompt, "requested_sections")
         evidence_briefs_raw = self._extract_json_value(user_prompt, "evidence_briefs")
         if isinstance(evidence_briefs_raw, list):

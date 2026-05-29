@@ -30,7 +30,7 @@ def _make_evidence(
 
 def _pricing_report(*, refs: list[str], content_len: int = 120) -> dict[str, object]:
     return {
-        "template_id": "battlecard_default",
+        "template_id": "default",
         "sections": [
             {
                 "section_id": "pricing",

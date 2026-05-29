@@ -19,7 +19,6 @@ from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import persist_conclusions_for_step
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
-    SUPERVISOR_ALLOWED_DIMENSIONS,
     build_analyst_fallback_user_prompt,
     build_analyst_user_prompt,
 )
@@ -39,8 +38,8 @@ def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
 
 def _resolve_focus_dimensions(request: Analyze) -> list[str]:
     if request.focus_dimensions:
-        return list(request.focus_dimensions)
-    return list(SUPERVISOR_ALLOWED_DIMENSIONS)
+        return sorted(set(request.focus_dimensions))
+    return []
 
 
 def _build_evidence_briefs(
@@ -49,12 +48,13 @@ def _build_evidence_briefs(
     focus_dimensions: list[str],
 ) -> list[dict[str, str]]:
     allowed_dimensions = set(focus_dimensions)
+    filter_by_dimensions = bool(allowed_dimensions)
     briefs: list[dict[str, str]] = []
     for row in evidence_rows:
         span = row.span if isinstance(row.span, dict) else {}
         dimension_raw = span.get("dimension")
         dimension = dimension_raw if isinstance(dimension_raw, str) else "unknown"
-        if dimension not in allowed_dimensions:
+        if filter_by_dimensions and dimension not in allowed_dimensions:
             continue
         competitor_raw = span.get("competitor_id")
         competitor_id = competitor_raw if isinstance(competitor_raw, str) else "unknown"
@@ -167,7 +167,7 @@ def _build_fallback_analysis(
         }
     else:
         summary = "Fallback analysis generated without evidence; analyst should re-run after research recovers."
-        first_dimension = focus_dimensions[0] if focus_dimensions else "feature"
+        first_dimension = focus_dimensions[0] if focus_dimensions else "general"
         insight = {
             "dimension": first_dimension,
             "finding": "No evidence available for analyst pass.",
@@ -218,6 +218,16 @@ async def analyst_node(state: AgentState) -> AgentState:
         evidence_rows=evidence_rows,
         focus_dimensions=focus_dimensions,
     )
+    if not focus_dimensions:
+        focus_dimensions = sorted(
+            {
+                item["dimension"]
+                for item in evidence_briefs
+                if isinstance(item.get("dimension"), str) and item["dimension"] != "unknown"
+            }
+        )
+        if not focus_dimensions:
+            focus_dimensions = ["general", "feature", "pricing"]
     allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
     user_prompt = build_analyst_user_prompt(
         user_query=user_query,

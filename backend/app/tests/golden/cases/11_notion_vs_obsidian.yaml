@@ -1,0 +1,15 @@
+id: 11_notion_vs_obsidian
+description: Generic run without industry pack should still reach QA approved.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "比较两款笔记产品的功能、定价与用户口碑"
+  competitors:
+    - Notion
+    - Obsidian
+  industry_pack: null
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  qa_rejection_count_gte: 0

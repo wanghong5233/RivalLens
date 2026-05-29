@@ -29,7 +29,7 @@ def _route_after_supervisor(
 
     run_id = state.get("run_id")
     industry_pack = state.get("industry_pack")
-    if run_id is None or industry_pack is None:
+    if run_id is None:
         return "researcher"
 
     sends: list[Send] = []

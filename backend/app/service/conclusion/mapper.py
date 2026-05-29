@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import TypedDict
 
-from service.llm import WRITER_ALLOWED_SECTION_IDS
+from schemas.contracts import validate_section_id
 
 
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
-ALLOWED_SECTIONS = set(WRITER_ALLOWED_SECTION_IDS)
 
 
 class MappedConclusion(TypedDict):
@@ -69,13 +68,13 @@ def insights_to_conclusions(
         confidence_raw = insight.get("confidence")
         evidence_ids_raw = insight.get("evidence_ids")
 
-        if (
-            not isinstance(dimension_raw, str)
-            or dimension_raw not in ALLOWED_SECTIONS
-            or not isinstance(claim_raw, str)
-            or not claim_raw.strip()
-            or not isinstance(evidence_ids_raw, list)
-        ):
+        if not isinstance(dimension_raw, str) or not isinstance(claim_raw, str) or not claim_raw.strip():
+            continue
+        try:
+            normalized_dimension = validate_section_id(dimension_raw)
+        except ValueError:
+            continue
+        if not isinstance(evidence_ids_raw, list):
             continue
 
         evidence_ids = [
@@ -105,12 +104,12 @@ def insights_to_conclusions(
 
         mapped.append(
             {
-                "section": dimension_raw,
+                "section": normalized_dimension,
                 "claim": claim_raw.strip(),
                 "confidence": confidence,
                 "evidence_ids": evidence_ids,
                 "competitor_ids": competitor_ids,
-                "risk_flags": _risk_flags_for_dimension(dimension_raw, risk_flags),
+                "risk_flags": _risk_flags_for_dimension(normalized_dimension, risk_flags),
             }
         )
     return mapped

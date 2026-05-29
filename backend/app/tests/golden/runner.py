@@ -31,7 +31,7 @@ class GoldenCaseSetup(BaseModel):
 class GoldenCaseInput(BaseModel):
     user_query: str
     competitors: list[str]
-    industry_pack: str = "ai_coding_tools"
+    industry_pack: str | None = "ai_coding_tools"
     target_roles: list[str] = Field(default_factory=lambda: ["pm"])
 
 
@@ -132,9 +132,11 @@ def _last_qa_reject_to(payloads: list[dict[str, object]]) -> str | None:
 def _write_promoted_rules_for_case(
     *,
     pack_root: Path,
-    pack_id: str,
+    pack_id: str | None,
     promoted_qa_rules: list[PromotedQARule],
 ) -> None:
+    if not isinstance(pack_id, str) or not pack_id.strip():
+        return
     promoted_yaml_path = pack_root / pack_id / "skills" / "qa_rules_promoted.yaml"
     promoted_yaml_path.parent.mkdir(parents=True, exist_ok=True)
     if not promoted_qa_rules:

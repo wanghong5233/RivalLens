@@ -62,7 +62,7 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
                 {
                     "run_id": run_id,
                     "user_query": "empty run for metrics boundary",
-                    "industry_pack": "ai_coding_tools",
+                    "industry_pack": "",
                     "status": "running",
                     "target_roles": json.dumps(["pm"]),
                     "competitors": json.dumps(["comp_cursor"]),

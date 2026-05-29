@@ -31,6 +31,13 @@ def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
     return get_session_factory()
 
 
+def _resolve_industry_pack_for_curator(state: AgentState) -> str:
+    industry_pack = state.get("industry_pack")
+    if isinstance(industry_pack, str) and industry_pack.strip():
+        return industry_pack
+    return "generic"
+
+
 async def _load_review_targets(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -118,15 +125,12 @@ async def qa_node(state: AgentState) -> AgentState:
     pending_review_target_step_id = state.get("pending_review_target_step_id")
     qa_rejection_count = int(state.get("qa_rejection_count", 0))
     qa_step_id = make_id("step_")
-    industry_pack = state.get("industry_pack")
+    industry_pack = _resolve_industry_pack_for_curator(state)
     promoted_qa_rules = []
-    if isinstance(industry_pack, str) and industry_pack:
-        try:
-            promoted_qa_rules = get_industry_pack_registry().get(
-                industry_pack
-            ).promoted_qa_rules
-        except IndustryPackNotFound:
-            promoted_qa_rules = []
+    try:
+        promoted_qa_rules = get_industry_pack_registry().get(industry_pack).promoted_qa_rules
+    except IndustryPackNotFound:
+        promoted_qa_rules = []
 
     writer_step, report = await _load_review_targets(
         session_factory=session_factory,

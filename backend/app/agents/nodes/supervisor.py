@@ -34,9 +34,15 @@ from schemas.supervisor import (
 from service.event_bus import RunEventType, emit_run_event
 
 MAX_SUPERVISOR_ITERATIONS = 10
-DEFAULT_RESEARCH_DIMENSIONS = ["feature", "pricing", "user_feedback"]
-DEFAULT_WRITE_SECTIONS = ["feature", "pricing", "user_feedback", "differentiation", "swot"]
 VALID_TOOLS = {"ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"}
+DIMENSION_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pricing", ("pricing", "price", "cost", "套餐", "定价", "收费")),
+    ("user_feedback", ("review", "feedback", "rating", "评价", "口碑", "用户声音")),
+    ("feature", ("feature", "capability", "功能", "能力", "workflow")),
+    ("positioning", ("positioning", "market", "segment", "定位", "市场")),
+    ("tech_stack", ("integration", "api", "architecture", "tech", "技术", "集成")),
+    ("go_to_market", ("growth", "distribution", "channel", "营销", "获客")),
+)
 TriggerSource = Literal[
     "user_query",
     "researcher_completion",
@@ -67,6 +73,38 @@ def _resolve_triggered_by(
     if last_completed_node == "writer":
         return "writer_completion"
     return "iteration_advance"
+
+
+def _stable_unique(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _derive_focus_dimensions(*, user_query: str, competitors: list[str]) -> list[str]:
+    normalized_query = user_query.lower()
+    derived: list[str] = []
+    for dimension, hints in DIMENSION_HINTS:
+        if any(hint in normalized_query for hint in hints):
+            derived.append(dimension)
+
+    if not derived:
+        derived.extend(["feature", "pricing", "user_feedback"])
+    if len(competitors) >= 3 and "positioning" not in derived:
+        derived.append("positioning")
+    if len(derived) < 3:
+        derived.extend(["feature", "pricing", "user_feedback"])
+    return _stable_unique(derived)[:5]
+
+
+def _derive_write_sections(*, focus_dimensions: list[str]) -> list[str]:
+    sections = _stable_unique([*focus_dimensions, "differentiation"])
+    return sections[:8]
 
 
 def _now_iso() -> str:
@@ -113,6 +151,8 @@ def _fallback_decision(
     user_query: str,
 ) -> SupervisorDecision:
     pending_competitors = [c for c in competitors if c not in researched_competitors]
+    fallback_dimensions = _derive_focus_dimensions(user_query=user_query, competitors=competitors)
+    fallback_sections = _derive_write_sections(focus_dimensions=fallback_dimensions)
     now = _now_iso()
 
     if len(pending_competitors) >= 2:
@@ -120,7 +160,7 @@ def _fallback_decision(
             ConductResearch(
                 research_topic=f"{competitor_id} vs user_query={user_query}",
                 competitor_id=competitor_id,
-                focus_dimensions=DEFAULT_RESEARCH_DIMENSIONS,
+                focus_dimensions=fallback_dimensions,
                 max_iterations=6,
                 fallback_to_offline=True,
             )
@@ -153,7 +193,7 @@ def _fallback_decision(
         args = ConductResearch(
             research_topic=f"{competitor_id} vs user_query={user_query}",
             competitor_id=competitor_id,
-            focus_dimensions=DEFAULT_RESEARCH_DIMENSIONS,
+            focus_dimensions=fallback_dimensions,
             max_iterations=6,
             fallback_to_offline=True,
         ).model_dump()
@@ -173,7 +213,7 @@ def _fallback_decision(
 
     if not analysis_done:
         args = Analyze(
-            focus_dimensions=DEFAULT_RESEARCH_DIMENSIONS,
+            focus_dimensions=fallback_dimensions,
             parallel_by_dimension=False,
             require_cross_competitor=True,
         ).model_dump()
@@ -193,8 +233,8 @@ def _fallback_decision(
 
     if not report_draft_done:
         args = Write(
-            template_id="battlecard_default",
-            sections=DEFAULT_WRITE_SECTIONS,
+            template_id=None,
+            sections=fallback_sections,
         ).model_dump()
         decision = SupervisorDecision(
             id=make_id("decision_"),
@@ -237,6 +277,7 @@ def _decision_from_qa_feedback(
     qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
     qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
     qa_reasons: list[str],
+    fallback_sections: list[str],
 ) -> tuple[SupervisorDecision, LLMResponse, bool] | None:
     if qa_outcome is None or qa_outcome == "approved":
         return None
@@ -278,8 +319,8 @@ def _decision_from_qa_feedback(
             iteration=iteration,
             chosen_tool="Write",
             tool_args=Write(
-                template_id="battlecard_default",
-                sections=DEFAULT_WRITE_SECTIONS,
+                template_id=None,
+                sections=fallback_sections,
             ).model_dump(),
             reasoning_summary=f"QA rejected writer output and requests rewrite: {qa_reason_summary}",
             triggered_by=triggered_by,
@@ -494,6 +535,12 @@ async def supervisor_node(state: AgentState) -> AgentState:
         last_completed_node=last_completed_node,
         qa_outcome=qa_outcome,
     )
+    fallback_sections = _derive_write_sections(
+        focus_dimensions=_derive_focus_dimensions(
+            user_query=user_query,
+            competitors=competitors,
+        )
+    )
 
     forced_degraded_by_qa = False
     qa_driven_decision = _decision_from_qa_feedback(
@@ -503,6 +550,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
         qa_outcome=qa_outcome,
         qa_reject_to=qa_reject_to,
         qa_reasons=qa_reasons,
+        fallback_sections=fallback_sections,
     )
     if qa_driven_decision is not None:
         decision, llm_response, forced_degraded_by_qa = qa_driven_decision

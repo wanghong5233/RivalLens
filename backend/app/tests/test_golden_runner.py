@@ -28,6 +28,23 @@ def test_golden_case_schema_parses_minimal_case() -> None:
     assert case.setup.promoted_qa_rules == []
 
 
+def test_golden_case_schema_accepts_null_pack() -> None:
+    case = GoldenCase.model_validate(
+        {
+            "id": "golden_case_schema_no_pack",
+            "description": "schema parse without pack",
+            "input": {
+                "user_query": "generic note app comparison",
+                "competitors": ["Notion", "Obsidian"],
+                "industry_pack": None,
+                "target_roles": ["pm"],
+            },
+            "assertions": {"final_qa_outcome": "approved"},
+        }
+    )
+    assert case.input.industry_pack is None
+
+
 def test_dump_markdown_report_writes_file(tmp_path: Path) -> None:
     from tests.golden.runner import GoldenCaseResult
 

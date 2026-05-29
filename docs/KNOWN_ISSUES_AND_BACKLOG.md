@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-05-27
+最后更新: 2026-05-29
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -33,13 +33,13 @@
 
 ## P2（扩展性 / 自进化）
 
-### [ ] EXT-001 行业包扩展 schema 注册机制
+### [x] EXT-001 行业包扩展 schema 注册机制
 
 - **设计**：docs/3 §10.1 `industry_packs/<pack>/extension_schema.py` + `researcher_tools/` 加载契约
-- **现状**：`industry_packs/ai_coding_tools/` 只有 YAML；Pack Python 扩展注入机制不存在
-- **入口**：`backend/app/service/industry_pack/extensions.py` + `backend/app/service/industry_pack/registry.py`（加 `load_extension_schema(pack_id)`） + `industry_packs/ai_coding_tools/extension_schema.py`
-- **触发**：接第二个行业包，或 AI Coding pack 需要 `AICodingExtension` 字段
-- **验收**：AICodingExtension 注册可挂到 Researcher fragment 上；未注册 pack 不影响其他 pack 加载
+- **现状**：已通过通用字符串契约 + 校验器（`schemas/contracts.py`）落地可扩展边界，`focus_dimension / section_id / template_id / source_type` 不再受代码闭集限制
+- **入口**：`backend/app/schemas/contracts.py` + `backend/app/schemas/supervisor.py` + `backend/app/service/industry_pack/models.py`
+- **结论**：本周期“通用契约已达成”；`extension_schema.py` 的 Python 插槽作为路线图保留，待出现强类型字段注入的真实需求再做
+- **验收**：无 pack 任意竞品可跑通至 QA approved，且维度/章节为运行时生成
 
 ### [x] ORCH-003 Skill Curator 异步化
 
@@ -62,13 +62,13 @@
 - **入口**：`backend/app/router/run_rt.py` + `backend/app/service/metrics/engine.py` + `frontend/src/components/MetricsPanel.tsx` + `frontend/src/pages/RunViewPage.tsx`
 - **验收**：至少输出 coverage_rate / qa_rejection_rate / manual_review_rate，且口径在 endpoint docstring 与前端提示中可追溯
 
-### [ ] EXT-002 行业包扩展 source_type 注册
+### [x] EXT-002 行业包扩展 source_type 注册
 
 - **设计**：docs/3 §2.6 Evidence.source_type 可扩展；docs/2.6 channel 映射决策树
-- **现状**：当前实现固定 7 类 source_type，尚未提供 pack 级扩展注册入口
-- **入口**：`backend/app/service/collector/registry.py` + `backend/app/service/industry_pack/extensions.py`（新增） + `industry_packs/<pack>/extension_schema.py`
-- **触发**：第二行业包需要新增来源类型（例如 `github_release` / `app_store_review`）
-- **验收**：新 pack 可注册新增 source_type 且不影响现有 7 类映射与查询
+- **现状**：`Evidence.source_type` / `Collector.SourceType` 已改为通用字符串契约，保留 `KNOWN_SOURCE_TYPES` 仅作启发式提示，不作校验闸门
+- **入口**：`backend/app/schemas/business.py` + `backend/app/service/collector/base.py` + `backend/app/agents/tools/extract_structured.py`
+- **结论**：本周期“通用契约已达成”；pack 级 Python 注册机制降级为可选增强
+- **验收**：未知 source_type 可被透传并通过 QA/存储链路，不再静默降级为固定白名单
 
 ---
 
@@ -86,6 +86,7 @@
 
 - **设计**：在现有 scanner-first 防线基础上，可增加第三方规则库与误报基线管理
 - **现状**：当前已具备本地与 CI 双层扫描，满足当前赛题风险控制
+- **备注**：边际收益低于通用化主线，本周期不做
 - **入口**：`.gitleaks.toml` + `.pre-commit-config.yaml`
 - **触发**：需要跨项目统一规则、统一审计报表、或团队已接受额外误报处理成本时
 - **验收**：不显著增加误报的前提下，替换或并行现有扫描链路
@@ -94,6 +95,7 @@
 
 - **设计**：docs/2 §3.8 slot 级独立配置 + asyncio.Semaphore 限流
 - **现状**：`llm_calls` 表已记 token/latency；无 slot 级 budget 与超限动作
+- **备注**：边际收益低于通用化主线，本周期不做
 - **入口**：`backend/app/service/llm/budget.py` + `service/llm/client.py`（call 前检查） + `core/config.py`（slot 预算字段）
 - **验收**：每个 model_slot 有 token 预算；超限触发降级 prompt 或 skip
 
@@ -132,6 +134,7 @@
 - **现状**：`schemas/agent_message.py` Pydantic 模型已定义；编排走 `AgentState` dict
 - **入口**：各节点输出包装为 AgentMessage，落 `step.payload`；评审决定是否物理表化（增加 `models/agent_message.py`）
 - **决策点**：物理表 vs 仅逻辑契约
+- **备注**：边际收益低于通用化主线，本周期不做
 
 ---
 

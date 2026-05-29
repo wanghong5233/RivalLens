@@ -1053,19 +1053,50 @@ def test_create_run_rejects_missing_industry_pack(test_client: TestClient) -> No
     assert payload["error_code"] == "INDUSTRY_PACK_NOT_FOUND"
 
 
-def test_create_run_rejects_missing_competitor_in_pack(test_client: TestClient) -> None:
+def test_create_run_accepts_free_competitor_names(test_client: TestClient) -> None:
     response = test_client.post(
         "/api/runs",
         json={
-            "user_query": "invalid competitor",
-            "competitors": ["comp_unknown"],
+            "user_query": "free competitor mode",
+            "competitors": ["Notion", "Obsidian"],
             "industry_pack": "ai_coding_tools",
             "target_roles": ["pm"],
         },
     )
     payload = response.json()
-    assert response.status_code == 400
-    assert payload["error_code"] == "COMPETITOR_NOT_IN_PACK"
+    assert response.status_code == 200
+    assert isinstance(payload["run_id"], str)
+
+
+def test_run_without_pack_with_arbitrary_competitors(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "比较两款笔记产品的功能/定价/用户口碑",
+            "competitors": ["Notion", "Obsidian"],
+            "industry_pack": None,
+            "target_roles": ["pm"],
+        },
+    )
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+
+    report_response = test_client.get(f"/api/runs/{run_id}/report")
+    assert report_response.status_code == 200
+    report_payload = report_response.json()
+    content_json = report_payload.get("content_json", {})
+    sections = content_json.get("sections", []) if isinstance(content_json, dict) else []
+    assert isinstance(sections, list)
+    assert len(sections) >= 3
+
+    trace_response = test_client.get(f"/api/runs/{run_id}/trace")
+    assert trace_response.status_code == 200
+    trace_payload = trace_response.json()
+    assert trace_payload["run"]["status"] in {"completed", "degraded"}
+    qa_steps = [step for step in trace_payload["steps"] if step.get("agent_name") == "qa"]
+    assert qa_steps, "expected at least one qa step"
+    final_qa_outcome = qa_steps[-1].get("payload", {}).get("qa_outcome")
+    assert final_qa_outcome == "approved"
 
 
 def _prepare_promoted_pack_copy(

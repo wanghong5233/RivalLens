@@ -18,10 +18,10 @@ from models.report import Report
 from models.step import Step
 from schemas.ids import make_id
 from schemas.supervisor import Write
+from schemas.contracts import validate_section_id
 from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import load_conclusions_for_run
 from service.llm import (
-    WRITER_ALLOWED_SECTION_IDS,
     WRITER_SYSTEM_PROMPT,
     build_writer_fallback_user_prompt,
     build_writer_user_prompt,
@@ -31,6 +31,7 @@ from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.writer")
+DEFAULT_FALLBACK_SECTIONS = ["feature", "pricing", "user_feedback"]
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -49,6 +50,14 @@ def _stable_unique(items: list[str]) -> list[str]:
         seen.add(item)
         ordered.append(item)
     return ordered
+
+
+def _is_valid_section_id(value: str) -> bool:
+    try:
+        validate_section_id(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _normalize_analyst_payload(payload: object) -> dict[str, object]:
@@ -75,7 +84,7 @@ def _normalize_analyst_payload(payload: object) -> dict[str, object]:
             evidence_ids_raw = item.get("evidence_ids")
             if (
                 not isinstance(dimension_raw, str)
-                or dimension_raw not in WRITER_ALLOWED_SECTION_IDS
+                or not _is_valid_section_id(dimension_raw)
                 or not isinstance(finding_raw, str)
                 or not finding_raw.strip()
                 or not isinstance(evidence_ids_raw, list)
@@ -105,7 +114,7 @@ def _normalize_analyst_payload(payload: object) -> dict[str, object]:
     recommended_sections_raw = payload.get("recommended_sections")
     if isinstance(recommended_sections_raw, list):
         recommended_sections = [
-            item for item in recommended_sections_raw if isinstance(item, str) and item in WRITER_ALLOWED_SECTION_IDS
+            item for item in recommended_sections_raw if isinstance(item, str) and _is_valid_section_id(item)
         ]
     else:
         recommended_sections = []
@@ -129,7 +138,7 @@ def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> d
         evidence_ids_raw = item.get("evidence_ids")
         if (
             not isinstance(section_raw, str)
-            or section_raw not in WRITER_ALLOWED_SECTION_IDS
+            or not _is_valid_section_id(section_raw)
             or not isinstance(claim_raw, str)
             or not claim_raw.strip()
             or not isinstance(evidence_ids_raw, list)
@@ -262,7 +271,7 @@ def _build_insight_briefs(
         evidence_ids_raw = item.get("evidence_ids")
         if (
             not isinstance(dimension_raw, str)
-            or dimension_raw not in WRITER_ALLOWED_SECTION_IDS
+            or not _is_valid_section_id(dimension_raw)
             or not isinstance(finding_raw, str)
             or not finding_raw.strip()
             or not isinstance(evidence_ids_raw, list)
@@ -295,19 +304,19 @@ def _resolve_target_sections(
         targets.extend(
             section_id
             for section_id in requested_sections
-            if isinstance(section_id, str) and section_id in WRITER_ALLOWED_SECTION_IDS
+            if isinstance(section_id, str) and _is_valid_section_id(section_id)
         )
     if not targets:
-        targets.extend(section_id for section_id in recommended_sections if section_id in WRITER_ALLOWED_SECTION_IDS)
+        targets.extend(section_id for section_id in recommended_sections if _is_valid_section_id(section_id))
     if not targets:
-        targets = ["feature", "pricing", "user_feedback"]
+        targets = DEFAULT_FALLBACK_SECTIONS
     return _stable_unique(targets)
 
 
 def _normalize_writer_output(
     *,
     content: dict[str, object],
-    template_id: str,
+    template_id: str | None,
     target_sections: list[str],
     allowed_evidence_ids: set[str],
     allowed_insight_ids: set[str],
@@ -322,8 +331,8 @@ def _normalize_writer_output(
         or not title_raw.strip()
         or not isinstance(executive_summary_raw, str)
         or not executive_summary_raw.strip()
-        or not isinstance(template_id_raw, str)
-        or template_id_raw != template_id
+        or (template_id is not None and (not isinstance(template_id_raw, str) or template_id_raw != template_id))
+        or (template_id is None and not isinstance(template_id_raw, str))
         or not isinstance(sections_raw, list)
     ):
         return None
@@ -339,7 +348,7 @@ def _normalize_writer_output(
         insight_refs_raw = item.get("insight_refs")
         if (
             not isinstance(section_id_raw, str)
-            or section_id_raw not in WRITER_ALLOWED_SECTION_IDS
+            or not _is_valid_section_id(section_id_raw)
             or not isinstance(section_title_raw, str)
             or not section_title_raw.strip()
             or not isinstance(content_markdown_raw, str)
@@ -385,7 +394,7 @@ def _normalize_writer_output(
         risk_callouts = default_risk_callouts
 
     return {
-        "template_id": template_id,
+        "template_id": template_id if template_id is not None else str(template_id_raw).strip(),
         "title": title_raw.strip(),
         "executive_summary": executive_summary_raw.strip(),
         "sections": normalized_sections,
@@ -395,20 +404,13 @@ def _normalize_writer_output(
 
 def _build_fallback_report(
     *,
-    template_id: str,
+    template_id: str | None,
     target_sections: list[str],
     evidence_ids: list[str],
     analyst_summary: str,
     insight_briefs: list[dict[str, object]],
     risk_flags: list[str],
 ) -> dict[str, object]:
-    section_title_map = {
-        "feature": "Feature Comparison",
-        "pricing": "Pricing Strategy",
-        "user_feedback": "User Feedback Signals",
-        "differentiation": "Differentiation",
-        "swot": "SWOT Snapshot",
-    }
     sections: list[dict[str, object]] = []
     for section_id in target_sections:
         related_insights = [
@@ -456,7 +458,7 @@ def _build_fallback_report(
         sections.append(
             {
                 "section_id": section_id,
-                "title": section_title_map.get(section_id, section_id.title()),
+                "title": section_id.replace("_", " ").title(),
                 "content_markdown": content_markdown,
                 "evidence_refs": _stable_unique([item for item in evidence_refs if item in evidence_ids]),
                 "insight_refs": _stable_unique(insight_refs),
@@ -467,7 +469,7 @@ def _build_fallback_report(
         sections.append(
             {
                 "section_id": "feature",
-                "title": "Feature Comparison",
+                "title": DEFAULT_FALLBACK_SECTIONS[0].replace("_", " ").title(),
                 "content_markdown": (
                     "Fallback writer generated a minimal section because no valid target sections were resolved "
                     "from request/recommended inputs."
@@ -479,7 +481,7 @@ def _build_fallback_report(
 
     summary = analyst_summary.strip() if analyst_summary.strip() else "Fallback writer summary from analyst context."
     return {
-        "template_id": template_id,
+        "template_id": template_id or "default",
         "title": "RivalLens Competitive Battlecard",
         "executive_summary": summary,
         "sections": sections,
@@ -597,7 +599,7 @@ async def writer_node(state: AgentState) -> AgentState:
         recommended_sections = [
             item
             for item in recommended_sections_raw
-            if isinstance(item, str) and item in WRITER_ALLOWED_SECTION_IDS
+            if isinstance(item, str) and _is_valid_section_id(item)
         ]
     else:
         recommended_sections = []

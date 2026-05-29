@@ -4,8 +4,8 @@
 >
 > **系统定位（不可妥协的红线）**：RivalLens 是 agentic multi-agent system，不是 fixed workflow。所有架构决策必须服务于三条特性：
 >
-> - **Agent-driven**：LLM 动态决策流程、Agent 选择与工具使用，而非 if-else 预定义路径。参考 Anthropic 《Building Effective Agents》对 workflow 与 agent 的区分——前者结构写死，后者由 LLM 在运行时编排。
-> - **Extensible**：Agent 角色、工具集、行业包、Schema 字段、QA 规则全部开放扩展。禁止把"当前实现的角色清单 / 工具清单 / 字段清单"写成代码闭集。
+> - **Agent-driven**：LLM 动态决策流程、Agent 选择与工具使用，而非 if-else 预定义路径。参考 Anthropic 《Building Effective Agents》对 workflow 与 agent 的区分——前者结构写死，后者由 LLM 在运行时编排。当前实现中，`focus_dimensions` / `sections` / `template_id` 已从固定枚举放开为运行时字符串契约。
+> - **Extensible**：Agent 角色、工具集、行业包、Schema 字段、QA 规则全部开放扩展。禁止把"当前实现的角色清单 / 工具清单 / 字段清单"写成代码闭集。当前实现中，`source_type` / `focus_dimension` / `section_id` 均改为通用字符串校验，不再是代码闭集。
 > - **Self-improving**：系统从每次 run 的反思中沉淀新 skill（QA 规则、prompt template、source routing 偏好），形成长期能力进化闭环。这是 RivalLens 区别于一次性 workflow 的核心。
 >
 > 每条决策都从问题本身推导，可独立回答"为什么不选另一个候选方案"。**任何选项若违反上述三条特性中的任一条，必须在文档中显式标注权衡理由，否则不允许写入。**
@@ -34,7 +34,7 @@ docker compose（本地 localhost）
 │
 ├─ backend（Python 3.11 + FastAPI + LangGraph）
 │   ├─ API Layer (FastAPI)
-│   │   ├─ Run / Step / Evidence / Report / Trace API
+│   │   ├─ Run / Step / Evidence / Report / Trace API（industry_pack 可选）
 │   │   ├─ Skill Candidate Review API
 │   │   ├─ Artifact Manager
 │   │   └─ Desensitization Middleware
@@ -60,7 +60,7 @@ docker compose（本地 localhost）
 
 - 前端只调 FastAPI，不直接触达 LangGraph；
 - LangGraph 节点之间通过结构化消息 + checkpoint state 通信，不传自由文本；
-- **Supervisor 通过工具调用（`ConductResearch` / `Analyze` / `Write` / `Finalize`）动态委派下游 Agent**，每次委派决策与 outcome 落 `supervisor_decisions` 表；
+- **Supervisor 通过工具调用（`ConductResearch` / `Analyze` / `Write` / `Finalize`）动态委派下游 Agent**，每次委派决策与 outcome 落 `supervisor_decisions` 表；维度与章节由运行时决策，不再绑定固定字段清单；
 - 所有 Agent 输出落 artifact 表，所有 conclusion 引用 `evidence_id`；
 - run 结束后 Skill Curator 异步消费完整 trace，产出进化候选到 `skill_candidates` 表（status=staging），等待人工审核进 industry pack 生效池。
 

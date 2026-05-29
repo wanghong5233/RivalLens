@@ -4,11 +4,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from models.evidence import EvidenceRecord
+from schemas.contracts import validate_section_id
 
 RuleSeverity = Literal["blocking", "warning"]
 RuleRejectTarget = Literal["supervisor", "researcher", "analyst", "writer"]
-
-DEFAULT_ALLOWED_TEMPLATE_IDS = {"battlecard_default"}
 
 
 @dataclass(frozen=True)
@@ -31,20 +30,15 @@ def rule_report_must_have_markdown_content(content_markdown: str) -> RuleResult:
     )
 
 
-def rule_report_template_id_valid(
-    *,
-    content_json: dict[str, object],
-    allowed_template_ids: set[str] | None = None,
-) -> RuleResult:
-    allowed = allowed_template_ids or DEFAULT_ALLOWED_TEMPLATE_IDS
+def rule_report_template_id_present(content_json: dict[str, object]) -> RuleResult:
     template_id_raw = content_json.get("template_id")
-    passed = isinstance(template_id_raw, str) and template_id_raw in allowed
+    passed = isinstance(template_id_raw, str) and bool(template_id_raw.strip())
     return RuleResult(
-        rule_id="rule_report_template_id_valid",
+        rule_id="rule_report_template_id_present",
         passed=passed,
         severity="blocking",
         reject_to="writer",
-        message=f"template_id must be in {sorted(allowed)}.",
+        message="template_id must be a non-empty string.",
     )
 
 
@@ -67,6 +61,15 @@ def rule_writer_sections_must_have_content(content_json: dict[str, object]) -> R
         passed = True
         for section in sections_raw:
             if not isinstance(section, dict):
+                passed = False
+                break
+            section_id_raw = section.get("section_id")
+            if not isinstance(section_id_raw, str):
+                passed = False
+                break
+            try:
+                validate_section_id(section_id_raw)
+            except ValueError:
                 passed = False
                 break
             content_markdown_raw = section.get("content_markdown")
@@ -119,6 +122,19 @@ def rule_writer_must_cite_evidence(
     )
 
 
+def rule_report_section_count_in_bounds(content_json: dict[str, object]) -> RuleResult:
+    sections_raw = content_json.get("sections")
+    section_count = len(sections_raw) if isinstance(sections_raw, list) else 0
+    passed = 1 <= section_count <= 12
+    return RuleResult(
+        rule_id="rule_report_section_count_in_bounds",
+        passed=passed,
+        severity="blocking",
+        reject_to="writer",
+        message="Report section count must be between 1 and 12.",
+    )
+
+
 def rule_evidence_must_be_desensitized(evidence_items: list[EvidenceRecord]) -> RuleResult:
     passed = all(item.desensitized for item in evidence_items)
     return RuleResult(
@@ -136,15 +152,12 @@ def evaluate_fast_path_rules(
     content_json: dict[str, object],
     evidence_items: list[EvidenceRecord],
     allowed_evidence_ids: set[str],
-    allowed_template_ids: set[str] | None = None,
 ) -> list[RuleResult]:
     return [
         rule_report_must_have_markdown_content(content_markdown),
-        rule_report_template_id_valid(
-            content_json=content_json,
-            allowed_template_ids=allowed_template_ids,
-        ),
+        rule_report_template_id_present(content_json),
         rule_report_must_have_at_least_one_section(content_json),
+        rule_report_section_count_in_bounds(content_json),
         rule_writer_sections_must_have_content(content_json),
         rule_writer_must_cite_evidence(
             content_json=content_json,

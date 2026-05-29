@@ -9,7 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
 
 from db.engine import get_session_factory
@@ -48,8 +48,16 @@ RESET_STAGE_DECISION_TOOLS: dict[ResetToStage, tuple[str, ...]] = {
 class RunCreateRequest(BaseModel):
     user_query: str = "skeleton"
     competitors: list[str] = Field(default_factory=list)
-    industry_pack: str
+    industry_pack: str | None = None
     target_roles: list[str] = Field(default_factory=list)
+
+    @field_validator("industry_pack")
+    @classmethod
+    def _normalize_industry_pack(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
 
 
 class RunCreateResponse(BaseModel):
@@ -65,7 +73,7 @@ class RunResetRequest(BaseModel):
 class RunDetailResponse(BaseModel):
     run_id: str
     user_query: str
-    industry_pack: str
+    industry_pack: str | None
     status: str
     target_roles: list[str]
     competitors: list[str]
@@ -77,7 +85,7 @@ class RunDetailResponse(BaseModel):
 class RunListItemResponse(BaseModel):
     run_id: str
     user_query: str
-    industry_pack: str
+    industry_pack: str | None
     status: str
     started_at: str
     finished_at: str | None
@@ -253,8 +261,8 @@ def _build_reset_state_values(*, reset_to: ResetToStage) -> dict[str, object]:
         values["next_action"] = "writer"
         values["report_draft_done"] = False
         values["pending_tool_args"] = {
-            "template_id": "battlecard_default",
-            "sections": ["feature", "pricing", "user_feedback", "differentiation", "swot"],
+            "template_id": None,
+            "sections": ["feature", "pricing", "user_feedback", "differentiation"],
         }
         return values
 
@@ -262,7 +270,7 @@ def _build_reset_state_values(*, reset_to: ResetToStage) -> dict[str, object]:
     values["analysis_done"] = False
     values["report_draft_done"] = False
     values["pending_tool_args"] = {
-        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+        "focus_dimensions": ["feature", "pricing", "user_feedback", "positioning"],
         "parallel_by_dimension": False,
         "require_cross_competitor": True,
     }
@@ -337,7 +345,7 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
     return RunDetailResponse(
         run_id=run.run_id,
         user_query=run.user_query,
-        industry_pack=run.industry_pack,
+        industry_pack=run.industry_pack if run.industry_pack else None,
         status=run.status,
         target_roles=list(run.target_roles),
         competitors=list(run.competitors),
@@ -354,32 +362,59 @@ def _extract_competitor_id(span: dict[str, object] | None) -> str | None:
     return competitor_id if isinstance(competitor_id, str) else None
 
 
-def _validate_pack_and_competitors(payload: RunCreateRequest) -> None:
+def _normalize_competitor_inputs(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = raw.strip()
+        if not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _validate_pack_and_competitors(payload: RunCreateRequest) -> tuple[str | None, list[str]]:
+    normalized_competitors = _normalize_competitor_inputs(payload.competitors)
+    if not normalized_competitors:
+        raise APIException(
+            status_code=400,
+            error_code="COMPETITORS_REQUIRED",
+            message="competitors must contain at least one non-empty item.",
+        )
+
+    pack_id_raw = payload.industry_pack.strip() if isinstance(payload.industry_pack, str) else ""
+    if not pack_id_raw:
+        return None, normalized_competitors
+
     pack_registry = get_industry_pack_registry()
-    if not pack_registry.has(payload.industry_pack):
+    if not pack_registry.has(pack_id_raw):
         raise APIException(
             status_code=400,
             error_code="INDUSTRY_PACK_NOT_FOUND",
-            message=f"industry_pack={payload.industry_pack} is not loaded.",
+            message=f"industry_pack={pack_id_raw} is not loaded.",
         )
 
     try:
-        pack = pack_registry.get(payload.industry_pack)
+        pack = pack_registry.get(pack_id_raw)
     except IndustryPackNotFound as exc:
         raise APIException(
             status_code=400,
             error_code="INDUSTRY_PACK_NOT_FOUND",
-            message=f"industry_pack={payload.industry_pack} is not loaded.",
+            message=f"industry_pack={pack_id_raw} is not loaded.",
         ) from exc
 
-    missing_competitors = [item for item in payload.competitors if item not in pack.competitors]
+    missing_competitors = [item for item in normalized_competitors if item not in pack.competitors]
     if missing_competitors:
-        missing_joined = ",".join(missing_competitors)
-        raise APIException(
-            status_code=400,
-            error_code="COMPETITOR_NOT_IN_PACK",
-            message=f"competitor(s) {missing_joined} not found in pack {payload.industry_pack}.",
+        log.info(
+            "api.run.create.free_competitor_mode",
+            industry_pack=pack_id_raw,
+            missing_competitor_count=len(missing_competitors),
         )
+        return None, normalized_competitors
+    return pack_id_raw, normalized_competitors
 
 
 @router.get("/api/runs", response_model=RunListResponse)
@@ -429,7 +464,7 @@ async def list_runs(
             RunListItemResponse(
                 run_id=run.run_id,
                 user_query=run.user_query,
-                industry_pack=run.industry_pack,
+                industry_pack=run.industry_pack if run.industry_pack else None,
                 status=run.status,
                 started_at=run.started_at.isoformat(),
                 finished_at=_to_iso(run.finished_at),
@@ -449,14 +484,14 @@ async def list_runs(
 
 @router.post("/api/runs", response_model=RunCreateResponse)
 async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateResponse:
-    _validate_pack_and_competitors(payload)
+    run_pack_id, normalized_competitors = _validate_pack_and_competitors(payload)
     run_id = make_id("run_")
     session_factory = get_session_factory()
     with bind_run(run_id):
         log.info(
             "api.run.create.start",
-            industry_pack=payload.industry_pack,
-            competitor_count=len(payload.competitors),
+            industry_pack=run_pack_id,
+            competitor_count=len(normalized_competitors),
             target_role_count=len(payload.target_roles),
         )
 
@@ -465,10 +500,10 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
                 Run(
                     run_id=run_id,
                     user_query=payload.user_query,
-                    industry_pack=payload.industry_pack,
+                    industry_pack=run_pack_id or "",
                     status="running",
                     target_roles=payload.target_roles,
-                    competitors=payload.competitors,
+                    competitors=normalized_competitors,
                 )
             )
             await session.commit()
@@ -483,8 +518,8 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
         graph_state = await graph.ainvoke(
             {
                 "run_id": run_id,
-                "industry_pack": payload.industry_pack,
-                "competitors": payload.competitors,
+                "industry_pack": run_pack_id,
+                "competitors": normalized_competitors,
                 "user_query": payload.user_query,
                 "researched_competitors": [],
                 "analysis_done": False,
@@ -519,7 +554,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             payload=_build_run_finish_payload(run_id=run_id, status=run.status),
         )
         task = asyncio.create_task(
-            run_skill_curator_for_run(run_id=run_id, industry_pack=payload.industry_pack),
+            run_skill_curator_for_run(run_id=run_id, industry_pack=run_pack_id or ""),
             name=f"skill_curator_{run_id}",
         )
         _register_background_task(request, task)
@@ -580,7 +615,7 @@ async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
             payload=_build_run_finish_payload(run_id=run_id, status=run.status),
         )
         task = asyncio.create_task(
-            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack),
+            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack or ""),
             name=f"skill_curator_{run_id}",
         )
         _register_background_task(request, task)
@@ -666,7 +701,7 @@ async def reset_run(run_id: str, payload: RunResetRequest, request: Request) -> 
             payload=_build_run_finish_payload(run_id=run_id, status=run.status),
         )
         task = asyncio.create_task(
-            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack),
+            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack or ""),
             name=f"skill_curator_{run_id}",
         )
         _register_background_task(request, task)
@@ -873,7 +908,9 @@ async def get_run_metrics(run_id: str) -> RunMetricsResponse:
         ).scalars().all()
         candidate_rows = (
             await session.execute(
-                select(SkillCandidateRecord).where(SkillCandidateRecord.industry_pack == run.industry_pack)
+                select(SkillCandidateRecord).where(
+                    SkillCandidateRecord.industry_pack == (run.industry_pack or "generic")
+                )
             )
         ).scalars().all()
 

@@ -15,7 +15,7 @@ def _last_write_wins(_: object, new: object) -> object:
 class AgentState(TypedDict, total=False):
     run_id: str
     user_query: str
-    industry_pack: str
+    industry_pack: str | None
     competitors: list[str]
     current_iteration: int
     pending_tool_args: Annotated[dict[str, object], _last_write_wins]

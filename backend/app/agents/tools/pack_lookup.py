@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from schemas.contracts import validate_dimension
 from schemas.supervisor import FocusDimension
 from service.industry_pack.registry import IndustryPackNotFound, get_industry_pack_registry
 
@@ -25,6 +26,7 @@ def _snapshot_observation(
     competitor_id: str,
     dimension: FocusDimension,
 ) -> ToolObservation:
+    normalized_dimension = validate_dimension(dimension)
     pack_registry = get_industry_pack_registry()
     try:
         pack = pack_registry.get(industry_pack_id)
@@ -37,7 +39,7 @@ def _snapshot_observation(
             f"competitor_id={competitor_id} not found in industry_pack={industry_pack_id}."
         )
 
-    snippets = competitor.snapshots.get(dimension, [])
+    snippets = competitor.snapshots.get(normalized_dimension, [])
     if not snippets:
         raise ToolError(
             f"No snapshot snippets for competitor_id={competitor_id}, dimension={dimension}."
@@ -54,6 +56,7 @@ def _snapshot_observation(
             "metadata": {
                 "pack_id": industry_pack_id,
                 "dimension": dimension,
+                "normalized_dimension": normalized_dimension,
                 "source": "industry_pack_snapshot",
             },
         }
@@ -72,6 +75,7 @@ def _snapshot_observation(
             "competitor_id": competitor.id,
             "competitor_display_name": competitor.display_name,
             "dimension": dimension,
+            "normalized_dimension": normalized_dimension,
             "snippets": snippet_rows,
         },
     )

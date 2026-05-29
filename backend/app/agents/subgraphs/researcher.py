@@ -6,6 +6,7 @@ from typing import Literal, TypedDict
 from langgraph.graph import END, StateGraph
 
 from agents.tools import get_channel_registry
+from schemas.contracts import validate_dimension, validate_source_type
 from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError
@@ -48,7 +49,7 @@ log = get_logger("agents.researcher_subgraph")
 
 class ResearcherSubState(TypedDict, total=False):
     run_id: str
-    industry_pack_id: str
+    industry_pack_id: str | None
     research_topic: str
     competitor_id: str
     focus_dimensions: list[FocusDimension]
@@ -97,6 +98,23 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                 {
                     "query": f"{state['competitor_id']} {dimension} {state['research_topic']}",
                     "max_results": 5,
+                    "dimension": dimension,
+                },
+            )
+        industry_pack_id = state.get("industry_pack_id")
+        has_pack = isinstance(industry_pack_id, str) and bool(industry_pack_id.strip())
+        if not has_pack and not _has_attempt("extract_structured"):
+            return (
+                "extract_structured",
+                {
+                    "text": (
+                        f"{state['competitor_id']} {dimension} signal captured for "
+                        f"{state['research_topic']}."
+                    ),
+                    "source_title": f"{state['competitor_id']} {dimension} seed",
+                    "source_type": "article",
+                    "dimension": dimension,
+                    "competitor_id": state["competitor_id"],
                 },
             )
         if not _has_attempt("fetch_url"):
@@ -104,25 +122,31 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                 "fetch_url",
                 {
                     "url": _fallback_fetch_url(state=state, dimension=dimension),
-                    "industry_pack_id": state["industry_pack_id"],
+                    "industry_pack_id": industry_pack_id if has_pack else None,
                     "competitor_id": state["competitor_id"],
+                    "dimension": dimension,
                 },
             )
-        return (
-            "lookup_offline_snapshot",
-            {
-                "industry_pack_id": state["industry_pack_id"],
-                "competitor_id": state["competitor_id"],
-                "dimension": dimension,
-            },
-        )
+        if has_pack:
+            return (
+                "lookup_offline_snapshot",
+                {
+                    "industry_pack_id": industry_pack_id,
+                    "competitor_id": state["competitor_id"],
+                    "dimension": dimension,
+                },
+            )
+        return ("finalize", {"summary": "fallback finalize because no industry pack snapshot is available"})
     return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 
 
 def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension) -> str:
     default_url = f"https://{state['competitor_id']}.example.com"
     try:
-        pack = get_industry_pack_registry().get(state["industry_pack_id"])
+        industry_pack_id = state.get("industry_pack_id")
+        if not isinstance(industry_pack_id, str) or not industry_pack_id:
+            raise IndustryPackNotFound("industry_pack missing")
+        pack = get_industry_pack_registry().get(industry_pack_id)
     except IndustryPackNotFound:
         pack = None
     competitor = pack.competitors.get(state["competitor_id"]) if pack is not None else None
@@ -131,9 +155,9 @@ def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension)
         if competitor is not None and competitor.official_url
         else default_url.rstrip("/")
     )
-    if dimension == "pricing":
+    if "pricing" in dimension:
         return f"{official_url}/pricing"
-    if dimension in {"feature", "tech_stack"}:
+    if "feature" in dimension or "tech" in dimension or "integration" in dimension:
         return f"{official_url}/docs"
     return official_url
 
@@ -143,6 +167,9 @@ def _validate_lookup_action(
     action_args: dict[str, object],
     state: ResearcherSubState,
 ) -> tuple[str, dict[str, object]] | None:
+    industry_pack_id = state.get("industry_pack_id")
+    if not isinstance(industry_pack_id, str) or not industry_pack_id:
+        return None
     dimension_raw = action_args.get("dimension")
     competitor_raw = action_args.get("competitor_id")
     if (
@@ -154,7 +181,7 @@ def _validate_lookup_action(
         return (
             competitor_raw,
             {
-                "industry_pack_id": state["industry_pack_id"],
+                "industry_pack_id": industry_pack_id,
                 "competitor_id": competitor_raw,
                 "dimension": dimension_raw,
             },
@@ -192,19 +219,30 @@ def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
             normalized_args: dict[str, object] = {"query": query_raw.strip()}
             if isinstance(max_results_raw, int):
                 normalized_args["max_results"] = max_results_raw
+            dimension_raw = action_args.get("dimension")
+            if isinstance(dimension_raw, str):
+                try:
+                    normalized_args["dimension"] = validate_dimension(dimension_raw)
+                except ValueError:
+                    pass
             return ("search_web", normalized_args)
 
     if action == "fetch_url":
         url_raw = action_args.get("url")
         if isinstance(url_raw, str) and url_raw.strip():
-            return (
-                "fetch_url",
-                {
-                    "url": url_raw.strip(),
-                    "industry_pack_id": state["industry_pack_id"],
-                    "competitor_id": state["competitor_id"],
-                },
-            )
+            industry_pack_id = state.get("industry_pack_id")
+            normalized_args: dict[str, object] = {
+                "url": url_raw.strip(),
+                "industry_pack_id": industry_pack_id if isinstance(industry_pack_id, str) and industry_pack_id else None,
+                "competitor_id": state["competitor_id"],
+            }
+            dimension_raw = action_args.get("dimension")
+            if isinstance(dimension_raw, str):
+                try:
+                    normalized_args["dimension"] = validate_dimension(dimension_raw)
+                except ValueError:
+                    pass
+            return ("fetch_url", normalized_args)
 
     if action == "parse_page":
         html_raw = action_args.get("html")
@@ -228,6 +266,17 @@ def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
                 normalized_args["source_url"] = source_url_raw
             if isinstance(source_title_raw, str):
                 normalized_args["source_title"] = source_title_raw
+            dimension_raw = action_args.get("dimension")
+            if isinstance(dimension_raw, str):
+                try:
+                    normalized_args["dimension"] = validate_dimension(dimension_raw)
+                except ValueError:
+                    pass
+            competitor_id_raw = action_args.get("competitor_id")
+            if isinstance(competitor_id_raw, str) and competitor_id_raw.strip():
+                normalized_args["competitor_id"] = competitor_id_raw.strip()
+            else:
+                normalized_args["competitor_id"] = state["competitor_id"]
             return ("extract_structured", normalized_args)
 
     return _fallback_action(state)
@@ -346,6 +395,11 @@ def _append_evidence_drafts(
             continue
         if not isinstance(source_type, str):
             source_type = "article"
+        else:
+            try:
+                source_type = validate_source_type(source_type)
+            except ValueError:
+                source_type = "article"
         if not isinstance(sanitized_text, str):
             sanitized_text = quote
         if not isinstance(metadata, dict):
@@ -394,7 +448,13 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         }
     registry = get_channel_registry()
     dimension_raw = action_args.get("dimension")
-    dimension: FocusDimension | None = dimension_raw if isinstance(dimension_raw, str) else None
+    if isinstance(dimension_raw, str):
+        try:
+            dimension = validate_dimension(dimension_raw)
+        except ValueError:
+            dimension = None
+    else:
+        dimension = None
     try:
         observation = await registry.invoke(channel_action, args=action_args)
         observation_row = {
@@ -419,9 +479,22 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     observations_log = list(state.get("observations_log", []))
     observations_log.append(observation_row)
 
+    result_payload_raw = observation_row.get("result", {}) if isinstance(observation_row, dict) else {}
+    if isinstance(result_payload_raw, dict):
+        result_payload = {
+            **result_payload_raw,
+            "metadata": {
+                **(result_payload_raw.get("metadata", {}) if isinstance(result_payload_raw.get("metadata"), dict) else {}),
+                "dimension": dimension,
+                "competitor_id": state["competitor_id"],
+            },
+        }
+    else:
+        result_payload = {}
+
     evidence_drafts = _append_evidence_drafts(
         evidence_drafts=list(state.get("evidence_drafts", [])),
-        observation=observation_row.get("result", {}) if isinstance(observation_row, dict) else {},
+        observation=result_payload,
     )
 
     if dimension is not None:

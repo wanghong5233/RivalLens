@@ -3,7 +3,7 @@ export type RunStatus = "running" | "completed" | "degraded" | "failed" | string
 export interface RunCreateRequest {
   user_query: string;
   competitors: string[];
-  industry_pack: string;
+  industry_pack?: string | null;
   target_roles: string[];
 }
 
@@ -20,7 +20,7 @@ export interface RunResetRequest {
 export interface RunDetailResponse {
   run_id: string;
   user_query: string;
-  industry_pack: string;
+  industry_pack: string | null;
   status: RunStatus;
   target_roles: string[];
   competitors: string[];
@@ -32,7 +32,7 @@ export interface RunDetailResponse {
 export interface RunListItemResponse {
   run_id: string;
   user_query: string;
-  industry_pack: string;
+  industry_pack: string | null;
   status: RunStatus;
   started_at: string;
   finished_at: string | null;

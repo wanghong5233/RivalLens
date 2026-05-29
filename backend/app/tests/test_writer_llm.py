@@ -47,6 +47,7 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "Writer context" in user_prompt
     assert "- evidence_briefs:" in user_prompt
     assert "- analyst_insights:" in user_prompt
+    assert "- allowed_section_ids:" not in user_prompt
     assert "Fallback writer request" in fallback_prompt
     assert "- evidence_ids:" in fallback_prompt
 
@@ -136,3 +137,35 @@ def test_fallback_report_render_contains_evidence_citations() -> None:
     assert report_content["sections"][0]["evidence_refs"] == ["ev_001"]
     assert "[ev_001]" in markdown
     assert "## Executive Summary" in markdown
+
+
+def test_normalize_writer_output_allows_template_auto_mode() -> None:
+    result = _normalize_writer_output(
+        content={
+            "template_id": "default",
+            "title": "Universal Report",
+            "executive_summary": "Valid summary with evidence references.",
+            "sections": [
+                {
+                    "section_id": "go_to_market",
+                    "title": "Go To Market",
+                    "content_markdown": (
+                        "This section has enough detail and valid evidence references to pass "
+                        "writer normalization under dynamic section mode."
+                    ),
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": [],
+                }
+            ],
+            "risk_callouts": [],
+        },
+        template_id=None,
+        target_sections=["go_to_market"],
+        allowed_evidence_ids={"ev_001"},
+        allowed_insight_ids=set(),
+        default_risk_callouts=[],
+    )
+
+    assert result is not None
+    assert result["template_id"] == "default"
+    assert result["sections"][0]["section_id"] == "go_to_market"

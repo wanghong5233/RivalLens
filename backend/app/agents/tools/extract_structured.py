@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from typing import cast
-
 from service.collector.base import BaseChannel, CollectorObservation, SourceType, ToolObservationResult
 from service.collector.errors import ChannelError
 from service.llm.client import get_llm_client
+from schemas.contracts import validate_source_type
 
 from agents.tools.parse_page import infer_source_type
 
@@ -38,16 +37,11 @@ class ExtractStructuredChannel(BaseChannel):
             raise ChannelError("extract_structured source_title must be string when provided.")
 
         source_type: SourceType
-        if isinstance(source_type_raw, str) and source_type_raw in {
-            "official_site",
-            "docs",
-            "pricing_page",
-            "public_review",
-            "article",
-            "local_note",
-            "offline_snapshot",
-        }:
-            source_type = cast(SourceType, source_type_raw)
+        if isinstance(source_type_raw, str):
+            try:
+                source_type = validate_source_type(source_type_raw)
+            except ValueError:
+                source_type = "article"
         else:
             source_type = infer_source_type(source_url=source_url, official_hosts=None)
 

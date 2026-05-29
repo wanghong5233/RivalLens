@@ -42,7 +42,6 @@ export function NewRunPage(): JSX.Element {
 
   const canSubmit =
     userQuery.trim().length > 0 &&
-    industryPack.length > 0 &&
     selectedCompetitors.length > 0 &&
     !createRunMutation.isPending;
 
@@ -72,7 +71,7 @@ export function NewRunPage(): JSX.Element {
     const created = await createRunMutation.mutateAsync({
       user_query: userQuery.trim(),
       competitors: selectedCompetitors,
-      industry_pack: industryPack,
+      industry_pack: industryPack.trim() ? industryPack : null,
       target_roles: targetRoles,
     });
     navigate(`/runs/${created.run_id}`);
@@ -82,7 +81,7 @@ export function NewRunPage(): JSX.Element {
     <section className="space-y-4">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">新建分析任务</h1>
-        <p className="text-sm text-muted-foreground">填写赛道问题、选择行业包和竞品后立即启动 run。</p>
+        <p className="text-sm text-muted-foreground">填写分析问题与竞品后即可启动；行业包可选（作为先验增强）。</p>
       </header>
 
       <Card>
@@ -111,7 +110,7 @@ export function NewRunPage(): JSX.Element {
 
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="industry-pack">
-                  行业包
+                  行业包（可选）
                 </label>
                 <select
                   className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
@@ -124,6 +123,7 @@ export function NewRunPage(): JSX.Element {
                   }}
                   value={industryPack}
                 >
+                  <option value="">不使用行业包（通用模式）</option>
                   {packs.map((pack) => (
                     <option key={pack.id} value={pack.id}>
                       {pack.display_name}
@@ -134,7 +134,9 @@ export function NewRunPage(): JSX.Element {
                   <p className="text-xs text-muted-foreground">
                     默认维度：{selectedPack.research_dimensions.join(" / ")}
                   </p>
-                ) : null}
+                ) : (
+                  <p className="text-xs text-muted-foreground">通用模式下由 Agent 运行时动态决定分析维度。</p>
+                )}
               </div>
 
               <div className="space-y-2">

@@ -81,3 +81,23 @@ def test_insights_to_conclusions_skips_invalid_items() -> None:
     )
 
     assert result == []
+
+
+def test_insights_to_conclusions_accepts_dynamic_section_ids() -> None:
+    result = insights_to_conclusions(
+        run_id="run_mapper_003",
+        step_id="step_mapper_003",
+        insights=[
+            {
+                "dimension": "go_to_market",
+                "finding": "Competitor has stronger organic acquisition channels.",
+                "confidence": "medium",
+                "evidence_ids": ["ev_1"],
+            },
+        ],
+        evidence_lookup={"ev_1": {"span": {"competitor_id": "comp_cursor"}}},
+        risk_flags=["go_to_market_channel_gap"],
+    )
+
+    assert len(result) == 1
+    assert result[0]["section"] == "go_to_market"

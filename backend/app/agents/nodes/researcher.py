@@ -11,6 +11,7 @@ from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.step import Step
+from schemas.contracts import validate_dimension, validate_source_type
 from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
 from service.event_bus import RunEventType, emit_run_event
@@ -28,9 +29,9 @@ def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
 
 def _require_industry_pack_id(state: AgentState) -> str:
     industry_pack_id = state.get("industry_pack")
-    if industry_pack_id is None:
-        raise RuntimeError("AgentState.industry_pack is required for researcher node.")
-    return industry_pack_id
+    if isinstance(industry_pack_id, str) and industry_pack_id.strip():
+        return industry_pack_id
+    return ""
 
 
 def _resolve_pack(industry_pack_id: str) -> IndustryPack:
@@ -48,19 +49,26 @@ def _resolve_focus_dimensions(
 ) -> list[FocusDimension]:
     focus_dimensions = list(request.focus_dimensions or pack.default_focus_dimensions)
     if not focus_dimensions:
+        focus_dimensions = ["feature", "pricing", "user_feedback"]
+    if not focus_dimensions:
         raise RuntimeError(
             f"No focus_dimensions available for industry_pack={pack.id} and competitor_id={request.competitor_id}."
         )
+    normalized: list[str] = []
+    seen: set[str] = set()
     for dimension in focus_dimensions:
-        if dimension not in {"feature", "pricing", "user_feedback", "positioning", "tech_stack"}:
-            raise RuntimeError(f"Unsupported focus dimension: {dimension}.")
-    return focus_dimensions
+        normalized_dimension = validate_dimension(dimension)
+        if normalized_dimension in seen:
+            continue
+        seen.add(normalized_dimension)
+        normalized.append(normalized_dimension)
+    return normalized
 
 
 def _build_initial_substate(
     *,
     run_id: str,
-    pack_id: str,
+    pack_id: str | None,
     request: ConductResearch,
     focus_dimensions: list[FocusDimension],
 ) -> ResearcherSubState:
@@ -97,15 +105,6 @@ def _build_evidence_rows(
     evidence_rows: list[EvidenceRecord] = []
     evidence_ids: list[str] = []
     allowed_dimensions = set(focus_dimensions)
-    allowed_source_types = {
-        "official_site",
-        "docs",
-        "pricing_page",
-        "public_review",
-        "article",
-        "local_note",
-        "offline_snapshot",
-    }
     for draft in evidence_drafts:
         if not isinstance(draft, dict):
             continue
@@ -117,15 +116,18 @@ def _build_evidence_rows(
         source_url_raw = draft.get("source_url")
         source_title_raw = draft.get("source_title")
         metadata_raw = draft.get("metadata", {})
-        if (
-            not isinstance(dimension_raw, str)
-            or dimension_raw not in allowed_dimensions
-            or not isinstance(competitor_id_raw, str)
-            or not isinstance(quote_raw, str)
-        ):
+        if not isinstance(dimension_raw, str) or not isinstance(competitor_id_raw, str) or not isinstance(quote_raw, str):
             continue
-        if not isinstance(source_type_raw, str) or source_type_raw not in allowed_source_types:
-            source_type_raw = "article"
+        normalized_dimension = validate_dimension(dimension_raw)
+        if normalized_dimension not in allowed_dimensions:
+            continue
+        if isinstance(source_type_raw, str):
+            try:
+                normalized_source_type = validate_source_type(source_type_raw)
+            except ValueError:
+                normalized_source_type = "article"
+        else:
+            normalized_source_type = "article"
         sanitized_text = sanitized_text_raw if isinstance(sanitized_text_raw, str) else quote_raw
         source_url = source_url_raw if isinstance(source_url_raw, str) else None
         source_title = source_title_raw if isinstance(source_title_raw, str) else None
@@ -136,14 +138,14 @@ def _build_evidence_rows(
             EvidenceRecord(
                 id=evidence_id,
                 run_id=run_id,
-                source_type=source_type_raw,
+                source_type=normalized_source_type,
                 source_url=source_url,
                 source_title=source_title,
                 quote=quote_raw,
                 sanitized_text=sanitized_text,
                 span={
                     **metadata,
-                    "dimension": dimension_raw,
+                    "dimension": normalized_dimension,
                     "competitor_id": competitor_id_raw,
                     "pack_id": pack_id,
                 },
@@ -203,18 +205,29 @@ async def researcher_node(state: AgentState) -> AgentState:
     industry_pack_id = _require_industry_pack_id(state)
     session_factory = _require_session_factory(state)
     request = ConductResearch.model_validate(state.get("pending_tool_args", {}))
-    pack = _resolve_pack(industry_pack_id)
-    competitor = pack.competitors.get(request.competitor_id)
-    if competitor is None:
-        raise RuntimeError(
-            f"competitor_id={request.competitor_id} not found in industry_pack={pack.id}."
+    pack: IndustryPack | None
+    if industry_pack_id:
+        pack = _resolve_pack(industry_pack_id)
+        competitor = pack.competitors.get(request.competitor_id)
+        if competitor is None:
+            raise RuntimeError(
+                f"competitor_id={request.competitor_id} not found in industry_pack={pack.id}."
+            )
+    else:
+        pack = IndustryPack(
+            id="generic",
+            name="Generic",
+            version="0",
+            default_focus_dimensions=[],
+            description="Generic pack-free execution mode.",
+            competitors={},
         )
 
     focus_dimensions = _resolve_focus_dimensions(request=request, pack=pack)
     subgraph = get_researcher_subgraph()
     subgraph_input = _build_initial_substate(
         run_id=run_id,
-        pack_id=pack.id,
+        pack_id=(industry_pack_id if industry_pack_id else None),
         request=request,
         focus_dimensions=focus_dimensions,
     )

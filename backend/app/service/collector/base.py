@@ -2,21 +2,25 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from schemas.contracts import validate_source_type
 from service.prompt_safety.sanitizer import sanitize_text
 
-SourceType = Literal[
-    "official_site",
-    "docs",
-    "pricing_page",
-    "public_review",
-    "article",
-    "local_note",
-    "offline_snapshot",
-]
+SourceType = str
+KNOWN_SOURCE_TYPES: frozenset[str] = frozenset(
+    {
+        "official_site",
+        "docs",
+        "pricing_page",
+        "public_review",
+        "article",
+        "local_note",
+        "offline_snapshot",
+    }
+)
 
 
 class CollectorSnippet(BaseModel):
@@ -27,6 +31,11 @@ class CollectorSnippet(BaseModel):
     source_type: SourceType
     desensitized: bool
     metadata: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("source_type")
+    @classmethod
+    def _validate_source_type(cls, value: str) -> str:
+        return validate_source_type(value)
 
 
 class ToolObservationResult(BaseModel):

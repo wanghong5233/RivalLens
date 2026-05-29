@@ -30,8 +30,9 @@ log = get_logger("service.qa.engine")
 
 _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_report_must_have_markdown_content": ["reports.content_markdown"],
-    "rule_report_template_id_valid": ["reports.content_json.template_id"],
+    "rule_report_template_id_present": ["reports.content_json.template_id"],
     "rule_report_must_have_at_least_one_section": ["reports.content_json.sections"],
+    "rule_report_section_count_in_bounds": ["reports.content_json.sections"],
     "rule_writer_sections_must_have_content": ["reports.content_json.sections[].content_markdown"],
     "rule_writer_must_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_evidence_must_be_desensitized": ["evidence.desensitized"],
@@ -203,6 +204,12 @@ def _build_promoted_rule_results(
     now: datetime | None = None,
 ) -> tuple[list[RuleResult], dict[str, object]]:
     observed_rules: list[RuleResult] = []
+    if not promoted_qa_rules:
+        return observed_rules, {
+            "promoted_qa_enforced_count": 0,
+            "promoted_qa_parse_error_count": 0,
+            "promoted_qa_blocked_rule_ids": [],
+        }
     current_time = now or datetime.now(timezone.utc)
     evidence_by_id = {item.id: item for item in evidence_items}
     parse_error_count = 0
@@ -242,7 +249,6 @@ async def evaluate_report(
     reviewer_step_id: str,
     session_factory: async_sessionmaker[AsyncSession],
     qa_rejection_count: int,
-    allowed_template_ids: set[str] | None = None,
     promoted_qa_rules: list[PromotedQARule] | None = None,
 ) -> tuple[Approval | Rejection, LLMResponse | None, dict[str, object]]:
     promoted_rules = promoted_qa_rules or []
@@ -286,7 +292,6 @@ async def evaluate_report(
         content_json=report.content_json,
         evidence_items=evidence_items,
         allowed_evidence_ids={item.id for item in evidence_items},
-        allowed_template_ids=allowed_template_ids,
     )
     promoted_rule_results, promoted_rule_metadata = _build_promoted_rule_results(
         promoted_qa_rules=promoted_rules,

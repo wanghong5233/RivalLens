@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from schemas.contracts import validate_source_type
+
 
 class Competitor(BaseModel):
     id: str
@@ -77,15 +79,7 @@ class UserFeedback(BaseModel):
 class Evidence(BaseModel):
     id: str
     run_id: str
-    source_type: Literal[
-        "official_site",
-        "docs",
-        "pricing_page",
-        "public_review",
-        "article",
-        "local_note",
-        "offline_snapshot",
-    ]
+    source_type: str
     source_url: str | None = None
     source_title: str | None = None
     quote: str
@@ -94,6 +88,11 @@ class Evidence(BaseModel):
     collected_by: str
     collected_at: str
     desensitized: bool
+
+    @field_validator("source_type")
+    @classmethod
+    def _validate_source_type(cls, value: str) -> str:
+        return validate_source_type(value)
 
 
 class Conclusion(BaseModel):
