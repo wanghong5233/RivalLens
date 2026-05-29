@@ -97,12 +97,13 @@
 - **入口**：`backend/app/service/llm/budget.py` + `service/llm/client.py`（call 前检查） + `core/config.py`（slot 预算字段）
 - **验收**：每个 model_slot 有 token 预算；超限触发降级 prompt 或 skip
 
-### [ ] ORCH-004 Resume B2 reset_to 阶段重放
+### [x] ORCH-004 Resume B2 reset_to 阶段重放
 
 - **设计**：docs/2.5 §8 + docs/2 §10.1 节点中断恢复
-- **现状**：`POST /api/runs/{id}/resume` 仅 thread 级（B1），不支持 reset_to 阶段重放
-- **入口**：`backend/app/router/run_rt.py` + `agents/graph.py`（配合 checkpoint reset_to） + 可选 `backend/app/service/checkpoint/`
-- **验收**：可指定 `reset_to=writer` 等阶段，清理后续 steps 重新跑
+- **现状**：已支持 `POST /api/runs/{id}/reset`（`reset_to in {writer, analyst}`）。执行时会清理目标阶段及后续 trace（steps/reports/conclusions），通过 checkpoint `aupdate_state(as_node="supervisor")` 重写阶段入口，再 `ainvoke(None)` 重放；重放完成后继续发 `run.finish` 并异步触发 curator
+- **入口**：`backend/app/router/run_rt.py`（reset endpoint + checkpoint state override） + `frontend/src/api/hooks.ts` / `frontend/src/pages/RunViewPage.tsx`（阶段重放 UI） + `backend/app/tests/test_smoke.py`（writer/analyst replay 覆盖）
+- **验收**：`reset_to=writer` 与 `reset_to=analyst` 可重放并回到 completed；`running` run 会返回 409 `RUN_NOT_RESETTABLE`
+- **备注**：researcher 级 reset_to（涉及 `researched_competitors` 累加 reducer 与 fan-out）留在后续独立 plan
 
 ### [x] ORCH-005 Golden eval 集
 

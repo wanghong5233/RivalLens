@@ -565,6 +565,12 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
 async def test_writer_report_evidence_refs_stable_with_table_toggle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if "postgresql+psycopg://" in settings.DATABASE_URL:
+        async_database_url = settings.DATABASE_URL.replace(
+            "postgresql+psycopg://",
+            "postgresql+asyncpg://",
+        )
+        monkeypatch.setattr(settings, "DATABASE_URL", async_database_url)
     run_id = f"run_writer_toggle_{uuid4().hex[:8]}"
     step_id = f"step_writer_toggle_{uuid4().hex[:8]}"
     engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
@@ -737,6 +743,180 @@ def test_resume_run_continues_from_checkpoint(test_client: TestClient) -> None:
     assert non_resumable_response.json()["error_code"] == "RUN_NOT_RESUMABLE"
 
 
+def test_reset_to_writer_replays_report(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "reset writer replay",
+            "competitors": ["comp_cursor", "comp_windsurf"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    reset_response = test_client.post(
+        f"/api/runs/{run_id}/reset",
+        json={"reset_to": "writer"},
+    )
+    assert reset_response.status_code == 200
+    reset_payload = reset_response.json()
+    assert reset_payload["run_id"] == run_id
+    assert reset_payload["status"] == "completed"
+
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            writer_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'writer'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            analyst_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'analyst'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            qa_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'qa'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            report_count = connection.execute(
+                text("SELECT COUNT(*) AS count FROM reports WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert int(writer_step_count) >= 1
+    assert int(analyst_step_count) >= 1
+    assert int(qa_step_count) >= 1
+    assert int(report_count) >= 1
+    assert _wait_for_skill_candidate_count(run_id) >= 1
+
+
+def test_reset_to_analyst_regenerates_conclusions(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "reset analyst replay",
+            "competitors": ["comp_cursor", "comp_windsurf"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    reset_response = test_client.post(
+        f"/api/runs/{run_id}/reset",
+        json={"reset_to": "analyst"},
+    )
+    assert reset_response.status_code == 200
+    reset_payload = reset_response.json()
+    assert reset_payload["run_id"] == run_id
+    assert reset_payload["status"] == "completed"
+
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            analyst_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'analyst'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            writer_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'writer'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            qa_step_count = connection.execute(
+                text(
+                    "SELECT COUNT(*) AS count FROM steps "
+                    "WHERE run_id = :run_id AND agent_name = 'qa'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            conclusion_count = connection.execute(
+                text("SELECT COUNT(*) AS count FROM conclusions WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert int(analyst_step_count) >= 1
+    assert int(writer_step_count) >= 1
+    assert int(qa_step_count) >= 1
+    assert int(conclusion_count) >= 1
+    assert _wait_for_skill_candidate_count(run_id) >= 1
+
+
+def test_reset_rejects_running_run(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "reset running run reject",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE runs SET status = 'running', finished_at = :finished_at "
+                    "WHERE run_id = :run_id"
+                ),
+                {"run_id": run_id, "finished_at": None},
+            )
+    finally:
+        engine.dispose()
+
+    reset_response = test_client.post(
+        f"/api/runs/{run_id}/reset",
+        json={"reset_to": "writer"},
+    )
+    assert reset_response.status_code == 409
+    assert reset_response.json()["error_code"] == "RUN_NOT_RESETTABLE"
+
+
+def test_reset_rejects_invalid_stage(test_client: TestClient) -> None:
+    create_response = test_client.post(
+        "/api/runs",
+        json={
+            "user_query": "reset invalid stage reject",
+            "competitors": ["comp_cursor"],
+            "industry_pack": "ai_coding_tools",
+            "target_roles": ["pm"],
+        },
+    )
+    assert create_response.status_code == 200
+    run_id = create_response.json()["run_id"]
+
+    reset_response = test_client.post(
+        f"/api/runs/{run_id}/reset",
+        json={"reset_to": "researcher"},
+    )
+    assert reset_response.status_code == 422
+
+
 def test_run_events_sse_endpoint_exposes_stream_content_type(test_client: TestClient) -> None:
     create_response = test_client.post(
         "/api/runs",
@@ -900,24 +1080,27 @@ def _prepare_promoted_pack_copy(
     return copied_root
 
 
-def _latest_staging_skill_candidate_id_for_run(run_id: str) -> str:
-    engine = create_engine(settings.DATABASE_URL_SYNC)
-    try:
-        with engine.connect() as connection:
-            row = connection.execute(
-                text(
-                    "SELECT id FROM skill_candidates "
-                    "WHERE status = 'staging' "
-                    "AND supporting_run_ids @> CAST(:supporting_run_ids AS jsonb) "
-                    "ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"supporting_run_ids": json.dumps([run_id], ensure_ascii=False)},
-            ).mappings().first()
-    finally:
-        engine.dispose()
-    if row is None:
-        raise RuntimeError(f"No staging skill candidate found for run_id={run_id}")
-    return str(row["id"])
+def _latest_staging_skill_candidate_id_for_run(run_id: str, *, timeout_seconds: float = 5.0) -> str:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        engine = create_engine(settings.DATABASE_URL_SYNC)
+        try:
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text(
+                        "SELECT id FROM skill_candidates "
+                        "WHERE status = 'staging' "
+                        "AND supporting_run_ids @> CAST(:supporting_run_ids AS jsonb) "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"supporting_run_ids": json.dumps([run_id], ensure_ascii=False)},
+                ).mappings().first()
+        finally:
+            engine.dispose()
+        if row is not None:
+            return str(row["id"])
+        time.sleep(0.2)
+    raise RuntimeError(f"No staging skill candidate found for run_id={run_id}")
 
 
 def _latest_qa_step_payload(run_id: str) -> dict[str, object]:

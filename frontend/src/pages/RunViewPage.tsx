@@ -3,11 +3,13 @@ import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 
-import { useRunDetail, useRunReport, useRunTrace } from "@/api/hooks";
+import { queryClient } from "@/api/queryClient";
+import { useResetRun, useRunDetail, useRunReport, useRunTrace } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { MetricsPanel } from "@/components/MetricsPanel";
 import { StatusBadge } from "@/components/StatusBadge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
@@ -30,6 +32,7 @@ export function RunViewPage(): JSX.Element {
 
   const detailQuery = useRunDetail(runId);
   const traceQuery = useRunTrace(runId);
+  const resetRunMutation = useResetRun();
 
   const runStatus = detailQuery.data?.status ?? "running";
   const isRunActive = runStatus === "running";
@@ -112,6 +115,7 @@ export function RunViewPage(): JSX.Element {
   const hasCuratorStep = traceSteps.some((item) => item.agent_name === "skill_curator");
   const showCuratorPending =
     (runStatus === "completed" || runStatus === "degraded") && !hasCuratorStep;
+  const isResetPending = resetRunMutation.isPending;
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) {
@@ -119,6 +123,16 @@ export function RunViewPage(): JSX.Element {
     }
     setActiveEvidenceIds(evidenceIds);
     setIsEvidenceDrawerOpen(true);
+  }
+
+  async function handleResetRun(resetTo: "analyst" | "writer"): Promise<void> {
+    if (!runId) {
+      return;
+    }
+    await resetRunMutation.mutateAsync({ runId, resetTo });
+    await queryClient.invalidateQueries({ queryKey: ["run-detail", runId] });
+    await queryClient.invalidateQueries({ queryKey: ["run-trace", runId] });
+    await queryClient.invalidateQueries({ queryKey: ["run-report", runId] });
   }
 
   const reportMarkdown = reportQuery.data?.content_markdown ?? "";
@@ -201,6 +215,44 @@ export function RunViewPage(): JSX.Element {
           </Card>
 
           <MetricsPanel isRunActive={isRunActive} runId={runId} />
+
+          {isReportReady ? (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">阶段重放（B2）</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  当结果不满意时，可从指定阶段回放。重放会清理该阶段及后续轨迹，然后从 checkpoint 继续执行。
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={isResetPending}
+                    onClick={() => {
+                      void handleResetRun("writer");
+                    }}
+                    type="button"
+                    variant="outline"
+                  >
+                    {isResetPending ? "重放中..." : "重写报告（writer）"}
+                  </Button>
+                  <Button
+                    disabled={isResetPending}
+                    onClick={() => {
+                      void handleResetRun("analyst");
+                    }}
+                    type="button"
+                    variant="outline"
+                  >
+                    {isResetPending ? "重放中..." : "重做分析（analyst）"}
+                  </Button>
+                </div>
+                {resetRunMutation.isError ? (
+                  <p className="text-sm text-red-200">阶段重放失败：{resetRunMutation.error.message}</p>
+                ) : null}
+              </CardContent>
+            </Card>
+          ) : null}
 
           <Card>
             <CardHeader className="pb-3">

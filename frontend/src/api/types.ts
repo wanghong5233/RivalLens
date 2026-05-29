@@ -13,6 +13,10 @@ export interface RunCreateResponse {
   message: string;
 }
 
+export interface RunResetRequest {
+  reset_to: "analyst" | "writer";
+}
+
 export interface RunDetailResponse {
   run_id: string;
   user_query: string;

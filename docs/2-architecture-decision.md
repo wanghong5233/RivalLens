@@ -345,6 +345,7 @@ skill_candidates ──[approved by reviewer]──> industry_packs/<pack>/skill
 | **Researcher ReAct 死循环** | 单 Researcher subgraph 的 tool call 计数被限制为 `max_researcher_iterations`（默认 6），超限触发强制 compress 并 return |
 | **QA 反馈死循环** | QA rejection 的 `retry_count` 写入 step；同一 step 被打回超过 `max_qa_rejections`（默认 3）后强制 finalize 该 step 为 `degraded`，不再继续打回 |
 | **Skill Curator 任务失败** | Curator 是异步任务，失败不影响主 run 结果；失败记录到 `skill_candidates.error` 字段供后续重跑 |
+| **阶段级重放（B2）** | 提供 `POST /api/runs/{id}/reset` 支持 `reset_to=writer/analyst`：清理目标阶段及后续 trace（steps/reports/conclusions），再通过 checkpoint `aupdate_state(as_node=\"supervisor\")` 重写入口并 `ainvoke(None)` 重放 |
 
 ### 10.2 降级机制
 

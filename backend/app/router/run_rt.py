@@ -5,14 +5,16 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from db.engine import get_session_factory
 from exceptions.base import APIException
+from models.conclusion import ConclusionRecord
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.report import Report
@@ -31,6 +33,17 @@ from utils.logger import bind_run, get_logger
 router = APIRouter()
 log = get_logger("router.run_rt")
 
+ResetToStage = Literal["analyst", "writer"]
+RESETTABLE_RUN_STATUS = {"completed", "degraded"}
+RESET_STAGE_AGENT_NAMES: dict[ResetToStage, tuple[str, ...]] = {
+    "writer": ("writer", "qa", "skill_curator"),
+    "analyst": ("analyst", "writer", "qa", "skill_curator"),
+}
+RESET_STAGE_DECISION_TOOLS: dict[ResetToStage, tuple[str, ...]] = {
+    "writer": ("Write", "Finalize"),
+    "analyst": ("Analyze", "Write", "Finalize"),
+}
+
 
 class RunCreateRequest(BaseModel):
     user_query: str = "skeleton"
@@ -43,6 +56,10 @@ class RunCreateResponse(BaseModel):
     run_id: str
     status: str
     message: str
+
+
+class RunResetRequest(BaseModel):
+    reset_to: ResetToStage
 
 
 class RunDetailResponse(BaseModel):
@@ -201,6 +218,86 @@ def _register_background_task(request: Request, task: asyncio.Task[object]) -> N
 
 def _build_run_finish_payload(*, run_id: str, status: str) -> dict[str, object]:
     return {"run_id": run_id, "status": status}
+
+
+def _coerce_run_status(state: object) -> str:
+    if isinstance(state, dict):
+        status_raw = state.get("status", "completed")
+    else:
+        status_raw = "completed"
+    status = str(status_raw)
+    if status in {"completed", "degraded"}:
+        return status
+    return "completed"
+
+
+def _has_checkpoint_state(values: object) -> bool:
+    if not isinstance(values, dict):
+        return False
+    return bool(values)
+
+
+def _build_reset_state_values(*, reset_to: ResetToStage) -> dict[str, object]:
+    values: dict[str, object] = {
+        "pending_tool_args": {},
+        "pending_review_target_step_id": None,
+        "last_completed_node": None,
+        "qa_outcome": None,
+        "qa_reject_to": None,
+        "qa_rejection_count": 0,
+        "qa_reasons": [],
+        "status": "running",
+        "decisions": [],
+    }
+    if reset_to == "writer":
+        values["next_action"] = "writer"
+        values["report_draft_done"] = False
+        values["pending_tool_args"] = {
+            "template_id": "battlecard_default",
+            "sections": ["feature", "pricing", "user_feedback", "differentiation", "swot"],
+        }
+        return values
+
+    values["next_action"] = "analyst"
+    values["analysis_done"] = False
+    values["report_draft_done"] = False
+    values["pending_tool_args"] = {
+        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+        "parallel_by_dimension": False,
+        "require_cross_competitor": True,
+    }
+    return values
+
+
+async def _cleanup_trace_for_reset(
+    *,
+    run_id: str,
+    reset_to: ResetToStage,
+) -> None:
+    session_factory = get_session_factory()
+    agent_names = RESET_STAGE_AGENT_NAMES[reset_to]
+    decision_tools = RESET_STAGE_DECISION_TOOLS[reset_to]
+    async with session_factory() as session:
+        # NOTE: reset_to replay is an explicit exception to append-only trace:
+        # we intentionally remove replay-target stages and their downstream data.
+        if reset_to == "analyst":
+            await session.execute(
+                delete(ConclusionRecord).where(ConclusionRecord.run_id == run_id)
+            )
+        await session.execute(delete(Report).where(Report.run_id == run_id))
+        await session.execute(
+            delete(Step).where(
+                Step.run_id == run_id,
+                Step.agent_name.in_(agent_names),
+            )
+        )
+        await session.execute(
+            delete(SupervisorDecisionRecord).where(
+                SupervisorDecisionRecord.run_id == run_id,
+                SupervisorDecisionRecord.chosen_tool.in_(decision_tools),
+            )
+        )
+        await session.commit()
 
 
 async def _run_event_stream(
@@ -493,6 +590,92 @@ async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
         run_id=run_id,
         status=run.status,
         message="Run resumed from checkpoint.",
+    )
+
+
+@router.post("/api/runs/{run_id}/reset", response_model=RunCreateResponse)
+async def reset_run(run_id: str, payload: RunResetRequest, request: Request) -> RunCreateResponse:
+    session_factory = get_session_factory()
+    with bind_run(run_id):
+        log.info("api.run.reset.start", reset_to=payload.reset_to)
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=404,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} does not exist",
+                )
+            if run.status not in RESETTABLE_RUN_STATUS:
+                raise APIException(
+                    status_code=409,
+                    error_code="RUN_NOT_RESETTABLE",
+                    message=f"run_id={run_id} status={run.status} cannot reset",
+                )
+            run_industry_pack = run.industry_pack
+
+        graph = getattr(request.app.state, "compiled_graph", None)
+        if graph is None:
+            raise APIException(
+                status_code=500,
+                error_code="GRAPH_NOT_INITIALIZED",
+                message="Compiled LangGraph instance is not initialized.",
+            )
+        config = {"configurable": {"thread_id": run_id}}
+        state_snapshot = await graph.aget_state(config)
+        if not _has_checkpoint_state(state_snapshot.values):
+            raise APIException(
+                status_code=409,
+                error_code="RUN_CHECKPOINT_NOT_FOUND",
+                message=f"run_id={run_id} has no checkpoint state to reset from",
+            )
+
+        await _cleanup_trace_for_reset(run_id=run_id, reset_to=payload.reset_to)
+
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=500,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} should exist before reset replay",
+                )
+            run.status = "running"
+            run.finished_at = None
+            await session.commit()
+
+        reset_values = _build_reset_state_values(reset_to=payload.reset_to)
+        await graph.aupdate_state(config, reset_values, as_node="supervisor")
+        graph_state = await graph.ainvoke(None, config=config)
+
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=500,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} should exist before reset status update",
+                )
+            run.status = _coerce_run_status(graph_state)
+            run.finished_at = datetime.now(timezone.utc)
+            await session.commit()
+
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(run_id=run_id, status=run.status),
+        )
+        task = asyncio.create_task(
+            run_skill_curator_for_run(run_id=run_id, industry_pack=run_industry_pack),
+            name=f"skill_curator_{run_id}",
+        )
+        _register_background_task(request, task)
+        log.info("api.run.reset.finish", reset_to=payload.reset_to, status=run.status)
+
+    return RunCreateResponse(
+        run_id=run_id,
+        status=run.status,
+        message=f"Run reset to {payload.reset_to} and replayed from checkpoint.",
     )
 
 
