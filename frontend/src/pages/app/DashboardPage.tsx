@@ -1,8 +1,9 @@
-import { ArrowRight, Plus, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowRight, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { useResumeRun, useRunsList, useWatchlist } from "@/api/hooks";
+import { useBatchDeleteRuns, useDeleteRun, usePatchRun, useResumeRun, useRunsList, useWatchlist } from "@/api/hooks";
+import { queryClient } from "@/api/queryClient";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +30,14 @@ export function DashboardPage(): JSX.Element {
   const latestRunsQuery = useRunsList({ limit: 20, offset: 0 });
   const watchlistQuery = useWatchlist();
   const resumeMutation = useResumeRun();
+  const deleteMutation = useDeleteRun();
+  const patchMutation = usePatchRun();
+  const batchDeleteMutation = useBatchDeleteRuns();
+  const [selectedRuns, setSelectedRuns] = useState<Set<string>>(new Set());
+  const [editingRunId, setEditingRunId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const currentItems = runsQuery.data?.items ?? [];
   const filteredItems = useMemo(() => {
@@ -50,6 +59,49 @@ export function DashboardPage(): JSX.Element {
     } catch (error) {
       if (error instanceof Error) {
         pushToast({ title: "恢复失败", description: error.message, variant: "danger" });
+      }
+    }
+  }
+
+  async function handleDeleteRun(runId: string): Promise<void> {
+    try {
+      await deleteMutation.mutateAsync(runId);
+      track("dashboard.delete_run", { run_id: runId });
+      pushToast({ title: "已删除", variant: "success" });
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    } catch (error) {
+      if (error instanceof Error) {
+        pushToast({ title: "删除失败", description: error.message, variant: "danger" });
+      }
+    }
+    setMenuOpenId(null);
+  }
+
+  async function handleRename(runId: string): Promise<void> {
+    const trimmed = editingTitle.trim();
+    if (!trimmed) { setEditingRunId(null); return; }
+    try {
+      await patchMutation.mutateAsync({ runId, payload: { user_query: trimmed } });
+      pushToast({ title: "已重命名", variant: "success" });
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    } catch (error) {
+      if (error instanceof Error) {
+        pushToast({ title: "重命名失败", description: error.message, variant: "danger" });
+      }
+    }
+    setEditingRunId(null);
+  }
+
+  async function handleBatchDelete(): Promise<void> {
+    if (selectedRuns.size === 0) return;
+    try {
+      const result = await batchDeleteMutation.mutateAsync([...selectedRuns]);
+      pushToast({ title: `已删除 ${result.deleted_count} 项`, variant: "success" });
+      setSelectedRuns(new Set());
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+    } catch (error) {
+      if (error instanceof Error) {
+        pushToast({ title: "批量删除失败", description: error.message, variant: "danger" });
       }
     }
   }
@@ -143,7 +195,15 @@ export function DashboardPage(): JSX.Element {
 
       {/* History */}
       <div className="space-y-3">
-        <h2 className="text-h3 text-foreground">历史任务</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-h3 text-foreground">历史任务</h2>
+          {selectedRuns.size > 0 && (
+            <Button size="sm" variant="danger" onClick={() => void handleBatchDelete()}>
+              <Trash2 className="h-3.5 w-3.5" />
+              删除 {selectedRuns.size} 项
+            </Button>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-foreground-subtle" />
@@ -169,20 +229,73 @@ export function DashboardPage(): JSX.Element {
 
         <div className="space-y-1">
           {filteredItems.map((run) => (
-            <button
+            <div
               key={run.run_id}
-              type="button"
-              onClick={() => navigate(`/app/runs/${run.run_id}`)}
-              className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-white/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="group relative flex w-full items-center gap-2 rounded-md px-3 py-2.5 transition-colors hover:bg-white/[0.03]"
             >
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-caption font-medium text-foreground">{run.user_query}</p>
-                <p className="text-micro text-foreground-subtle">
-                  {run.domain_hint ?? "通用"} · {run.evidence_count} 证据 · {run.step_count} 步骤
-                </p>
-              </div>
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 shrink-0 rounded border-white/20 bg-transparent accent-primary"
+                checked={selectedRuns.has(run.run_id)}
+                onChange={(e) => {
+                  const next = new Set(selectedRuns);
+                  if (e.target.checked) next.add(run.run_id); else next.delete(run.run_id);
+                  setSelectedRuns(next);
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => navigate(`/app/runs/${run.run_id}`)}
+                className="min-w-0 flex-1 text-left focus-visible:outline-none"
+              >
+                {editingRunId === run.run_id ? (
+                  <Input
+                    autoFocus
+                    className="h-7 text-caption"
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onBlur={() => void handleRename(run.run_id)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void handleRename(run.run_id); if (e.key === "Escape") setEditingRunId(null); }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <>
+                    <p className="truncate text-caption font-medium text-foreground">{run.user_query}</p>
+                    <p className="text-micro text-foreground-subtle">
+                      {run.domain_hint ?? "通用"} · {run.evidence_count} 证据 · {run.step_count} 步骤
+                    </p>
+                  </>
+                )}
+              </button>
               <StatusBadge status={run.status} />
-            </button>
+              <div className="relative" ref={menuOpenId === run.run_id ? menuRef : undefined}>
+                <button
+                  type="button"
+                  className="rounded p-1 text-foreground-subtle opacity-0 transition-opacity hover:bg-white/[0.06] group-hover:opacity-100"
+                  onClick={(e) => { e.stopPropagation(); setMenuOpenId(menuOpenId === run.run_id ? null : run.run_id); }}
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </button>
+                {menuOpenId === run.run_id && (
+                  <div className="absolute right-0 top-8 z-50 w-32 rounded-md border border-white/[0.08] bg-raised py-1 shadow-raised">
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-caption text-foreground hover:bg-white/[0.06]"
+                      onClick={(e) => { e.stopPropagation(); setEditingRunId(run.run_id); setEditingTitle(run.user_query); setMenuOpenId(null); }}
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> 重命名
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-caption text-danger hover:bg-white/[0.06]"
+                      onClick={(e) => { e.stopPropagation(); void handleDeleteRun(run.run_id); }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> 删除
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           ))}
         </div>
 

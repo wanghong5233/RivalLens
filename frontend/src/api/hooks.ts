@@ -108,6 +108,29 @@ async function deleteWatchlistItem(watchId: string): Promise<WatchlistItemRespon
   return data;
 }
 
+async function deleteRun(runId: string): Promise<{ run_id: string; deleted: boolean }> {
+  const { data } = await apiClient.delete<{ run_id: string; deleted: boolean }>(`/api/runs/${runId}`);
+  return data;
+}
+
+async function patchRun(
+  runId: string,
+  payload: { user_query?: string; status?: "cancelled" },
+): Promise<RunDetailResponse> {
+  const { data } = await apiClient.patch<RunDetailResponse>(`/api/runs/${runId}`, payload);
+  return data;
+}
+
+async function batchDeleteRuns(
+  runIds: string[],
+): Promise<{ deleted_count: number; not_found: string[] }> {
+  const { data } = await apiClient.post<{ deleted_count: number; not_found: string[] }>(
+    "/api/runs/batch-delete",
+    { run_ids: runIds },
+  );
+  return data;
+}
+
 async function fetchRunEvidence(
   runId: string,
   query: RunEvidenceQuery,
@@ -341,5 +364,36 @@ export function useRejectCandidate(): UseMutationResult<
   return useMutation({
     mutationFn: ({ candidateId, reviewedBy }) =>
       rejectSkillCandidate(candidateId, { reviewed_by: reviewedBy }),
+  });
+}
+
+export interface PatchRunVariables {
+  runId: string;
+  payload: { user_query?: string; status?: "cancelled" };
+}
+
+export function useDeleteRun(): UseMutationResult<
+  { run_id: string; deleted: boolean },
+  Error,
+  string
+> {
+  return useMutation({
+    mutationFn: deleteRun,
+  });
+}
+
+export function usePatchRun(): UseMutationResult<RunDetailResponse, Error, PatchRunVariables> {
+  return useMutation({
+    mutationFn: ({ runId, payload }) => patchRun(runId, payload),
+  });
+}
+
+export function useBatchDeleteRuns(): UseMutationResult<
+  { deleted_count: number; not_found: string[] },
+  Error,
+  string[]
+> {
+  return useMutation({
+    mutationFn: batchDeleteRuns,
   });
 }

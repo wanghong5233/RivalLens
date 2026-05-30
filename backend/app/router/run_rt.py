@@ -816,6 +816,79 @@ async def get_run(run_id: str) -> RunDetailResponse:
         return _to_run_detail(run)
 
 
+class RunPatchRequest(BaseModel):
+    user_query: str | None = None
+    status: Literal["cancelled"] | None = None
+
+
+class RunDeleteResponse(BaseModel):
+    run_id: str
+    deleted: bool
+
+
+class BatchDeleteRequest(BaseModel):
+    run_ids: list[str] = Field(..., min_length=1, max_length=50)
+
+
+class BatchDeleteResponse(BaseModel):
+    deleted_count: int
+    not_found: list[str]
+
+
+@router.delete("/api/runs/{run_id}", response_model=RunDeleteResponse)
+async def delete_run(run_id: str) -> RunDeleteResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        await session.delete(run)
+        await session.commit()
+    return RunDeleteResponse(run_id=run_id, deleted=True)
+
+
+@router.patch("/api/runs/{run_id}", response_model=RunDetailResponse)
+async def patch_run(run_id: str, payload: RunPatchRequest) -> RunDetailResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        if payload.user_query is not None:
+            run.user_query = payload.user_query
+        if payload.status == "cancelled" and run.status == "running":
+            run.status = "cancelled"
+            run.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(run)
+    return _to_run_detail(run)
+
+
+@router.post("/api/runs/batch-delete", response_model=BatchDeleteResponse)
+async def batch_delete_runs(payload: BatchDeleteRequest) -> BatchDeleteResponse:
+    session_factory = get_session_factory()
+    not_found: list[str] = []
+    deleted_count = 0
+    async with session_factory() as session:
+        for rid in payload.run_ids:
+            run = await session.get(Run, rid)
+            if run is None:
+                not_found.append(rid)
+            else:
+                await session.delete(run)
+                deleted_count += 1
+        await session.commit()
+    return BatchDeleteResponse(deleted_count=deleted_count, not_found=not_found)
+
+
 @router.get("/api/runs/{run_id}/report", response_model=RunReportResponse)
 async def get_run_report(run_id: str) -> RunReportResponse:
     session_factory = get_session_factory()
