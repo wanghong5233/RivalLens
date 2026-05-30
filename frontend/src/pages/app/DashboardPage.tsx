@@ -154,11 +154,11 @@ export function DashboardPage(): JSX.Element {
 
         {/* Watchlist card */}
         <div className="rounded-lg border border-white/[0.06] bg-surface p-5">
-          <p className="text-micro font-medium uppercase tracking-wider text-foreground-subtle">Watchlist</p>
+          <p className="text-micro font-medium uppercase tracking-wider text-foreground-subtle">竞品追踪</p>
           <p className="mt-3 text-h2 font-semibold text-foreground">{watchlistQuery.data?.length ?? 0}</p>
           <p className="text-micro text-foreground-muted">个竞品正在追踪</p>
           <Button asChild size="sm" variant="secondary" className="mt-3">
-            <Link to="/app/watch">管理 Watchlist</Link>
+            <Link to="/app/watch">管理追踪列表</Link>
           </Button>
         </div>
       </div>

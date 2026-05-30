@@ -37,8 +37,8 @@ export function WatchPage(): JSX.Element {
   return (
     <section className="space-y-6">
       <header>
-        <h1 className="text-h1 text-foreground">Watchlist</h1>
-        <p className="mt-1 text-caption text-foreground-muted">追踪竞品，获取持续更新。</p>
+        <h1 className="text-h1 text-foreground">竞品追踪</h1>
+        <p className="mt-1 text-caption text-foreground-muted">添加竞品到追踪列表，持续监控更新动态。</p>
       </header>
 
       <div className="flex gap-2">
@@ -58,7 +58,7 @@ export function WatchPage(): JSX.Element {
 
       {watchlistQuery.data && watchlistQuery.data.length === 0 && (
         <div className="rounded-lg border border-white/[0.06] bg-surface p-8 text-center text-caption text-foreground-muted">
-          Watchlist 为空，添加竞品开始追踪。
+          追踪列表为空，添加竞品开始持续监控。
         </div>
       )}
 

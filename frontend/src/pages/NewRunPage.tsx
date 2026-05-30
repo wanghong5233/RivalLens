@@ -266,7 +266,7 @@ export function NewRunPage(): JSX.Element {
         );
         if (failedCompetitors.length > 0) {
           pushToast({
-            title: "部分竞品未加入 Watchlist",
+            title: "部分竞品未加入追踪列表",
             description: failedCompetitors.join("、"),
             variant: "warning",
           });
@@ -553,7 +553,7 @@ export function NewRunPage(): JSX.Element {
                 onChange={(event) => setAddToWatchlist(event.target.checked)}
                 type="checkbox"
               />
-              将本次竞品加入 Watchlist
+              将本次竞品加入追踪列表
             </label>
             <Button disabled={!canSubmit} size="lg" type="submit">
               {createRunMutation.isPending ? "启动中..." : "启动分析"}

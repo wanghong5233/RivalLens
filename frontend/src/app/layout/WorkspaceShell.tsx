@@ -17,7 +17,7 @@ const NAV_ITEMS = [
   { to: "/app", icon: LayoutDashboard, label: "仪表盘", end: true },
   { to: "/app/runs/new", icon: Plus, label: "新建分析", end: false },
   { to: "/app/compare", icon: BarChart3, label: "对比矩阵", end: false },
-  { to: "/app/watch", icon: FolderClock, label: "Watchlist", end: false },
+  { to: "/app/watch", icon: FolderClock, label: "竞品追踪", end: false },
   { to: "/app/templates", icon: Shapes, label: "模板库", end: false },
 ] as const;
 
