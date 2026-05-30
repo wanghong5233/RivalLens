@@ -73,10 +73,11 @@ cd ../ && python -m compileall backend/app
 
 ## Documentation
 
-- 产品愿景：`./docs/product-vision.md`
-- Demo 动线：`./docs/1-demo-storyboard.md`
+- 产品愿景：`./docs/1-product-vision.md`
+- 产品功能清单：`./docs/1.1-product-features.md`
 - 赛题背景：`./docs/0-problem-background.md`
 - QnA 信号：`./docs/0-qna-signals.md`
+- 合规声明：`./docs/6-compliance-statement.md`
 
 ## Contributing
 

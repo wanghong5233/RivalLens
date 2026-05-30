@@ -377,7 +377,7 @@ skill_candidates ──[approved by reviewer]──> backend/skills/<applies_to>
 - HTTP User-Agent 标识：`RivalLens-Researcher/0.1 (+research)`；
 - 单站点 QPS ≤ 1，通过 `asyncio.Semaphore` 限制（与 Researcher 并发上限独立）；
 - 所有 evidence 必须记录 `source_url` 与 `collected_at`，作为合规证据；
-- `docs/compliance-statement.md` 记录数据来源、抓取约束、隐私处理与审计字段；
+- `docs/6-compliance-statement.md` 记录数据来源、抓取约束、隐私处理与审计字段；
 - Channel 分层、`source_type` 映射与降级路径见 `docs/2.6-collector-channels.md`。
 
 ### 11.2 API Key 与 Secrets
