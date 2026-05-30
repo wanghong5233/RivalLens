@@ -1,30 +1,35 @@
+import { Activity, Copy, Download, RotateCcw, Share2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 
 import { queryClient } from "@/api/queryClient";
-import { useResetRun, useRunDetail, useRunReport, useRunTrace } from "@/api/hooks";
+import { useResetRun, useRunConclusions, useRunDetail, useRunMetrics, useRunReport, useRunTrace } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
+import { BattlecardGrid } from "@/components/battlecard";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
-import { MetricsPanel } from "@/components/MetricsPanel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { pushToast } from "@/components/ui/toaster";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import { track } from "@/lib/analytics";
 
 const CITATION_REGEX = /\[(ev_[a-zA-Z0-9_]+)\]/g;
 
+function toHeadingId(value: string): string {
+  return value.trim().toLowerCase().replace(/[^\w\u4e00-\u9fa5\s-]/g, "").replace(/\s+/g, "-");
+}
+
 function toCitationLinkMarkdown(markdown: string): string {
-  return markdown.replace(CITATION_REGEX, (_match, evidenceId: string) => {
-    return `[${evidenceId}](evidence://${evidenceId})`;
-  });
+  return markdown.replace(CITATION_REGEX, (_match, evidenceId: string) => `[${evidenceId}](evidence://${evidenceId})`);
 }
 
 export function RunViewPage(): JSX.Element {
   const { runId: runIdFromParams } = useParams<{ runId: string }>();
+  const navigate = useNavigate();
   const runId = runIdFromParams ?? "";
   const [isEvidenceDrawerOpen, setIsEvidenceDrawerOpen] = useState(false);
   const [activeEvidenceIds, setActiveEvidenceIds] = useState<string[]>([]);
@@ -38,319 +43,229 @@ export function RunViewPage(): JSX.Element {
   const isRunActive = runStatus === "running";
   const isReportReady = runStatus === "completed" || runStatus === "degraded";
   const reportQuery = useRunReport(runId, { enabled: isReportReady });
+  const conclusionsQuery = useRunConclusions(runId, {
+    enabled: isReportReady,
+    refetchInterval: isRunActive ? 2_000 : false,
+  });
+  const metricsQuery = useRunMetrics(runId, {
+    enabled: isReportReady,
+    refetchInterval: isRunActive ? 2_000 : false,
+  });
 
-  const traceSteps = traceQuery.data?.steps ?? [];
-  const researcherSteps = traceSteps.filter((item) => item.agent_name === "researcher");
-  const hasAnalystStep = traceSteps.some((item) => item.agent_name === "analyst");
-  const hasWriterStep = traceSteps.some((item) => item.agent_name === "writer");
+  const recentDecisions = useMemo(
+    () => traceQuery.data?.supervisor_decisions.slice(-5).reverse() ?? [],
+    [traceQuery.data?.supervisor_decisions],
+  );
 
-  const competitorProgress = useMemo(() => {
-    const map = new Map<string, { done: boolean; evidenceCount: number }>();
-    for (const competitorId of detailQuery.data?.competitors ?? []) {
-      map.set(competitorId, { done: false, evidenceCount: 0 });
-    }
-    for (const step of researcherSteps) {
-      const competitorId = step.payload.competitor_id;
-      const evidenceIds = step.payload.evidence_ids;
-      if (typeof competitorId !== "string") {
-        continue;
-      }
-      const evidenceCount = Array.isArray(evidenceIds) ? evidenceIds.length : 0;
-      const current = map.get(competitorId) ?? { done: false, evidenceCount: 0 };
-      map.set(competitorId, {
-        done: true,
-        evidenceCount: current.evidenceCount + evidenceCount,
-      });
-    }
-    return map;
-  }, [detailQuery.data?.competitors, researcherSteps]);
-
-  const progressStages = useMemo(() => {
-    const isFinalized = runStatus === "completed" || runStatus === "degraded";
-    const hasResearch = researcherSteps.length > 0;
-    const stages: Array<{ key: string; label: string; state: "done" | "active" | "pending" }> = [
-      { key: "research", label: "调研竞品", state: "pending" },
-      { key: "analysis", label: "跨竞品分析", state: "pending" },
-      { key: "writer", label: "撰写报告", state: "pending" },
-    ];
-
-    if (isFinalized) {
-      return stages.map((item) => ({ ...item, state: "done" as const }));
-    }
-    if (!hasResearch) {
-      stages[0].state = "active";
-      return stages;
-    }
-    stages[0].state = "done";
-    if (!hasAnalystStep) {
-      stages[1].state = "active";
-      return stages;
-    }
-    stages[1].state = "done";
-    stages[2].state = hasWriterStep ? "done" : "active";
-    return stages;
-  }, [hasAnalystStep, hasWriterStep, researcherSteps.length, runStatus]);
-
-  const latestEvents = useMemo(() => {
-    const latest = traceSteps.slice(-6).reverse();
-    return latest.map((step) => {
-      const baseTime = formatDateTime(step.created_at);
-      if (step.agent_name === "researcher") {
-        const competitorId = typeof step.payload.competitor_id === "string" ? step.payload.competitor_id : "unknown";
-        const evidenceCount = Array.isArray(step.payload.evidence_ids) ? step.payload.evidence_ids.length : 0;
-        return `${baseTime}  Researcher(${competitorId}) 完成，输出 ${evidenceCount} 条 evidence`;
-      }
-      if (step.agent_name === "analyst") {
-        return `${baseTime}  Analyst 完成跨竞品分析`;
-      }
-      if (step.agent_name === "writer") {
-        return `${baseTime}  Writer 生成报告草稿`;
-      }
-      if (step.agent_name === "qa") {
-        return `${baseTime}  QA 校验状态：${step.status}`;
-      }
-      return `${baseTime}  ${step.agent_name} 状态：${step.status}`;
-    });
-  }, [traceSteps]);
-  const hasCuratorStep = traceSteps.some((item) => item.agent_name === "skill_curator");
-  const showCuratorPending =
-    (runStatus === "completed" || runStatus === "degraded") && !hasCuratorStep;
-  const isResetPending = resetRunMutation.isPending;
+  const reportMarkdown = reportQuery.data?.content_markdown ?? "";
+  const reportWithCitationLinks = useMemo(() => toCitationLinkMarkdown(reportMarkdown), [reportMarkdown]);
+  const conclusions = conclusionsQuery.data?.items ?? [];
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
-    if (evidenceIds.length === 0) {
-      return;
-    }
+    if (evidenceIds.length === 0) return;
     setActiveEvidenceIds(evidenceIds);
     setIsEvidenceDrawerOpen(true);
   }
 
   async function handleResetRun(resetTo: "analyst" | "writer"): Promise<void> {
-    if (!runId) {
-      return;
-    }
+    if (!runId) return;
     await resetRunMutation.mutateAsync({ runId, resetTo });
     await queryClient.invalidateQueries({ queryKey: ["run-detail", runId] });
     await queryClient.invalidateQueries({ queryKey: ["run-trace", runId] });
     await queryClient.invalidateQueries({ queryKey: ["run-report", runId] });
   }
 
-  const reportMarkdown = reportQuery.data?.content_markdown ?? "";
-  const reportWithCitationLinks = useMemo(
-    () => toCitationLinkMarkdown(reportMarkdown),
-    [reportMarkdown],
-  );
+  function handleExportMarkdown(): void {
+    if (!reportMarkdown) {
+      pushToast({ title: "暂无报告内容", variant: "warning" });
+      return;
+    }
+    const blob = new Blob([reportMarkdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rivallens_report_${runId}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+    track("run_view.export_markdown", { run_id: runId });
+  }
+
+  async function handleCopyShareLink(): Promise<void> {
+    const sharedUrl = `${window.location.origin}/share/${runId}`;
+    try {
+      await navigator.clipboard.writeText(sharedUrl);
+      pushToast({ title: "分享链接已复制", description: sharedUrl, variant: "success" });
+      track("run_view.copy_share_link", { run_id: runId });
+    } catch {
+      pushToast({ title: "复制失败", variant: "danger" });
+    }
+  }
 
   return (
-    <section className="space-y-4">
+    <section className="space-y-6">
+      {/* Header */}
       <header className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold">Run 详情</h1>
-            <p className="font-mono text-xs text-muted-foreground">{runId}</p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-h1 text-foreground">{detailQuery.data?.user_query ?? "加载中..."}</h1>
+            <p className="mt-1 text-micro text-foreground-subtle">
+              {detailQuery.data ? formatDateTime(detailQuery.data.started_at) : ""} · {runId}
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            <StatusBadge status={runStatus} />
-            <Link
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:border-primary hover:text-foreground"
-              to={`/runs/${runId}/trace`}
-            >
-              开发者视图
-            </Link>
-          </div>
+          <StatusBadge status={runStatus} />
         </div>
       </header>
 
-      {detailQuery.isLoading ? (
+      {detailQuery.isLoading && (
         <div className="space-y-3">
-          <Skeleton className="h-28 w-full" />
+          <Skeleton className="h-20 w-full" />
           <Skeleton className="h-40 w-full" />
         </div>
-      ) : null}
+      )}
 
-      {detailQuery.isError ? (
-        <Card className="border-red-400/40">
-          <CardContent className="pt-6 text-sm text-red-200">{detailQuery.error.message}</CardContent>
-        </Card>
-      ) : null}
+      {detailQuery.isError && (
+        <div className="rounded-lg border border-danger/30 bg-danger/5 p-4 text-caption text-danger">
+          {detailQuery.error.message}
+        </div>
+      )}
 
-      {detailQuery.data ? (
+      {detailQuery.data && (
         <>
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">任务概览</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm text-muted-foreground">
-              <p>query: {detailQuery.data.user_query}</p>
-              <p>
-                domain_hint: {detailQuery.data.domain_hint ?? "none"} · competitors: {detailQuery.data.competitors.length}
-              </p>
-              <p>
-                reference_urls: {detailQuery.data.reference_urls.length}
-              </p>
-              <p>
-                started: {formatDateTime(detailQuery.data.started_at)} ({formatRelativeTime(detailQuery.data.started_at)})
-              </p>
-            </CardContent>
-          </Card>
+          {/* KPI bar */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <KpiCard label="覆盖率" value={metricsQuery.data ? `${(metricsQuery.data.coverage_rate * 100).toFixed(0)}%` : "-"} />
+            <KpiCard label="QA 通过" value={metricsQuery.data ? `${((1 - metricsQuery.data.qa_rejection_rate) * 100).toFixed(0)}%` : "-"} />
+            <KpiCard label="证据数" value={metricsQuery.data?.evidence_count_total.toLocaleString() ?? "-"} />
+            <KpiCard label="耗时" value={detailQuery.data.finished_at ? formatRelativeTime(detailQuery.data.finished_at) : "进行中"} />
+          </div>
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">业务进度</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-2 sm:grid-cols-3">
-                {progressStages.map((stage) => (
-                  <div
-                    className={cn(
-                      "rounded-md border px-3 py-2 text-sm",
-                      stage.state === "done" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-200",
-                      stage.state === "active" && "border-primary/50 bg-primary/10 text-foreground",
-                      stage.state === "pending" && "border-border text-muted-foreground",
-                    )}
-                    key={stage.key}
+          {/* Tabs */}
+          <Tabs defaultValue="battlecard">
+            <div className="flex items-center justify-between gap-3">
+              <TabsList>
+                <TabsTrigger value="battlecard">Battlecard</TabsTrigger>
+                <TabsTrigger value="report">完整报告</TabsTrigger>
+                <TabsTrigger value="trace">决策回放</TabsTrigger>
+              </TabsList>
+              {/* Toolbar */}
+              <div className="flex items-center gap-1.5">
+                <Button size="sm" variant="ghost" onClick={() => void handleCopyShareLink()} aria-label="复制分享链接">
+                  <Share2 className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="ghost" onClick={handleExportMarkdown} aria-label="导出 Markdown">
+                  <Download className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => navigate(`/app/runs/new?from=${runId}`)} aria-label="再分析一版">
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => navigate(`/app/compare?run_ids=${runId}`)} aria-label="对比矩阵">
+                  <Copy className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Battlecard tab */}
+            <TabsContent value="battlecard" className="space-y-4">
+              {!isReportReady && (
+                <div className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-surface p-4 text-caption text-foreground-muted">
+                  <Activity className="h-4 w-4 text-primary" />
+                  报告生成中，完成后将展示 Battlecard 网格。
+                </div>
+              )}
+              {isReportReady && conclusionsQuery.isLoading && <Skeleton className="h-60 w-full" />}
+              {isReportReady && !conclusionsQuery.isLoading && (
+                <BattlecardGrid runId={runId} conclusions={conclusions} />
+              )}
+            </TabsContent>
+
+            {/* Full report tab */}
+            <TabsContent value="report" className="space-y-4">
+              {!isReportReady && (
+                <div className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-surface p-4 text-caption text-foreground-muted">
+                  <Activity className="h-4 w-4 text-primary" />
+                  报告仍在生成中。
+                </div>
+              )}
+              {reportQuery.isLoading && <Skeleton className="h-60 w-full" />}
+              {reportQuery.isError && (
+                <p className="text-caption text-danger">报告读取失败：{reportQuery.error.message}</p>
+              )}
+              {isReportReady && !reportQuery.isLoading && !reportQuery.isError && (
+                <article className="prose prose-invert max-w-none rounded-lg border border-white/[0.06] bg-surface p-6 text-caption leading-7 prose-headings:text-foreground prose-p:text-foreground-muted prose-strong:text-foreground prose-a:text-primary">
+                  <ReactMarkdown
+                    components={{
+                      a: ({ href, children }) => {
+                        if (href?.startsWith("evidence://")) {
+                          const evidenceId = href.replace("evidence://", "");
+                          return (
+                            <button
+                              className="cursor-pointer rounded bg-primary/10 px-1.5 py-0.5 text-micro text-primary ring-1 ring-inset ring-primary/20 hover:bg-primary/20"
+                              onClick={() => openEvidenceDrawer([evidenceId])}
+                              type="button"
+                            >
+                              {children}
+                            </button>
+                          );
+                        }
+                        return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
+                      },
+                      h2: ({ children }) => {
+                        const text = Array.isArray(children)
+                          ? children.map((c) => (typeof c === "string" ? c : "")).join(" ").trim()
+                          : typeof children === "string" ? children.trim() : "";
+                        return <h2 id={toHeadingId(text)}>{children}</h2>;
+                      },
+                    }}
+                    remarkPlugins={[remarkGfm]}
                   >
-                    {stage.state === "done" ? "✓" : stage.state === "active" ? "●" : "○"} {stage.label}
+                    {reportWithCitationLinks}
+                  </ReactMarkdown>
+                </article>
+              )}
+            </TabsContent>
+
+            {/* Trace tab */}
+            <TabsContent value="trace" className="space-y-4">
+              {isReportReady && (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={resetRunMutation.isPending}
+                    onClick={() => void handleResetRun("writer")}
+                  >
+                    重写报告
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={resetRunMutation.isPending}
+                    onClick={() => void handleResetRun("analyst")}
+                  >
+                    重做分析
+                  </Button>
+                </div>
+              )}
+              <div className="space-y-2">
+                {recentDecisions.length === 0 && (
+                  <p className="text-caption text-foreground-muted">暂无决策记录。</p>
+                )}
+                {recentDecisions.map((d) => (
+                  <div key={d.id} className="rounded-lg border border-white/[0.06] bg-surface p-3">
+                    <p className="text-caption font-medium text-foreground">
+                      iter {d.iteration} · {d.chosen_tool}
+                    </p>
+                    <p className="mt-1 text-micro text-foreground-muted">{d.reasoning_summary}</p>
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
-
-          <MetricsPanel isRunActive={isRunActive} runId={runId} />
-
-          {isReportReady ? (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">阶段重放（B2）</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  当结果不满意时，可从指定阶段回放。重放会清理该阶段及后续轨迹，然后从 checkpoint 继续执行。
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    disabled={isResetPending}
-                    onClick={() => {
-                      void handleResetRun("writer");
-                    }}
-                    type="button"
-                    variant="outline"
-                  >
-                    {isResetPending ? "重放中..." : "重写报告（writer）"}
-                  </Button>
-                  <Button
-                    disabled={isResetPending}
-                    onClick={() => {
-                      void handleResetRun("analyst");
-                    }}
-                    type="button"
-                    variant="outline"
-                  >
-                    {isResetPending ? "重放中..." : "重做分析（analyst）"}
-                  </Button>
-                </div>
-                {resetRunMutation.isError ? (
-                  <p className="text-sm text-red-200">阶段重放失败：{resetRunMutation.error.message}</p>
-                ) : null}
-              </CardContent>
-            </Card>
-          ) : null}
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">竞品进度</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {detailQuery.data.competitors.map((competitorId) => {
-                  const item = competitorProgress.get(competitorId) ?? { done: false, evidenceCount: 0 };
-                  return (
-                    <div className="rounded-md border border-border p-3 text-sm" key={competitorId}>
-                      <p className="font-medium">{competitorId}</p>
-                      <p className="mt-1 text-muted-foreground">
-                        {item.done ? "✓ 已完成调研" : "⏳ 调研中"} · {item.evidenceCount} evidence
-                      </p>
-                      <Link
-                        className="mt-2 inline-flex rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
-                        to={`/runs/${runId}/evidence?competitor_id=${encodeURIComponent(competitorId)}`}
-                      >
-                        查看证据
-                      </Link>
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">最新事件</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 text-sm text-muted-foreground">
-              {latestEvents.length > 0 ? latestEvents.map((event, index) => <p key={`${event}-${index}`}>• {event}</p>) : <p>暂无事件</p>}
-            </CardContent>
-          </Card>
-          {showCuratorPending ? (
-            <Card className="border-primary/40">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Skill Curator 沉淀中...</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm text-muted-foreground">
-                <p>主流程已完成，候选规则正在后台生成并写入 Skill Staging Console。</p>
-                <Link className="text-primary hover:underline" to="/skills/staging">
-                  前往 Skill Staging Console
-                </Link>
-              </CardContent>
-            </Card>
-          ) : null}
+              <Button asChild size="sm" variant="outline">
+                <Link to={`/app/runs/${runId}/trace`}>打开完整回放</Link>
+              </Button>
+            </TabsContent>
+          </Tabs>
         </>
-      ) : null}
-
-      {isReportReady ? (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Battlecard 报告</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {reportQuery.isLoading ? <Skeleton className="h-60 w-full" /> : null}
-            {reportQuery.isError ? (
-              <p className="text-sm text-red-200">报告读取失败：{reportQuery.error.message}</p>
-            ) : null}
-            {!reportQuery.isLoading && !reportQuery.isError ? (
-              <article className="prose prose-invert max-w-none text-sm leading-7">
-                <ReactMarkdown
-                  components={{
-                    a: ({ href, children }) => {
-                      if (href?.startsWith("evidence://")) {
-                        const evidenceId = href.replace("evidence://", "");
-                        return (
-                          <button
-                            className="cursor-pointer rounded bg-primary/15 px-1.5 py-0.5 text-xs text-primary hover:bg-primary/25"
-                            onClick={() => openEvidenceDrawer([evidenceId])}
-                            type="button"
-                          >
-                            {children}
-                          </button>
-                        );
-                      }
-                      return (
-                        <a href={href} rel="noreferrer" target="_blank">
-                          {children}
-                        </a>
-                      );
-                    },
-                  }}
-                  remarkPlugins={[remarkGfm]}
-                >
-                  {reportWithCitationLinks}
-                </ReactMarkdown>
-              </article>
-            ) : null}
-          </CardContent>
-        </Card>
-      ) : null}
+      )}
 
       <EvidenceDrawer
         evidenceIds={activeEvidenceIds}
@@ -359,5 +274,14 @@ export function RunViewPage(): JSX.Element {
         runId={runId}
       />
     </section>
+  );
+}
+
+function KpiCard({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-surface px-4 py-3">
+      <p className="text-micro text-foreground-subtle">{label}</p>
+      <p className="mt-0.5 text-h3 font-semibold text-foreground">{value}</p>
+    </div>
   );
 }

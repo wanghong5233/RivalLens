@@ -194,7 +194,7 @@ export function SkillStagingPage(): JSX.Element {
                       <Link
                         className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
                         key={runId}
-                        to={`/runs/${runId}`}
+                        to={`/app/runs/${runId}`}
                       >
                         {runId}
                       </Link>

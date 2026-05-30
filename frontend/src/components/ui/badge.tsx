@@ -4,13 +4,17 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const badgeVariants = cva(
-  "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors",
+  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-micro font-medium ring-1 ring-inset transition-colors",
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground",
-        secondary: "border-transparent bg-secondary text-secondary-foreground",
-        outline: "border-border text-foreground",
+        default: "bg-primary/10 text-primary ring-primary/20",
+        secondary: "bg-white/[0.04] text-foreground-muted ring-white/[0.08]",
+        outline: "bg-transparent text-foreground-muted ring-white/[0.1]",
+        success: "bg-success/10 text-success ring-success/20",
+        warning: "bg-warning/10 text-warning ring-warning/20",
+        danger: "bg-danger/10 text-danger ring-danger/20",
+        accent: "bg-accent/10 text-accent ring-accent/20",
       },
     },
     defaultVariants: {

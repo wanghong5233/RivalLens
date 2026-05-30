@@ -15,12 +15,15 @@ import type {
   RunDetailResponse,
   RunListResponse,
   RunMetricsResponse,
+  RunConclusionsResponse,
   RunResetRequest,
   RunReportResponse,
   RunTraceResponse,
   SkillCandidateListResponse,
   SkillCandidateReviewRequest,
   SkillCandidateReviewResponse,
+  WatchlistCreateRequest,
+  WatchlistItemResponse,
 } from "@/api/types";
 
 const RUNNING_POLL_INTERVAL_MS = getRunFallbackPollMs();
@@ -82,6 +85,26 @@ async function fetchRunReport(runId: string): Promise<RunReportResponse> {
 
 async function fetchRunMetrics(runId: string): Promise<RunMetricsResponse> {
   const { data } = await apiClient.get<RunMetricsResponse>(`/api/runs/${runId}/metrics`);
+  return data;
+}
+
+async function fetchRunConclusions(runId: string): Promise<RunConclusionsResponse> {
+  const { data } = await apiClient.get<RunConclusionsResponse>(`/api/runs/${runId}/conclusions`);
+  return data;
+}
+
+async function fetchWatchlist(): Promise<WatchlistItemResponse[]> {
+  const { data } = await apiClient.get<WatchlistItemResponse[]>("/api/watchlist");
+  return data;
+}
+
+async function createWatchlistItem(payload: WatchlistCreateRequest): Promise<WatchlistItemResponse> {
+  const { data } = await apiClient.post<WatchlistItemResponse>("/api/watchlist", payload);
+  return data;
+}
+
+async function deleteWatchlistItem(watchId: string): Promise<WatchlistItemResponse> {
+  const { data } = await apiClient.delete<WatchlistItemResponse>(`/api/watchlist/${watchId}`);
   return data;
 }
 
@@ -205,6 +228,25 @@ export function useRunMetrics(
   });
 }
 
+export function useRunConclusions(
+  runId: string,
+  options: QueryBehaviorOptions = {},
+): UseQueryResult<RunConclusionsResponse, Error> {
+  return useQuery({
+    queryKey: ["run-conclusions", runId],
+    queryFn: () => fetchRunConclusions(runId),
+    enabled: Boolean(runId) && (options.enabled ?? true),
+    refetchInterval: options.refetchInterval,
+  });
+}
+
+export function useWatchlist(): UseQueryResult<WatchlistItemResponse[], Error> {
+  return useQuery({
+    queryKey: ["watchlist"],
+    queryFn: fetchWatchlist,
+  });
+}
+
 export function useRunEvidence(
   runId: string,
   query: RunEvidenceQuery = {},
@@ -245,6 +287,22 @@ export interface ResetRunMutationVariables {
 export function useResetRun(): UseMutationResult<RunCreateResponse, Error, ResetRunMutationVariables> {
   return useMutation({
     mutationFn: ({ runId, resetTo }) => resetRun(runId, { reset_to: resetTo }),
+  });
+}
+
+export function useCreateWatchlistItem(): UseMutationResult<
+  WatchlistItemResponse,
+  Error,
+  WatchlistCreateRequest
+> {
+  return useMutation({
+    mutationFn: createWatchlistItem,
+  });
+}
+
+export function useDeleteWatchlistItem(): UseMutationResult<WatchlistItemResponse, Error, string> {
+  return useMutation({
+    mutationFn: deleteWatchlistItem,
   });
 }
 

@@ -1,12 +1,38 @@
+import type { LucideIcon } from "lucide-react";
+import { CircleDollarSign, FileText, Globe, MessageSquareText, Sparkles } from "lucide-react";
 import { useMemo } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useRunDetail, useRunEvidence } from "@/api/hooks";
+import type { EvidenceListItemResponse } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
+
+interface SourceMeta {
+  label: string;
+  icon: LucideIcon;
+}
+
+function toSourceMeta(sourceType: string): SourceMeta {
+  const normalized = sourceType.toLowerCase();
+  if (normalized.includes("pricing")) {
+    return { label: "定价页", icon: CircleDollarSign };
+  }
+  if (normalized.includes("review")) {
+    return { label: "用户评论", icon: MessageSquareText };
+  }
+  if (normalized.includes("snapshot")) {
+    return { label: "网页快照", icon: FileText };
+  }
+  if (normalized.includes("article")) {
+    return { label: "文章信息", icon: FileText };
+  }
+  return { label: sourceType, icon: Globe };
+}
 
 export function RunEvidencePage(): JSX.Element {
   const { runId: runIdFromParams } = useParams<{ runId: string }>();
@@ -44,6 +70,18 @@ export function RunEvidencePage(): JSX.Element {
       (item) => item.evidence_id === highlightedEvidenceId,
     );
   }, [filteredEvidenceQuery.data, highlightedEvidenceId]);
+  const groupedEvidence = useMemo(() => {
+    const groups = new Map<string, EvidenceListItemResponse[]>();
+    for (const item of filteredEvidenceQuery.data ?? []) {
+      const groupKey = item.competitor_id ?? "未标注竞品";
+      const current = groups.get(groupKey) ?? [];
+      current.push(item);
+      groups.set(groupKey, current);
+    }
+    return Array.from(groups.entries()).sort(([left], [right]) =>
+      left.localeCompare(right, "zh-CN"),
+    );
+  }, [filteredEvidenceQuery.data]);
 
   function patchSearchParams(next: {
     competitorId?: string;
@@ -80,29 +118,56 @@ export function RunEvidencePage(): JSX.Element {
   }
 
   return (
-    <section className="space-y-4">
-      <header className="space-y-2">
+    <section className="space-y-5">
+      <header className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold">Evidence Console</h1>
-            <p className="font-mono text-xs text-muted-foreground">run_id: {runId}</p>
+            <p className="inline-flex items-center gap-2 text-xs text-primary">
+              <Sparkles className="h-3.5 w-3.5" />
+              可追溯证据库
+            </p>
+            <h1 className="text-2xl font-semibold">{detailQuery.data?.user_query ?? "证据库"}</h1>
+            <p className="text-xs text-muted-foreground">run_id: {runId}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Link
               className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:border-primary hover:text-foreground"
-              to={`/runs/${runId}`}
+              to={`/app/runs/${runId}`}
             >
               返回 Run 详情
             </Link>
             <Link
               className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:border-primary hover:text-foreground"
-              to={`/runs/${runId}/trace`}
+              to={`/app/runs/${runId}/trace`}
             >
               查看 Trace
             </Link>
           </div>
         </div>
       </header>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-muted-foreground">当前筛选结果</p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums">
+              {(filteredEvidenceQuery.data ?? []).length}
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-muted-foreground">总证据量</p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums">{(allEvidenceQuery.data ?? []).length}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-xs text-muted-foreground">已分组竞品</p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums">{groupedEvidence.length}</p>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card>
         <CardHeader className="pb-3">
@@ -193,46 +258,60 @@ export function RunEvidencePage(): JSX.Element {
         </Card>
       ) : null}
 
-      <div className="space-y-3">
-        {(filteredEvidenceQuery.data ?? []).map((item) => {
-          const isHighlighted = item.evidence_id === highlightedEvidenceId;
-          return (
-            <Card
-              className={cn(
-                "border-border",
-                isHighlighted && "border-primary bg-primary/5",
-              )}
-              key={item.evidence_id}
-            >
-              <CardHeader className="pb-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span className="font-mono text-foreground">{item.evidence_id}</span>
-                  <span>
-                    {item.source_type} · {formatDateTime(item.collected_at)}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span>competitor: {item.competitor_id ?? "-"}</span>
-                  {isHighlighted ? <span className="text-primary">当前高亮</span> : null}
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <p className="whitespace-pre-wrap leading-6">{item.sanitized_text}</p>
-                {item.source_title ? <p className="text-xs text-muted-foreground">title: {item.source_title}</p> : null}
-                {item.source_url ? (
-                  <a
-                    className="text-xs text-primary underline-offset-4 hover:underline"
-                    href={item.source_url}
-                    rel="noreferrer"
-                    target="_blank"
+      <div className="space-y-4">
+        {groupedEvidence.map(([groupKey, evidenceItems]) => (
+          <Card key={groupKey}>
+            <CardHeader className="pb-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="text-base">{groupKey}</CardTitle>
+                <Badge variant="secondary">{evidenceItems.length} 条证据</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {evidenceItems.map((item) => {
+                const sourceMeta = toSourceMeta(item.source_type);
+                const SourceIcon = sourceMeta.icon;
+                const isHighlighted = item.evidence_id === highlightedEvidenceId;
+                return (
+                  <article
+                    className={cn(
+                      "space-y-3 rounded-lg border border-border/90 bg-background/70 p-4",
+                      isHighlighted && "border-primary bg-primary/10",
+                    )}
+                    key={item.evidence_id}
                   >
-                    打开原页面
-                  </a>
-                ) : null}
-              </CardContent>
-            </Card>
-          );
-        })}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                        <SourceIcon className="h-3.5 w-3.5 text-primary" />
+                        <span>{sourceMeta.label}</span>
+                        <span>·</span>
+                        <span>{formatDateTime(item.collected_at)}</span>
+                      </div>
+                      <span className="font-mono text-xs text-muted-foreground">{item.evidence_id}</span>
+                    </div>
+                    {item.source_title ? <p className="text-sm font-medium text-foreground">{item.source_title}</p> : null}
+                    <p className="whitespace-pre-wrap text-sm leading-6 text-slate-200">{item.sanitized_text}</p>
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                      {isHighlighted ? <span className="rounded bg-primary/20 px-2 py-0.5 text-primary">报告高亮引用</span> : null}
+                      {item.source_url ? (
+                        <a
+                          className="text-primary underline-offset-4 hover:underline"
+                          href={item.source_url}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          打开原页面
+                        </a>
+                      ) : (
+                        <span>无原始链接</span>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
+            </CardContent>
+          </Card>
+        ))}
       </div>
     </section>
   );

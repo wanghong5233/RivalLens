@@ -16,11 +16,11 @@ function asStringList(value: unknown): string[] {
 }
 
 function buildEvidenceLink(runId: string, evidenceId: string): string {
-  return `/runs/${runId}/evidence?evidence_id=${encodeURIComponent(evidenceId)}`;
+  return `/app/runs/${runId}/evidence?evidence_id=${encodeURIComponent(evidenceId)}`;
 }
 
 function buildCompetitorLink(runId: string, competitorId: string): string {
-  return `/runs/${runId}/evidence?competitor_id=${encodeURIComponent(competitorId)}`;
+  return `/app/runs/${runId}/evidence?competitor_id=${encodeURIComponent(competitorId)}`;
 }
 
 export function buildEvidenceLinkFromToolArgs(

@@ -1,37 +1,55 @@
 # RivalLens
 
-> Multi-Agent 协作的自动化竞品分析系统，每条结论可追溯到原始证据。
+> 面向产品经理与创业者的 AI 竞品雷达 SaaS：3 分钟生成可分享、可溯源 Battlecard 报告。
 
 ![Status](https://img.shields.io/badge/status-WIP-yellow)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
+![Frontend](https://img.shields.io/badge/frontend-React%2BVite-61dafb)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Background
 
-传统竞品分析流程繁琐、信息源分散、对个人行业认知依赖大。RivalLens 通过 Supervisor / Researcher / Analyst / Writer / QA Reviewer / Skill Curator 六个专职 Agent 的 LangGraph DAG 协作（动态委派、Send fan-out、多目标 QA 打回、异步技能进化），自动完成从公开信息采集到结构化竞品报告的全链路输出，并保证每条分析结论可追溯到原始来源。系统采用 Agent-Native 4 轴（Entity / Source / Skill / Hint）设计，支持更换竞品对象与分析场景时不重写主流程。
+RivalLens 使用多 Agent 协作把公开竞品信息转为结构化结论，输出带证据引用的报告、结论矩阵和对比视图。目标用户是需要快速形成竞品判断的产品经理、创业者和独立开发者。
 
-## Tech Stack
+## Features
 
-| 层 | 选型 |
+- 任务流：新建分析、实时进度、失败重试、阶段重放
+- 报告流：Battlecard Markdown 报告、证据抽屉、导出与分享
+- 结论流：`/api/runs/:id/conclusions` 矩阵化展示（claim/confidence/risk/evidence）
+- 对比流：跨 run 结论对比矩阵（功能/定价/反馈/SWOT）
+- 追踪流：Watchlist 最小 CRUD（竞品追踪骨架）
+- 评审流：Skill staging 审核台（Curator 候选规则人工通过）
+
+## Architecture
+
+```mermaid
+flowchart LR
+    User[User] --> Public[Public Pages]
+    User --> Workspace[Workspace /app]
+    Workspace --> API[FastAPI]
+    API --> Graph[LangGraph Agents]
+    API --> DB[(PostgreSQL)]
+    Graph --> DB
+```
+
+| Layer | Tech |
 |---|---|
-| Orchestration | LangGraph + langgraph-checkpoint-postgres |
-| Backend | FastAPI + Pydantic + SQLAlchemy + Python 3.11 |
-| Database | PostgreSQL 16 |
-| LLM | 豆包 Doubao-Seed-2.0-lite |
-| Frontend | React + Vite + TypeScript |
-| Deploy | docker compose |
+| Frontend | React 18, Vite, TypeScript, Tailwind, shadcn/ui |
+| Backend | FastAPI, SQLAlchemy, Pydantic, LangGraph |
+| Storage | PostgreSQL 16 |
+| Model | Doubao Seed 系列（通过 provider 路由） |
 
-## Local Development
+## Quick Start
 
-### Backend
+### 1) Start Backend
 
 ```bash
 docker compose -f backend/docker-compose.dev.yml up -d
 ```
 
-后端默认地址：`http://localhost:8010`。
+Backend default: `http://localhost:8010`
 
-### Frontend
+### 2) Start Frontend
 
 ```bash
 cd frontend
@@ -39,8 +57,31 @@ npm install
 npm run dev
 ```
 
-前端默认地址：`http://localhost:5173`，通过 `VITE_API_BASE_URL` 对接后端。
+Frontend default: `http://localhost:5173`
+
+### 3) Run Checks
+
+```bash
+cd frontend && npm run type-check
+cd ../ && python -m compileall backend/app
+```
+
+## Product Routes
+
+- Public: `/`, `/examples`, `/pricing`, `/share/:runId`
+- Workspace: `/app`, `/app/runs/new`, `/app/runs/:runId`, `/app/compare`, `/app/watch`, `/app/settings/skill-admin`
+
+## Documentation
+
+- 产品愿景：`./docs/product-vision.md`
+- Demo 动线：`./docs/1-demo-storyboard.md`
+- 赛题背景：`./docs/0-problem-background.md`
+- QnA 信号：`./docs/0-qna-signals.md`
+
+## Contributing
+
+欢迎提 Issue 或 PR。提交前请至少执行前后端基础检查命令。
 
 ## License
 
-MIT.
+MIT

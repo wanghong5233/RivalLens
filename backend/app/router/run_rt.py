@@ -24,6 +24,7 @@ from models.run import Run
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
+from models.watchlist import WatchlistItem
 from schemas.ids import make_id
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
@@ -226,6 +227,36 @@ class RunConclusionsResponse(BaseModel):
     items: list[ConclusionItemResponse]
 
 
+class WatchlistCreateRequest(BaseModel):
+    competitor_id: str
+    note: str | None = None
+    next_refresh_at: datetime | None = None
+
+    @field_validator("competitor_id")
+    @classmethod
+    def _validate_competitor_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("competitor_id cannot be empty.")
+        return normalized
+
+    @field_validator("note")
+    @classmethod
+    def _normalize_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
+
+
+class WatchlistItemResponse(BaseModel):
+    watch_id: str
+    competitor_id: str
+    note: str | None
+    next_refresh_at: str | None
+    created_at: str
+
+
 def _to_sse_chunk(*, event: str, data: dict[str, object]) -> str:
     serialized = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {serialized}\n\n"
@@ -379,6 +410,16 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
         started_at=run.started_at.isoformat(),
         finished_at=_to_iso(run.finished_at),
         created_at=run.created_at.isoformat(),
+    )
+
+
+def _to_watchlist_item(item: WatchlistItem) -> WatchlistItemResponse:
+    return WatchlistItemResponse(
+        watch_id=item.watch_id,
+        competitor_id=item.competitor_id,
+        note=item.note,
+        next_refresh_at=_to_iso(item.next_refresh_at),
+        created_at=item.created_at.isoformat(),
     )
 
 
@@ -890,6 +931,62 @@ async def get_run_conclusions(run_id: str) -> RunConclusionsResponse:
         run_id=run_id,
         items=[ConclusionItemResponse.model_validate(item) for item in items_raw],
     )
+
+
+@router.get("/api/watchlist", response_model=list[WatchlistItemResponse])
+async def list_watchlist() -> list[WatchlistItemResponse]:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(WatchlistItem).order_by(WatchlistItem.created_at.desc(), WatchlistItem.competitor_id.asc())
+            )
+        ).scalars().all()
+    return [_to_watchlist_item(item) for item in rows]
+
+
+@router.post("/api/watchlist", response_model=WatchlistItemResponse)
+async def create_watchlist_item(payload: WatchlistCreateRequest) -> WatchlistItemResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        existing = (
+            await session.execute(
+                select(WatchlistItem).where(WatchlistItem.competitor_id == payload.competitor_id)
+            )
+        ).scalars().first()
+        if existing is not None:
+            raise APIException(
+                status_code=409,
+                error_code="WATCHLIST_ALREADY_EXISTS",
+                message=f"competitor_id={payload.competitor_id} already exists in watchlist",
+            )
+        item = WatchlistItem(
+            watch_id=make_id("watch_"),
+            competitor_id=payload.competitor_id,
+            note=payload.note,
+            next_refresh_at=payload.next_refresh_at,
+        )
+        session.add(item)
+        await session.commit()
+        await session.refresh(item)
+    return _to_watchlist_item(item)
+
+
+@router.delete("/api/watchlist/{watch_id}", response_model=WatchlistItemResponse)
+async def delete_watchlist_item(watch_id: str) -> WatchlistItemResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        item = await session.get(WatchlistItem, watch_id)
+        if item is None:
+            raise APIException(
+                status_code=404,
+                error_code="WATCHLIST_ITEM_NOT_FOUND",
+                message=f"watch_id={watch_id} does not exist",
+            )
+        deleted_item = _to_watchlist_item(item)
+        await session.delete(item)
+        await session.commit()
+    return deleted_item
 
 
 @router.get("/api/runs/{run_id}/metrics", response_model=RunMetricsResponse)

@@ -1,14 +1,19 @@
 # RivalLens Frontend
 
-RivalLens 联调控制台（React + Vite + TypeScript + Tailwind + shadcn/ui）。
+> 项目入口见根目录 [`README.md`](../README.md)。
 
-## 1. 环境准备
+## Scope
 
-- Node.js >= 18
-- npm >= 10
-- 后端 API 已运行（默认 `http://localhost:8010`）
+该目录负责 RivalLens 前端应用：公开区（营销与分享）与工作区（分析执行与对比）。
 
-## 2. 本地启动
+## Routes
+
+| Group | Routes |
+|---|---|
+| Public | `/`, `/examples`, `/pricing`, `/share/:runId` |
+| Workspace | `/app`, `/app/runs/new`, `/app/runs/:runId`, `/app/compare`, `/app/watch`, `/app/settings` |
+
+## Development
 
 ```bash
 cd frontend
@@ -16,28 +21,19 @@ npm install
 npm run dev
 ```
 
-默认访问：`http://localhost:5173`。
+默认地址：`http://localhost:5173`。
 
-## 3. API 配置
+## API Configuration
 
 - 环境变量：`VITE_API_BASE_URL`
 - 默认值：`http://localhost:8010`
-- 推荐在本机创建 `frontend/.env.local`（已 gitignore）
-
-示例：
+- 推荐本地文件：`frontend/.env.local`
 
 ```bash
 VITE_API_BASE_URL=http://localhost:8010
 ```
 
-## 4. 已打通页面
-
-- `/`：run 列表页
-- `/runs/new`：新建任务
-- `/runs/:run_id`：运行中/报告页（含 Evidence Drawer）
-- `/runs/:run_id/trace`：开发者视图
-
-## 5. 脚本
+## Scripts
 
 ```bash
 npm run dev
@@ -46,4 +42,8 @@ npm run preview
 npm run type-check
 ```
 
-`npm run build` 会先跑 TypeScript 编译检查，再执行 Vite 构建。
+## Notes
+
+- 所有页面通过路由 `lazy()` 加载，减少首屏负担。
+- 全局错误与请求失败通过 ErrorBoundary + Toaster 统一处理。
+- 运行事件通过 SSE 分发到 report/metrics/trace 等 query cache。

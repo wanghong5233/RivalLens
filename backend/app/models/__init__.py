@@ -9,6 +9,7 @@ from models.run import Run
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
+from models.watchlist import WatchlistItem
 
 __all__ = [
     "Artifact",
@@ -21,4 +22,5 @@ __all__ = [
     "SkillCandidateRecord",
     "Step",
     "SupervisorDecisionRecord",
+    "WatchlistItem",
 ]

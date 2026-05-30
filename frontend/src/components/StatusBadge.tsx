@@ -1,28 +1,38 @@
+import type { LucideIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleDashed, CircleX, LoaderCircle } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
+import type { BadgeProps } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 type StatusType = "running" | "completed" | "degraded" | "failed" | string;
 
-const STATUS_META: Record<string, { icon: string; label: string; className: string }> = {
+interface StatusMeta {
+  icon: LucideIcon;
+  label: string;
+  variant: BadgeProps["variant"];
+}
+
+const STATUS_META: Record<string, StatusMeta> = {
   running: {
-    icon: "⏳",
+    icon: LoaderCircle,
     label: "进行中",
-    className: "bg-amber-500/15 text-amber-300",
+    variant: "warning",
   },
   completed: {
-    icon: "✓",
+    icon: CheckCircle2,
     label: "完成",
-    className: "bg-emerald-500/15 text-emerald-300",
+    variant: "success",
   },
   degraded: {
-    icon: "⚠",
+    icon: AlertTriangle,
     label: "降级",
-    className: "bg-orange-500/15 text-orange-300",
+    variant: "warning",
   },
   failed: {
-    icon: "✗",
+    icon: CircleX,
     label: "失败",
-    className: "bg-red-500/15 text-red-300",
+    variant: "danger",
   },
 };
 
@@ -32,13 +42,14 @@ export interface StatusBadgeProps {
 
 export function StatusBadge({ status }: StatusBadgeProps): JSX.Element {
   const meta = STATUS_META[status] ?? {
-    icon: "•",
+    icon: CircleDashed,
     label: status,
-    className: "bg-secondary text-secondary-foreground",
+    variant: "secondary" as const,
   };
+  const Icon = meta.icon;
   return (
-    <Badge className={cn("border-transparent px-2 py-0.5 font-medium", meta.className)} variant="secondary">
-      <span className="mr-1">{meta.icon}</span>
+    <Badge variant={meta.variant}>
+      <Icon className={cn("h-3 w-3", status === "running" && "animate-spin")} />
       {meta.label}
     </Badge>
   );

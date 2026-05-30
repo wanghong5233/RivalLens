@@ -17,23 +17,50 @@ export function useRunEvents(runId: string): void {
     }
     const eventsUrl = `${API_BASE_URL}/api/runs/${runId}/events`;
     const eventSource = new EventSource(eventsUrl);
-    const onMessage = (): void => {
+    const invalidateRunDetail = (): void => {
       void queryClient.invalidateQueries({ queryKey: ["run-detail", runId] });
+    };
+    const invalidateRunTrace = (): void => {
       void queryClient.invalidateQueries({ queryKey: ["run-trace", runId] });
     };
-    eventSource.onmessage = onMessage;
-    const eventTypes = [
-      "step.start",
-      "step.finish",
-      "supervisor.decision",
-      "qa.outcome",
-      "curator.start",
-      "curator.finish",
-      "run.finish",
-    ];
-    for (const eventType of eventTypes) {
-      eventSource.addEventListener(eventType, onMessage);
-    }
+    const invalidateRunMetrics = (): void => {
+      void queryClient.invalidateQueries({ queryKey: ["run-metrics", runId] });
+    };
+    const invalidateRunReport = (): void => {
+      void queryClient.invalidateQueries({ queryKey: ["run-report", runId] });
+      void queryClient.invalidateQueries({ queryKey: ["run-conclusions", runId] });
+    };
+    const onFallbackMessage = (): void => {
+      invalidateRunDetail();
+      invalidateRunTrace();
+    };
+
+    eventSource.onmessage = onFallbackMessage;
+    eventSource.addEventListener("step.start", () => {
+      invalidateRunDetail();
+      invalidateRunTrace();
+    });
+    eventSource.addEventListener("step.finish", () => {
+      invalidateRunDetail();
+      invalidateRunTrace();
+      invalidateRunMetrics();
+    });
+    eventSource.addEventListener("qa.outcome", () => {
+      invalidateRunDetail();
+      invalidateRunTrace();
+      invalidateRunMetrics();
+    });
+    eventSource.addEventListener("supervisor.decision", () => {
+      invalidateRunTrace();
+    });
+    eventSource.addEventListener("curator.finish", () => {
+      void queryClient.invalidateQueries({ queryKey: ["skill-candidates"] });
+    });
+    eventSource.addEventListener("run.finish", () => {
+      invalidateRunDetail();
+      invalidateRunMetrics();
+      invalidateRunReport();
+    });
     eventSource.addEventListener("error", () => {
       // Browser-side EventSource handles retry; backend hints 15s.
       const _retryHintMs = RUN_RECONNECT_HINT_MS;

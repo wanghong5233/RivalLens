@@ -90,7 +90,7 @@ export function EvidenceDrawer({
                 <Link
                   className="inline-flex rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
                   onClick={() => onOpenChange(false)}
-                  to={`/runs/${runId}/evidence?evidence_id=${encodeURIComponent(item.evidence_id)}`}
+                  to={`/app/runs/${runId}/evidence?evidence_id=${encodeURIComponent(item.evidence_id)}`}
                 >
                   查看完整证据
                 </Link>

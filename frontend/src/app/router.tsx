@@ -1,42 +1,141 @@
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate, redirect } from "react-router-dom";
 
-import { AppShell } from "@/app/layout/AppShell";
-import { HomePage } from "@/pages/HomePage";
-import { NewRunPage } from "@/pages/NewRunPage";
+import { MarketingShell } from "@/app/layout/MarketingShell";
+import { WorkspaceShell } from "@/app/layout/WorkspaceShell";
 import { NotFoundPage } from "@/pages/NotFoundPage";
-import { RunEvidencePage } from "@/pages/RunEvidencePage";
-import { RunTracePage } from "@/pages/RunTracePage";
-import { RunViewPage } from "@/pages/RunViewPage";
-import { SkillStagingPage } from "@/pages/SkillStagingPage";
 
 export const appRouter = createBrowserRouter([
   {
     path: "/",
-    element: <AppShell />,
+    element: <MarketingShell />,
     children: [
       {
         index: true,
-        element: <HomePage />,
+        lazy: async () => {
+          const module = await import("@/pages/marketing/LandingPage");
+          return { Component: module.LandingPage };
+        },
+      },
+      {
+        path: "pricing",
+        lazy: async () => {
+          const module = await import("@/pages/marketing/PricingPage");
+          return { Component: module.PricingPage };
+        },
+      },
+      {
+        path: "examples",
+        lazy: async () => {
+          const module = await import("@/pages/marketing/ExamplesPage");
+          return { Component: module.ExamplesPage };
+        },
+      },
+      {
+        path: "share/:runId",
+        lazy: async () => {
+          const module = await import("@/pages/marketing/SharedReportPage");
+          return { Component: module.SharedReportPage };
+        },
+      },
+      {
+        path: "app",
+        element: <WorkspaceShell />,
+        children: [
+          {
+            index: true,
+            lazy: async () => {
+              const module = await import("@/pages/app/DashboardPage");
+              return { Component: module.DashboardPage };
+            },
+          },
+          {
+            path: "runs/new",
+            lazy: async () => {
+              const module = await import("@/pages/NewRunPage");
+              return { Component: module.NewRunPage };
+            },
+          },
+          {
+            path: "runs/:runId",
+            lazy: async () => {
+              const module = await import("@/pages/RunViewPage");
+              return { Component: module.RunViewPage };
+            },
+          },
+          {
+            path: "runs/:runId/trace",
+            lazy: async () => {
+              const module = await import("@/pages/RunTracePage");
+              return { Component: module.RunTracePage };
+            },
+          },
+          {
+            path: "runs/:runId/evidence",
+            lazy: async () => {
+              const module = await import("@/pages/RunEvidencePage");
+              return { Component: module.RunEvidencePage };
+            },
+          },
+          {
+            path: "compare",
+            lazy: async () => {
+              const module = await import("@/pages/app/ComparePage");
+              return { Component: module.ComparePage };
+            },
+          },
+          {
+            path: "watch",
+            lazy: async () => {
+              const module = await import("@/pages/app/WatchPage");
+              return { Component: module.WatchPage };
+            },
+          },
+          {
+            path: "templates",
+            lazy: async () => {
+              const module = await import("@/pages/app/TemplatesPage");
+              return { Component: module.TemplatesPage };
+            },
+          },
+          {
+            path: "settings",
+            lazy: async () => {
+              const module = await import("@/pages/app/SettingsPage");
+              return { Component: module.SettingsPage };
+            },
+          },
+          {
+            path: "settings/skill-admin",
+            lazy: async () => {
+              const module = await import("@/pages/SkillStagingPage");
+              return { Component: module.SkillStagingPage };
+            },
+          },
+          {
+            path: "*",
+            element: <NotFoundPage />,
+          },
+        ],
       },
       {
         path: "runs/new",
-        element: <NewRunPage />,
+        element: <Navigate replace to="/app/runs/new" />,
       },
       {
         path: "runs/:runId",
-        element: <RunViewPage />,
+        loader: ({ params }) => redirect(`/app/runs/${params.runId ?? ""}`),
       },
       {
         path: "runs/:runId/trace",
-        element: <RunTracePage />,
+        loader: ({ params }) => redirect(`/app/runs/${params.runId ?? ""}/trace`),
       },
       {
         path: "runs/:runId/evidence",
-        element: <RunEvidencePage />,
+        loader: ({ params }) => redirect(`/app/runs/${params.runId ?? ""}/evidence`),
       },
       {
         path: "skills/staging",
-        element: <SkillStagingPage />,
+        element: <Navigate replace to="/app/settings/skill-admin" />,
       },
       {
         path: "*",

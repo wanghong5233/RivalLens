@@ -52,7 +52,7 @@ export function RunTracePage(): JSX.Element {
         <h1 className="text-xl font-semibold">开发者视图 / Trace</h1>
         <div className="flex items-center gap-3 text-xs text-gray-400">
           <span>run_id: {runId}</span>
-          <Link className="text-primary hover:underline" to={`/runs/${runId}`}>
+          <Link className="text-primary hover:underline" to={`/app/runs/${runId}`}>
             返回 run 详情
           </Link>
         </div>

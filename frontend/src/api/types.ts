@@ -118,6 +118,38 @@ export interface RunMetricsResponse {
   run_wall_clock_seconds: number | null;
 }
 
+export interface ConclusionItemResponse {
+  conclusion_id: string;
+  run_id: string;
+  step_id: string;
+  section: string;
+  claim: string;
+  confidence: string;
+  competitor_ids: string[];
+  risk_flags: string[];
+  evidence_ids: string[];
+  created_at: string;
+}
+
+export interface RunConclusionsResponse {
+  run_id: string;
+  items: ConclusionItemResponse[];
+}
+
+export interface WatchlistItemResponse {
+  watch_id: string;
+  competitor_id: string;
+  note: string | null;
+  next_refresh_at: string | null;
+  created_at: string;
+}
+
+export interface WatchlistCreateRequest {
+  competitor_id: string;
+  note?: string | null;
+  next_refresh_at?: string | null;
+}
+
 export interface EvidenceListItemResponse {
   evidence_id: string;
   run_id: string;
