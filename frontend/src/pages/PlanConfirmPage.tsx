@@ -86,7 +86,7 @@ export function PlanConfirmPage(): JSX.Element {
       return;
     }
     if (planConfirmed && phase === "executing") {
-      navigate(`/app/runs/${runId}`, { replace: true });
+      navigate(`/app/runs/${runId}/live`, { replace: true });
     }
   }, [runId, runStatus, planConfirmed, phase, navigate]);
 
@@ -150,11 +150,11 @@ export function PlanConfirmPage(): JSX.Element {
       });
       pushToast({
         title: "计划已确认",
-        description: "Agent 正在按计划执行，跳转到运行详情页…",
+        description: "Agent 正在按计划执行，跳转到实时进度…",
         variant: "success",
       });
       window.setTimeout(() => {
-        navigate(`/app/runs/${runId}`);
+        navigate(`/app/runs/${runId}/live`);
       }, POST_CONFIRM_REDIRECT_MS);
     } catch (error) {
       const status = (error as { response?: { status?: number } }).response?.status;
@@ -162,14 +162,14 @@ export function PlanConfirmPage(): JSX.Element {
         ?.error_code;
       if (status === 409 && errorCode === "PLAN_NOT_AWAITING_CONFIRM") {
         // The graph already moved past planner_wait — most often because the
-        // user confirmed in another tab. Send them to the run view instead of
+        // user confirmed in another tab. Send them to the live page instead of
         // surfacing the 409 as an error.
         pushToast({
           title: "计划已被确认",
           description: "Agent 已开始执行，正在跳转…",
           variant: "default",
         });
-        navigate(`/app/runs/${runId}`, { replace: true });
+        navigate(`/app/runs/${runId}/live`, { replace: true });
         return;
       }
       const message = error instanceof Error ? error.message : "未知错误";

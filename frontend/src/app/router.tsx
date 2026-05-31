@@ -77,6 +77,13 @@ export const appRouter = createBrowserRouter([
             },
           },
           {
+            path: "runs/:runId/live",
+            lazy: async () => {
+              const module = await import("@/pages/LiveRunPage");
+              return { Component: module.LiveRunPage };
+            },
+          },
+          {
             path: "runs/:runId/trace",
             lazy: async () => {
               const module = await import("@/pages/RunTracePage");
