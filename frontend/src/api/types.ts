@@ -90,6 +90,12 @@ export interface FollowUpRequest {
   applies_to_stage?: PlanTaskStage | null;
 }
 
+export interface FollowUpAcceptedResponse {
+  run_id: string;
+  follow_up_id: string;
+  received_at: string;
+}
+
 export interface RunAcceptedResponse {
   run_id: string;
   status: RunStatus;

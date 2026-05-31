@@ -10,6 +10,8 @@ import { getRunFallbackPollMs, useRunEvents } from "@/api/sse";
 import type {
   CompetitorSeedResponse,
   EvidenceListItemResponse,
+  FollowUpAcceptedResponse,
+  FollowUpRequest,
   IntakeCreateRequest,
   IntakeCreateResponse,
   IntakeUserReply,
@@ -183,6 +185,17 @@ async function confirmRunPlan(
 ): Promise<RunAcceptedResponse> {
   const { data } = await apiClient.post<RunAcceptedResponse>(
     `/api/runs/${runId}/plan/confirm`,
+    payload,
+  );
+  return data;
+}
+
+async function submitRunFollowUp(
+  runId: string,
+  payload: FollowUpRequest,
+): Promise<FollowUpAcceptedResponse> {
+  const { data } = await apiClient.post<FollowUpAcceptedResponse>(
+    `/api/runs/${runId}/follow-up`,
     payload,
   );
   return data;
@@ -365,6 +378,21 @@ export function useConfirmRunPlan(): UseMutationResult<
 > {
   return useMutation({
     mutationFn: ({ runId, payload }) => confirmRunPlan(runId, payload),
+  });
+}
+
+export interface SubmitRunFollowUpVariables {
+  runId: string;
+  payload: FollowUpRequest;
+}
+
+export function useSubmitRunFollowUp(): UseMutationResult<
+  FollowUpAcceptedResponse,
+  Error,
+  SubmitRunFollowUpVariables
+> {
+  return useMutation({
+    mutationFn: ({ runId, payload }) => submitRunFollowUp(runId, payload),
   });
 }
 

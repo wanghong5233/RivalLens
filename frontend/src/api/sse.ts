@@ -68,6 +68,16 @@ export interface SupervisorDecisionEventPayload {
   triggered_by: string;
   outcome: string;
   plan_task_ids: string[];
+  // Phase 4: ids the supervisor consumed in this turn. FE uses this to drop
+  // matching entries from the local "pending instructions" chip list.
+  consumed_follow_up_ids?: string[];
+}
+
+export interface FollowUpReceivedPayload {
+  follow_up_id: string;
+  text: string;
+  applies_to_stage: string | null;
+  received_at: string;
 }
 
 export interface StepFinishEventPayload {
@@ -99,6 +109,9 @@ export interface RunEventsOptions {
   onEvidenceCollected?: (payload: EvidenceCollectedPayload) => void;
   onSupervisorDecision?: (payload: SupervisorDecisionEventPayload) => void;
   onStepFinish?: (payload: StepFinishEventPayload) => void;
+  // Phase 4: LiveRunPage shows a toast / pending-instruction chip when a new
+  // follow-up is accepted (either by the local user or another tab).
+  onFollowUpReceived?: (payload: FollowUpReceivedPayload) => void;
 }
 
 interface RunEventEnvelope {
@@ -256,12 +269,40 @@ function coerceSupervisorDecisionPayload(value: unknown): SupervisorDecisionEven
   const planTaskIds = Array.isArray(planTaskIdsRaw)
     ? planTaskIdsRaw.filter((item): item is string => typeof item === "string")
     : [];
+  const consumedRaw = record.consumed_follow_up_ids;
+  const consumedFollowUpIds = Array.isArray(consumedRaw)
+    ? consumedRaw.filter((item): item is string => typeof item === "string")
+    : undefined;
   return {
     iteration: typeof iterationRaw === "number" ? iterationRaw : 0,
     chosen_tool: chosenToolRaw,
     triggered_by: typeof triggeredByRaw === "string" ? triggeredByRaw : "unknown",
     outcome: typeof outcomeRaw === "string" ? outcomeRaw : "unknown",
     plan_task_ids: planTaskIds,
+    consumed_follow_up_ids: consumedFollowUpIds,
+  };
+}
+
+function coerceFollowUpReceivedPayload(value: unknown): FollowUpReceivedPayload | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const followUpIdRaw = record.follow_up_id;
+  if (typeof followUpIdRaw !== "string" || followUpIdRaw.length === 0) {
+    return null;
+  }
+  const textRaw = record.text;
+  if (typeof textRaw !== "string") {
+    return null;
+  }
+  const receivedAtRaw = record.received_at;
+  const stageRaw = record.applies_to_stage;
+  return {
+    follow_up_id: followUpIdRaw,
+    text: textRaw,
+    applies_to_stage: typeof stageRaw === "string" ? stageRaw : null,
+    received_at: typeof receivedAtRaw === "string" ? receivedAtRaw : "",
   };
 }
 
@@ -325,6 +366,7 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     onEvidenceCollected,
     onSupervisorDecision,
     onStepFinish,
+    onFollowUpReceived,
   } = options;
   useEffect(() => {
     if (!runId) {
@@ -383,6 +425,15 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
       const payload = coerceSupervisorDecisionPayload(parseEventPayload(event.data));
       if (payload !== null) {
         onSupervisorDecision(payload);
+      }
+    });
+    eventSource.addEventListener("followup.received", (event: MessageEvent<string>) => {
+      if (onFollowUpReceived === undefined) {
+        return;
+      }
+      const payload = coerceFollowUpReceivedPayload(parseEventPayload(event.data));
+      if (payload !== null) {
+        onFollowUpReceived(payload);
       }
     });
     eventSource.addEventListener("curator.finish", () => {
@@ -485,5 +536,6 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     onEvidenceCollected,
     onSupervisorDecision,
     onStepFinish,
+    onFollowUpReceived,
   ]);
 }
