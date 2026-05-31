@@ -356,6 +356,22 @@ async def researcher_node(state: AgentState) -> AgentState:
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()
+    for evidence_row in evidence_rows:
+        span = evidence_row.span if isinstance(evidence_row.span, dict) else {}
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.EVIDENCE_COLLECTED,
+            step_id=step_id,
+            payload={
+                "evidence_id": evidence_row.id,
+                "competitor_id": span.get("competitor_id"),
+                "dimension": span.get("dimension"),
+                "source_type": evidence_row.source_type,
+                "source_title": evidence_row.source_title,
+                "source_url": evidence_row.source_url,
+                "desensitized": bool(evidence_row.desensitized),
+            },
+        )
     await emit_run_event(
         run_id=run_id,
         event_type=RunEventType.STEP_FINISH,
