@@ -25,7 +25,7 @@ todos:
     status: completed
   - id: phase4
     content: Phase 4：follow-up REST 端点 + Supervisor 消费 follow_up_queue + 前端输入框启用
-    status: pending
+    status: completed
   - id: phase_beta
     content: Phase β：PlanConfirmRequest.additional_tasks + Supervisor user_pinned 优先级 + 前端添加 task modal（可独立合入或推迟）
     status: pending
@@ -494,10 +494,33 @@ HEARTBEAT              = "heartbeat"
 - 提交：拆 2 个原子 commit——`feat(sse): expose tool / evidence / decision / step.finish callbacks` / `feat(ui): LiveRunPage at /app/runs/:runId/live + redirect from /plan`。
 - 验收：`npm run type-check` 0 错；从 chat → /plan → /live 全链路渲染，supervisor.decision/step.finish/tool.start/tool.finish/evidence.collected 五类事件都能在 UI 上看到对应反映；run 终态后 2.5s 自动跳到 `/app/runs/{id}` 看完整报告。
 
-### Phase 4：Follow-up Interrupt（0.5 天）
-- 后端：`POST /api/runs/{id}/follow-up` + Supervisor 消费 `follow_up_queue`。
-- 前端：底部输入框启用 + `useFollowUp`。
-- 验收：执行到一半发送"再多找 GitHub Copilot 的资料"，下一轮 Supervisor 决策 reasoning_summary 显式提到该指令、且实际拉了新 evidence。
+### Phase 4：Follow-up Interrupt（**已完成 ✅**）
+
+**Phase 4 — 后端实现（已完成 ✅）**
+
+- DB inbox：[`backend/app/models/run.py`](backend/app/models/run.py) 加 `follow_ups: JSONB nullable` 列（迁移 [`0013_add_runs_follow_ups_column`](backend/app/alembic/versions/0013_add_runs_follow_ups_column.py)）。存储 `FollowUpEntry`（[`schemas/plan.py`](backend/app/schemas/plan.py)：`id` / `text` / `applies_to_stage` / `received_at` / `consumed_at` / `consumed_in_iteration`）。`FollowUpRequest` 同时收紧为 `1..1000` 字符——422 在 Pydantic 层就拦下。
+- 端点：[`POST /api/runs/{run_id}/follow-up`](backend/app/router/run_rt.py) append-only 落库 + emit `followup.received` 事件。守卫四态——404 RUN_NOT_FOUND / 409 FOLLOWUP_RUN_NOT_RUNNING（终态）/ 409 FOLLOWUP_NOT_EXECUTING（`plan_tree.confirmed_at` 缺失）/ 409 FOLLOWUP_GRAPH_PAUSED（graph 在 intake_wait / planner_wait）。
+- Supervisor 消费：[`agents/nodes/supervisor.py`](backend/app/agents/nodes/supervisor.py) 入口 `_load_pending_follow_ups`（拉 `consumed_at=NULL`）→ 注入 [`build_supervisor_user_prompt` / `build_supervisor_fallback_user_prompt`](backend/app/service/llm/prompts.py) 新增的 `pending_follow_ups` 段 → 决策落库后 `_mark_follow_ups_consumed` 写回 `consumed_at + consumed_in_iteration`。仅 LLM 分支消费；qa-driven / max-iter 分支不上 prompt 也不消费，下轮再处理。
+- 事件 payload 扩 `consumed_follow_up_ids`（additive）到 `supervisor.decision`，前端用它精确擦除已被吃掉的 chip。
+- 测试：新增 [`test_followup_api.py`](backend/app/tests/test_followup_api.py) 9 个测试：`_format_pending_follow_ups` 两条 / 全部 4 个 guard 分支 / happy persist + 二次 append 顺序 / e2e（intake → 直插 follow_up → /plan/confirm → 等终态 → 断言 `consumed_at` 已盖戳 + `consumed_in_iteration ≥ 1`）。容器内全量 `pytest tests/ --ignore=tests/test_smoke.py` **140 passed**。
+- 关键 YAGNI / 设计决策：
+  1. **不用 `graph.aupdate_state` 把 follow-up 推进 LangGraph state**——supervisor 不在 interrupt 上，对 running thread 调 `aupdate_state` 是 LangGraph 官方明确警示的 race 路径。DB inbox 与 `intake_draft` / `plan_tree` 一致，HTTP 写 graph 读，零并发风险。
+  2. **不为 follow-up 单建独立表**——单 run 上 N≤几十，且只按 run_id 查；建表会拉一次 join、零收益。
+  3. **不在 `AgentState.follow_up_queue` 上做 graph 内累加**——保留字段供未来 Phase β 扩展，但本期 supervisor 直接读 DB，避免"state 与 DB 两份真相"。
+  4. **不让 QA-driven / max-iter 分支消费 follow-up**——这两条路径不召唤 LLM，强行 consume 会丢失用户意图；保留 pending，下一轮真实 supervisor turn 再吃。
+
+**Phase 4 — 前端实现（已完成 ✅）**
+
+- API 层：[`api/types.ts`](frontend/src/api/types.ts) 加 `FollowUpAcceptedResponse`；[`api/hooks.ts`](frontend/src/api/hooks.ts) 加 `submitRunFollowUp` + `useSubmitRunFollowUp` mutation；[`api/sse.ts`](frontend/src/api/sse.ts) 加 `FollowUpReceivedPayload` + `coerceFollowUpReceivedPayload`（defensive parse）+ `onFollowUpReceived` 回调 + `followup.received` 监听。`SupervisorDecisionEventPayload` 扩 `consumed_follow_up_ids?: string[]`。
+- LiveRunPage：[`pages/LiveRunPage.tsx`](frontend/src/pages/LiveRunPage.tsx) 把 Phase 3 的 `FollowUpPlaceholder` 替换为真实 `FollowUpComposer`——textarea + 发送按钮 + 1..1000 字符本地校验，提交走 `useSubmitRunFollowUp`。本地提交成功后立刻把响应转成 `FollowUpReceivedPayload` 推入 `pendingFollowUps`；远端 `followup.received` 也走同一通道，按 `follow_up_id` 去重。`supervisor.decision.consumed_follow_up_ids` 到来时按 ID 集合擦除 chip。
+- 错误处理：分 error_code 给不同 toast——`FOLLOWUP_GRAPH_PAUSED` / `FOLLOWUP_NOT_EXECUTING` / `FOLLOWUP_RUN_NOT_RUNNING` 都映射成中文具体说明，避免笼统"提交失败"。
+- 关键 YAGNI 决策：
+  1. **不做 `applies_to_stage` 选择器**——本期 textarea 单字段，让用户用自然语言表达；分阶段细分留给 Phase β。
+  2. **不在 chip 上做"撤回"按钮**——后端 append-only，撤回需要 reverse migration + mark consumed 路径，YAGNI；用户错发可补一条更正即可。
+  3. **不缓存 pendingFollowUps 到 localStorage**——刷新由 `followup.received`（如果 SSE 还没断）+ supervisor.decision 重新同步；终态分支隐藏 composer，不会丢失上下文。
+  4. **不在 toast / chip 上展示 `received_at`**——chip 是"未处理"语义，时间没人看；接到 consumed_follow_up_ids 自然消失即是反馈。
+- 提交：拆 5 个原子 commit——后端 3 个（data layer / supervisor 消费 / endpoint+tests）+ 前端 2 个（api 层 / LiveRunPage Composer）。
+- 验收：`pytest` 140 passed；`npm run type-check` 0 错；执行中提交"再多关注 GitHub Copilot 的 pricing"→ 顶部出现等待 chip → 下一次 supervisor.decision 携带 `consumed_follow_up_ids` 后 chip 消失，DB `runs.follow_ups[0].consumed_at` 已盖戳。
 
 ### Phase β：User-injected Task（1 天，可选独立合入）
 - 后端：`PlanConfirmRequest.additional_tasks` 启用；planner_node 接受 `source="user"` task；Supervisor 优先级把 `user_pinned` 列前。
