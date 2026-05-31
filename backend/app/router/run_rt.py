@@ -1208,8 +1208,10 @@ async def confirm_run_plan(
     """Phase 2 (Invariant C): resume the graph past planner_wait.
 
     The graph proceeds to the supervisor and the rest of the executor in a
-    background task. Phase α only honors `disabled_task_ids`; the planner_wait
-    node silently drops `additional_tasks` until Phase β enables them.
+    background task. Phase β honors `disabled_task_ids` (must reference tasks
+    in the pending plan) and `additional_tasks` (server forces
+    source="user", priority="user_pinned"; the planner_wait node validates
+    them and merges into plan_tree).
     """
     graph = getattr(request.app.state, "compiled_graph", None)
     if graph is None:
@@ -1273,6 +1275,7 @@ async def confirm_run_plan(
         log.info(
             "api.run.plan.confirm.accepted",
             disabled_task_count=len(payload.disabled_task_ids),
+            additional_task_count=len(payload.additional_tasks),
         )
 
     return RunAcceptedResponse(run_id=run_id, status="running")

@@ -32,6 +32,13 @@ _VALID_STAGES: frozenset[str] = frozenset({"discover", "research", "analyze", "w
 _MAX_RESEARCH_TASKS = 8
 _MAX_TOTAL_TASKS = 12
 _DEFAULT_FOCUS_DIMENSIONS: tuple[str, ...] = ("feature", "pricing", "user_feedback")
+# Phase β: cap user-injected tasks. Backend defends; FE should also enforce so
+# the validation message reaches the user before a round-trip.
+_MAX_ADDITIONAL_TASKS = 5
+# Phase β: user injections never include "discover" — that stage is the
+# discovery node's exclusive output. Allowing it would let two discoveries
+# compete and would also bypass `_derive_focus_dimensions`.
+_USER_ALLOWED_STAGES: frozenset[str] = frozenset({"research", "analyze", "write"})
 
 
 def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -230,6 +237,54 @@ async def _persist_planner_step(
         return step.step_id
 
 
+def _normalize_user_tasks(additional_tasks: list[PlanTask]) -> list[PlanTask]:
+    """Phase β: server-side hardening of `additional_tasks`.
+
+    Rules (each violation drops the offending task — silent skip is *not* used;
+    we raise so the FE surfaces the reason instead of producing a partial plan):
+    - stage must be in {"research", "analyze", "write"}; "discover" is rejected.
+    - research stage requires a non-empty `competitor_id`.
+    - title must be non-empty after trim.
+    - `task_id` is regenerated (client-supplied IDs are not trusted — would
+      collide with planner ptask_ namespace).
+    - `source` and `priority` are forced regardless of client payload.
+    - `enabled` is forced True (a user-added task that is born disabled is
+      contradictory; if they change their mind they can omit it instead).
+
+    Caller enforces the count cap (`_MAX_ADDITIONAL_TASKS`).
+    """
+    normalized: list[PlanTask] = []
+    for index, task in enumerate(additional_tasks):
+        if task.stage not in _USER_ALLOWED_STAGES:
+            raise ValueError(
+                f"additional_tasks[{index}].stage={task.stage!r} is not user-addable "
+                f"(allowed: {sorted(_USER_ALLOWED_STAGES)})"
+            )
+        title_trimmed = task.title.strip()
+        if not title_trimmed:
+            raise ValueError(f"additional_tasks[{index}].title must be non-empty")
+        competitor_id = task.competitor_id.strip() if task.competitor_id else None
+        if task.stage == "research":
+            if not competitor_id:
+                raise ValueError(
+                    f"additional_tasks[{index}].competitor_id is required for stage=research"
+                )
+        normalized.append(
+            PlanTask(
+                task_id=make_id("ptask_"),
+                stage=task.stage,
+                title=title_trimmed[:60],
+                description=task.description.strip()[:500],
+                competitor_id=competitor_id if task.stage == "research" else None,
+                focus_dimensions=list(task.focus_dimensions),
+                source="user",
+                enabled=True,
+                priority="user_pinned",
+            )
+        )
+    return normalized
+
+
 async def _persist_plan_tree_to_run(*, run_id: str, plan: PlanTree) -> None:
     """Mirror the latest plan_tree onto the Run row.
 
@@ -332,8 +387,11 @@ async def planner_wait_node(state: AgentState) -> AgentState:
     Invariant A: no LLM calls, no DB writes before interrupt(). All side effects
     after interrupt() run exactly once per resume.
 
-    Phase α: only `disabled_task_ids` is honored. `additional_tasks` is reserved
-    for Phase β and silently dropped here.
+    Phase β: honors `disabled_task_ids` against pending plan tasks AND merges
+    `additional_tasks` (forced source="user", priority="user_pinned") onto the
+    end of the kept list. User-pinned research competitors that aren't yet in
+    `state.competitors` are returned as a diff so the supervisor can skip the
+    discovery round-trip and target them directly.
     """
     pending = _coerce_pending_plan(state)
     raw_confirm: Any = interrupt(
@@ -349,11 +407,31 @@ async def planner_wait_node(state: AgentState) -> AgentState:
             f"planner_wait resume value failed validation: {exc}"
         ) from exc
 
+    if len(confirm.additional_tasks) > _MAX_ADDITIONAL_TASKS:
+        raise RuntimeError(
+            f"additional_tasks count ({len(confirm.additional_tasks)}) "
+            f"exceeds limit ({_MAX_ADDITIONAL_TASKS})"
+        )
+    try:
+        user_tasks = _normalize_user_tasks(confirm.additional_tasks)
+    except ValueError as exc:
+        raise RuntimeError(f"additional_tasks validation failed: {exc}") from exc
+
     disabled = set(confirm.disabled_task_ids)
+    pending_task_ids = {task.task_id for task in pending.tasks}
+    unknown_disabled = [tid for tid in disabled if tid not in pending_task_ids]
+    if unknown_disabled:
+        # FE may race against a stale plan version. Surface the mismatch
+        # instead of silently dropping the unknown IDs.
+        raise RuntimeError(
+            f"disabled_task_ids reference non-existent tasks: {sorted(unknown_disabled)}"
+        )
+
     kept_tasks = [task for task in pending.tasks if task.task_id not in disabled]
+    merged_tasks = kept_tasks + user_tasks
     confirmed = PlanTree(
         plan_id=pending.plan_id,
-        tasks=kept_tasks,
+        tasks=merged_tasks,
         rationale=pending.rationale,
         version=pending.version + 1,
         confirmed_at=datetime.now(timezone.utc).isoformat(),
@@ -361,6 +439,27 @@ async def planner_wait_node(state: AgentState) -> AgentState:
 
     run_id = state.get("run_id") or make_id("run_")
     await _persist_plan_tree_to_run(run_id=run_id, plan=confirmed)
+
+    # User-injected research competitors must be added to state.competitors so
+    # the supervisor's hard-constraint guard accepts them. operator.add
+    # concatenates onto current state — we only return the *diff* (new IDs)
+    # to avoid duplicates.
+    existing_competitors = set(state.get("competitors", []) or [])
+    new_user_competitors = [
+        task.competitor_id
+        for task in user_tasks
+        if task.stage == "research"
+        and task.competitor_id is not None
+        and task.competitor_id not in existing_competitors
+    ]
+    # De-dup the diff itself (user could have added the same competitor twice).
+    seen_diff: set[str] = set()
+    competitors_diff: list[str] = []
+    for competitor in new_user_competitors:
+        if competitor in seen_diff:
+            continue
+        seen_diff.add(competitor)
+        competitors_diff.append(competitor)
 
     await emit_run_event(
         run_id=run_id,
@@ -370,15 +469,28 @@ async def planner_wait_node(state: AgentState) -> AgentState:
             "plan_id": confirmed.plan_id,
             "version": confirmed.version,
             "kept_task_count": len(kept_tasks),
+            "user_task_count": len(user_tasks),
             "disabled_task_ids": sorted(disabled),
             "confirmed_at": confirmed.confirmed_at,
         },
     )
 
-    return {
-        **cast(dict[str, Any], state),
+    state_dict = cast(dict[str, Any], state)
+    # `**state` would spread `competitors` from the current snapshot, but
+    # LangGraph's operator.add reducer would then concat `competitors_diff`
+    # on top. We don't want the existing list duplicated, so we omit it
+    # from the spread when there's a diff to add — the reducer keeps the
+    # existing state.competitors intact and only the diff is appended.
+    state_without_competitors = {
+        key: value for key, value in state_dict.items() if key != "competitors"
+    }
+    result: dict[str, Any] = {
+        **state_without_competitors,
         "run_id": run_id,
         "phase": "executing",
         "plan_tree": confirmed,
         "pending_plan_tree": None,
     }
+    if competitors_diff:
+        result["competitors"] = competitors_diff
+    return result
