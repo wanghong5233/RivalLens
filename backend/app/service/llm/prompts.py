@@ -446,6 +446,32 @@ def build_planner_fallback_user_prompt(*, intake_draft: dict[str, object]) -> st
     )
 
 
+def _format_pending_follow_ups(pending_follow_ups: Sequence[dict[str, object]] | None) -> str:
+    if not pending_follow_ups:
+        return ""
+    lines: list[str] = []
+    for entry in pending_follow_ups:
+        if not isinstance(entry, dict):
+            continue
+        text_raw = entry.get("text")
+        if not isinstance(text_raw, str) or not text_raw.strip():
+            continue
+        id_raw = entry.get("id")
+        stage_raw = entry.get("applies_to_stage")
+        stage_tag = f" [{stage_raw}]" if isinstance(stage_raw, str) and stage_raw else ""
+        id_tag = f" {id_raw}" if isinstance(id_raw, str) and id_raw else ""
+        lines.append(f"-{id_tag}{stage_tag} {text_raw.strip()}")
+    if not lines:
+        return ""
+    return (
+        "\nUser mid-run instructions (Phase 4 follow-ups). You MUST acknowledge "
+        "these in `reasoning_summary` and let them influence the next decision "
+        "when relevant:\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def build_supervisor_user_prompt(
     *,
     user_query: str,
@@ -457,6 +483,7 @@ def build_supervisor_user_prompt(
     qa_outcome: str | None,
     qa_reject_to: str | None,
     qa_reasons: Sequence[str],
+    pending_follow_ups: Sequence[dict[str, object]] | None = None,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     discovery_needed = len(competitors) == 0
@@ -492,7 +519,8 @@ def build_supervisor_user_prompt(
         f"- report_draft_done: {report_draft_done}\n"
         f"- qa_outcome: {qa_outcome}\n"
         f"- qa_reject_to: {qa_reject_to}\n"
-        f"- qa_reasons: {_json(list(qa_reasons))}\n\n"
+        f"- qa_reasons: {_json(list(qa_reasons))}\n"
+        f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         f"{constraints}"
     )
 
@@ -504,6 +532,7 @@ def build_supervisor_fallback_user_prompt(
     researched_competitors: Sequence[str],
     analysis_done: bool,
     report_draft_done: bool,
+    pending_follow_ups: Sequence[dict[str, object]] | None = None,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     preferred_tool_hint: str
@@ -526,7 +555,8 @@ def build_supervisor_fallback_user_prompt(
         f"- pending_competitors: {_json(pending_competitors)}\n"
         f"- analysis_done: {analysis_done}\n"
         f"- report_draft_done: {report_draft_done}\n"
-        f"- preferred_tool_hint: {preferred_tool_hint}\n\n"
+        f"- preferred_tool_hint: {preferred_tool_hint}\n"
+        f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         "Pick exactly one next tool and keep tool_args minimal but valid.\n"
         "If competitors is empty, you MUST use DiscoverCompetitors.\n"
         "When pending_competitors has 2+ entries, prefer ConductResearchBatch with one unique competitor per topic."

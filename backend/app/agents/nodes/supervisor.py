@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agents.state import AgentState
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
+from models.run import Run
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from service.llm import (
@@ -620,6 +621,77 @@ async def _persist_iteration(
     return step.step_id
 
 
+async def _load_pending_follow_ups(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    run_id: str,
+) -> list[dict[str, object]]:
+    """Phase 4: read FollowUpEntry rows with consumed_at=None from Run.follow_ups.
+
+    Returns plain dicts (not Pydantic models) — the supervisor prompt builder
+    only needs `id` / `text` / `applies_to_stage`, and round-tripping through
+    FollowUpEntry would discard fields the FE may add later.
+    """
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None or run.follow_ups is None:
+            return []
+        pending: list[dict[str, object]] = []
+        for entry in run.follow_ups:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("consumed_at") is None:
+                pending.append(entry)
+    return pending
+
+
+async def _mark_follow_ups_consumed(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    run_id: str,
+    follow_up_ids: list[str],
+    iteration: int,
+) -> None:
+    """Phase 4: stamp `consumed_at` + `consumed_in_iteration` on the listed IDs.
+
+    Reads + writes inside one session so we don't race with a concurrent
+    POST /follow-up. Unknown IDs are silently skipped (defensive — the
+    endpoint never reuses fu_ ids so this should never happen).
+    """
+    if not follow_up_ids:
+        return
+    target_ids = set(follow_up_ids)
+    consumed_at = _now_iso()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None or run.follow_ups is None:
+            return
+        updated: list[dict[str, object]] = []
+        changed = False
+        for entry in run.follow_ups:
+            if not isinstance(entry, dict):
+                updated.append(entry)
+                continue
+            entry_id = entry.get("id")
+            if (
+                isinstance(entry_id, str)
+                and entry_id in target_ids
+                and entry.get("consumed_at") is None
+            ):
+                new_entry = {
+                    **entry,
+                    "consumed_at": consumed_at,
+                    "consumed_in_iteration": iteration,
+                }
+                updated.append(new_entry)
+                changed = True
+            else:
+                updated.append(entry)
+        if changed:
+            run.follow_ups = updated
+            await session.commit()
+
+
 def _map_next_action(chosen_tool: str) -> Literal["discovery", "researcher", "analyst", "writer", "finalize"]:
     if chosen_tool == "DiscoverCompetitors":
         return "discovery"
@@ -721,6 +793,11 @@ async def supervisor_node(state: AgentState) -> AgentState:
         focus_dimensions=fallback_dimensions,
     )
 
+    # Pre-declared so the mark-consumed call after persist is unconditional;
+    # only the LLM branch overwrites it (qa-driven + max-iter branches don't
+    # actually present the follow-ups to any LLM, so we leave them pending).
+    pending_follow_ups: list[dict[str, object]] = []
+
     forced_degraded_by_qa = False
     qa_driven_decision = _decision_from_qa_feedback(
         run_id=run_id,
@@ -760,6 +837,10 @@ async def supervisor_node(state: AgentState) -> AgentState:
             error="max_iterations_hit",
         )
     else:
+        pending_follow_ups = await _load_pending_follow_ups(
+            session_factory=session_factory,
+            run_id=run_id,
+        )
         user_prompt = build_supervisor_user_prompt(
             user_query=user_query,
             iteration=iteration,
@@ -770,6 +851,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             qa_outcome=qa_outcome,
             qa_reject_to=qa_reject_to,
             qa_reasons=qa_reasons,
+            pending_follow_ups=pending_follow_ups,
         )
         llm_response = await get_llm_client().complete_json(
             model_slot="research",
@@ -782,6 +864,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 researched_competitors=researched_competitors,
                 analysis_done=analysis_done,
                 report_draft_done=report_draft_done,
+                pending_follow_ups=pending_follow_ups,
             ),
         )
         decision = _try_llm_decision(
@@ -809,6 +892,18 @@ async def supervisor_node(state: AgentState) -> AgentState:
         decision=decision,
         llm_response=llm_response,
     )
+    consumed_follow_up_ids: list[str] = []
+    for entry in pending_follow_ups:
+        entry_id = entry.get("id")
+        if isinstance(entry_id, str) and entry_id:
+            consumed_follow_up_ids.append(entry_id)
+    if consumed_follow_up_ids:
+        await _mark_follow_ups_consumed(
+            session_factory=session_factory,
+            run_id=run_id,
+            follow_up_ids=consumed_follow_up_ids,
+            iteration=iteration,
+        )
     with bind_step(persisted_step_id):
         log.info(
             "supervisor.decision",
@@ -833,6 +928,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             "triggered_by": decision.triggered_by or "unknown",
             "outcome": decision.outcome or "unknown",
             "plan_task_ids": plan_task_ids,
+            "consumed_follow_up_ids": consumed_follow_up_ids,
         },
     )
     decisions.append(decision)
