@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 import re
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -11,6 +12,7 @@ from schemas.contracts import validate_dimension, validate_source_type
 from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError
+from service.event_bus import RunEventType, emit_run_event
 from service.llm import (
     RESEARCHER_COMPRESSION_PROMPT,
     RESEARCHER_SYSTEM_PROMPT,
@@ -43,6 +45,19 @@ ACTION_TO_CHANNEL = {
     "read_skill_file": "read_skill_file",
 }
 log = get_logger("agents.researcher_subgraph")
+
+# Fields that are safe to expose in tool.start/finish event payloads.
+# WHY: keep the live feed informative (query/url/skill_id) without leaking
+# bulk content (raw HTML, full search results, transient sanitizer state).
+_SAFE_TOOL_ARG_KEYS = ("query", "url", "max_results", "skill_id", "path")
+
+
+def _safe_tool_args_summary(args: dict[str, object]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key in _SAFE_TOOL_ARG_KEYS:
+        if key in args and args[key] is not None:
+            summary[key] = args[key]
+    return summary
 
 
 class ResearcherSubState(TypedDict, total=False):
@@ -516,6 +531,28 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
             dimension = None
     else:
         dimension = None
+
+    run_id_raw = state.get("run_id")
+    run_id = run_id_raw if isinstance(run_id_raw, str) else None
+    competitor_id_raw = state.get("competitor_id")
+    competitor_id = competitor_id_raw if isinstance(competitor_id_raw, str) else None
+    turn_index = int(state.get("turn_count", 0)) + 1
+    args_summary = _safe_tool_args_summary(action_args)
+
+    if run_id is not None:
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.TOOL_START,
+            payload={
+                "tool": action_raw,
+                "competitor_id": competitor_id,
+                "dimension": dimension,
+                "turn": turn_index,
+                "args_summary": args_summary,
+            },
+        )
+
+    tool_started_at = time.monotonic()
     try:
         observation = await registry.invoke(channel_action, args=action_args)
         observation_row = {
@@ -536,6 +573,31 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
             "args": action_args,
             "error": str(exc),
         }
+    latency_ms = int((time.monotonic() - tool_started_at) * 1000)
+
+    if run_id is not None:
+        success = "error" not in observation_row
+        snippet_count = 0
+        if success:
+            result_section = observation_row.get("result")
+            if isinstance(result_section, dict):
+                snippets_section = result_section.get("snippets")
+                if isinstance(snippets_section, list):
+                    snippet_count = len(snippets_section)
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.TOOL_FINISH,
+            payload={
+                "tool": action_raw,
+                "competitor_id": competitor_id,
+                "dimension": dimension,
+                "turn": turn_index,
+                "success": success,
+                "snippet_count": snippet_count,
+                "latency_ms": latency_ms,
+                "error": str(observation_row.get("error"))[:300] if not success else None,
+            },
+        )
 
     observations_log = list(state.get("observations_log", []))
     observations_log.append(observation_row)

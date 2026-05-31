@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 from agents.state import AgentState
@@ -63,6 +64,20 @@ async def discovery_node(state: AgentState) -> AgentState:
     all_snippets: list[str] = []
 
     for query in search_queries[:5]:
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.TOOL_START,
+            step_id=step_id,
+            payload={
+                "tool": "search_web",
+                "competitor_id": None,
+                "dimension": None,
+                "args_summary": {"query": query, "max_results": min(max_results, 10)},
+            },
+        )
+        tool_started_at = time.monotonic()
+        snippets_added = 0
+        error_text: str | None = None
         try:
             observation = await registry.invoke(
                 "search_web", args={"query": query, "max_results": min(max_results, 10)}
@@ -71,8 +86,25 @@ async def discovery_node(state: AgentState) -> AgentState:
                 text = snippet.sanitized_text or snippet.quote
                 if text:
                     all_snippets.append(text[:500])
+                    snippets_added += 1
         except (ChannelError, Exception) as exc:
-            log.warning("discovery.search_failed", query=query, error=str(exc))
+            error_text = str(exc)
+            log.warning("discovery.search_failed", query=query, error=error_text)
+        latency_ms = int((time.monotonic() - tool_started_at) * 1000)
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.TOOL_FINISH,
+            step_id=step_id,
+            payload={
+                "tool": "search_web",
+                "competitor_id": None,
+                "dimension": None,
+                "success": error_text is None,
+                "snippet_count": snippets_added,
+                "latency_ms": latency_ms,
+                "error": error_text[:300] if error_text else None,
+            },
+        )
 
     discovered: list[str] = []
     if all_snippets:
