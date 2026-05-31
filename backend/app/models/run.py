@@ -30,3 +30,17 @@ class Run(Base):
         nullable=False,
         server_default=func.now(),
     )
+    # Phase 1b: Agent-native intake snapshot. Persisted at intake.complete so the
+    # FE can render "what you asked for" on the live run page even after restart.
+    # `phase` is derived (status + intake_draft + plan_tree), so we deliberately
+    # do NOT store a phase column — YAGNI and avoids drift with the graph state.
+    intake_draft: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )
+    # Phase 2 placeholder (planner output); ships in the same migration to avoid
+    # a second DDL round-trip when the planner lands.
+    plan_tree: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )
