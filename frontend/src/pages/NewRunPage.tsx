@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useCompetitorSeeds, useCreateRun, useCreateWatchlistItem } from "@/api/hooks";
+import { IntakeModeSwitcher } from "@/components/intake/IntakeModeSwitcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -299,7 +300,10 @@ export function NewRunPage(): JSX.Element {
   return (
     <section className="space-y-6">
       <header className="space-y-3">
-        <h1 className="text-h1 text-foreground">新建竞品分析</h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-h1 text-foreground">新建竞品分析</h1>
+          <IntakeModeSwitcher active="expert" />
+        </div>
         <p className="text-caption text-foreground-muted">
           填写核心问题、选择竞品与关注角色后即可启动。不确定竞品时可留空，Agent 会自动发现赛道内的主要竞品。
         </p>

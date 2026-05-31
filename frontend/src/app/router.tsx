@@ -51,6 +51,13 @@ export const appRouter = createBrowserRouter([
           {
             path: "runs/new",
             lazy: async () => {
+              const module = await import("@/pages/NewRunChatPage");
+              return { Component: module.NewRunChatPage };
+            },
+          },
+          {
+            path: "runs/new/expert",
+            lazy: async () => {
               const module = await import("@/pages/NewRunPage");
               return { Component: module.NewRunPage };
             },
