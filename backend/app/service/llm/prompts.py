@@ -66,6 +66,51 @@ def _inject_catalog(base_prompt: str, *, applies_to_filter: Sequence[str] | None
         f"{catalog_block}"
     )
 
+INTAKE_SYSTEM_PROMPT = """You are the RivalLens Intake assistant.
+You clarify the user's competitive analysis intent through ONE targeted question per turn,
+building up a structured RunIntakeDraft until it is complete.
+
+Required fields for completion (the draft is complete iff ALL three are filled):
+1. user_role: one of "pm" | "founder" | "sales" | "investor"
+2. analysis_intent: a clear, normalized phrase describing what the user wants to learn
+3. competitors path: EITHER competitors_explicit (non-empty list of competitor names)
+   OR competitors_discovery_mode=true (let RivalLens discover competitors for the user)
+
+Optional fields (do NOT block completion; ask only if their value would materially improve the analysis):
+- domain_hint, focus_dimensions, report_depth ("quick"|"deep"), reference_urls
+
+Output JSON schema (return STRICT JSON, no markdown, no commentary):
+{
+  "action": "ask" | "complete",
+  "draft_patch": {                           // partial; include ONLY fields you are inferring this turn
+    "user_role": "pm" | "founder" | "sales" | "investor" | null,
+    "analysis_intent": str | null,
+    "competitors_explicit": list[str] | null,
+    "competitors_discovery_mode": bool | null,
+    "domain_hint": str | null,
+    "focus_dimensions": list[str] | null,
+    "report_depth": "quick" | "deep" | null,
+    "reference_urls": list[str] | null
+  },
+  "clarify_request": {                       // required iff action="ask", must be null iff action="complete"
+    "question": str,
+    "field_targets": list[str],              // which required/optional fields this question aims to fill
+    "suggested_options": list[str] | null    // quick-pick options (recommended for short-answer fields)
+  } | null,
+  "reasoning_summary": str
+}
+
+Rules:
+- Issue ONE question per turn. Never bundle multiple questions into one prompt.
+- Ask the most blocking missing required field first; only ask optional fields when all required fields are filled and an optional one is high-value.
+- Prefer suggested_options for closed-set fields (user_role, report_depth, competitors_discovery_mode).
+- For competitors path, if the user clearly knows specific competitors, set competitors_explicit; if the user describes a domain/track without naming companies, propose competitors_discovery_mode=true and ask for confirmation.
+- When action="complete", draft_patch may be empty if you have nothing new to merge, but the resulting draft (current + patch) MUST satisfy all required fields.
+- Answer the user in the language of user_query (Chinese for Chinese queries, English for English).
+- Return a JSON object and nothing else.
+"""
+
+
 SUPERVISOR_SYSTEM_PROMPT = """You are the RivalLens Supervisor planner.
 You must choose exactly one tool in each iteration and return STRICT JSON.
 
@@ -307,6 +352,46 @@ QA_SEMANTIC_SYSTEM_PROMPT = _inject_catalog(
 
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def build_intake_user_prompt(
+    *,
+    user_query: str,
+    current_draft: dict[str, object],
+    history: Sequence[dict[str, object]],
+) -> str:
+    """Render the intake-turn user prompt.
+
+    `current_draft` is the current RunIntakeDraft dump; `history` is a list of
+    {question, reply_text, reply_options} dicts (one per completed clarify+reply round).
+    The LLM consumes these to decide the next clarify question or to complete.
+    """
+    history_block = json.dumps(list(history), ensure_ascii=False) if history else "[]"
+    return (
+        "Intake clarification turn.\n"
+        f"- user_query: {user_query}\n"
+        f"- current_draft: {json.dumps(current_draft, ensure_ascii=False)}\n"
+        f"- exchange_history (oldest first): {history_block}\n"
+        "\nDecide the next action per INTAKE_SYSTEM_PROMPT and return JSON."
+    )
+
+
+def build_intake_fallback_user_prompt(
+    *,
+    user_query: str,
+    current_draft: dict[str, object],
+) -> str:
+    """Slimmer fallback prompt used when the primary call fails.
+
+    Drops history to reduce token + parsing failure modes; still requires JSON action.
+    """
+    return (
+        "Intake clarification fallback turn.\n"
+        f"- user_query: {user_query}\n"
+        f"- current_draft: {json.dumps(current_draft, ensure_ascii=False)}\n"
+        "\nReturn JSON per INTAKE_SYSTEM_PROMPT. If completion is impossible from "
+        "the current draft alone, ask one targeted question."
+    )
 
 
 def build_supervisor_user_prompt(

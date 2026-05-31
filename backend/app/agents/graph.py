@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from agents.nodes.analyst import analyst_node
 from agents.nodes.discovery import discovery_node
+from agents.nodes.intake import intake_generate_node, intake_wait_node
 from agents.nodes.qa import qa_node
 from agents.nodes.researcher import researcher_node
 from agents.nodes.supervisor import supervisor_node
@@ -63,6 +64,22 @@ def _route_after_qa(state: AgentState) -> Literal["supervisor", "finalize"]:
     return "supervisor"
 
 
+def _route_entry(state: AgentState) -> Literal["intake_generate", "supervisor"]:
+    # Invariant B: drive entry from explicit `phase`. Legacy runs without `phase`
+    # default to `supervisor` so POST /api/runs keeps its synchronous-bus contract.
+    if state.get("phase") == "intake":
+        return "intake_generate"
+    return "supervisor"
+
+
+def _route_after_intake_generate(state: AgentState) -> Literal["intake_wait", "supervisor"]:
+    # Phase 1b: when intake completes we go straight to supervisor; Phase 2 will swap
+    # `supervisor` for the planner_generate node so the user can confirm a plan first.
+    if state.get("phase") == "intake":
+        return "intake_wait"
+    return "supervisor"
+
+
 def build_graph_uncompiled() -> StateGraph:
     graph = StateGraph(AgentState)
     graph.add_node("supervisor", supervisor_node)
@@ -71,7 +88,25 @@ def build_graph_uncompiled() -> StateGraph:
     graph.add_node("analyst", analyst_node)
     graph.add_node("writer", writer_node)
     graph.add_node("qa", qa_node)
-    graph.set_entry_point("supervisor")
+    graph.add_node("intake_generate", intake_generate_node)
+    graph.add_node("intake_wait", intake_wait_node)
+    graph.add_conditional_edges(
+        START,
+        _route_entry,
+        {
+            "intake_generate": "intake_generate",
+            "supervisor": "supervisor",
+        },
+    )
+    graph.add_conditional_edges(
+        "intake_generate",
+        _route_after_intake_generate,
+        {
+            "intake_wait": "intake_wait",
+            "supervisor": "supervisor",
+        },
+    )
+    graph.add_edge("intake_wait", "intake_generate")
     graph.add_conditional_edges(
         "supervisor",
         _route_after_supervisor,

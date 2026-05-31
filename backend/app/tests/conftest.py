@@ -108,6 +108,137 @@ class _FakeLLMClient:
             error=None,
         )
 
+    @staticmethod
+    def _derive_intake_patch(user_prompt: str) -> dict[str, object]:
+        """Derive a draft_patch from the latest exchange, mimicking a real LLM.
+
+        Reads exchange_history JSON, inspects the LAST entry's field_targets +
+        reply, and proposes a patch on those specific fields. Conservative: only
+        patches the fields the previous clarify targeted.
+        """
+        match = re.search(r"- exchange_history \(oldest first\): (\[.*\])\n", user_prompt)
+        if match is None:
+            return {}
+        try:
+            history = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(history, list) or not history:
+            return {}
+        last = history[-1]
+        if not isinstance(last, dict):
+            return {}
+        targets_raw = last.get("field_targets")
+        targets = (
+            [t for t in targets_raw if isinstance(t, str)]
+            if isinstance(targets_raw, list)
+            else []
+        )
+        reply_text = last.get("reply_text") if isinstance(last.get("reply_text"), str) else ""
+        options_raw = last.get("reply_options")
+        options = (
+            [o for o in options_raw if isinstance(o, str)]
+            if isinstance(options_raw, list)
+            else []
+        )
+        patch: dict[str, object] = {}
+        if "user_role" in targets:
+            role_value: str | None = None
+            for option in options:
+                if option in {"pm", "founder", "sales", "investor"}:
+                    role_value = option
+                    break
+            if role_value is None and reply_text.strip() in {
+                "pm",
+                "founder",
+                "sales",
+                "investor",
+            }:
+                role_value = reply_text.strip()
+            if role_value is not None:
+                patch["user_role"] = role_value
+        if "analysis_intent" in targets and reply_text.strip():
+            patch["analysis_intent"] = reply_text.strip()
+        if "competitors_explicit" in targets or "competitors_discovery_mode" in targets:
+            if "让 Agent 帮我发现" in options:
+                patch["competitors_discovery_mode"] = True
+            else:
+                candidates = [
+                    name.strip()
+                    for name in re.split(r"[,，;；/]\s*", reply_text)
+                    if name.strip()
+                ]
+                if candidates:
+                    patch["competitors_explicit"] = candidates
+                elif "已有名单" in options:
+                    # User picked "have a list" but didn't include any names; ask again later.
+                    pass
+        return patch
+
+    def _build_intake_response(self, user_prompt: str) -> LLMResponse:
+        # Parse current_draft JSON and infer the next ask/complete decision.
+        current_draft_raw = re.search(r"- current_draft: (\{.*?\})\n", user_prompt)
+        try:
+            current_draft = (
+                json.loads(current_draft_raw.group(1)) if current_draft_raw else {}
+            )
+        except json.JSONDecodeError:
+            current_draft = {}
+
+        patch = self._derive_intake_patch(user_prompt)
+        merged = {**current_draft, **patch}
+
+        user_role = merged.get("user_role")
+        analysis_intent = merged.get("analysis_intent")
+        competitors_explicit = merged.get("competitors_explicit") or []
+        competitors_discovery_mode = bool(merged.get("competitors_discovery_mode"))
+        has_competitor_path = bool(competitors_explicit) or competitors_discovery_mode
+
+        if not user_role:
+            content: dict[str, object] = {
+                "action": "ask",
+                "draft_patch": patch,
+                "clarify_request": {
+                    "question": "请问您的角色是？",
+                    "field_targets": ["user_role"],
+                    "suggested_options": ["pm", "founder", "sales", "investor"],
+                },
+                "reasoning_summary": "fake: ask user_role first",
+            }
+        elif not (isinstance(analysis_intent, str) and analysis_intent.strip()):
+            content = {
+                "action": "ask",
+                "draft_patch": patch,
+                "clarify_request": {
+                    "question": "请用一句话描述您最想了解的内容。",
+                    "field_targets": ["analysis_intent"],
+                    "suggested_options": None,
+                },
+                "reasoning_summary": "fake: ask analysis_intent",
+            }
+        elif not has_competitor_path:
+            content = {
+                "action": "ask",
+                "draft_patch": patch,
+                "clarify_request": {
+                    "question": "您是否已经有想分析的竞品名单？",
+                    "field_targets": [
+                        "competitors_explicit",
+                        "competitors_discovery_mode",
+                    ],
+                    "suggested_options": ["已有名单", "让 Agent 帮我发现"],
+                },
+                "reasoning_summary": "fake: ask competitor path",
+            }
+        else:
+            content = {
+                "action": "complete",
+                "draft_patch": patch,
+                "clarify_request": None,
+                "reasoning_summary": "fake: draft satisfies all required fields",
+            }
+        return self._build_response(model_slot="research", content=content)
+
     def _build_supervisor_decision_response(self, user_prompt: str) -> LLMResponse:
         pending_competitors = self._extract_json_list(user_prompt, "pending_competitors")
         analysis_done = "- analysis_done: True" in user_prompt
@@ -503,6 +634,14 @@ class _FakeLLMClient:
         if (
             model_slot == "research"
             and isinstance(system_prompt, str)
+            and "RivalLens Intake assistant" in system_prompt
+            and isinstance(user_prompt, str)
+            and "Intake clarification" in user_prompt
+        ):
+            return self._build_intake_response(user_prompt)
+        if (
+            model_slot == "research"
+            and isinstance(system_prompt, str)
             and "Supervisor planner" in system_prompt
             and isinstance(user_prompt, str)
             and "Planning context" in user_prompt
@@ -577,6 +716,7 @@ def fake_llm_client(
     fake_client = _FakeLLMClient()
     monkeypatch.setattr("service.llm.client.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.nodes.supervisor.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("agents.nodes.intake.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.nodes.analyst.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.nodes.writer.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)

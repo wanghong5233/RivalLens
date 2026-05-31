@@ -2,6 +2,7 @@ from service.llm.client import LLMClient, get_llm_client, llm_client
 from service.llm.exceptions import LLMRequestError, LLMResponseFormatError
 from service.llm.prompts import (
     ANALYST_SYSTEM_PROMPT,
+    INTAKE_SYSTEM_PROMPT,
     QA_SEMANTIC_SYSTEM_PROMPT,
     QA_SEMANTIC_ALLOWED_REJECT_TO,
     RESEARCHER_COMPRESSION_PROMPT,
@@ -13,6 +14,8 @@ from service.llm.prompts import (
     build_analyst_user_prompt,
     build_compression_user_prompt,
     build_compression_fallback_user_prompt,
+    build_intake_fallback_user_prompt,
+    build_intake_user_prompt,
     build_skill_catalog_block,
     build_qa_semantic_fallback_user_prompt,
     build_qa_semantic_user_prompt,
@@ -35,6 +38,7 @@ __all__ = [
     "LLMResponseFormatError",
     "ProviderRawResponse",
     "ANALYST_SYSTEM_PROMPT",
+    "INTAKE_SYSTEM_PROMPT",
     "QA_SEMANTIC_ALLOWED_REJECT_TO",
     "QA_SEMANTIC_SYSTEM_PROMPT",
     "RESEARCHER_COMPRESSION_PROMPT",
@@ -47,6 +51,8 @@ __all__ = [
     "build_analyst_user_prompt",
     "build_compression_fallback_user_prompt",
     "build_compression_user_prompt",
+    "build_intake_fallback_user_prompt",
+    "build_intake_user_prompt",
     "build_skill_catalog_block",
     "build_qa_semantic_fallback_user_prompt",
     "build_qa_semantic_user_prompt",
