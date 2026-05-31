@@ -19,10 +19,11 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { useRunDetail } from "@/api/hooks";
+import { useRunDetail, useSubmitRunFollowUp } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import type {
   EvidenceCollectedPayload,
+  FollowUpReceivedPayload,
   StepFinishEventPayload,
   SupervisorDecisionEventPayload,
   ToolEventPayload,
@@ -35,6 +36,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { pushToast } from "@/components/ui/toaster";
 import { cn } from "@/lib/utils";
 
 type PlanTaskRuntimeStatus = "queued" | "running" | "completed";
@@ -109,6 +111,10 @@ export function LiveRunPage(): JSX.Element {
   const [evidenceFeed, setEvidenceFeed] = useState<EvidenceCollectedPayload[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerEvidenceIds, setDrawerEvidenceIds] = useState<string[]>([]);
+  // Phase 4: pending follow-ups the supervisor has not yet consumed. Seeded
+  // by local /follow-up submissions and remote followup.received events;
+  // pruned by consumed_follow_up_ids on supervisor.decision.
+  const [pendingFollowUps, setPendingFollowUps] = useState<FollowUpReceivedPayload[]>([]);
 
   // Reset the per-task runtime status whenever the plan changes (e.g. after a
   // version bump from a future edit). All tasks start as "queued".
@@ -129,20 +135,24 @@ export function LiveRunPage(): JSX.Element {
 
   const handleSupervisorDecision = useCallback(
     (payload: SupervisorDecisionEventPayload) => {
-      if (payload.plan_task_ids.length === 0) {
-        return;
-      }
-      setPlanTaskStatus((prev) => {
-        const next = { ...prev };
-        for (const taskId of payload.plan_task_ids) {
-          // Don't downgrade a completed tile back to "running" if a later
-          // decision references the same task (defensive).
-          if (next[taskId] !== "completed") {
-            next[taskId] = "running";
+      if (payload.plan_task_ids.length > 0) {
+        setPlanTaskStatus((prev) => {
+          const next = { ...prev };
+          for (const taskId of payload.plan_task_ids) {
+            // Don't downgrade a completed tile back to "running" if a later
+            // decision references the same task (defensive).
+            if (next[taskId] !== "completed") {
+              next[taskId] = "running";
+            }
           }
-        }
-        return next;
-      });
+          return next;
+        });
+      }
+      const consumed = payload.consumed_follow_up_ids;
+      if (consumed !== undefined && consumed.length > 0) {
+        const consumedSet = new Set(consumed);
+        setPendingFollowUps((prev) => prev.filter((entry) => !consumedSet.has(entry.follow_up_id)));
+      }
     },
     [],
   );
@@ -240,12 +250,22 @@ export function LiveRunPage(): JSX.Element {
     });
   }, []);
 
+  const handleFollowUpReceived = useCallback((payload: FollowUpReceivedPayload) => {
+    setPendingFollowUps((prev) => {
+      if (prev.some((entry) => entry.follow_up_id === payload.follow_up_id)) {
+        return prev;
+      }
+      return [...prev, payload];
+    });
+  }, []);
+
   useRunEvents(runId, {
     onSupervisorDecision: handleSupervisorDecision,
     onStepFinish: handleStepFinish,
     onToolStart: handleToolStart,
     onToolFinish: handleToolFinish,
     onEvidenceCollected: handleEvidenceCollected,
+    onFollowUpReceived: handleFollowUpReceived,
   });
 
   // When the run reaches a terminal state, defer the navigation a moment so
@@ -367,7 +387,12 @@ export function LiveRunPage(): JSX.Element {
         </div>
       </div>
 
-      <FollowUpPlaceholder isTerminal={isTerminal} />
+      <FollowUpComposer
+        runId={runId}
+        isTerminal={isTerminal}
+        pending={pendingFollowUps}
+        onSubmitted={handleFollowUpReceived}
+      />
 
       <EvidenceDrawer
         open={drawerOpen}
@@ -379,22 +404,124 @@ export function LiveRunPage(): JSX.Element {
   );
 }
 
-function FollowUpPlaceholder({ isTerminal }: { isTerminal: boolean }): JSX.Element | null {
+interface FollowUpComposerProps {
+  runId: string;
+  isTerminal: boolean;
+  pending: FollowUpReceivedPayload[];
+  // Mirror the SSE handler so locally-submitted follow-ups appear in the
+  // chip row immediately; the upcoming followup.received broadcast will be
+  // deduped by id.
+  onSubmitted: (payload: FollowUpReceivedPayload) => void;
+}
+
+const FOLLOWUP_MAX_LEN = 1000;
+
+function FollowUpComposer({
+  runId,
+  isTerminal,
+  pending,
+  onSubmitted,
+}: FollowUpComposerProps): JSX.Element | null {
+  const [text, setText] = useState("");
+  const submit = useSubmitRunFollowUp();
+
   if (isTerminal) {
     return null;
   }
-  // Phase 4 will wire this up to POST /api/runs/{id}/follow-up; for Phase 3 the
-  // disabled input establishes the placement + sets the expectation that the
-  // user can speak mid-run instead of just watching.
+
+  const trimmed = text.trim();
+  const tooLong = trimmed.length > FOLLOWUP_MAX_LEN;
+  const canSubmit = trimmed.length > 0 && !tooLong && !submit.isPending;
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (!canSubmit) {
+      return;
+    }
+    try {
+      const response = await submit.mutateAsync({
+        runId,
+        payload: { text: trimmed },
+      });
+      onSubmitted({
+        follow_up_id: response.follow_up_id,
+        text: trimmed,
+        applies_to_stage: null,
+        received_at: response.received_at,
+      });
+      setText("");
+      pushToast({
+        title: "追加指令已送达",
+        description: "Agent 将在下一次决策中处理这条指令。",
+        variant: "success",
+      });
+    } catch (error) {
+      const status = (error as { response?: { status?: number } }).response?.status;
+      const errorCode = (error as { response?: { data?: { error_code?: string } } }).response?.data
+        ?.error_code;
+      const description =
+        errorCode === "FOLLOWUP_GRAPH_PAUSED"
+          ? "当前需要先完成 intake / plan 确认。"
+          : errorCode === "FOLLOWUP_NOT_EXECUTING"
+            ? "计划尚未确认，无法追加指令。"
+            : errorCode === "FOLLOWUP_RUN_NOT_RUNNING"
+              ? "Run 已结束，无法追加指令。"
+              : `提交失败（${status ?? "unknown"}）。`;
+      pushToast({
+        title: "追加指令未送达",
+        description,
+        variant: "danger",
+      });
+    }
+  };
+
   return (
-    <div className="rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-3">
-      <div className="text-xs text-foreground-muted">追加指令（Phase 4 启用）</div>
-      <input
-        type="text"
-        placeholder="想让 Agent 多关注哪些方向？（即将上线）"
-        disabled
-        className="mt-1 w-full bg-transparent text-sm text-foreground-muted placeholder:text-foreground-muted/60 focus:outline-none"
-      />
+    <div className="space-y-2 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4">
+      {pending.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {pending.map((entry) => (
+            <Badge
+              key={entry.follow_up_id}
+              variant="outline"
+              className="max-w-[320px] truncate"
+              title={entry.text}
+            >
+              <Clock className="mr-1 h-3 w-3" /> 等待处理 · {entry.text}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      <form onSubmit={handleSubmit} className="flex items-end gap-2">
+        <div className="flex-1">
+          <label
+            htmlFor="follow-up-text"
+            className="block text-xs uppercase tracking-wide text-foreground-muted"
+          >
+            追加指令
+          </label>
+          <textarea
+            id="follow-up-text"
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            placeholder="想让 Agent 额外关注哪些竞品 / 维度？（≤ 1000 字符）"
+            rows={2}
+            className={cn(
+              "mt-1 w-full resize-none rounded-md border border-white/[0.08] bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground-muted/60",
+              "focus:border-primary/40 focus:outline-none",
+              tooLong ? "border-danger/60" : "",
+            )}
+          />
+          {tooLong ? (
+            <div className="mt-1 text-xs text-danger">
+              超过 {FOLLOWUP_MAX_LEN} 字符上限。
+            </div>
+          ) : null}
+        </div>
+        <Button type="submit" disabled={!canSubmit} size="sm">
+          {submit.isPending ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}
+          发送
+        </Button>
+      </form>
     </div>
   );
 }
