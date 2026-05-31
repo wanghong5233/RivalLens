@@ -14,12 +14,13 @@
 
 ### 1.1 版本
 
-当前版本：`schema_v0.2`
+当前版本：`schema_v0.3`
 
 变更历史：
 
 - `schema_v0.1`：初版，5 个 Agent (Collector/Extractor/Analyst/Writer/QA)，单目标 QA 路由。
 - `schema_v0.2`：升级到 6 Agent agentic 架构（合并 Collector+Extractor → Researcher，新增 Supervisor 与 Skill Curator），引入 Supervisor 委派工具协议、多目标 QA 路由、Skill 候选 schema。
+- `schema_v0.3`（当前）：升级到 7 + 1 Agent agentic 架构（核心闭环新增 Intake / Planner，异步进化保持 Skill Curator），引入 (1) `RunIntakeDraft` / `IntakeClarifyRequest` / `IntakeUserReply` / `IntakeExchange` 等 chat intake 契约；(2) `PlanTree` / `PlanTask`（含 `source` / `priority` 字段）/ `PlanConfirmRequest` 计划编制契约；(3) `FollowUpRequest` / `FollowUpEntry` 运行中追加指令契约；(4) 11 类 RunEvent 流式事件（`intake.*` / `plan.*` / `tool.*` / `evidence.collected` / `followup.received` / `supervisor.decision` 扩 `plan_task_ids + consumed_follow_up_ids`）。架构推导见 `docs/2.5-agent-architecture.md`，端到端时序见 `docs/2.7-agent-native-intake-and-live-run.md`。
 
 ### 1.2 字段演变规则
 
@@ -32,7 +33,7 @@
 ### 1.3 ID 命名约定
 
 - 所有 ID 形如 `<prefix>_<slug>_<seq>`，如 `ev_cursor_pricing_001` / `concl_pricing_diff_001`。
-- prefix 必须固定：`run_` / `step_` / `ev_` / `concl_` / `comp_` / `feat_` / `price_` / `feedback_` / `msg_` / `decision_` / `rejection_` / `skill_` / `artifact_`。
+- prefix 必须固定：`run_` / `step_` / `ev_` / `concl_` / `comp_` / `feat_` / `price_` / `feedback_` / `msg_` / `decision_` / `rejection_` / `skill_` / `artifact_` / `plan_` / `ptask_` / `fu_`（后三者为 `schema_v0.3` 新增）。
 
 ## 2. 业务领域对象
 
@@ -150,6 +151,115 @@ class Conclusion(BaseModel):
 - `confidence` 由 Analyst 评估，QA Reviewer 可降级（如冲突 → `low`）。
 - SCH-001（C1）已落地物理表：`conclusions(conclusion_id, run_id, step_id, section, claim, confidence, competitor_ids JSONB, risk_flags JSONB, created_at)` 与 `conclusion_evidence(conclusion_id, evidence_id, relevance_rank, created_at)`；关系表主键为 `(conclusion_id, evidence_id)`。
 
+### 2.8 RunIntakeDraft（`schema_v0.3` 新增）
+
+由 Intake Agent 与用户多轮对话后产出的结构化需求草稿。落库于 `runs.intake_draft` JSONB 列，前端 Intake Checklist 实时反映其完整度。
+
+```python
+UserRole = Literal["pm", "founder", "sales", "investor"]
+FocusDimension = str   # 运行时字符串契约，不闭集
+
+class RunIntakeDraft(BaseModel):
+    user_query: str                                # 必填，用户首句
+    user_role: UserRole | None = None
+    analysis_intent: str | None = None             # Agent 归一化后的意图概述
+    competitors_explicit: list[str] = []           # 用户显式给出的竞品名
+    competitors_discovery_mode: bool = False       # 是否让 Agent 自行发现竞品
+    domain_hint: str | None = None
+    focus_dimensions: list[FocusDimension] = []    # 由 Planner 派生，不进入 is_complete 判定
+    report_depth: Literal["quick", "deep"] = "quick"
+    reference_urls: list[str] = []
+
+    @computed_field
+    @property
+    def is_complete(self) -> bool:
+        """user_role + analysis_intent + (competitors_explicit ∨ competitors_discovery_mode) 齐全。"""
+        ...
+
+class IntakeClarifyRequest(BaseModel):
+    question: str
+    field_targets: list[str]                       # 这个问题想填的字段名
+    suggested_options: list[str] | None = None     # 给用户的快速选项（推荐 2–4 个）
+
+class IntakeUserReply(BaseModel):
+    text: str = ""
+    selected_options: list[str] = []
+    # model_validator 强制 text 或 selected_options 至少一个非空
+
+class IntakeExchange(BaseModel):
+    """一轮已完成的 clarify+reply，进 AgentState.intake_history。
+    
+    取代 Plan 原文的 list[tuple]——tuple 过 AsyncPostgresSaver checkpoint
+    JSON 反序列化会降级为 list、类型全丢；与 SupervisorDecision / Evidence
+    一样走 Pydantic 模型确保类型守恒。
+    """
+    clarify: IntakeClarifyRequest
+    reply: IntakeUserReply                         # 必填，无 None default：in-flight clarify 住在 pending_clarify
+```
+
+- `is_complete` 是 `@computed_field` 只读，禁止字段独立设置，避免 LLM patch 与计算结果漂移。
+- Intake LLM 输出契约（不是上面的对象，是 LLM 自己产的 JSON）：`{action: "ask"\|"complete", clarify_request?: IntakeClarifyRequest, draft_patch: dict, reasoning_summary: str}`，`draft_patch` 经 `_sanitize_patch` 白名单（8 字段）二次裁剪后才 merge 到 `intake_draft`。
+
+### 2.9 PlanTree / PlanTask（`schema_v0.3` 新增）
+
+由 Planner Agent 产出的可视化执行计划。落库于 `runs.plan_tree` JSONB 列，前端 PlanConfirmPage 渲染并允许用户勾选 / 添加任务。
+
+```python
+PlanTaskStage = Literal["discover", "research", "analyze", "write"]
+PlanTaskSource = Literal["agent", "user"]
+PlanTaskPriority = Literal["normal", "user_pinned"]
+
+class PlanTask(BaseModel):
+    task_id: str                                   # make_id("ptask_")
+    stage: PlanTaskStage
+    title: str
+    description: str = ""
+    competitor_id: str | None = None               # research stage 必填
+    focus_dimensions: list[str] = []
+    source: PlanTaskSource = "agent"               # Phase β：user-injected 强制 "user"
+    enabled: bool = True                           # 用户在 PlanConfirm 阶段可勾掉
+    priority: PlanTaskPriority = "normal"          # user-injected 强制 "user_pinned"
+
+class PlanTree(BaseModel):
+    plan_id: str                                   # make_id("plan_")
+    tasks: list[PlanTask]
+    rationale: str                                 # Planner Agent 给的整体计划说明
+    version: int = 1                               # 每次用户修改 +1
+    confirmed_at: str | None = None                # ISO timestamp，planning → executing 的唯一信号
+
+class PlanConfirmRequest(BaseModel):
+    disabled_task_ids: list[str] = []              # 用户取消勾选；必须全部命中 pending plan
+    additional_tasks: list[PlanTask] = []          # Phase β：user-injected task，上限 5 条
+```
+
+- `PlanTree.confirmed_at` 是 phase 推断的唯一数据源（`_derive_run_phase` 读这一字段），不引入额外 `Run.plan_confirmed_at` 列。
+- `_normalize_user_tasks` server-side 强制规则：拒 `discover` stage（Agent 专属）/ research 必须有 `competitor_id` / title 1..60 / description ≤ 500 / 强制 `source="user"`, `priority="user_pinned"`, `enabled=True`, 新发 `ptask_` id。
+- `disabled_task_ids` 必须全部命中 pending plan 的 `task_id` 集合，否则 `planner_wait_node` 抛错让 bg task 失败（防止 FE 用 stale plan 静默丢弃任务）。
+- user-pinned research task 的 `competitor_id` 在 `planner_wait_node` 中作为 `competitors_diff` 返回，借 `AgentState.competitors` 的 `operator.add` reducer 追加进 state，supervisor 下游 hard-constraint 放行新竞品。
+
+### 2.10 FollowUpRequest / FollowUpEntry（`schema_v0.3` 新增）
+
+运行中用户追加的"再多关注 X / 把焦点调整到 Y"等指令。**走 DB inbox 模式**：HTTP 端点 append 到 `runs.follow_ups` JSONB 数组，Supervisor 每轮入口拉未消费记录注入 prompt，决策后写回 `consumed_at`。Supervisor 不在 interrupt 上，对 running thread 调 `aupdate_state` 是 LangGraph 官方明确警示的 race 路径——故采用 lock-free DB inbox。
+
+```python
+class FollowUpRequest(BaseModel):
+    """HTTP 端点入参。"""
+    text: str = Field(min_length=1, max_length=1000)
+    applies_to_stage: PlanTaskStage | None = None
+
+class FollowUpEntry(BaseModel):
+    """落 runs.follow_ups JSONB 的单条记录。"""
+    id: str                                        # make_id("fu_")
+    text: str
+    applies_to_stage: PlanTaskStage | None = None
+    received_at: str                               # ISO timestamp
+    consumed_at: str | None = None                 # supervisor 消费后盖戳
+    consumed_in_iteration: int | None = None       # 被哪一轮 supervisor decision 吃掉
+```
+
+- `POST /api/runs/{run_id}/follow-up` 守卫四态：404 RUN_NOT_FOUND / 409 FOLLOWUP_RUN_NOT_RUNNING（终态）/ 409 FOLLOWUP_NOT_EXECUTING（`plan_tree.confirmed_at` 缺失）/ 409 FOLLOWUP_GRAPH_PAUSED（graph 在 `intake_wait` / `planner_wait`）。
+- 仅 supervisor 的 LLM 决策分支消费 follow-up；qa-driven / max-iter 分支保留 pending，下轮再处理（避免在没召唤 LLM 的路径上"吃掉"用户意图）。
+
 ## 3. 中间产物
 
 ### 3.1 CompetitorKnowledgeFragment（单竞品分片）
@@ -208,8 +318,8 @@ class AgentMessage(BaseModel):
     run_id: str
     step_id: str
     trace_id: str
-    source_agent: Literal["supervisor", "researcher", "analyst", "writer", "qa", "skill_curator"]
-    target_agent: Literal["supervisor", "researcher", "analyst", "writer", "qa", "skill_curator"]
+    source_agent: Literal["intake", "planner", "supervisor", "researcher", "analyst", "writer", "qa", "skill_curator", "user"]
+    target_agent: Literal["intake", "planner", "supervisor", "researcher", "analyst", "writer", "qa", "skill_curator", "user"]
     status: Literal["pending", "running", "completed", "rejected", "approved", "degraded", "failed"]
     payload_type: str                   # 见 §4.2
     payload: dict
@@ -222,17 +332,45 @@ class AgentMessage(BaseModel):
 
 | payload_type | 通常方向 | 描述 |
 |---|---|---|
-| `delegation_request` | supervisor → researcher/analyst/writer | Supervisor 工具委派（payload 为 ConductResearch / Analyze / Write） |
+| `delegation_request` | supervisor → researcher/analyst/writer | Supervisor 工具委派（payload 为 ConductResearch / ConductResearchBatch / Analyze / Write） |
 | `evidence_batch` | researcher → supervisor | Researcher 完成调研，返回 evidence + fragment |
 | `competitor_knowledge_fragment` | researcher → analyst | 结构化分片（通常通过 supervisor 中转） |
 | `analysis_result` | analyst → writer | Analyst 产出的 Conclusion[] |
 | `report_draft` | writer → qa | Writer 产出待审报告 |
 | `qa_rejection` | qa → {supervisor, researcher, analyst, writer} | 结构化 rejection（payload 为 Rejection） |
 | `qa_approval` | qa → supervisor | 通过审查 |
-| `supervisor_decision` | supervisor → (trace) | 决策记录（payload 为 SupervisorDecision） |
+| `supervisor_decision` | supervisor → (trace) | 决策记录（payload 为 SupervisorDecision，含 `plan_task_ids` + `consumed_follow_up_ids`） |
+| `intake_clarify_request` | intake → user | Agent 抛出的澄清提问（payload 为 IntakeClarifyRequest） |
+| `intake_user_reply` | user → intake | 用户回复（payload 为 IntakeUserReply） |
+| `intake_complete` | intake → (trace) | RunIntakeDraft 已满足 is_complete，准备进 Planner |
+| `plan_published` | planner → user | Planner 产出 PlanTree 等待用户确认 |
+| `plan_confirmed` | user → planner | 用户确认 PlanTree（payload 含 disabled_task_ids + additional_tasks + user_task_count） |
+| `followup_received` | user → supervisor (via DB inbox) | 运行中追加指令落库通知 |
 | `skill_candidate` | skill_curator → (staging) | Curator 产出的候选 |
 
 枚举为开放集，可通过新增 Agent 协议消息类型扩展，但 core 必须支持上述全部。
+
+### 4.2bis RunEvent 流式事件清单（`schema_v0.3` 新增）
+
+`backend/app/service/event_bus/bus.py::RunEventType` 是前端 SSE 订阅的事件流契约。下表是当前实现的全集（按 phase 时序）：
+
+| RunEventType | phase | payload 关键字段 | 消费者 |
+|---|---|---|---|
+| `intake.clarify_request` | intake | `question`, `field_targets`, `suggested_options` | NewRunChatPage |
+| `intake.user_reply` | intake | `text`, `selected_options` | NewRunChatPage（自映对话历史） |
+| `intake.complete` | intake → planning | `intake_draft` 终态、跳转目标 | NewRunChatPage 触发 navigate |
+| `plan.published` | planning | 完整 `PlanTree` | PlanConfirmPage |
+| `plan.confirmed` | planning → executing | `disabled_task_ids`, `additional_tasks`, `user_task_count` | LiveRunPage |
+| `plan.task.start` / `plan.task.finish` | executing | （**未实现，YAGNI**）由 supervisor.decision + step.finish 推断 | — |
+| `supervisor.decision` | executing | `chosen_tool`, `tool_args`, `reasoning_summary`, `plan_task_ids`, `consumed_follow_up_ids` | LiveRunPage 左栏 PlanTree 状态、follow-up chip 擦除 |
+| `tool.start` / `tool.finish` | executing | `tool`, `competitor_id`, `dimension`, `turn`, `args_summary`, `latency_ms`, `success`, `snippet_count`, `error` | LiveRunPage 右上工具调用面板 |
+| `evidence.collected` | executing | `evidence_id`, `competitor_id`, `dimension`, `source_type`, `source_title`, `source_url`, `desensitized` | LiveRunPage 右下证据流 + Evidence Console |
+| `followup.received` | executing | `follow_up_id`, `text`, `applies_to_stage`, `received_at` | LiveRunPage chip（未消费态） |
+| `step.start` / `step.finish` | * | `step_id`, `agent_name`, `competitor_id`, `status` | LiveRunPage（research task 按 competitor_id 精准完成） |
+| `run.finish` | done | `status`, `report_id?` | LiveRunPage 终态延迟跳转 |
+| `heartbeat` | * | 现实现是 SSE 注释行 `: keepalive\n\n`，无 enum 值（YAGNI，避免空 consumer） | — |
+
+> 事件 schema 是 additive：所有 payload 字段新增对老订阅者透明，老前端遇到未知字段自动忽略（EventSource 默认行为）。任何字段语义改变必须升 `schema_version`。
 
 ### 4.3 evidence_batch 示例
 
@@ -609,7 +747,9 @@ body 描述该 `source_type` 的匹配条件、优先级理由与质量样本（
 
 | Agent | 主要输入 | 主要输出 | 通信协议 payload_type |
 |---|---|---|---|
-| Supervisor | 用户 query、domain_hint、reference_urls、target_roles、Researcher fragments、QA rejection/approval | `DiscoverCompetitors` / `ConductResearch` / `Analyze` / `Write` / `Finalize` tool call；每次落 `SupervisorDecision` | `delegation_request` / `supervisor_decision` |
+| Intake | 用户首句 + intake_history + 当前 `RunIntakeDraft` | LLM JSON `{action, clarify_request?, draft_patch?}`；ask 写 `pending_clarify`，complete 切 `phase="planning"` | `intake_clarify_request` / `intake_user_reply` / `intake_complete` |
+| Planner | 已 is_complete 的 `RunIntakeDraft` | `PlanTree`（含 `tasks/rationale/version/confirmed_at`），落 `Run.plan_tree` JSONB | `plan_published` / `plan_confirmed` |
+| Supervisor | 已确认的 RunIntakeDraft + PlanTree（含 source/priority） + Researcher fragments + QA rejection/approval + 未消费 `runs.follow_ups` + user_pinned task 投影 | `DiscoverCompetitors` / `ConductResearch` / `ConductResearchBatch` / `Analyze` / `Write` / `Finalize` tool call；每次落 `SupervisorDecision`（含 `plan_task_ids` + `consumed_follow_up_ids`） | `delegation_request` / `supervisor_decision` / `followup_received` |
 | Researcher | `ConductResearch` 委派（research_topic + focus_dimensions） | `Evidence[]` + `CompetitorKnowledgeFragment` | `evidence_batch` / `competitor_knowledge_fragment` |
 | Analyst | `CompetitorKnowledgeAggregate`（由后端合成） | `Conclusion[]`、维度分析 | `analysis_result` |
 | Writer | `Conclusion[]` + Evidence 引用 + `prompt_template` SKILL.md（按 `domain_hint + tags` 选取） | `Report`（content_json + content_markdown） | `report_draft` |
