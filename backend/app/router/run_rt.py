@@ -469,14 +469,8 @@ def _load_competitor_seed_rows() -> list[dict[str, object]]:
 
 
 def _validate_competitors(payload: RunCreateRequest) -> list[str]:
-    normalized_competitors = _normalize_competitor_inputs(payload.competitors)
-    if not normalized_competitors:
-        raise APIException(
-            status_code=400,
-            error_code="COMPETITORS_REQUIRED",
-            message="competitors must contain at least one non-empty item.",
-        )
-    return normalized_competitors
+    """Normalize competitor inputs. Empty list is allowed (discovery mode)."""
+    return _normalize_competitor_inputs(payload.competitors)
 
 
 @router.get("/api/runs", response_model=RunListResponse)
@@ -591,6 +585,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
                 "domain_hint": payload.domain_hint,
                 "reference_urls": normalized_reference_urls,
                 "competitors": normalized_competitors,
+                "discovered_competitors": [],
                 "user_query": payload.user_query,
                 "researched_competitors": [],
                 "analysis_done": False,
@@ -618,6 +613,9 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             run_status = str(graph_state.get("status", "completed"))
             run.status = run_status if run_status in {"completed", "degraded"} else "completed"
             run.finished_at = datetime.now(timezone.utc)
+            final_competitors = graph_state.get("competitors")
+            if isinstance(final_competitors, list) and final_competitors:
+                run.competitors = final_competitors
             await session.commit()
         await emit_run_event(
             run_id=run_id,

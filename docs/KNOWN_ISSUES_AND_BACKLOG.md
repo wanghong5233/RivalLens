@@ -173,7 +173,7 @@
 - [x] METRIC-001 业务闭环指标面板（`GET /api/runs/{run_id}/metrics` + RunView MetricsPanel）
 - [x] HLT-001 DAG Run View（`@xyflow/react` + `@dagrejs/dagre`，`/runs/:runId/trace` 默认 DAG Tab，支持节点详情抽屉与 Evidence 跳转）
 - [x] COMP-001 `docs/compliance-statement.md`（数据来源、抓取范围、robots/QPS/UA、脱敏与提示注入边界）
-- [x] Supervisor 主循环 + tool calling 委派（ConductResearch / Analyze / Write / Finalize）
+- [x] Supervisor 主循环 + tool calling 委派（DiscoverCompetitors / ConductResearch / Analyze / Write / Finalize）
 - [x] Researcher ReAct subgraph + compress_context 节点
 - [x] Analyst LLM 跨竞品分析
 - [x] Writer LLM 报告生成（content_json + content_markdown）
@@ -186,7 +186,7 @@
 - [x] LLM Provider 多模型路由（豆包 / OpenAI / Qwen）+ fallback prompt
 - [x] PG 数据模型：runs / steps / llm_calls / supervisor_decisions / evidence / reports / artifacts / skill_candidates
 - [x] 业务实体 Pydantic schema（Competitor / Feature / Pricing / Persona / UserFeedback / Evidence / Conclusion / Fragment / Aggregate）
-- [x] Supervisor 委派工具 schema（ConductResearch / Analyze / Write / Finalize / SupervisorDecision）
+- [x] Supervisor 委派工具 schema（DiscoverCompetitors / ConductResearch / Analyze / Write / Finalize / SupervisorDecision）
 - [x] Rejection / Approval schema + RetryPolicy
 - [x] SkillCandidate schema + 三类 payload
 - [x] AgentMessage schema 定义（编排未使用，见 MSG-001）

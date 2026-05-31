@@ -14,7 +14,7 @@
 
 ## 1. 设计原则
 
-RivalLens 是一个 agentic multi-agent system，输入为竞品对象列表与目标用户角色，输出为结构化竞品报告 + 端到端可追溯性 + 系统级反思沉淀。下列五条原则与文档顶部的三条不可妥协特性正交：三条特性约束**做什么**，五条原则约束**怎么做**。
+RivalLens 是一个 agentic multi-agent system，输入为用户 query（可选附带竞品对象列表与目标用户角色），输出为结构化竞品报告 + 端到端可追溯性 + 系统级反思沉淀。当用户未指定竞品时，Supervisor 通过 DiscoverCompetitors 工具自动发现赛道内竞品。下列五条原则与文档顶部的三条不可妥协特性正交：三条特性约束**做什么**，五条原则约束**怎么做**。
 
 - **Evidence-grounded**：每条分析结论必须绑定可定位的 `evidence_id`，无证据来源的输出不进入最终报告。这是任何辅助决策类系统的可信度底线。
 - **Local-deployable**：单机 `docker compose up` 即可完整运行，不依赖云资源或外部托管。降低用户上手成本，并保证开发、测试、演示三套环境完全一致。
@@ -60,7 +60,7 @@ docker compose（本地 localhost）
 
 - 前端只调 FastAPI，不直接触达 LangGraph；
 - LangGraph 节点之间通过结构化消息 + checkpoint state 通信，不传自由文本；
-- **Supervisor 通过工具调用（`ConductResearch` / `Analyze` / `Write` / `Finalize`）动态委派下游 Agent**，每次委派决策与 outcome 落 `supervisor_decisions` 表；维度与章节由运行时决策，不再绑定固定字段清单；
+- **Supervisor 通过工具调用（`DiscoverCompetitors` / `ConductResearch` / `Analyze` / `Write` / `Finalize`）动态委派下游 Agent**，每次委派决策与 outcome 落 `supervisor_decisions` 表；维度与章节由运行时决策，不再绑定固定字段清单；
 - 所有 Agent 输出落 artifact 表，所有 conclusion 引用 `evidence_id`；
 - run 结束后 Skill Curator 异步消费完整 trace，产出进化候选到 `skill_candidates` 表（status=staging），等待人工审核进 industry pack 生效池。
 
@@ -72,7 +72,7 @@ docker compose（本地 localhost）
 
 RivalLens 的核心交互模式是 agentic state graph，不是固定 pipeline：
 
-- **Supervisor LLM 通过工具委派**下游 Agent（`ConductResearch` / `Analyze` / `Write` / `Finalize`），fan-out 度由 LLM 在运行时决定，不是代码硬编码；
+- **Supervisor LLM 通过工具委派**下游 Agent（`DiscoverCompetitors` / `ConductResearch` / `Analyze` / `Write` / `Finalize`），fan-out 度由 LLM 在运行时决定，不是代码硬编码；
 - **Researcher 是 ReAct subgraph**，被 Supervisor 通过 LangGraph `Send` 批量委派并行执行；
 - **QA Reviewer 多目标 rejection**，可打回 Researcher / Analyst / Writer 或回到 Supervisor 重新规划；
 - 单 run 持续 5–15 分钟，节点中断恢复需要 checkpoint。

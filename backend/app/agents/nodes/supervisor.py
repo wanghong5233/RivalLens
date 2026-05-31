@@ -27,6 +27,7 @@ from schemas.supervisor import (
     Analyze,
     ConductResearch,
     ConductResearchBatch,
+    DiscoverCompetitors,
     Finalize,
     SupervisorDecision,
     Write,
@@ -34,7 +35,7 @@ from schemas.supervisor import (
 from service.event_bus import RunEventType, emit_run_event
 
 MAX_SUPERVISOR_ITERATIONS = 10
-VALID_TOOLS = {"ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"}
+VALID_TOOLS = {"DiscoverCompetitors", "ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"}
 DIMENSION_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pricing", ("pricing", "price", "cost", "套餐", "定价", "收费")),
     ("user_feedback", ("review", "feedback", "rating", "评价", "口碑", "用户声音")),
@@ -150,6 +151,27 @@ def _fallback_decision(
     triggered_by: TriggerSource,
     user_query: str,
 ) -> SupervisorDecision:
+    now = _now_iso()
+
+    if not competitors:
+        args = DiscoverCompetitors(
+            search_queries=[user_query, f"{user_query} competitors alternatives"],
+            domain_context=user_query,
+            max_results=8,
+        ).model_dump()
+        return SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="DiscoverCompetitors",
+            tool_args=args,
+            reasoning_summary="No competitors provided; fallback triggers discovery phase.",
+            triggered_by=triggered_by,
+            outcome="dispatched",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+
     pending_competitors = [c for c in competitors if c not in researched_competitors]
     fallback_dimensions = _derive_focus_dimensions(user_query=user_query, competitors=competitors)
     fallback_sections = _derive_write_sections(focus_dimensions=fallback_dimensions)
@@ -480,6 +502,7 @@ def _try_llm_decision(
         return None
 
     chosen_tool_literal: Literal[
+        "DiscoverCompetitors",
         "ConductResearch",
         "ConductResearchBatch",
         "Analyze",
@@ -487,7 +510,10 @@ def _try_llm_decision(
         "Finalize",
     ]
     try:
-        if chosen_tool == "ConductResearch":
+        if chosen_tool == "DiscoverCompetitors":
+            chosen_tool_literal = "DiscoverCompetitors"
+            tool_args = DiscoverCompetitors.model_validate(tool_args_raw).model_dump()
+        elif chosen_tool == "ConductResearch":
             chosen_tool_literal = "ConductResearch"
             tool_args = ConductResearch.model_validate(tool_args_raw).model_dump()
         elif chosen_tool == "ConductResearchBatch":
@@ -594,7 +620,9 @@ async def _persist_iteration(
     return step.step_id
 
 
-def _map_next_action(chosen_tool: str) -> Literal["researcher", "analyst", "writer", "finalize"]:
+def _map_next_action(chosen_tool: str) -> Literal["discovery", "researcher", "analyst", "writer", "finalize"]:
+    if chosen_tool == "DiscoverCompetitors":
+        return "discovery"
     if chosen_tool in {"ConductResearch", "ConductResearchBatch"}:
         return "researcher"
     if chosen_tool == "Analyze":

@@ -21,20 +21,21 @@
   - `topics: list[ConductResearch]`（1..8）
   - `parallelism_rationale: str`
 - `SupervisorDecision.chosen_tool` 扩展为：
-  - `ConductResearch` / `ConductResearchBatch` / `Analyze` / `Write` / `Finalize`
+  - `DiscoverCompetitors` / `ConductResearch` / `ConductResearchBatch` / `Analyze` / `Write` / `Finalize`
 
 这样可以保持工具语义单一：`ConductResearch` 表示单目标研究，`ConductResearchBatch` 表示多目标并行研究。
 
 ### 2.2 AgentState reducer
 
 - `backend/app/agents/state.py` 对并发更新字段加 reducer：
-  - `researched_competitors`: `operator.add`（累加分支增量）
+  - `competitors` / `discovered_competitors` / `researched_competitors`: `operator.add`（累加分支增量）
   - `pending_tool_args` / `last_completed_node` / `status`: last-write-wins
 - `researcher_node` 改为返回增量（delta-only），避免把完整历史列表重复拼接。
 
 ### 2.3 Send 路由
 
 - `backend/app/agents/graph.py` 中 `_route_after_supervisor`：
+  - 当 `next_action == "discovery"` 时路由到 `discovery` 节点，完成后回到 `supervisor`；
   - 当 `pending_tool_args.topics` 为多项时，返回 `list[Send]`；
   - 每个 `Send` 分支注入最小执行上下文：`run_id`、`domain_hint`、`reference_urls`、单个 topic 的 `pending_tool_args`；
   - 非 batch 情况仍按原路径返回 `researcher` / `analyst` / `writer` / `finalize`。

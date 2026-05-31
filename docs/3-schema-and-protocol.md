@@ -296,6 +296,12 @@ Supervisor 在每个决策点调用以下工具之一。工具 schema 即委派�
 ### 5.1 工具集 Pydantic 模型
 
 ```python
+class DiscoverCompetitors(BaseModel):
+    """Search the web to discover competitors in a given track/domain."""
+    search_queries: list[str] = Field(min_length=1, max_length=5)
+    domain_context: str
+    max_results: int = Field(default=8, ge=1, le=15)
+
 class ConductResearch(BaseModel):
     """Delegate one Researcher subgraph to study a single research topic."""
     research_topic: str                 # 单个竞品名 + 关注维度
@@ -335,7 +341,7 @@ class SupervisorDecision(BaseModel):
     id: str
     run_id: str
     iteration: int                      # 第几次决策
-    chosen_tool: Literal["ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"]
+    chosen_tool: Literal["DiscoverCompetitors", "ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"]
     tool_args: dict                     # 工具调用的完整参数（与上述 Pydantic 模型对应）
     reasoning_summary: str              # LLM 自陈"为什么做这个决定"，必填
     triggered_by: Literal[
@@ -603,7 +609,7 @@ body 描述该 `source_type` 的匹配条件、优先级理由与质量样本（
 
 | Agent | 主要输入 | 主要输出 | 通信协议 payload_type |
 |---|---|---|---|
-| Supervisor | 用户 query、domain_hint、reference_urls、target_roles、Researcher fragments、QA rejection/approval | `ConductResearch` / `Analyze` / `Write` / `Finalize` tool call；每次落 `SupervisorDecision` | `delegation_request` / `supervisor_decision` |
+| Supervisor | 用户 query、domain_hint、reference_urls、target_roles、Researcher fragments、QA rejection/approval | `DiscoverCompetitors` / `ConductResearch` / `Analyze` / `Write` / `Finalize` tool call；每次落 `SupervisorDecision` | `delegation_request` / `supervisor_decision` |
 | Researcher | `ConductResearch` 委派（research_topic + focus_dimensions） | `Evidence[]` + `CompetitorKnowledgeFragment` | `evidence_batch` / `competitor_knowledge_fragment` |
 | Analyst | `CompetitorKnowledgeAggregate`（由后端合成） | `Conclusion[]`、维度分析 | `analysis_result` |
 | Writer | `Conclusion[]` + Evidence 引用 + `prompt_template` SKILL.md（按 `domain_hint + tags` 选取） | `Report`（content_json + content_markdown） | `report_draft` |

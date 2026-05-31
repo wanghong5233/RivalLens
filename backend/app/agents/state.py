@@ -17,10 +17,11 @@ class AgentState(TypedDict, total=False):
     user_query: str
     domain_hint: str | None
     reference_urls: list[str]
-    competitors: list[str]
+    competitors: Annotated[list[str], operator.add]
+    discovered_competitors: Annotated[list[str], operator.add]
     current_iteration: int
     pending_tool_args: Annotated[dict[str, object], _last_write_wins]
-    next_action: Literal["researcher", "analyst", "writer", "finalize"]
+    next_action: Literal["discovery", "researcher", "analyst", "writer", "finalize"]
     last_completed_node: Annotated[
         Literal["researcher", "analyst", "writer"] | None,
         _last_write_wins,

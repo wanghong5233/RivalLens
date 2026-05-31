@@ -147,7 +147,6 @@ export function NewRunPage(): JSX.Element {
 
   const canSubmit =
     userQuery.trim().length > 0 &&
-    selectedCompetitors.length > 0 &&
     targetRoles.length > 0 &&
     !createRunMutation.isPending;
 
@@ -302,7 +301,7 @@ export function NewRunPage(): JSX.Element {
       <header className="space-y-3">
         <h1 className="text-h1 text-foreground">新建竞品分析</h1>
         <p className="text-caption text-foreground-muted">
-          填写核心问题、选择竞品与关注角色后即可启动。RivalLens 会自动生成结构化报告并保留完整证据链。
+          填写核心问题、选择竞品与关注角色后即可启动。不确定竞品时可留空，Agent 会自动发现赛道内的主要竞品。
         </p>
         <div className="flex flex-wrap gap-2">
           {RUN_TEMPLATES.map((template) => (
@@ -442,6 +441,12 @@ export function NewRunPage(): JSX.Element {
                   </Button>
                 </div>
               </div>
+              {selectedCompetitors.length === 0 && (
+                <div className="rounded-md border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-foreground-muted">
+                  <p className="font-medium text-primary">赛道扫描模式</p>
+                  <p className="mt-1 text-xs">不填写竞品时，Agent 将根据你的问题描述自动搜索并发现该领域的主要竞品，然后进行深度分析。</p>
+                </div>
+              )}
             </CardContent>
           </Card>
 

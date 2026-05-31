@@ -15,6 +15,13 @@ from schemas.contracts import (
 FocusDimension = str
 
 
+class DiscoverCompetitors(BaseModel):
+    """Search the web to discover competitors in a given track/domain."""
+    search_queries: list[str] = Field(min_length=1, max_length=5)
+    domain_context: str
+    max_results: int = Field(default=8, ge=1, le=15)
+
+
 class ConductResearch(BaseModel):
     research_topic: str
     competitor_id: str
@@ -92,7 +99,7 @@ class SupervisorDecision(BaseModel):
     id: str
     run_id: str
     iteration: int
-    chosen_tool: Literal["ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"]
+    chosen_tool: Literal["DiscoverCompetitors", "ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"]
     tool_args: dict
     reasoning_summary: str
     triggered_by: Literal[

@@ -6,6 +6,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Send
 
 from agents.nodes.analyst import analyst_node
+from agents.nodes.discovery import discovery_node
 from agents.nodes.qa import qa_node
 from agents.nodes.researcher import researcher_node
 from agents.nodes.supervisor import supervisor_node
@@ -15,8 +16,10 @@ from agents.state import AgentState
 
 def _route_after_supervisor(
     state: AgentState,
-) -> list[Send] | Literal["researcher", "analyst", "writer", "finalize"]:
+) -> list[Send] | Literal["discovery", "researcher", "analyst", "writer", "finalize"]:
     next_action = state.get("next_action", "finalize")
+    if next_action == "discovery":
+        return "discovery"
     if next_action != "researcher":
         if next_action in {"analyst", "writer", "finalize"}:
             return next_action
@@ -63,6 +66,7 @@ def _route_after_qa(state: AgentState) -> Literal["supervisor", "finalize"]:
 def build_graph_uncompiled() -> StateGraph:
     graph = StateGraph(AgentState)
     graph.add_node("supervisor", supervisor_node)
+    graph.add_node("discovery", discovery_node)
     graph.add_node("researcher", researcher_node)
     graph.add_node("analyst", analyst_node)
     graph.add_node("writer", writer_node)
@@ -72,12 +76,14 @@ def build_graph_uncompiled() -> StateGraph:
         "supervisor",
         _route_after_supervisor,
         {
+            "discovery": "discovery",
             "researcher": "researcher",
             "analyst": "analyst",
             "writer": "writer",
             "finalize": END,
         },
     )
+    graph.add_edge("discovery", "supervisor")
     graph.add_edge("researcher", "supervisor")
     graph.add_edge("analyst", "supervisor")
     graph.add_edge("writer", "qa")

@@ -37,7 +37,8 @@ flowchart LR
 
 ```text
 输入契约:
-- 用户可提交 user_query + competitors + target_roles + 可选 domain_hint/reference_urls。
+- 用户可提交 user_query + target_roles + 可选 competitors / domain_hint / reference_urls。
+- competitors 为空时，Supervisor 通过 DiscoverCompetitors 自动发现赛道内竞品后再进入调研。
 - 用户可将竞品加入 watchlist。
 
 输出契约:

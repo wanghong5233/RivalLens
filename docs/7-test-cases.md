@@ -57,7 +57,7 @@
 | TC-D3 未知领域 | query 用电商工具 + 自由竞品名 `Shopify, WooCommerce` | 不在种子表也能完成；Skill Curator 异步落 `skill_candidates` |
 | TC-D4 长 query | query ≥ 300 字符 | 不报 422，prompt 不被截到致命位 |
 | TC-D5 reference_urls 重复 | 提交 3 个其中 2 个相同 | 后端去重生效，evidence 不出现重复源 |
-| TC-D6 空 competitors | competitors=`[]` | 返回 `COMPETITORS_REQUIRED` 错误码 |
+| TC-D6 空 competitors 触发发现 | competitors=`[]`, query="AI Coding 工具赛道有哪些产品" | 触发 DiscoverCompetitors → 发现 3+ 竞品 → 正常完成 research/analyze/write |
 | TC-D7 prompt 注入 | query 内嵌 `ignore previous instructions...` | `evidence.span.prompt_safety.hit_patterns` 命中，sanitized_text 不外泄 |
 
 ---
@@ -92,7 +92,28 @@
 
 ---
 
-## 7. 录制 Demo 推荐脚本
+## 7. 赛道扫描（Agent Discovery）
+
+验证"用户不提供竞品名，Agent 自动发现"的 Agent Native 能力。
+
+| 编号 | query | competitors | target_roles | domain_hint | 预期路径 |
+|---|---|---|---|---|---|
+| TC-G1 纯赛道输入 | AI Coding 工具赛道有哪些产品，各自定位和差异是什么 | （空） | pm, founder | ai_coding_assistant | discovery → research(N) → analyze → write → qa |
+| TC-G2 模糊意图 | 我想做一个企业知识管理工具，帮我看看市场上有哪些竞品 | （空） | founder | knowledge_management | discovery → research(N) → analyze → write → qa |
+| TC-G3 部分已知 | 除了 Cursor 还有谁在做 AI 编程助手，帮我全面对比 | Cursor | pm | ai_coding_assistant | research(Cursor) + discovery → research(discovered) → analyze → write → qa |
+| TC-G4 宽赛道 | 2024 年最值得关注的项目管理 SaaS 工具有哪些 | （空） | pm, founder | project_management | discovery → research(5-8) → analyze → write → qa |
+| TC-G5 非种子领域 | 国内主流的 AI 绘画工具对比分析 | （空） | pm | — | discovery → research(N) → analyze → write → qa |
+
+验证点：
+- `supervisor_decisions` 表第一条 `chosen_tool=DiscoverCompetitors`
+- `steps` 表出现 `agent_name=discovery`
+- `runs.competitors` 字段在 run 完成后包含 Agent 发现的竞品名
+- 报告 Battlecard 按发现的竞品分组渲染
+- 证据控制台可追溯 discovery 阶段的搜索来源
+
+---
+
+## 8. 录制 Demo 推荐脚本
 
 控制总时长 ≤ 3 分钟。建议序列：
 
@@ -106,7 +127,7 @@
 
 ---
 
-## 8. 文档联动
+## 9. 文档联动
 
 - 功能清单：`docs/1.1-product-features.md`
 - 协议字段：`docs/3-schema-and-protocol.md`

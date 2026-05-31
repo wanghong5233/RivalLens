@@ -7,7 +7,7 @@
 落地目标：
 
 - 同一 run 内产生多条 `supervisor_decisions` 与 `steps`
-- 决策链路至少覆盖 `ConductResearch -> Analyze -> Write -> Finalize`
+- 决策链路至少覆盖 `DiscoverCompetitors（可选）-> ConductResearch -> Analyze -> Write -> Finalize`
 - 保留 LLM 调用入口（当前为 stub），并提供强约束 fallback 规划器
 - 触发最大迭代护栏时强制 `Finalize(max_iterations_hit)`
 
@@ -91,8 +91,8 @@ sequenceDiagram
 - `test_create_run_persists_rows`：`steps` 至少 4 行，最新决策为 `Finalize`
 - `test_get_run_detail_and_trace`：
   - `GET /api/runs/{run_id}` 返回原始 `user_query`
-  - `GET /api/runs/{run_id}/trace` 决策链包含 `ConductResearch`、`Analyze`、`Write`、`Finalize`
-  - `GET /api/runs/{run_id}/trace` 的 `steps.agent_name` 至少包含 `researcher`、`analyst`、`writer`
+  - `GET /api/runs/{run_id}/trace` 决策链包含 `ConductResearch`、`Analyze`、`Write`、`Finalize`（赛道扫描场景额外包含 `DiscoverCompetitors` 与 `agent_name=discovery` 步骤）
+  - `GET /api/runs/{run_id}/trace` 的 `steps.agent_name` 至少包含 `researcher`、`analyst`、`writer`（discovery 场景另含 `discovery`）
 
 ## 7. 后续演进位
 

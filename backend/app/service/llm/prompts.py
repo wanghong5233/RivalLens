@@ -70,6 +70,14 @@ SUPERVISOR_SYSTEM_PROMPT = """You are the RivalLens Supervisor planner.
 You must choose exactly one tool in each iteration and return STRICT JSON.
 
 Available tools:
+0) DiscoverCompetitors
+   - Use when competitors list is empty or user query implies track-level exploration.
+   - tool_args schema:
+     {
+       "search_queries": list[str],
+       "domain_context": str,
+       "max_results": int
+     }
 1) ConductResearch
    - tool_args schema:
      {
@@ -115,14 +123,16 @@ Available tools:
 
 Output JSON schema:
 {
-  "chosen_tool": "ConductResearch" | "ConductResearchBatch" | "Analyze" | "Write" | "Finalize",
+  "chosen_tool": "DiscoverCompetitors" | "ConductResearch" | "ConductResearchBatch" | "Analyze" | "Write" | "Finalize",
   "tool_args": { ... valid for chosen_tool ... },
   "reasoning_summary": "short and concrete rationale"
 }
 
 Rules:
 - Always return a JSON object and nothing else.
-- Never invent competitor ids not present in the allowed list from user prompt.
+- If competitors list is empty, you MUST call DiscoverCompetitors first before any ConductResearch.
+- If competitors list is non-empty, ConductResearch/ConductResearchBatch competitor_id must be from the known competitors list.
+- For DiscoverCompetitors, construct 2-4 search queries that cover the track/domain from different angles.
 - For ConductResearch and ConductResearchBatch, choose 3-5 focus_dimensions in snake_case and aligned with user_query.
 - For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors.
 - Prefer ConductResearchBatch when pending_competitors has 2+ independent competitors and analysis_done is false.
@@ -312,6 +322,27 @@ def build_supervisor_user_prompt(
     qa_reasons: Sequence[str],
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
+    discovery_needed = len(competitors) == 0
+
+    constraints: str
+    if discovery_needed:
+        constraints = (
+            "Hard constraints:\n"
+            "1) competitors list is EMPTY — you MUST call DiscoverCompetitors first.\n"
+            "2) Construct 2-4 search queries covering the domain/track from different angles.\n"
+            "3) Do NOT call ConductResearch or ConductResearchBatch until competitors are discovered.\n"
+            "4) Return exactly one tool decision in this iteration.\n"
+        )
+    else:
+        constraints = (
+            "Hard constraints:\n"
+            f"1) ConductResearch.tool_args.competitor_id must be in {_json(list(competitors))}.\n"
+            "2) ConductResearchBatch.tool_args.topics[*].competitor_id must be unique and all in "
+            f"{_json(list(competitors))}.\n"
+            "3) focus_dimensions must be 3-5 snake_case dimensions relevant to user_query; avoid hardcoded templates.\n"
+            "4) Return exactly one tool decision in this iteration.\n"
+        )
+
     return (
         "Planning context:\n"
         f"- iteration: {iteration}\n"
@@ -319,17 +350,13 @@ def build_supervisor_user_prompt(
         f"- competitors: {_json(list(competitors))}\n"
         f"- researched_competitors: {_json(list(researched_competitors))}\n"
         f"- pending_competitors: {_json(pending_competitors)}\n"
+        f"- discovery_needed: {discovery_needed}\n"
         f"- analysis_done: {analysis_done}\n"
         f"- report_draft_done: {report_draft_done}\n"
         f"- qa_outcome: {qa_outcome}\n"
         f"- qa_reject_to: {qa_reject_to}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n\n"
-        "Hard constraints:\n"
-        f"1) ConductResearch.tool_args.competitor_id must be in {_json(list(competitors))}.\n"
-        "2) ConductResearchBatch.tool_args.topics[*].competitor_id must be unique and all in "
-        f"{_json(list(competitors))}.\n"
-        "3) focus_dimensions must be 3-5 snake_case dimensions relevant to user_query; avoid hardcoded templates.\n"
-        "4) Return exactly one tool decision in this iteration.\n"
+        f"{constraints}"
     )
 
 
@@ -343,7 +370,9 @@ def build_supervisor_fallback_user_prompt(
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     preferred_tool_hint: str
-    if len(pending_competitors) >= 2:
+    if not competitors:
+        preferred_tool_hint = "DiscoverCompetitors"
+    elif len(pending_competitors) >= 2:
         preferred_tool_hint = "ConductResearchBatch"
     elif len(pending_competitors) == 1:
         preferred_tool_hint = "ConductResearch"
@@ -362,6 +391,7 @@ def build_supervisor_fallback_user_prompt(
         f"- report_draft_done: {report_draft_done}\n"
         f"- preferred_tool_hint: {preferred_tool_hint}\n\n"
         "Pick exactly one next tool and keep tool_args minimal but valid.\n"
+        "If competitors is empty, you MUST use DiscoverCompetitors.\n"
         "When pending_competitors has 2+ entries, prefer ConductResearchBatch with one unique competitor per topic."
     )
 
