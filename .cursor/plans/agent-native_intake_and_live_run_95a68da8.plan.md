@@ -18,11 +18,11 @@ todos:
     content: Phase 2 (α)：planner_node + PlanTree interrupt + PlanConfirmPage 渲染 + checkbox 勾选取消
     status: pending
   - id: phase3_backend
-    content: Phase 3 后端：tool/evidence 边界 emit 细粒度事件，SSE 心跳带 phase + current_task_id
-    status: pending
+    content: Phase 3 后端：tool/evidence 边界 emit 细粒度事件 + supervisor.decision 加 plan_task_ids
+    status: completed
   - id: phase3_frontend
-    content: Phase 3 前端：LiveRunPage 双栏（Plan Tree + Evidence Feed）+ 顶部 mini-DAG + 底部 follow-up 输入框（先 disabled）
-    status: pending
+    content: Phase 3 前端：LiveRunPage 双栏（Plan Tree + Evidence Feed + Tool Activity）+ 顶部状态条 + 底部 follow-up placeholder
+    status: completed
   - id: phase4
     content: Phase 4：follow-up REST 端点 + Supervisor 消费 follow_up_queue + 前端输入框启用
     status: pending
@@ -462,10 +462,37 @@ HEARTBEAT              = "heartbeat"
   4. **不缓存用户的 disabled 选择到 localStorage**——刷新即重置为全选，简单可预期；用户多次刷新场景在 Phase 2 不优化。
 - 验收：`npm run type-check` 0 错（已实测）；从 intake 到完成可走通完整流：发起诉求 → 3 轮 clarify+reply → `/app/runs/{id}/plan` 看到计划（含 rationale + 分阶段任务 + 右侧需求摘要）→ 勾掉 1 个 task → 点"确认并启动分析" → 跳 `/app/runs/{id}` 看 run 执行完成。
 
-### Phase 3：LiveRunPage 双栏 + 细粒度事件（1.5 天）
-- 后端：在 [`backend/app/agents/tools/*`](backend/app/agents/tools) 工具边界 emit `tool.start/finish`，在 evidence 落库点 emit `evidence.collected`；`_run_event_stream` 心跳带 phase + current_task_id。
-- 前端：`LiveRunPage` 左 Plan Tree + 右 Evidence Feed + 顶部 mini-DAG + 底部 follow-up 输入框（输入框先 disabled，仅 UI）。
-- 验收：长跑过程中每收到 1 条 evidence 右侧立刻新增卡片；plan tree 节点状态实时变化；从开始到完成无空白等待。
+### Phase 3：LiveRunPage 双栏 + 细粒度事件（**已完成 ✅**）
+
+**Phase 3 — 后端实现（已完成 ✅）**
+
+- 工具边界 emit：[`agents/subgraphs/researcher.py::tool_exec`](backend/app/agents/subgraphs/researcher.py) 和 [`agents/nodes/discovery.py`](backend/app/agents/nodes/discovery.py) 在 `registry.invoke` 前后分别 emit `tool.start` / `tool.finish`，payload 含 `tool` / `competitor_id` / `dimension` / `turn` / `args_summary`（白名单 query/url/max_results/skill_id/path，杜绝原文/HTML/敏感字段泄漏）+ `success` / `snippet_count` / `latency_ms` / `error`（截 300 字）。两节点都用 `time.monotonic()` 计 latency，避免 wall-clock 跳变。
+- Evidence 落库 emit：[`agents/nodes/researcher.py`](backend/app/agents/nodes/researcher.py) 在 batched commit **之后** 按行 emit `evidence.collected`，payload 含真 `evidence_id` + dimension/competitor_id/source_type/source_title/source_url/desensitized——前端可直接 deep-link 到 EvidenceDrawer，无需 provisional → permanent id 对账。
+- Supervisor 决策映射：[`agents/nodes/supervisor.py::_match_plan_task_ids`](backend/app/agents/nodes/supervisor.py) 把 SupervisorDecision 按 chosen_tool + competitor 映回 `plan_tree.tasks`（DiscoverCompetitors → 所有 discover；ConductResearch → 单 competitor 匹配；ConductResearchBatch → topics 内多 competitor；Analyze/Write → 单 task；Finalize → 空）。结果注入既有 `SUPERVISOR_DECISION` 事件 payload 的 `plan_task_ids` 字段（**纯 additive**，老订阅者忽略未知字段）。
+- 测试：新增 [`test_phase3_events.py`](backend/app/tests/test_phase3_events.py) 8 个测试覆盖 helper 全分支 + `tool_exec` 在 happy/ChannelError 两条路径上的 start/finish 配对 emit。容器内全量 `pytest tests/ --ignore=tests/test_smoke.py` **131 passed**——所有 emit 改动均无副作用（`emit_run_event` 在 event_bus 未初始化时为 no-op，老测试零受影响）。
+- 关键 YAGNI 决策：
+  1. **不引入 `plan.task.start/finish` 事件**——直接把 `plan_task_ids: list[str]` 加进既有 `supervisor.decision` payload；前端"task → running"用 supervisor.decision，"task → completed"用 step.finish.agent_name+competitor_id 映射。事件平面零扩容、向后兼容。
+  2. **不在 SSE 心跳里塞 `phase + current_task_id`**——`useRunDetail` 通过 SSE invalidation 已能拿到最新 phase，浏览器自带 EventSource keepalive 处理空闲连接；后端 keepalive 留 `: keepalive\n\n` 注释行即可，避免新加一个无 consumer 的 HEARTBEAT 事件枚举值。
+  3. **不在 supervisor 上做 plan_task 强制约束**——支线扫的是 plan_tree，本期仅做"可视化对齐"，执行层语义不动（继承 Phase 2 的 supervisor 零侵入策略），保持 graph 稳定。
+- 提交：拆 3 个原子 commit——`feat(events): emit tool.start/finish at researcher subgraph + discovery boundaries` / `feat(events): emit evidence.collected after researcher batch commit` / `feat(events): enrich supervisor.decision with plan_task_ids + tests`。
+
+**Phase 3 — 前端实现（已完成 ✅）**
+
+- SSE 扩展 [`frontend/src/api/sse.ts`](frontend/src/api/sse.ts)：新增 `ToolEventPayload` / `ToolFinishEventPayload` / `EvidenceCollectedPayload` / `SupervisorDecisionEventPayload` / `StepFinishEventPayload` + 对应 `coerce*` 函数（defensive parse，缺字段不崩）+ `onToolStart` / `onToolFinish` / `onEvidenceCollected` / `onSupervisorDecision` / `onStepFinish` 五个可选回调。`evidence.collected` 额外触发 `["run-evidence", runId]` invalidation，让 EvidenceDrawer 实时跟上；其他事件按需，避免无谓重拉。
+- 路由 [`frontend/src/app/router.tsx`](frontend/src/app/router.tsx) 加 `/app/runs/:runId/live` lazy 挂 `LiveRunPage`；[`frontend/src/pages/PlanConfirmPage.tsx`](frontend/src/pages/PlanConfirmPage.tsx) 确认后跳转目标由 `/app/runs/{id}` 改为 `/app/runs/{id}/live`（含 409 PLAN_NOT_AWAITING_CONFIRM 兜底分支）。
+- 新页 [`frontend/src/pages/LiveRunPage.tsx`](frontend/src/pages/LiveRunPage.tsx)：双栏布局——
+  - **顶部状态条**：返回链接 + 截断用户问题 + `StatusBadge` + 进度徽章 `已完成 X/Y · 进行中 Z` + 终态时"查看完整报告"CTA。终态自动延迟 2.5s `navigate(/app/runs/{id}, replace)`，让用户先看到最后一帧。
+  - **左栏 Plan Tree**：按 4 个 stage（发现/调研/分析/撰写）分组，每个 task 显示标题 + competitor + 维度，状态图标三态（queued: `CircleDot` 灰 / running: `Loader2` 转黄 / completed: `CheckCircle2` 绿）。状态转换：`onSupervisorDecision` 把 `plan_task_ids` 标 running（避免 completed→running 倒退）；`onStepFinish` 按 `AGENT_NAME_TO_STAGE` + competitor_id（research stage 特别按 competitor_id 精准匹配，避免误标其他 competitor 完成）标 completed。
+  - **右上 工具调用面板**：按 `${tool}|${competitor_id}|${dimension}|${turn}` 配对 start/finish；显示 tool 图标 + 参数 + 延迟/snippet 数/错误；保留最近 12 条，幂等去重。tool.finish 找不到对应 start 时 synthesize 一条（防止页面 mid-run 挂载时丢失 finish）。
+  - **右下 证据流**：`onEvidenceCollected` prepend，最近 30 条，click 卡片打开既有 `EvidenceDrawer`。
+  - **底部 Follow-up 占位**：终态前显示 disabled `<input>` "想让 Agent 多关注哪些方向？（即将上线）"——为 Phase 4 留位且管理用户预期；终态时隐藏。
+- 关键 YAGNI 决策：
+  1. **不实现顶部 mini-DAG 呼吸灯**——StatusBadge + 进度徽章 + 左栏 Plan Tree running/queued 视觉已经覆盖"系统正在做什么"的信息密度；mini-DAG 5 节点呼吸灯需要单独的状态机推断（supervisor 没有"当前 active node"的官方事件），收益不及成本，Phase 5 演示视频再考虑。
+  2. **不缓存 toolActivity / evidenceFeed 到 localStorage**——刷新即重新订阅 SSE，evidence 列表由 Drawer 走 server 拉，工具调用本身是瞬时态。
+  3. **不接 `useLiveRunFeed` hook 抽象**——所有事件状态都在 `LiveRunPage` 内 useState，单文件容易读；要复用时再抽。
+  4. **不让 supervisor "completed" 标记下游 task 自动级联**——researcher 完成只标当前 competitor 的 research task；analyzer 完成才级联所有 analyze；保留人脑可预期的语义。
+- 提交：拆 2 个原子 commit——`feat(sse): expose tool / evidence / decision / step.finish callbacks` / `feat(ui): LiveRunPage at /app/runs/:runId/live + redirect from /plan`。
+- 验收：`npm run type-check` 0 错；从 chat → /plan → /live 全链路渲染，supervisor.decision/step.finish/tool.start/tool.finish/evidence.collected 五类事件都能在 UI 上看到对应反映；run 终态后 2.5s 自动跳到 `/app/runs/{id}` 看完整报告。
 
 ### Phase 4：Follow-up Interrupt（0.5 天）
 - 后端：`POST /api/runs/{id}/follow-up` + Supervisor 消费 `follow_up_queue`。

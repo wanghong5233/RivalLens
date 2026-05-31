@@ -367,11 +367,33 @@ export function LiveRunPage(): JSX.Element {
         </div>
       </div>
 
+      <FollowUpPlaceholder isTerminal={isTerminal} />
+
       <EvidenceDrawer
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         runId={runId}
         evidenceIds={drawerEvidenceIds}
+      />
+    </div>
+  );
+}
+
+function FollowUpPlaceholder({ isTerminal }: { isTerminal: boolean }): JSX.Element | null {
+  if (isTerminal) {
+    return null;
+  }
+  // Phase 4 will wire this up to POST /api/runs/{id}/follow-up; for Phase 3 the
+  // disabled input establishes the placement + sets the expectation that the
+  // user can speak mid-run instead of just watching.
+  return (
+    <div className="rounded-2xl border border-dashed border-white/[0.08] bg-white/[0.02] px-4 py-3">
+      <div className="text-xs text-foreground-muted">追加指令（Phase 4 启用）</div>
+      <input
+        type="text"
+        placeholder="想让 Agent 多关注哪些方向？（即将上线）"
+        disabled
+        className="mt-1 w-full bg-transparent text-sm text-foreground-muted placeholder:text-foreground-muted/60 focus:outline-none"
       />
     </div>
   );
