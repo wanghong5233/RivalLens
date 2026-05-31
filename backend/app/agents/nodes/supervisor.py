@@ -632,6 +632,66 @@ def _map_next_action(chosen_tool: str) -> Literal["discovery", "researcher", "an
     return "finalize"
 
 
+_CHOSEN_TOOL_TO_PLAN_STAGE: dict[str, str] = {
+    "DiscoverCompetitors": "discover",
+    "ConductResearch": "research",
+    "ConductResearchBatch": "research",
+    "Analyze": "analyze",
+    "Write": "write",
+}
+
+
+def _match_plan_task_ids(
+    *,
+    plan_tree: object,
+    decision: SupervisorDecision,
+) -> list[str]:
+    """Best-effort map supervisor decision → plan_task IDs for the live plan tree.
+
+    Returns empty list when:
+    - plan_tree is missing / unconfirmed (legacy runs, intake-skip, Finalize),
+    - or no task in plan_tree matches the chosen tool + competitor(s).
+    The FE uses this list to flip task tiles to "running"; a miss is harmless.
+    """
+    if not isinstance(plan_tree, dict):
+        return []
+    tasks_raw = plan_tree.get("tasks")
+    if not isinstance(tasks_raw, list):
+        return []
+    target_stage = _CHOSEN_TOOL_TO_PLAN_STAGE.get(decision.chosen_tool)
+    if target_stage is None:
+        return []
+
+    target_competitor_ids: set[str] = set()
+    if decision.chosen_tool == "ConductResearch":
+        competitor_id_raw = decision.tool_args.get("competitor_id")
+        if isinstance(competitor_id_raw, str) and competitor_id_raw:
+            target_competitor_ids.add(competitor_id_raw)
+    elif decision.chosen_tool == "ConductResearchBatch":
+        topics_raw = decision.tool_args.get("topics")
+        if isinstance(topics_raw, list):
+            for topic in topics_raw:
+                if isinstance(topic, dict):
+                    competitor_id_raw = topic.get("competitor_id")
+                    if isinstance(competitor_id_raw, str) and competitor_id_raw:
+                        target_competitor_ids.add(competitor_id_raw)
+
+    matched: list[str] = []
+    for task in tasks_raw:
+        if not isinstance(task, dict):
+            continue
+        if task.get("stage") != target_stage:
+            continue
+        if target_stage == "research":
+            task_competitor = task.get("competitor_id")
+            if not isinstance(task_competitor, str) or task_competitor not in target_competitor_ids:
+                continue
+        task_id_raw = task.get("task_id")
+        if isinstance(task_id_raw, str) and task_id_raw:
+            matched.append(task_id_raw)
+    return matched
+
+
 @log_node("supervisor")
 async def supervisor_node(state: AgentState) -> AgentState:
     session_factory = _resolve_session_factory(state)
@@ -759,6 +819,10 @@ async def supervisor_node(state: AgentState) -> AgentState:
             reasoning_summary_len=len(decision.reasoning_summary),
             tool_arg_keys=sorted(decision.tool_args.keys()),
         )
+    plan_task_ids = _match_plan_task_ids(
+        plan_tree=state.get("plan_tree"),
+        decision=decision,
+    )
     await emit_run_event(
         run_id=run_id,
         event_type=RunEventType.SUPERVISOR_DECISION,
@@ -768,6 +832,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             "chosen_tool": decision.chosen_tool,
             "triggered_by": decision.triggered_by or "unknown",
             "outcome": decision.outcome or "unknown",
+            "plan_task_ids": plan_task_ids,
         },
     )
     decisions.append(decision)
