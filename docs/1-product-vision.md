@@ -6,7 +6,9 @@
 
 ```mermaid
 flowchart LR
-    Input[提出竞品问题] --> Agent[多 Agent 执行]
+    Input[提出竞品问题] --> Intake[Intake Agent<br/>多轮 clarify]
+    Intake --> Plan[Plan 确认<br/>可勾选 + 追加]
+    Plan --> Agent[多 Agent 执行<br/>支持运行中 follow-up]
     Agent --> Report[Battlecard 报告]
     Agent --> Conclusions[结论矩阵]
     Report --> Share[分享与导出]
@@ -19,9 +21,9 @@ flowchart LR
 | 层 | 负责 | 不负责 |
 |---|---|---|
 | 营销层（`/`、`/examples`、`/share/:runId`） | 价值表达、案例展示、报告阅读 | 任务执行、管理能力 |
-| 工作区层（`/app/*`） | 新建分析、任务管理、结论对比、追踪订阅 | 外部公开访问 |
-| Agent 编排层（LangGraph） | 调研、分析、写作、QA、Curator | 页面呈现、前端交互 |
-| 数据与证据层（PostgreSQL） | run、evidence、conclusion、watchlist 持久化 | 产品文案、UI 路由 |
+| 工作区层（`/app/*`） | Chat intake、Plan 确认、Live 运行页、新建分析、任务管理、结论对比、追踪订阅 | 外部公开访问 |
+| Agent 编排层（LangGraph） | Intake clarify、Plan 编制、调度、调研、分析、写作、QA、Curator | 页面呈现、前端交互 |
+| 数据与证据层（PostgreSQL） | run（含 `intake_draft` / `plan_tree` / `follow_ups` JSONB）、evidence、conclusion、watchlist 持久化 | 产品文案、UI 路由 |
 
 ## 第一性原理约束
 
@@ -36,13 +38,22 @@ flowchart LR
 ## 用户契约
 
 ```text
-输入契约:
-- 用户可提交 user_query + target_roles + 可选 competitors / domain_hint / reference_urls。
-- competitors 为空时，Supervisor 通过 DiscoverCompetitors 自动发现赛道内竞品后再进入调研。
+输入契约（chat-intake 默认路径）:
+- 用户提交首句 user_query 即可启动 run；Intake Agent 通过多轮 clarify 补齐 user_role / analysis_intent /
+  (competitors_explicit ∨ competitors_discovery_mode)。
+- Intake 完成后跳 PlanConfirmPage：用户审核 PlanTree，可勾掉不想做的 task，可添加最多 5 条
+  user-pinned 任务（仅 research / analyze / write 三个 stage，discover 是 Agent 专属）。
+- 运行中可发送 follow-up（1..1000 字符），Supervisor 在下一轮决策时消费并注入 prompt。
 - 用户可将竞品加入 watchlist。
 
+输入契约（专家模式快速路径）:
+- 切到 `/app/runs/new/expert` 直接填三步表单，跳过 chat intake 与 plan 确认，直送 Supervisor。
+- 适合"已经清楚要分析谁、要看什么维度"的专业用户。
+
 输出契约:
-- 每个 run 提供 report、metrics、evidence、conclusions、trace。
+- 每个 run 在 `/app/runs/:runId/live` 提供实时双栏视图：左 PlanTree 进度（含 supervisor 决策映射），
+  右 Evidence Feed + 工具调用面板（tool.start / tool.finish / evidence.collected SSE）。
+- 终态 2.5s 后自动跳 `/app/runs/:runId`，提供 report、metrics、evidence、conclusions、trace。
 - 报告支持 /share/:runId 公开阅读。
 - 对比页可聚合多 run conclusions。
 ```
@@ -53,6 +64,7 @@ flowchart LR
 2. 任务状态变化必须通过 run status 与事件流可观测。
 3. 工作区入口固定为 `/app`，公开区入口固定为 `/`。
 4. watchlist CRUD 失败时返回显式错误，不返回伪成功。
+5. Intake / Plan 都是 HITL 同步交互节点：`RunIntakeDraft.is_complete` 与 `PlanTree.confirmed_at` 未落值之前不进入 executing 阶段；用户在这两个节点可无限轮编辑而不会被超时强制结束。
 
 ## 留存与变现路径
 
