@@ -8,6 +8,7 @@ from langgraph.types import Send
 from agents.nodes.analyst import analyst_node
 from agents.nodes.discovery import discovery_node
 from agents.nodes.intake import intake_generate_node, intake_wait_node
+from agents.nodes.planner import planner_generate_node, planner_wait_node
 from agents.nodes.qa import qa_node
 from agents.nodes.researcher import researcher_node
 from agents.nodes.supervisor import supervisor_node
@@ -64,20 +65,37 @@ def _route_after_qa(state: AgentState) -> Literal["supervisor", "finalize"]:
     return "supervisor"
 
 
-def _route_entry(state: AgentState) -> Literal["intake_generate", "supervisor"]:
+def _route_entry(state: AgentState) -> Literal["intake_generate", "planner_generate", "supervisor"]:
     # Invariant B: drive entry from explicit `phase`. Legacy runs without `phase`
     # default to `supervisor` so POST /api/runs keeps its synchronous-bus contract.
-    if state.get("phase") == "intake":
+    # Phase 2: `phase="planning"` entry skips intake (e.g. expert-mode runs that
+    # arrive with a fully-formed intake_draft already).
+    phase = state.get("phase")
+    if phase == "intake":
         return "intake_generate"
+    if phase == "planning":
+        return "planner_generate"
     return "supervisor"
 
 
-def _route_after_intake_generate(state: AgentState) -> Literal["intake_wait", "supervisor"]:
-    # Phase 1b: when intake completes we go straight to supervisor; Phase 2 will swap
-    # `supervisor` for the planner_generate node so the user can confirm a plan first.
-    if state.get("phase") == "intake":
+def _route_after_intake_generate(
+    state: AgentState,
+) -> Literal["intake_wait", "planner_generate", "supervisor"]:
+    # Phase 2: intake.complete sets phase="planning" → planner_generate. If the
+    # IntakeAgent still wants another clarify, phase stays "intake" → intake_wait.
+    # Any other phase falls through to supervisor (defensive, not reachable today).
+    phase = state.get("phase")
+    if phase == "intake":
         return "intake_wait"
+    if phase == "planning":
+        return "planner_generate"
     return "supervisor"
+
+
+def _route_after_planner_generate(state: AgentState) -> Literal["planner_wait"]:
+    # planner_generate always commits and routes to planner_wait. The branch is
+    # declared explicitly so the graph DAG stays self-documenting.
+    return "planner_wait"
 
 
 def build_graph_uncompiled() -> StateGraph:
@@ -90,11 +108,14 @@ def build_graph_uncompiled() -> StateGraph:
     graph.add_node("qa", qa_node)
     graph.add_node("intake_generate", intake_generate_node)
     graph.add_node("intake_wait", intake_wait_node)
+    graph.add_node("planner_generate", planner_generate_node)
+    graph.add_node("planner_wait", planner_wait_node)
     graph.add_conditional_edges(
         START,
         _route_entry,
         {
             "intake_generate": "intake_generate",
+            "planner_generate": "planner_generate",
             "supervisor": "supervisor",
         },
     )
@@ -103,10 +124,17 @@ def build_graph_uncompiled() -> StateGraph:
         _route_after_intake_generate,
         {
             "intake_wait": "intake_wait",
+            "planner_generate": "planner_generate",
             "supervisor": "supervisor",
         },
     )
     graph.add_edge("intake_wait", "intake_generate")
+    graph.add_conditional_edges(
+        "planner_generate",
+        _route_after_planner_generate,
+        {"planner_wait": "planner_wait"},
+    )
+    graph.add_edge("planner_wait", "supervisor")
     graph.add_conditional_edges(
         "supervisor",
         _route_after_supervisor,

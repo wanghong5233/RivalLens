@@ -338,12 +338,12 @@ async def intake_generate_node(state: AgentState) -> AgentState:
                 "draft": next_draft.model_dump(exclude={"is_complete"}),
             },
         )
-        # Phase 1b: skip planner and go straight to supervisor. Phase 2 will swap
-        # this to phase="planning" so the planner_generate_node takes over here.
+        # Phase 2: intake.complete hands off to the planner. The graph's
+        # _route_after_intake_generate reads `phase` and routes to planner_generate.
         return {
             **state,
             "run_id": run_id,
-            "phase": "executing",
+            "phase": "planning",
             "intake_draft": next_draft,
             "intake_history": history,
             "pending_clarify": None,
