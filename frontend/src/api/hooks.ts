@@ -10,6 +10,10 @@ import { getRunFallbackPollMs, useRunEvents } from "@/api/sse";
 import type {
   CompetitorSeedResponse,
   EvidenceListItemResponse,
+  IntakeCreateRequest,
+  IntakeCreateResponse,
+  IntakeUserReply,
+  RunAcceptedResponse,
   RunCreateRequest,
   RunCreateResponse,
   RunDetailResponse,
@@ -148,6 +152,27 @@ async function fetchCompetitorSeeds(): Promise<CompetitorSeedResponse[]> {
 
 async function createRun(payload: RunCreateRequest): Promise<RunCreateResponse> {
   const { data } = await apiClient.post<RunCreateResponse>("/api/runs", payload);
+  return data;
+}
+
+async function createRunIntake(payload: IntakeCreateRequest): Promise<IntakeCreateResponse> {
+  const { data } = await apiClient.post<IntakeCreateResponse>("/api/runs/intake", payload);
+  return data;
+}
+
+export interface ReplyRunIntakeVariables {
+  runId: string;
+  reply: IntakeUserReply;
+}
+
+async function replyRunIntake(
+  runId: string,
+  reply: IntakeUserReply,
+): Promise<RunAcceptedResponse> {
+  const { data } = await apiClient.post<RunAcceptedResponse>(
+    `/api/runs/${runId}/intake/reply`,
+    reply,
+  );
   return data;
 }
 
@@ -293,6 +318,26 @@ export function useCompetitorSeeds(): UseQueryResult<CompetitorSeedResponse[], E
 export function useCreateRun(): UseMutationResult<RunCreateResponse, Error, RunCreateRequest> {
   return useMutation({
     mutationFn: createRun,
+  });
+}
+
+export function useCreateRunIntake(): UseMutationResult<
+  IntakeCreateResponse,
+  Error,
+  IntakeCreateRequest
+> {
+  return useMutation({
+    mutationFn: createRunIntake,
+  });
+}
+
+export function useReplyRunIntake(): UseMutationResult<
+  RunAcceptedResponse,
+  Error,
+  ReplyRunIntakeVariables
+> {
+  return useMutation({
+    mutationFn: ({ runId, reply }) => replyRunIntake(runId, reply),
   });
 }
 
