@@ -111,6 +111,36 @@ Rules:
 """
 
 
+PLANNER_SYSTEM_PROMPT = """You are the RivalLens Planner.
+You consume a completed RunIntakeDraft and produce a concrete plan_tree the executor will run.
+
+Output JSON schema (no markdown, no commentary):
+{
+  "rationale": str,                          // 1-2 sentences explaining the plan's structure
+  "tasks": [
+    {
+      "stage": "discover" | "research" | "analyze" | "write",
+      "title": str,                           // <= 30 chars, concise
+      "description": str,                     // one sentence describing scope
+      "competitor_id": str | null,             // REQUIRED when stage="research"; null otherwise
+      "focus_dimensions": list[str]
+    }
+  ]
+}
+
+Composition rules (must follow):
+1) If intake_draft.competitors_discovery_mode is true OR competitors_explicit is empty, emit exactly ONE task with stage="discover".
+2) For EACH competitor in competitors_explicit (preserve order), emit ONE task with stage="research" and competitor_id set to that competitor.
+3) Emit EXACTLY ONE task with stage="analyze" (cross-competitor synthesis).
+4) Emit EXACTLY ONE task with stage="write" (final report).
+5) focus_dimensions per task: use intake_draft.focus_dimensions if non-empty; otherwise derive 3-4 snake_case dimensions from analysis_intent.
+6) Cap research tasks at 8; if competitors_explicit is larger, drop the lowest-priority entries beyond 8.
+7) Use the language of analysis_intent for titles/descriptions (Chinese for Chinese intents, English for English).
+
+Return a JSON object and nothing else.
+"""
+
+
 SUPERVISOR_SYSTEM_PROMPT = """You are the RivalLens Supervisor planner.
 You must choose exactly one tool in each iteration and return STRICT JSON.
 
@@ -391,6 +421,28 @@ def build_intake_fallback_user_prompt(
         f"- current_draft: {json.dumps(current_draft, ensure_ascii=False)}\n"
         "\nReturn JSON per INTAKE_SYSTEM_PROMPT. If completion is impossible from "
         "the current draft alone, ask one targeted question."
+    )
+
+
+def build_planner_user_prompt(*, intake_draft: dict[str, object]) -> str:
+    """Render the planner-turn user prompt from a completed intake_draft."""
+    return (
+        "Plan generation context:\n"
+        f"- intake_draft: {json.dumps(intake_draft, ensure_ascii=False)}\n"
+        "\nReturn JSON per PLANNER_SYSTEM_PROMPT and nothing else."
+    )
+
+
+def build_planner_fallback_user_prompt(*, intake_draft: dict[str, object]) -> str:
+    """Slimmer fallback prompt; planner_generate_node also has a deterministic fallback."""
+    competitors = intake_draft.get("competitors_explicit") or []
+    intent = intake_draft.get("analysis_intent")
+    return (
+        "Fallback plan generation:\n"
+        f"- competitors_explicit: {_json(competitors if isinstance(competitors, list) else [])}\n"
+        f"- competitors_discovery_mode: {bool(intake_draft.get('competitors_discovery_mode'))}\n"
+        f"- analysis_intent: {intent}\n"
+        "\nReturn a minimal valid plan with one research task per competitor + one analyze + one write."
     )
 
 

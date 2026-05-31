@@ -26,12 +26,19 @@ class PlanTask(BaseModel):
 
 
 class PlanTree(BaseModel):
-    """The Agent's full proposed plan; `version` bumps on each user edit."""
+    """The Agent's full proposed plan; `version` bumps on each user edit.
+
+    `confirmed_at` is the lifecycle signal: None when freshly published by
+    planner_generate, ISO timestamp after planner_wait resumes from the user's
+    confirmation. _derive_run_phase reads this to distinguish "planning"
+    (paused at planner_wait) from "executing" without poking graph state.
+    """
 
     plan_id: str = Field(default_factory=lambda: make_id("plan_"))
     tasks: list[PlanTask] = Field(default_factory=list)
     rationale: str = ""
     version: int = 1
+    confirmed_at: str | None = None
 
 
 class PlanConfirmRequest(BaseModel):
