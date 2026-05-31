@@ -4,10 +4,10 @@ overview: 把当前"按下启动就黑盒等几分钟"的体验，改造为 Agen
 todos:
   - id: phase0a
     content: Phase 0a HITL Spike（强制前置）：最小两节点 graph 验证 Invariant A/B/C/E，30 分钟 idle resume + connection pool 行为；spike 失败则不进 0b
-    status: pending
+    status: completed
   - id: phase0b
     content: Phase 0b 异步化：POST /api/runs 走 Invariant C "立返 accepted + create_task" 模板，前端 navigate 到占位 live 页
-    status: pending
+    status: completed
   - id: phase1_backend
     content: Phase 1 后端：state 加 phase/intake_*，新增 intake_node + IntakeAgent prompt + 三个 REST 端点 + 13 类新 RunEvent
     status: completed
@@ -16,7 +16,7 @@ todos:
     status: completed
   - id: phase2
     content: Phase 2 (α)：planner_node + PlanTree interrupt + PlanConfirmPage 渲染 + checkbox 勾选取消
-    status: pending
+    status: completed
   - id: phase3_backend
     content: Phase 3 后端：tool/evidence 边界 emit 细粒度事件 + supervisor.decision 加 plan_task_ids
     status: completed
@@ -30,8 +30,8 @@ todos:
     content: Phase β：PlanConfirmRequest.additional_tasks + Supervisor user_pinned 优先级 + 前端添加 task modal（可独立合入或推迟）
     status: completed
   - id: docs
-    content: 落 docs/2.7-agent-native-intake-and-live-run.md 完整版 + 同步 1-product-vision.md 与 3-schema-and-protocol.md
-    status: pending
+    content: 落 docs/2.7-agent-native-intake-and-live-run.md 完整版 + 同步 1-product-vision.md 与 3-schema-and-protocol.md（schema_v0.3）+ 2.5-agent-architecture.md（6 → 7 Agent + Skill Curator）
+    status: completed
 isProject: false
 ---
 
@@ -573,6 +573,37 @@ HEARTBEAT              = "heartbeat"
 - **风险：Invariant E 在生产 lifespan reload 时被打破** → `app_main.py` lifespan 收尾时遍历 `app.state.background_tasks` 把仍在 interrupt 等待的 run 标 `Run.status="failed"` 并 emit `run.failed`，前端 LiveRunPage 收到 `run.failed` 显示"服务重启，请重新发起分析"。
 - **风险：Phase 0a spike 通过但 Phase 1 真实节点中又踩 Invariant A** → 在 [`backend/app/agents/nodes/`](backend/app/agents/nodes) 加一个轻量装饰器 `@idempotent_interrupt_node`，强制节点函数声明 cache 字段名，装饰器内自动检查 "interrupt 之前不能 await emit_run_event"（用 ast 静态扫描或运行时计数器）。这是最强的工程兜底。
 
-## 9. 文档产出
+## 9. 文档产出（**已完成 ✅**）
 
-落到 [`docs/2.7-agent-native-intake-and-live-run.md`](docs/2.7-agent-native-intake-and-live-run.md)：本 Plan 的完整版（含本文件全部章节 + UI 草图示意 + 事件 schema 完整表）。命名衔接 `2-` / `2.5-` / `2.6-` 系列。同步在 [`docs/1-product-vision.md`](docs/1-product-vision.md) 用户契约段补充 "intake 形态与 plan 确认环节"；在 [`docs/3-schema-and-protocol.md`](docs/3-schema-and-protocol.md) 补充 `RunIntakeDraft` / `PlanTree` / 11 类新事件的 schema 定义。
+四份文档同步落地：
+
+1. **新建** [`docs/2.7-agent-native-intake-and-live-run.md`](docs/2.7-agent-native-intake-and-live-run.md)：Phase 1–β 的现状文档。12 节覆盖子系统定位 / 6 个 Invariant / LangGraph 拓扑图 / 5 个 REST 端点契约 / SSE 事件清单 / 前端路由 / follow-up DB inbox / user task `_normalize_user_tasks` 与 `competitors_diff` / 回滚策略 / 已知限制 / 测试覆盖（指向 `test_hitl_spike` / `test_intake_*` / `test_plan_*` / `test_phase3_events` / `test_followup_api` / `test_phase_beta_user_tasks`）/ 同步纪律。
+
+2. **改写** [`docs/2.5-agent-architecture.md`](docs/2.5-agent-architecture.md)：架构从"6 个 Agent"升级到"**7 个核心闭环 Agent + 1 个异步 Skill Curator**"。
+   - §1.3 决策落地表加"需求理解 / 计划编制"两行。
+   - §2.1 推导原则从 6 类拆为 8 类（把笼统的"决策"拆为澄清/编制/调度三层）。
+   - §2.2 / §2.3 与赛题举例 / GPT Researcher 对比表加入 Intake / Planner 行。
+   - **新增 §2.4 "Intake / Planner / Supervisor 三者不合并的第一性原理"**（用六维对比表说明合并的三类硬冲突）。
+   - §2.6 总体拓扑图加 Intake / Planner / FollowUpInbox 节点 + HITL 路径。
+   - §3 标题升级为"7 + 1 个 Agent 规格"，前置 §3.1 Intake / §3.2 Planner 两节，Supervisor 输入扩 follow-up + user_pinned 投影。
+   - §4.0 时序图前置 Intake/Planner 已完成的 note；§4.1 加 `ConductResearchBatch` schema；§4.2 SupervisorDecision 加 `plan_task_ids` + `consumed_follow_up_ids`。
+   - §8 失败模式总表加 Intake 死循环 / Plan 节点数 / user task 滥用 / follow-up 滥发 四行；§9 扩展点清单加 HITL 节点 / Intake/Planner prompt / PlanTask stage 三行。
+   - §10 同步纪律加"HITL 节点变更必须同步 2.7"一条。
+
+3. **改写** [`docs/3-schema-and-protocol.md`](docs/3-schema-and-protocol.md)：升级到 `schema_v0.3`。
+   - §1.1 变更历史加 v0.3 条目（含 4 类新契约 + 11 类 RunEvent 概览）。
+   - §1.3 ID 前缀加 `plan_` / `ptask_` / `fu_`。
+   - **新增 §2.8 RunIntakeDraft**（含 `is_complete` computed_field 约束、`_sanitize_patch` 白名单注释 + `IntakeClarifyRequest` / `IntakeUserReply` / `IntakeExchange`）。
+   - **新增 §2.9 PlanTree / PlanTask**（含 `source` / `priority` 字段、`_normalize_user_tasks` 规则、`competitors_diff` 机制说明）。
+   - **新增 §2.10 FollowUpRequest / FollowUpEntry**（含 DB inbox 设计理由 + 4 个端点守卫）。
+   - §4.1 AgentMessage source/target_agent 枚举加 `intake` / `planner` / `user`。
+   - §4.2 payload_type 加 6 个新类型；**新增 §4.2bis RunEvent 流式事件清单**（按 phase 时序列全集）。
+   - §11 Agent I/O 总表前置 Intake / Planner 两行，Supervisor 行扩 follow-up + user_pinned。
+
+4. **改写** [`docs/1-product-vision.md`](docs/1-product-vision.md)：
+   - 现状目标图（mermaid）加 Intake / Plan 两步。
+   - 分层职责表更新工作区层（Chat intake / Plan 确认 / Live 页）+ Agent 编排层（Intake / Plan 编制 / Supervisor 调度）+ 数据层（`intake_draft` / `plan_tree` / `follow_ups` JSONB）。
+   - 用户契约拆为"chat-intake 默认路径"与"专家模式快速路径"两段；输出契约补 LiveRunPage SSE。
+   - 不变式追加第 5 条：Intake / Plan 是 HITL 同步节点，未确认前不进 executing。
+
+提交：拆 4 个原子 commit（2.5 / 2.7 / 3 / 1-product-vision + plan 文档）。
