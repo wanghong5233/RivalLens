@@ -70,6 +70,13 @@ export const appRouter = createBrowserRouter([
             },
           },
           {
+            path: "runs/:runId/plan",
+            lazy: async () => {
+              const module = await import("@/pages/PlanConfirmPage");
+              return { Component: module.PlanConfirmPage };
+            },
+          },
+          {
             path: "runs/:runId/trace",
             lazy: async () => {
               const module = await import("@/pages/RunTracePage");

@@ -256,19 +256,22 @@ export function NewRunChatPage(): JSX.Element {
         {
           id: newMessageId(),
           kind: "assistant.complete",
-          text: "需求确认完成，正在为你启动分析。",
+          text: "需求确认完成，Agent 正在为你拟定一份分析计划，请稍候确认。",
         },
       ]);
       setStatus("complete");
       pushToast({
         title: "需求确认完成",
-        description: "正在跳转到运行详情页…",
+        description: "正在跳转到计划确认页…",
         variant: "success",
       });
       if (runId !== null) {
         const targetRunId = runId;
+        // Phase 2: hand off to PlanConfirmPage. The planner publishes a plan
+        // shortly after intake completes; PlanConfirmPage either renders the
+        // already-mirrored Run.plan_tree or waits for plan.published over SSE.
         window.setTimeout(() => {
-          navigate(`/app/runs/${targetRunId}`);
+          navigate(`/app/runs/${targetRunId}/plan`);
         }, POST_COMPLETE_DELAY_MS);
       }
     },

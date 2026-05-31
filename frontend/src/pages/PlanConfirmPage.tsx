@@ -1,0 +1,487 @@
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronLeft,
+  Compass,
+  FileText,
+  Loader2,
+  Microscope,
+  PenLine,
+  Sparkles,
+} from "lucide-react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+
+import { useConfirmRunPlan, useRunDetail } from "@/api/hooks";
+import type { PlanTask, PlanTaskStage, PlanTree, RunIntakeDraft } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { pushToast } from "@/components/ui/toaster";
+import { cn } from "@/lib/utils";
+
+const STAGE_META: Record<PlanTaskStage, { label: string; icon: typeof Compass; description: string }> = {
+  discover: {
+    label: "发现",
+    icon: Compass,
+    description: "Agent 先去找出赛道上的头部竞品。",
+  },
+  research: {
+    label: "调研",
+    icon: Microscope,
+    description: "按维度采集每家竞品的事实证据。",
+  },
+  analyze: {
+    label: "分析",
+    icon: Sparkles,
+    description: "跨竞品对比、找出差异化与机会点。",
+  },
+  write: {
+    label: "撰写",
+    icon: PenLine,
+    description: "把证据 + 洞察整理成可分发的报告。",
+  },
+};
+
+const STAGE_ORDER: PlanTaskStage[] = ["discover", "research", "analyze", "write"];
+
+const POST_CONFIRM_REDIRECT_MS = 800;
+
+const TERMINAL_STATUSES = new Set(["completed", "degraded", "failed", "cancelled"]);
+
+export function PlanConfirmPage(): JSX.Element {
+  const { runId: rawRunId } = useParams<{ runId: string }>();
+  const runId = rawRunId ?? "";
+  const navigate = useNavigate();
+  const runDetail = useRunDetail(runId);
+  const confirmPlan = useConfirmRunPlan();
+
+  const [disabledIds, setDisabledIds] = useState<Set<string>>(() => new Set());
+  const [touched, setTouched] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const planTree = runDetail.data?.plan_tree ?? null;
+  const runStatus = runDetail.data?.status ?? null;
+  const phase = runDetail.data?.phase ?? null;
+  const planConfirmed = Boolean(planTree?.confirmed_at);
+
+  // Initialize the disabled set from the plan exactly once (when the plan
+  // first arrives). Keeps the checkbox state stable across SSE re-fetches
+  // — otherwise React Query invalidations would reset user choices.
+  useEffect(() => {
+    if (planTree === null || touched) {
+      return;
+    }
+    setDisabledIds(new Set());
+  }, [planTree, touched]);
+
+  // Auto-redirect if the run is already past the planning gate.
+  useEffect(() => {
+    if (!runId) {
+      return;
+    }
+    if (runStatus && TERMINAL_STATUSES.has(runStatus)) {
+      navigate(`/app/runs/${runId}`, { replace: true });
+      return;
+    }
+    if (planConfirmed && phase === "executing") {
+      navigate(`/app/runs/${runId}`, { replace: true });
+    }
+  }, [runId, runStatus, planConfirmed, phase, navigate]);
+
+  const tasksByStage = useMemo(() => {
+    if (planTree === null) {
+      return null;
+    }
+    const grouped: Record<PlanTaskStage, PlanTask[]> = {
+      discover: [],
+      research: [],
+      analyze: [],
+      write: [],
+    };
+    for (const task of planTree.tasks) {
+      grouped[task.stage].push(task);
+    }
+    return grouped;
+  }, [planTree]);
+
+  const totalEnabled = useMemo(() => {
+    if (planTree === null) {
+      return 0;
+    }
+    return planTree.tasks.filter((task) => !disabledIds.has(task.task_id)).length;
+  }, [planTree, disabledIds]);
+
+  const toggleTask = (taskId: string): void => {
+    setTouched(true);
+    setDisabledIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) {
+        next.delete(taskId);
+      } else {
+        next.add(taskId);
+      }
+      return next;
+    });
+  };
+
+  async function handleConfirm(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (planTree === null || submitting) {
+      return;
+    }
+    if (totalEnabled === 0) {
+      pushToast({
+        title: "至少需要保留一个任务",
+        description: "全部任务被禁用，无法启动分析。",
+        variant: "danger",
+      });
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await confirmPlan.mutateAsync({
+        runId,
+        payload: {
+          disabled_task_ids: Array.from(disabledIds),
+          additional_tasks: [],
+        },
+      });
+      pushToast({
+        title: "计划已确认",
+        description: "Agent 正在按计划执行，跳转到运行详情页…",
+        variant: "success",
+      });
+      window.setTimeout(() => {
+        navigate(`/app/runs/${runId}`);
+      }, POST_CONFIRM_REDIRECT_MS);
+    } catch (error) {
+      const status = (error as { response?: { status?: number } }).response?.status;
+      const errorCode = (error as { response?: { data?: { error_code?: string } } }).response?.data
+        ?.error_code;
+      if (status === 409 && errorCode === "PLAN_NOT_AWAITING_CONFIRM") {
+        // The graph already moved past planner_wait — most often because the
+        // user confirmed in another tab. Send them to the run view instead of
+        // surfacing the 409 as an error.
+        pushToast({
+          title: "计划已被确认",
+          description: "Agent 已开始执行，正在跳转…",
+          variant: "default",
+        });
+        navigate(`/app/runs/${runId}`, { replace: true });
+        return;
+      }
+      const message = error instanceof Error ? error.message : "未知错误";
+      pushToast({
+        title: "确认失败",
+        description: message,
+        variant: "danger",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!runId) {
+    return (
+      <section className="space-y-4">
+        <header className="space-y-2">
+          <h1 className="text-h1 text-foreground">计划确认</h1>
+          <p className="text-caption text-foreground-muted">缺少 run_id 参数，请从对话页重新进入。</p>
+        </header>
+      </section>
+    );
+  }
+
+  return (
+    <section className="space-y-5">
+      <header className="space-y-3">
+        <Button
+          asChild
+          className="-ml-2 inline-flex w-fit items-center gap-1 text-caption text-foreground-muted hover:text-foreground"
+          size="sm"
+          variant="ghost"
+        >
+          <a href="/app/runs/new" onClick={(event) => {
+            event.preventDefault();
+            navigate("/app/runs/new");
+          }}>
+            <ChevronLeft className="h-3.5 w-3.5" />
+            返回对话
+          </a>
+        </Button>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-h1 text-foreground">确认分析计划</h1>
+          <Badge variant="secondary" className="font-mono text-xs">{runId}</Badge>
+        </div>
+        <p className="text-caption text-foreground-muted">
+          Agent 已根据需求拟定了一份分步执行计划。你可以取消不需要的任务，确认后会立即开始抓取证据。
+        </p>
+      </header>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="space-y-3 lg:col-span-2">
+          {planTree === null ? (
+            <PlanLoadingCard />
+          ) : (
+            <form className="space-y-3" onSubmit={handleConfirm}>
+              {planTree.rationale ? (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="inline-flex items-center gap-2 text-base">
+                      <Sparkles className="h-4 w-4 text-primary" />
+                      Agent 的整体思路
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0 text-sm leading-relaxed text-foreground">
+                    {planTree.rationale}
+                  </CardContent>
+                </Card>
+              ) : null}
+
+              <div className="space-y-3">
+                {STAGE_ORDER.map((stage) => {
+                  const tasks = tasksByStage?.[stage] ?? [];
+                  if (tasks.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <StageBlock
+                      key={stage}
+                      stage={stage}
+                      tasks={tasks}
+                      disabledIds={disabledIds}
+                      onToggle={toggleTask}
+                    />
+                  );
+                })}
+              </div>
+
+              <Card className="border-primary/30">
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                  <div className="space-y-0.5 text-sm">
+                    <p className="font-medium text-foreground">
+                      共 {planTree.tasks.length} 个任务，已选 {totalEnabled} 个
+                    </p>
+                    <p className="text-caption text-foreground-muted">
+                      取消勾选的任务不会被执行；确认后无法再编辑。
+                    </p>
+                  </div>
+                  <Button disabled={submitting || totalEnabled === 0} size="sm" type="submit">
+                    {submitting ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        启动中
+                      </>
+                    ) : (
+                      "确认并启动分析"
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
+            </form>
+          )}
+        </div>
+
+        <aside className="space-y-3">
+          <IntakeSummaryCard draft={runDetail.data?.intake_draft ?? null} />
+          <PlanMetadataCard planTree={planTree} />
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+interface StageBlockProps {
+  stage: PlanTaskStage;
+  tasks: PlanTask[];
+  disabledIds: Set<string>;
+  onToggle: (taskId: string) => void;
+}
+
+function StageBlock({ stage, tasks, disabledIds, onToggle }: StageBlockProps): JSX.Element {
+  const meta = STAGE_META[stage];
+  const Icon = meta.icon;
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="inline-flex items-center gap-2 text-base">
+          <Icon className="h-4 w-4 text-primary" />
+          {meta.label}
+          <span className="text-caption font-normal text-foreground-muted">· {tasks.length}</span>
+        </CardTitle>
+        <p className="text-caption text-foreground-muted">{meta.description}</p>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">
+        {tasks.map((task) => (
+          <TaskRow
+            key={task.task_id}
+            task={task}
+            disabled={disabledIds.has(task.task_id)}
+            onToggle={() => onToggle(task.task_id)}
+          />
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface TaskRowProps {
+  task: PlanTask;
+  disabled: boolean;
+  onToggle: () => void;
+}
+
+function TaskRow({ task, disabled, onToggle }: TaskRowProps): JSX.Element {
+  const checkboxId = `plan-task-${task.task_id}`;
+  return (
+    <label
+      htmlFor={checkboxId}
+      className={cn(
+        "flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors",
+        disabled
+          ? "border-white/[0.06] bg-white/[0.02] opacity-60"
+          : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.06]",
+      )}
+    >
+      <input
+        checked={!disabled}
+        className="mt-1 h-3.5 w-3.5 cursor-pointer rounded border-white/20 bg-white/[0.05]"
+        id={checkboxId}
+        onChange={onToggle}
+        type="checkbox"
+      />
+      <div className="flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={cn("text-sm font-medium", disabled ? "text-foreground-muted line-through" : "text-foreground")}>
+            {task.title}
+          </span>
+          {task.competitor_id ? (
+            <Badge variant="secondary" className="text-xs">{task.competitor_id}</Badge>
+          ) : null}
+          {task.priority === "user_pinned" ? (
+            <Badge variant="default" className="text-xs">用户置顶</Badge>
+          ) : null}
+        </div>
+        {task.description ? (
+          <p className="text-caption text-foreground-muted">{task.description}</p>
+        ) : null}
+        {task.focus_dimensions.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {task.focus_dimensions.map((dim) => (
+              <Badge key={dim} variant="outline" className="text-[10px]">{dim}</Badge>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </label>
+  );
+}
+
+function PlanLoadingCard(): JSX.Element {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="inline-flex items-center gap-2 text-base">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+          Agent 正在拟定分析计划…
+        </CardTitle>
+        <p className="text-caption text-foreground-muted">
+          Planner 通常需要 5-15 秒，期间你可以稍等或先阅读右侧需求摘要。
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-3 pt-0">
+        {[0, 1, 2].map((idx) => (
+          <div className="space-y-2" key={idx}>
+            <Skeleton className="h-4 w-1/3" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
+
+function IntakeSummaryCard({ draft }: { draft: RunIntakeDraft | null }): JSX.Element {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="inline-flex items-center gap-2 text-base">
+          <FileText className="h-4 w-4 text-primary" />
+          需求摘要
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0 text-xs text-foreground-muted">
+        {draft === null ? (
+          <p>暂无需求快照。</p>
+        ) : (
+          <>
+            <SummaryRow label="原始诉求" value={draft.user_query} />
+            <SummaryRow label="用户角色" value={draft.user_role ?? "—"} />
+            <SummaryRow label="分析意图" value={draft.analysis_intent ?? "—"} />
+            <SummaryRow
+              label="竞品"
+              value={
+                draft.competitors_explicit.length > 0
+                  ? draft.competitors_explicit.join("、")
+                  : draft.competitors_discovery_mode
+                    ? "Agent 自动发现"
+                    : "—"
+              }
+            />
+            {draft.focus_dimensions.length > 0 ? (
+              <SummaryRow label="关注维度" value={draft.focus_dimensions.join("、")} />
+            ) : null}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function PlanMetadataCard({ planTree }: { planTree: PlanTree | null }): JSX.Element {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="inline-flex items-center gap-2 text-base">
+          <CheckCircle2 className="h-4 w-4 text-primary" />
+          计划信息
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0 text-xs text-foreground-muted">
+        {planTree === null ? (
+          <div className="inline-flex items-center gap-2 text-foreground-muted">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            等待计划发布…
+          </div>
+        ) : (
+          <>
+            <SummaryRow label="plan_id" value={<span className="font-mono">{planTree.plan_id}</span>} />
+            <SummaryRow label="版本" value={`v${planTree.version}`} />
+            <SummaryRow label="任务数" value={String(planTree.tasks.length)} />
+            <SummaryRow
+              label="状态"
+              value={planTree.confirmed_at ? "已确认" : "待确认"}
+            />
+            {planTree.confirmed_at ? (
+              <div className="inline-flex items-center gap-1.5 text-foreground-muted">
+                <AlertTriangle className="h-3 w-3" />
+                此计划已确认，正在执行。
+              </div>
+            ) : null}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: React.ReactNode }): JSX.Element {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <span className="text-foreground-muted/80">{label}</span>
+      <span className="max-w-[12rem] truncate text-right text-foreground">{value}</span>
+    </div>
+  );
+}
