@@ -1,9 +1,14 @@
 import axios from "axios";
 
-const DEFAULT_API_BASE_URL = "http://localhost:8010";
+// Dev: empty baseURL → Vite proxy forwards /api to backend (vite.config.ts).
+// Prod / override: set VITE_API_BASE_URL (e.g. http://localhost:8010).
+const DEFAULT_API_BASE_URL = import.meta.env.DEV ? "" : "http://localhost:8010";
 
 const resolvedBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
-export const API_BASE_URL = resolvedBaseUrl || DEFAULT_API_BASE_URL;
+export const API_BASE_URL =
+  resolvedBaseUrl !== undefined && resolvedBaseUrl.length > 0
+    ? resolvedBaseUrl
+    : DEFAULT_API_BASE_URL;
 
 interface ApiErrorPayload {
   error_code?: string;

@@ -19,6 +19,13 @@ def configure_logging() -> None:
         level=log_level,
     )
 
+    class _SuppressHealthAccessLog(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            message = record.getMessage()
+            return 'GET /health' not in message and 'HEAD /health' not in message
+
+    logging.getLogger("uvicorn.access").addFilter(_SuppressHealthAccessLog())
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

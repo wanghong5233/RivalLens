@@ -25,12 +25,15 @@ npm run dev
 
 ## API Configuration
 
-- 环境变量：`VITE_API_BASE_URL`
-- 默认值：`http://localhost:8010`
+本地开发默认走 **Vite 代理**：前端请求 `/api/*` 由 `vite.config.ts` 转发到 `http://localhost:8010`，无需配置 CORS。
+
+- 环境变量：`VITE_API_BASE_URL`（留空即可使用代理）
+- 直连后端（不经代理）时设为：`http://localhost:8010`
 - 推荐本地文件：`frontend/.env.local`
 
 ```bash
-VITE_API_BASE_URL=http://localhost:8010
+# 默认：留空，走 Vite /api 代理
+VITE_API_BASE_URL=
 ```
 
 ## Scripts

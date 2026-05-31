@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     WRITER_READ_CONCLUSIONS_FROM_TABLE: bool = True
 
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
+    DEMO_FIXTURES_DIR: str | None = None
 
     @model_validator(mode="after")
     def validate_llm_provider_credentials(self) -> Settings:

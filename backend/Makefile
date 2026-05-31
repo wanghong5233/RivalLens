@@ -72,7 +72,7 @@ logs:
 
 .PHONY: logs-api
 logs-api:
-	$(DC) logs $(SVC_API) --tail=0 -f
+	$(DC) logs $(SVC_API) --tail=0 -f 2>&1 | grep --line-buffered -Ev '"(GET|HEAD) /health '
 
 .PHONY: logs-api-history
 logs-api-history:
