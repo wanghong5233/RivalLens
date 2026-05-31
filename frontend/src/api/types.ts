@@ -1,11 +1,96 @@
 export type RunStatus = "running" | "completed" | "degraded" | "failed" | string;
 
+export type RunPhase = "intake" | "planning" | "executing" | "done";
+
+export type UserRole = "pm" | "founder" | "sales" | "investor";
+
 export interface RunCreateRequest {
   user_query: string;
   competitors: string[];
   domain_hint?: string | null;
   reference_urls?: string[] | null;
   target_roles: string[];
+}
+
+// --- Phase 1/2 Agent-native intake + plan-then-execute contract ---
+
+export interface RunIntakeDraft {
+  user_query: string;
+  user_role: UserRole | null;
+  analysis_intent: string | null;
+  competitors_explicit: string[];
+  competitors_discovery_mode: boolean;
+  domain_hint: string | null;
+  focus_dimensions: string[];
+  report_depth: "quick" | "deep";
+  reference_urls: string[];
+  is_complete: boolean;
+}
+
+export interface IntakeClarifyRequest {
+  question: string;
+  field_targets: string[];
+  suggested_options: string[] | null;
+}
+
+export interface IntakeUserReply {
+  text: string;
+  selected_options: string[];
+}
+
+export interface IntakeCreateRequest {
+  user_query: string;
+  user_role?: UserRole | null;
+  domain_hint?: string | null;
+  reference_urls?: string[] | null;
+  competitors_explicit?: string[];
+  competitors_discovery_mode?: boolean;
+  focus_dimensions?: string[];
+  report_depth?: "quick" | "deep";
+}
+
+export interface IntakeCreateResponse {
+  run_id: string;
+  status: RunStatus;
+  phase: RunPhase;
+  intake_draft: RunIntakeDraft;
+  first_clarify_request: IntakeClarifyRequest | null;
+}
+
+export type PlanTaskStage = "discover" | "research" | "analyze" | "write";
+
+export interface PlanTask {
+  task_id: string;
+  stage: PlanTaskStage;
+  title: string;
+  description: string;
+  competitor_id: string | null;
+  focus_dimensions: string[];
+  source: "agent" | "user";
+  enabled: boolean;
+  priority: "normal" | "user_pinned";
+}
+
+export interface PlanTree {
+  plan_id: string;
+  tasks: PlanTask[];
+  rationale: string;
+  version: number;
+}
+
+export interface PlanConfirmRequest {
+  disabled_task_ids: string[];
+  additional_tasks: PlanTask[];
+}
+
+export interface FollowUpRequest {
+  text: string;
+  applies_to_stage?: PlanTaskStage | null;
+}
+
+export interface RunAcceptedResponse {
+  run_id: string;
+  status: RunStatus;
 }
 
 export interface RunCreateResponse {
@@ -29,6 +114,10 @@ export interface RunDetailResponse {
   started_at: string;
   finished_at: string | null;
   created_at: string;
+  // Phase 1+ (optional until the backend detail handler + migration land).
+  phase?: RunPhase;
+  intake_draft?: RunIntakeDraft | null;
+  plan_tree?: PlanTree | null;
 }
 
 export interface RunListItemResponse {

@@ -27,6 +27,19 @@ class RunEventType(StrEnum):
     CURATOR_START = "curator.start"
     CURATOR_FINISH = "curator.finish"
     RUN_FINISH = "run.finish"
+    # --- Phase 1+ Agent-native intake + plan-then-execute + live run (emitters TBD) ---
+    INTAKE_CLARIFY_REQUEST = "intake.clarify_request"
+    INTAKE_USER_REPLY = "intake.user_reply"
+    INTAKE_COMPLETE = "intake.complete"
+    PLAN_PUBLISHED = "plan.published"
+    PLAN_CONFIRMED = "plan.confirmed"
+    PLAN_TASK_START = "plan.task.start"
+    PLAN_TASK_FINISH = "plan.task.finish"
+    TOOL_START = "tool.start"
+    TOOL_FINISH = "tool.finish"
+    EVIDENCE_COLLECTED = "evidence.collected"
+    FOLLOWUP_RECEIVED = "followup.received"
+    HEARTBEAT = "heartbeat"
 
 
 class RunEvent(BaseModel):
