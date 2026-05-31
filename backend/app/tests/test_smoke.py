@@ -397,8 +397,9 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     )
     payload = response.json()
     assert response.status_code == 200
-    assert payload["status"] == "completed"
+    assert payload["status"] == "running"
     assert payload["run_id"].startswith("run_")
+    assert _wait_for_run_terminal(payload["run_id"]) == "completed"
     assert _wait_for_skill_candidate_count(payload["run_id"]) >= 1
 
     snapshot = _fetch_persisted_snapshot(payload["run_id"])
@@ -449,6 +450,7 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) == "completed"
 
     detail_response = test_client.get(f"/api/runs/{run_id}")
     assert detail_response.status_code == 200
@@ -475,7 +477,10 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     assert "analyst" in step_agents
     assert "writer" in step_agents
     assert "qa" in step_agents
-    assert "skill_curator" not in step_agents
+    # The curator runs out-of-band after run.finish (and now writes its own step once
+    # the async run settles), so assert against the supervisor decision loop instead:
+    # the supervisor must never route to the curator as a tool.
+    assert "skill_curator" not in decision_tools
     assert _wait_for_skill_candidate_count(run_id) >= 1
 
     not_found_response = test_client.get("/api/runs/run_not_exists")
@@ -495,6 +500,7 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) == "completed"
 
     list_response = test_client.get("/api/runs", params={"status": "completed", "limit": 20, "offset": 0})
     assert list_response.status_code == 200
@@ -710,6 +716,7 @@ def test_resume_run_continues_from_checkpoint(test_client: TestClient) -> None:
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) == "completed"
 
     engine = create_engine(settings.DATABASE_URL_SYNC)
     try:
@@ -754,6 +761,7 @@ def test_reset_to_writer_replays_report(test_client: TestClient) -> None:
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) == "completed"
 
     reset_response = test_client.post(
         f"/api/runs/{run_id}/reset",
@@ -814,6 +822,7 @@ def test_reset_to_analyst_regenerates_conclusions(test_client: TestClient) -> No
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) == "completed"
 
     reset_response = test_client.post(
         f"/api/runs/{run_id}/reset",
@@ -874,6 +883,7 @@ def test_reset_rejects_running_run(test_client: TestClient) -> None:
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) == "completed"
 
     engine = create_engine(settings.DATABASE_URL_SYNC)
     try:
@@ -928,19 +938,23 @@ def test_run_events_sse_endpoint_exposes_stream_content_type(test_client: TestCl
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    # POST /api/runs is async (Phase 0b): the graph emits real events to the run_id
+    # channel concurrently. Use a dedicated channel so the pub/sub contract check is
+    # not polluted by background run events.
+    sse_channel = f"{run_id}_sse_contract"
 
     event_bus = getattr(test_client.app.state, "event_bus", None)
     assert event_bus is not None
     subscribe_loop = asyncio.new_event_loop()
     publish_loop = asyncio.new_event_loop()
-    subscribe_cm = event_bus.subscribe(run_id)
+    subscribe_cm = event_bus.subscribe(sse_channel)
     try:
         queue = subscribe_loop.run_until_complete(subscribe_cm.__aenter__())
         step_id = "step_sse_contract"
         publish_loop.run_until_complete(
             event_bus.publish(
                 RunEvent(
-                    run_id=run_id,
+                    run_id=sse_channel,
                     event_type=RunEventType.STEP_START,
                     step_id=step_id,
                     payload={"agent_name": "supervisor"},
@@ -1084,6 +1098,7 @@ def test_run_without_pack_with_arbitrary_competitors(test_client: TestClient) ->
     )
     assert response.status_code == 200
     run_id = response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) in {"completed", "degraded"}
 
     report_response = test_client.get(f"/api/runs/{run_id}/report")
     assert report_response.status_code == 200
@@ -1226,6 +1241,38 @@ def _wait_for_skill_candidate_count(run_id: str, *, timeout_seconds: float = 5.0
     return 0
 
 
+_TERMINAL_RUN_STATUSES = {"completed", "degraded", "failed"}
+
+
+def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 30.0) -> str:
+    """Poll the runs table until the background graph task reaches a terminal status.
+
+    POST /api/runs is asynchronous (Phase 0b): it returns status=running immediately
+    while the supervisor graph runs in an asyncio background task on the TestClient
+    portal loop. Tests that read completed artifacts must wait for that task to finish.
+    """
+    deadline = time.time() + timeout_seconds
+    last_status = "running"
+    while time.time() < deadline:
+        engine = create_engine(settings.DATABASE_URL_SYNC)
+        try:
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text("SELECT status FROM runs WHERE run_id = :run_id"),
+                    {"run_id": run_id},
+                ).mappings().first()
+        finally:
+            engine.dispose()
+        if row is not None:
+            last_status = str(row["status"])
+            if last_status in _TERMINAL_RUN_STATUSES:
+                return last_status
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"run_id={run_id} did not reach a terminal status within {timeout_seconds}s (last={last_status})"
+    )
+
+
 def test_promoted_qa_rule_visible_in_next_run(
     test_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1243,6 +1290,7 @@ def test_promoted_qa_rule_visible_in_next_run(
     )
     assert first_run.status_code == 200
     first_run_id = first_run.json()["run_id"]
+    assert _wait_for_run_terminal(first_run_id) == "completed"
     candidate_id = _latest_staging_skill_candidate_id_for_run(first_run_id)
 
     approve_response = test_client.post(
@@ -1266,6 +1314,7 @@ def test_promoted_qa_rule_visible_in_next_run(
     )
     assert second_run.status_code == 200
     second_run_id = second_run.json()["run_id"]
+    assert _wait_for_run_terminal(second_run_id) in {"completed", "degraded"}
     qa_payload = _latest_qa_step_payload(second_run_id)
     promoted_rule_ids_raw = qa_payload.get("promoted_qa_rule_ids")
     assert isinstance(promoted_rule_ids_raw, list)
@@ -1306,6 +1355,7 @@ def test_promoted_qa_rule_blocks_report_with_enforced_yaml(
     )
     assert run_response.status_code == 200
     run_id = run_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) in {"completed", "degraded"}
     qa_payload = _latest_qa_step_payload(run_id)
 
     assert qa_payload.get("qa_outcome") in {"rejected", "force_degraded"}
@@ -1355,6 +1405,7 @@ def test_promoted_qa_rule_blocks_then_writer_redo_passes(
     )
     assert run_response.status_code == 200
     run_id = run_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) in {"completed", "degraded"}
     qa_payloads = _qa_payloads_for_run(run_id)
     first_payload = qa_payloads[0]
     assert first_payload.get("qa_outcome") == "rejected"

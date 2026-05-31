@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 import tempfile
+import time
 
 import yaml
 from fastapi.testclient import TestClient
@@ -72,6 +73,33 @@ def _load_case(path: Path) -> GoldenCase:
     if not isinstance(loaded, dict):
         raise RuntimeError(f"Golden case root must be object: {path}")
     return GoldenCase.model_validate(loaded)
+
+
+_TERMINAL_RUN_STATUSES = {"completed", "degraded", "failed"}
+
+
+def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 30.0) -> str:
+    """Poll until the async POST /api/runs background graph task reaches a terminal status."""
+    deadline = time.time() + timeout_seconds
+    last_status = "running"
+    while time.time() < deadline:
+        engine = create_engine(settings.DATABASE_URL_SYNC)
+        try:
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text("SELECT status FROM runs WHERE run_id = :run_id"),
+                    {"run_id": run_id},
+                ).mappings().first()
+        finally:
+            engine.dispose()
+        if row is not None:
+            last_status = str(row["status"])
+            if last_status in _TERMINAL_RUN_STATUSES:
+                return last_status
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"run_id={run_id} did not reach a terminal status within {timeout_seconds}s (last={last_status})"
+    )
 
 
 def _latest_qa_payload(run_id: str) -> dict[str, object]:
@@ -234,6 +262,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         )
 
     run_id = str(response.json()["run_id"])
+    _wait_for_run_terminal(run_id)
     qa_payloads = _qa_payloads_for_run(run_id)
     qa_outcome = _last_qa_outcome(qa_payloads)
     qa_reject_to = _last_qa_reject_to(qa_payloads)

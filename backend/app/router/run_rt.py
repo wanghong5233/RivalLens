@@ -6,15 +6,18 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 import yaml
 
 from db.engine import get_session_factory
+from core.config import settings
 from exceptions.base import APIException
 from models.conclusion import ConclusionRecord
 from models.evidence import EvidenceRecord
@@ -26,6 +29,8 @@ from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from models.watchlist import WatchlistItem
 from schemas.ids import make_id
+from schemas.intake import IntakeClarifyRequest, IntakeUserReply, RunIntakeDraft, UserRole
+from schemas.plan import PlanConfirmRequest
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.metrics import build_run_metrics_snapshot
@@ -84,6 +89,41 @@ class RunCreateResponse(BaseModel):
     message: str
 
 
+class IntakeCreateRequest(BaseModel):
+    """Body for POST /api/runs/intake.
+
+    Chat mode (default): only `user_query` (+ optional `user_role`) is expected; the
+    Agent clarifies the rest. Expert mode (`?mode=expert`): the caller pre-fills the
+    full draft and the Agent skips clarification.
+    """
+
+    user_query: str
+    user_role: UserRole | None = None
+    domain_hint: str | None = None
+    reference_urls: list[str] | None = None
+    competitors_explicit: list[str] = Field(default_factory=list)
+    competitors_discovery_mode: bool = False
+    focus_dimensions: list[str] = Field(default_factory=list)
+    report_depth: Literal["quick", "deep"] = "quick"
+
+
+class IntakeCreateResponse(BaseModel):
+    run_id: str
+    status: str
+    phase: str
+    intake_draft: RunIntakeDraft
+    # Invariant D: chat mode returns the first clarify question synchronously so the
+    # client can render it immediately; expert mode returns None (draft already complete).
+    first_clarify_request: IntakeClarifyRequest | None = None
+
+
+class RunAcceptedResponse(BaseModel):
+    """Async-accept envelope for all resume endpoints (Invariant C)."""
+
+    run_id: str
+    status: str
+
+
 class RunResetRequest(BaseModel):
     reset_to: ResetToStage
 
@@ -99,6 +139,11 @@ class RunDetailResponse(BaseModel):
     started_at: str
     finished_at: str | None
     created_at: str
+    # Phase 1b additions: derived from status + intake_draft + plan_tree so the FE
+    # can render the live-run page without re-reading the LangGraph checkpoint.
+    phase: Literal["intake", "planning", "executing", "done"] | None = None
+    intake_draft: dict[str, object] | None = None
+    plan_tree: dict[str, object] | None = None
 
 
 class RunListItemResponse(BaseModel):
@@ -398,6 +443,32 @@ def _to_iso(dt: datetime | None) -> str | None:
     return dt.isoformat()
 
 
+def _derive_run_phase(run: Run) -> Literal["intake", "planning", "executing", "done"] | None:
+    """Phase is a derived view, not stored — the source of truth is the LangGraph state.
+
+    Legacy runs (created via POST /api/runs without intake) have `intake_draft is None`
+    and return `None` here so the FE renders them with the old layout.
+    """
+    intake_draft = run.intake_draft
+    if intake_draft is None:
+        return None
+    if run.status in {"completed", "degraded", "failed"}:
+        return "done"
+    intake_complete = bool(intake_draft.get("user_role")) and bool(
+        intake_draft.get("analysis_intent")
+    ) and (
+        bool(intake_draft.get("competitors_explicit"))
+        or bool(intake_draft.get("competitors_discovery_mode"))
+    )
+    if not intake_complete:
+        return "intake"
+    if run.plan_tree is None:
+        # Phase 1b skips the planner; runs go straight to executing. Phase 2 will
+        # populate plan_tree before transitioning out of "planning".
+        return "executing"
+    return "executing"
+
+
 def _to_run_detail(run: Run) -> RunDetailResponse:
     return RunDetailResponse(
         run_id=run.run_id,
@@ -410,6 +481,9 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
         started_at=run.started_at.isoformat(),
         finished_at=_to_iso(run.finished_at),
         created_at=run.created_at.isoformat(),
+        phase=_derive_run_phase(run),
+        intake_draft=dict(run.intake_draft) if run.intake_draft is not None else None,
+        plan_tree=dict(run.plan_tree) if run.plan_tree is not None else None,
     )
 
 
@@ -445,7 +519,13 @@ def _normalize_competitor_inputs(values: list[str]) -> list[str]:
 
 
 def _competitor_seed_file_path() -> Path:
-    return Path(__file__).resolve().parents[3] / "demo_fixtures" / "competitors_seed.yaml"
+    if settings.DEMO_FIXTURES_DIR:
+        return Path(settings.DEMO_FIXTURES_DIR) / "competitors_seed.yaml"
+    docker_mount = Path("/demo_fixtures/competitors_seed.yaml")
+    if docker_mount.exists():
+        return docker_mount
+    # backend/app/router/run_rt.py -> backend/demo_fixtures
+    return Path(__file__).resolve().parents[2] / "demo_fixtures" / "competitors_seed.yaml"
 
 
 def _load_competitor_seed_rows() -> list[dict[str, object]]:
@@ -456,9 +536,13 @@ def _load_competitor_seed_rows() -> list[dict[str, object]]:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError:
         return []
-    if not isinstance(loaded, dict):
+    competitors_raw: object
+    if isinstance(loaded, list):
+        competitors_raw = loaded
+    elif isinstance(loaded, dict):
+        competitors_raw = loaded.get("competitors")
+    else:
         return []
-    competitors_raw = loaded.get("competitors")
     if not isinstance(competitors_raw, list):
         return []
     rows: list[dict[str, object]] = []
@@ -543,6 +627,68 @@ async def list_competitor_seeds() -> list[CompetitorSeedResponse]:
     return [CompetitorSeedResponse.model_validate(item) for item in _load_competitor_seed_rows()]
 
 
+async def _execute_run_graph(
+    *,
+    run_id: str,
+    graph: Any,
+    initial_state: dict[str, object],
+    domain_hint: str | None,
+    background_tasks: set[asyncio.Task[object]],
+) -> None:
+    """Run the supervisor graph to completion off the request path (Phase 0b async).
+
+    Mirrors the skill-curator background-task pattern: catch the boundary error
+    families, persist terminal status, emit run.finish, and return. Unknown errors
+    propagate to asyncio so they remain visible instead of being silently hidden.
+    """
+    session_factory = get_session_factory()
+    with bind_run(run_id):
+        try:
+            graph_state = await graph.ainvoke(
+                initial_state,
+                config={"configurable": {"thread_id": run_id}},
+            )
+        except (APIException, SQLAlchemyError, RuntimeError) as exc:
+            log.exception("api.run.execute.failed", error=str(exc)[:500])
+            async with session_factory() as session:
+                run = await session.get(Run, run_id)
+                if run is not None:
+                    run.status = "failed"
+                    run.finished_at = datetime.now(timezone.utc)
+                    await session.commit()
+            await emit_run_event(
+                run_id=run_id,
+                event_type=RunEventType.RUN_FINISH,
+                payload=_build_run_finish_payload(run_id=run_id, status="failed"),
+            )
+            return
+
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise RuntimeError(f"run_id={run_id} should exist after creation")
+            run_status = str(graph_state.get("status", "completed"))
+            run.status = run_status if run_status in {"completed", "degraded"} else "completed"
+            run.finished_at = datetime.now(timezone.utc)
+            final_competitors = graph_state.get("competitors")
+            if isinstance(final_competitors, list) and final_competitors:
+                run.competitors = final_competitors
+            await session.commit()
+            final_status = run.status
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(run_id=run_id, status=final_status),
+        )
+        curator_task = asyncio.create_task(
+            run_skill_curator_for_run(run_id=run_id, domain_hint=domain_hint),
+            name=f"skill_curator_{run_id}",
+        )
+        background_tasks.add(curator_task)
+        curator_task.add_done_callback(background_tasks.discard)
+        log.info("api.run.execute.finish", status=final_status)
+
+
 @router.post("/api/runs", response_model=RunCreateResponse)
 async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateResponse:
     normalized_competitors = _validate_competitors(payload)
@@ -558,6 +704,21 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             target_role_count=len(payload.target_roles),
         )
 
+        graph = getattr(request.app.state, "compiled_graph", None)
+        if graph is None:
+            raise APIException(
+                status_code=500,
+                error_code="GRAPH_NOT_INITIALIZED",
+                message="Compiled LangGraph instance is not initialized.",
+            )
+        background_tasks = getattr(request.app.state, "background_tasks", None)
+        if not isinstance(background_tasks, set):
+            raise APIException(
+                status_code=500,
+                error_code="BACKGROUND_TASKS_NOT_INITIALIZED",
+                message="Background task registry is not initialized.",
+            )
+
         async with session_factory() as session:
             session.add(
                 Run(
@@ -572,68 +733,407 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             )
             await session.commit()
 
-        graph = getattr(request.app.state, "compiled_graph", None)
-        if graph is None:
-            raise APIException(
-                status_code=500,
-                error_code="GRAPH_NOT_INITIALIZED",
-                message="Compiled LangGraph instance is not initialized.",
+        initial_state: dict[str, object] = {
+            "run_id": run_id,
+            "domain_hint": payload.domain_hint,
+            "reference_urls": normalized_reference_urls,
+            "competitors": normalized_competitors,
+            "discovered_competitors": [],
+            "user_query": payload.user_query,
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "pending_tool_args": {},
+            "qa_outcome": None,
+            "qa_reject_to": None,
+            "qa_rejection_count": 0,
+            "pending_review_target_step_id": None,
+            "qa_reasons": [],
+            "status": "running",
+        }
+        task = asyncio.create_task(
+            _execute_run_graph(
+                run_id=run_id,
+                graph=graph,
+                initial_state=initial_state,
+                domain_hint=payload.domain_hint,
+                background_tasks=background_tasks,
+            ),
+            name=f"run_graph_{run_id}",
+        )
+        _register_background_task(request, task)
+        log.info("api.run.create.accepted")
+
+    return RunCreateResponse(
+        run_id=run_id,
+        status="running",
+        message="Run accepted; supervisor loop executing in background.",
+    )
+
+
+# --- Phase 1b Agent-native intake (chat mode). Expert mode and plan/confirm
+# are intentionally NOT implemented yet — see Phase 2 in the plan doc. ---
+
+
+def _extract_first_interrupt_value(snapshot: Any) -> Any:
+    """Canonical interrupt-payload extraction for langgraph 0.2.50 (Invariant D)."""
+    for task in snapshot.tasks:
+        if task.interrupts:
+            return task.interrupts[0].value
+    return None
+
+
+def _coerce_intake_draft_from_state(state_values: dict[str, object]) -> RunIntakeDraft | None:
+    raw = state_values.get("intake_draft")
+    if isinstance(raw, RunIntakeDraft):
+        return raw
+    if isinstance(raw, dict):
+        return RunIntakeDraft.model_validate(raw)
+    return None
+
+
+async def _persist_intake_draft_to_run(
+    *,
+    run_id: str,
+    state_values: dict[str, object],
+) -> None:
+    """Snapshot the latest intake_draft from graph state into the Run row.
+
+    Allows GET /api/runs/{id} to render the current intake state without
+    re-reading the LangGraph checkpoint.
+    """
+    draft = _coerce_intake_draft_from_state(state_values)
+    if draft is None:
+        return
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        run.intake_draft = draft.model_dump(exclude={"is_complete"})
+        await session.commit()
+
+
+async def _resume_intake_graph_in_background(
+    *,
+    run_id: str,
+    graph: Any,
+    resume_payload: dict[str, object],
+    domain_hint: str | None,
+    background_tasks: set[asyncio.Task[object]],
+) -> None:
+    """Resume the intake-paused graph; either pause again or run to END.
+
+    Either outcome is normal:
+      - paused again (more clarification needed): intake_generate already emitted
+        INTAKE_CLARIFY_REQUEST inside the graph, so this background path only
+        updates the Run row's intake_draft snapshot.
+      - reached END: same finalization as `_execute_run_graph` (status, RUN_FINISH,
+        skill curator follow-up).
+    """
+    session_factory = get_session_factory()
+    config = {"configurable": {"thread_id": run_id}}
+    with bind_run(run_id):
+        try:
+            await graph.ainvoke(Command(resume=resume_payload), config=config)
+            snapshot = await graph.aget_state(config)
+        except (APIException, SQLAlchemyError, RuntimeError) as exc:
+            log.exception("api.run.intake.resume.failed", error=str(exc)[:500])
+            async with session_factory() as session:
+                run = await session.get(Run, run_id)
+                if run is not None:
+                    run.status = "failed"
+                    run.finished_at = datetime.now(timezone.utc)
+                    await session.commit()
+            await emit_run_event(
+                run_id=run_id,
+                event_type=RunEventType.RUN_FINISH,
+                payload=_build_run_finish_payload(run_id=run_id, status="failed"),
             )
-        graph_state = await graph.ainvoke(
-            {
-                "run_id": run_id,
-                "domain_hint": payload.domain_hint,
-                "reference_urls": normalized_reference_urls,
-                "competitors": normalized_competitors,
-                "discovered_competitors": [],
-                "user_query": payload.user_query,
-                "researched_competitors": [],
-                "analysis_done": False,
-                "report_draft_done": False,
-                "current_iteration": 0,
-                "pending_tool_args": {},
-                "qa_outcome": None,
-                "qa_reject_to": None,
-                "qa_rejection_count": 0,
-                "pending_review_target_step_id": None,
-                "qa_reasons": [],
-                "status": "running",
-            },
-            config={"configurable": {"thread_id": run_id}},
+            return
+
+        state_values = snapshot.values if isinstance(snapshot.values, dict) else {}
+        await _persist_intake_draft_to_run(run_id=run_id, state_values=state_values)
+
+        if snapshot.next != ():
+            log.info(
+                "api.run.intake.resume.paused",
+                next_node=snapshot.next[0] if snapshot.next else None,
+            )
+            return
+
+        run_status_raw = str(state_values.get("status", "completed"))
+        run_status = run_status_raw if run_status_raw in {"completed", "degraded"} else "completed"
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise RuntimeError(f"run_id={run_id} should exist after resume")
+            run.status = run_status
+            run.finished_at = datetime.now(timezone.utc)
+            final_competitors = state_values.get("competitors")
+            if isinstance(final_competitors, list) and final_competitors:
+                run.competitors = final_competitors
+            await session.commit()
+            final_status = run.status
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(run_id=run_id, status=final_status),
+        )
+        curator_task = asyncio.create_task(
+            run_skill_curator_for_run(run_id=run_id, domain_hint=domain_hint),
+            name=f"skill_curator_{run_id}",
+        )
+        background_tasks.add(curator_task)
+        curator_task.add_done_callback(background_tasks.discard)
+        log.info("api.run.intake.resume.finish", status=final_status)
+
+
+@router.post("/api/runs/intake", response_model=IntakeCreateResponse)
+async def create_run_intake(
+    payload: IntakeCreateRequest,
+    request: Request,
+    mode: Literal["chat", "expert"] = Query(default="chat"),
+) -> IntakeCreateResponse:
+    """Phase 1b chat-mode intake creation.
+
+    Invariant D: ainvoke synchronously until the first interrupt, read the clarify
+    payload from the snapshot, return it inline so the FE renders the first
+    question without an SSE round-trip.
+
+    Expert mode is intentionally 422 in Phase 1b — it would need to skip intake
+    and enter the planner, which Phase 2 implements. Returning 422 keeps the API
+    contract honest instead of silently routing expert traffic through chat.
+    """
+    if mode == "expert":
+        raise APIException(
+            status_code=422,
+            error_code="EXPERT_MODE_NOT_AVAILABLE",
+            message="Expert mode requires the planner node; available from Phase 2.",
         )
 
+    graph = getattr(request.app.state, "compiled_graph", None)
+    if graph is None:
+        raise APIException(
+            status_code=500,
+            error_code="GRAPH_NOT_INITIALIZED",
+            message="Compiled LangGraph instance is not initialized.",
+        )
+
+    run_id = make_id("run_")
+    normalized_reference_urls = list(payload.reference_urls or [])
+    initial_draft = RunIntakeDraft(
+        user_query=payload.user_query,
+        user_role=payload.user_role,
+        domain_hint=payload.domain_hint,
+        competitors_explicit=list(payload.competitors_explicit),
+        competitors_discovery_mode=payload.competitors_discovery_mode,
+        focus_dimensions=list(payload.focus_dimensions),
+        report_depth=payload.report_depth,
+        reference_urls=normalized_reference_urls,
+    )
+
+    session_factory = get_session_factory()
+    with bind_run(run_id):
+        log.info(
+            "api.run.intake.create.start",
+            user_role=payload.user_role,
+            competitor_explicit_count=len(payload.competitors_explicit),
+            competitor_discovery_mode=payload.competitors_discovery_mode,
+        )
+
+        async with session_factory() as session:
+            session.add(
+                Run(
+                    run_id=run_id,
+                    user_query=payload.user_query,
+                    domain_hint=payload.domain_hint,
+                    reference_urls=normalized_reference_urls,
+                    status="running",
+                    target_roles=[],
+                    competitors=list(payload.competitors_explicit),
+                    intake_draft=initial_draft.model_dump(exclude={"is_complete"}),
+                )
+            )
+            await session.commit()
+
+        config = {"configurable": {"thread_id": run_id}}
+        initial_state: dict[str, object] = {
+            "run_id": run_id,
+            "user_query": payload.user_query,
+            "domain_hint": payload.domain_hint,
+            "reference_urls": normalized_reference_urls,
+            "competitors": list(payload.competitors_explicit),
+            "discovered_competitors": [],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "pending_tool_args": {},
+            "qa_outcome": None,
+            "qa_reject_to": None,
+            "qa_rejection_count": 0,
+            "pending_review_target_step_id": None,
+            "qa_reasons": [],
+            "status": "running",
+            "phase": "intake",
+            "intake_draft": initial_draft,
+            "intake_history": [],
+            "pending_clarify": None,
+        }
+        try:
+            await graph.ainvoke(initial_state, config=config)
+        except (APIException, SQLAlchemyError, RuntimeError) as exc:
+            log.exception("api.run.intake.create.failed", error=str(exc)[:500])
+            async with session_factory() as session:
+                run = await session.get(Run, run_id)
+                if run is not None:
+                    run.status = "failed"
+                    run.finished_at = datetime.now(timezone.utc)
+                    await session.commit()
+            raise APIException(
+                status_code=500,
+                error_code="INTAKE_GRAPH_FAILED",
+                message=f"intake graph invocation failed: {exc}",
+            ) from exc
+
+        snapshot = await graph.aget_state(config)
+        state_values = snapshot.values if isinstance(snapshot.values, dict) else {}
+        await _persist_intake_draft_to_run(run_id=run_id, state_values=state_values)
+        final_draft = _coerce_intake_draft_from_state(state_values) or initial_draft
+
+        first_clarify: IntakeClarifyRequest | None = None
+        phase_out: str
+        if snapshot.next == ("intake_wait",):
+            clarify_raw = _extract_first_interrupt_value(snapshot)
+            if clarify_raw is None:
+                raise APIException(
+                    status_code=500,
+                    error_code="INTAKE_CLARIFY_MISSING",
+                    message="intake graph paused without an interrupt payload",
+                )
+            first_clarify = IntakeClarifyRequest.model_validate(clarify_raw)
+            phase_out = "intake"
+        elif snapshot.next == ():
+            # Edge case: the IntakeAgent decided complete on turn 1 and the graph ran
+            # the full pipeline inside this request. Status reflects the terminal state.
+            run_status_raw = str(state_values.get("status", "completed"))
+            run_status = run_status_raw if run_status_raw in {"completed", "degraded"} else "completed"
+            async with session_factory() as session:
+                run = await session.get(Run, run_id)
+                if run is not None:
+                    run.status = run_status
+                    run.finished_at = datetime.now(timezone.utc)
+                    await session.commit()
+            phase_out = "done"
+        else:
+            phase_out = "intake"
+
+        log.info(
+            "api.run.intake.create.accepted",
+            paused_at=snapshot.next[0] if snapshot.next else None,
+            draft_complete=bool(final_draft.is_complete),
+        )
+
+    return IntakeCreateResponse(
+        run_id=run_id,
+        status="running",
+        phase=phase_out,
+        intake_draft=final_draft,
+        first_clarify_request=first_clarify,
+    )
+
+
+@router.post("/api/runs/{run_id}/intake/reply", response_model=RunAcceptedResponse)
+async def reply_run_intake(
+    run_id: str,
+    payload: IntakeUserReply,
+    request: Request,
+) -> RunAcceptedResponse:
+    """Invariant C: return accepted immediately; resume the graph off the request path.
+
+    The graph re-enters intake_generate after the wait node returns. Whether it
+    asks another clarify or completes is observed by the FE via SSE; the response
+    body intentionally carries no clarify payload to keep this endpoint cheap.
+    """
+    graph = getattr(request.app.state, "compiled_graph", None)
+    if graph is None:
+        raise APIException(
+            status_code=500,
+            error_code="GRAPH_NOT_INITIALIZED",
+            message="Compiled LangGraph instance is not initialized.",
+        )
+    background_tasks = getattr(request.app.state, "background_tasks", None)
+    if not isinstance(background_tasks, set):
+        raise APIException(
+            status_code=500,
+            error_code="BACKGROUND_TASKS_NOT_INITIALIZED",
+            message="Background task registry is not initialized.",
+        )
+
+    session_factory = get_session_factory()
+    with bind_run(run_id):
         async with session_factory() as session:
             run = await session.get(Run, run_id)
             if run is None:
                 raise APIException(
-                    status_code=500,
+                    status_code=404,
                     error_code="RUN_NOT_FOUND",
-                    message=f"run_id={run_id} should exist after creation",
+                    message=f"run_id={run_id} does not exist",
                 )
-            run_status = str(graph_state.get("status", "completed"))
-            run.status = run_status if run_status in {"completed", "degraded"} else "completed"
-            run.finished_at = datetime.now(timezone.utc)
-            final_competitors = graph_state.get("competitors")
-            if isinstance(final_competitors, list) and final_competitors:
-                run.competitors = final_competitors
-            await session.commit()
-        await emit_run_event(
-            run_id=run_id,
-            event_type=RunEventType.RUN_FINISH,
-            payload=_build_run_finish_payload(run_id=run_id, status=run.status),
-        )
+            if run.status != "running":
+                raise APIException(
+                    status_code=409,
+                    error_code="RUN_NOT_RESUMABLE",
+                    message=f"run status={run.status} is not resumable",
+                )
+            domain_hint = run.domain_hint
+
+        # Verify the graph is actually paused at intake_wait before resuming. Resuming
+        # from a non-intake pause would corrupt state by injecting an IntakeUserReply
+        # into the wrong node's interrupt payload.
+        snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
+        if snapshot.next != ("intake_wait",):
+            raise APIException(
+                status_code=409,
+                error_code="INTAKE_NOT_AWAITING_REPLY",
+                message=(
+                    "run is not paused at the intake clarify step; "
+                    f"current next_node={list(snapshot.next)}"
+                ),
+            )
+
+        resume_payload = payload.model_dump()
         task = asyncio.create_task(
-            run_skill_curator_for_run(run_id=run_id, domain_hint=payload.domain_hint),
-            name=f"skill_curator_{run_id}",
+            _resume_intake_graph_in_background(
+                run_id=run_id,
+                graph=graph,
+                resume_payload=resume_payload,
+                domain_hint=domain_hint,
+                background_tasks=background_tasks,
+            ),
+            name=f"intake_resume_{run_id}",
         )
         _register_background_task(request, task)
-        log.info("api.run.create.finish", status=run.status)
+        log.info(
+            "api.run.intake.reply.accepted",
+            reply_text_len=len(payload.text),
+            reply_option_count=len(payload.selected_options),
+        )
 
-    return RunCreateResponse(
-        run_id=run_id,
-        status=run.status,
-        message="Supervisor loop run persisted.",
-    )
+    return RunAcceptedResponse(run_id=run_id, status="running")
+
+
+@router.post("/api/runs/{run_id}/plan/confirm", response_model=RunAcceptedResponse)
+async def confirm_run_plan(
+    run_id: str,
+    payload: PlanConfirmRequest,
+    request: Request,
+) -> RunAcceptedResponse:
+    # Phase 2 (Invariant C): return accepted immediately, resume the graph in a
+    # background task via Command(resume=payload) on thread_id=run_id.
+    raise NotImplementedError("Phase 2: plan confirm resume not yet implemented.")
 
 
 @router.post("/api/runs/{run_id}/resume", response_model=RunCreateResponse)

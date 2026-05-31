@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 import json
+import time
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from core.config import settings
+
+_TERMINAL_RUN_STATUSES = {"completed", "degraded", "failed"}
+
+
+def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 30.0) -> str:
+    """Poll until the async POST /api/runs background graph task reaches a terminal status."""
+    deadline = time.time() + timeout_seconds
+    last_status = "running"
+    while time.time() < deadline:
+        engine = create_engine(settings.DATABASE_URL_SYNC)
+        try:
+            with engine.connect() as connection:
+                row = connection.execute(
+                    text("SELECT status FROM runs WHERE run_id = :run_id"),
+                    {"run_id": run_id},
+                ).mappings().first()
+        finally:
+            engine.dispose()
+        if row is not None:
+            last_status = str(row["status"])
+            if last_status in _TERMINAL_RUN_STATUSES:
+                return last_status
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"run_id={run_id} did not reach a terminal status within {timeout_seconds}s (last={last_status})"
+    )
 
 
 def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
@@ -22,6 +49,7 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     )
     assert create_response.status_code == 200
     run_id = create_response.json()["run_id"]
+    assert _wait_for_run_terminal(run_id) == "completed"
 
     metrics_response = test_client.get(f"/api/runs/{run_id}/metrics")
     payload = metrics_response.json()
