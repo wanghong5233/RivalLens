@@ -7,7 +7,10 @@ import {
   Loader2,
   Microscope,
   PenLine,
+  Pin,
+  Plus,
   Sparkles,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -46,6 +49,19 @@ const STAGE_META: Record<PlanTaskStage, { label: string; icon: typeof Compass; d
 
 const STAGE_ORDER: PlanTaskStage[] = ["discover", "research", "analyze", "write"];
 
+// Phase β: stages a user is allowed to inject. Mirrors the backend's
+// `_USER_ALLOWED_STAGES`; discover is reserved for the discovery node.
+const USER_ALLOWED_STAGES: ReadonlyArray<"research" | "analyze" | "write"> = [
+  "research",
+  "analyze",
+  "write",
+];
+// Phase β: backend caps `additional_tasks` at this number; we enforce locally
+// so the user gets immediate feedback instead of waiting for a 500-equivalent
+// background failure.
+const MAX_ADDITIONAL_TASKS = 5;
+const USER_TASK_TITLE_MAX = 60;
+
 const POST_CONFIRM_REDIRECT_MS = 800;
 
 const TERMINAL_STATUSES = new Set(["completed", "degraded", "failed", "cancelled"]);
@@ -60,6 +76,9 @@ export function PlanConfirmPage(): JSX.Element {
   const [disabledIds, setDisabledIds] = useState<Set<string>>(() => new Set());
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Phase β: user-injected tasks held locally until /plan/confirm submits.
+  // Server regenerates task_id; the local id is only used as a React key.
+  const [additionalTasks, setAdditionalTasks] = useState<PlanTask[]>([]);
 
   const planTree = runDetail.data?.plan_tree ?? null;
   const runStatus = runDetail.data?.status ?? null;
@@ -110,8 +129,19 @@ export function PlanConfirmPage(): JSX.Element {
     if (planTree === null) {
       return 0;
     }
-    return planTree.tasks.filter((task) => !disabledIds.has(task.task_id)).length;
-  }, [planTree, disabledIds]);
+    const enabledFromPlan = planTree.tasks.filter(
+      (task) => !disabledIds.has(task.task_id),
+    ).length;
+    return enabledFromPlan + additionalTasks.length;
+  }, [planTree, disabledIds, additionalTasks]);
+
+  const removeAdditionalTask = (taskId: string): void => {
+    setAdditionalTasks((prev) => prev.filter((task) => task.task_id !== taskId));
+  };
+
+  const addAdditionalTask = (task: PlanTask): void => {
+    setAdditionalTasks((prev) => [...prev, task]);
+  };
 
   const toggleTask = (taskId: string): void => {
     setTouched(true);
@@ -145,7 +175,7 @@ export function PlanConfirmPage(): JSX.Element {
         runId,
         payload: {
           disabled_task_ids: Array.from(disabledIds),
-          additional_tasks: [],
+          additional_tasks: additionalTasks,
         },
       });
       pushToast({
@@ -257,6 +287,12 @@ export function PlanConfirmPage(): JSX.Element {
                   );
                 })}
               </div>
+
+              <AdditionalTasksCard
+                tasks={additionalTasks}
+                onAdd={addAdditionalTask}
+                onRemove={removeAdditionalTask}
+              />
 
               <Card className="border-primary/30">
                 <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
@@ -376,6 +412,217 @@ function TaskRow({ task, disabled, onToggle }: TaskRowProps): JSX.Element {
         ) : null}
       </div>
     </label>
+  );
+}
+
+interface AdditionalTasksCardProps {
+  tasks: PlanTask[];
+  onAdd: (task: PlanTask) => void;
+  onRemove: (taskId: string) => void;
+}
+
+function AdditionalTasksCard({ tasks, onAdd, onRemove }: AdditionalTasksCardProps): JSX.Element {
+  const [formOpen, setFormOpen] = useState(false);
+  const [stage, setStage] = useState<"research" | "analyze" | "write">("research");
+  const [title, setTitle] = useState("");
+  const [competitorId, setCompetitorId] = useState("");
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const atCapacity = tasks.length >= MAX_ADDITIONAL_TASKS;
+  const titleTrimmed = title.trim();
+  const titleTooLong = titleTrimmed.length > USER_TASK_TITLE_MAX;
+  const needsCompetitor = stage === "research";
+  const competitorTrimmed = competitorId.trim();
+  const canSubmit =
+    titleTrimmed.length > 0 &&
+    !titleTooLong &&
+    (!needsCompetitor || competitorTrimmed.length > 0);
+
+  const resetForm = (): void => {
+    setStage("research");
+    setTitle("");
+    setCompetitorId("");
+    setDescription("");
+    setError(null);
+  };
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    if (!canSubmit) {
+      if (!titleTrimmed) {
+        setError("请填写任务标题");
+      } else if (titleTooLong) {
+        setError(`标题不能超过 ${USER_TASK_TITLE_MAX} 字符`);
+      } else if (needsCompetitor && !competitorTrimmed) {
+        setError("调研任务需要指定竞品");
+      }
+      return;
+    }
+    const newTask: PlanTask = {
+      // Local-only id; the backend regenerates a ptask_ prefix before merging.
+      task_id: `client_${crypto.randomUUID()}`,
+      stage,
+      title: titleTrimmed,
+      description: description.trim(),
+      competitor_id: needsCompetitor ? competitorTrimmed : null,
+      focus_dimensions: [],
+      source: "user",
+      enabled: true,
+      priority: "user_pinned",
+    };
+    onAdd(newTask);
+    resetForm();
+    setFormOpen(false);
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="inline-flex items-center gap-2 text-base">
+          <Pin className="h-4 w-4 text-warning" />
+          用户置顶任务
+          <span className="text-caption font-normal text-foreground-muted">
+            · {tasks.length}/{MAX_ADDITIONAL_TASKS}
+          </span>
+        </CardTitle>
+        <p className="text-caption text-foreground-muted">
+          额外加入的任务会被标记为 user_pinned，Supervisor 会优先处理。
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-2 pt-0">
+        {tasks.length === 0 && !formOpen ? (
+          <p className="text-caption text-foreground-muted">
+            还没有添加额外任务。
+          </p>
+        ) : null}
+        {tasks.map((task) => (
+          <div
+            key={task.task_id}
+            className="flex items-start gap-3 rounded-md border border-warning/40 bg-warning/[0.04] p-3"
+          >
+            <Pin className="mt-1 h-3.5 w-3.5 text-warning" />
+            <div className="flex-1 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-foreground">{task.title}</span>
+                <Badge variant="outline" className="text-xs">
+                  {STAGE_META[task.stage].label}
+                </Badge>
+                {task.competitor_id ? (
+                  <Badge variant="secondary" className="text-xs">{task.competitor_id}</Badge>
+                ) : null}
+              </div>
+              {task.description ? (
+                <p className="text-caption text-foreground-muted">{task.description}</p>
+              ) : null}
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              type="button"
+              onClick={() => onRemove(task.task_id)}
+              aria-label="移除任务"
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ))}
+
+        {formOpen ? (
+          <form
+            onSubmit={handleSubmit}
+            className="space-y-2 rounded-md border border-white/[0.08] bg-white/[0.02] p-3"
+          >
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="space-y-1 text-caption text-foreground-muted">
+                阶段
+                <select
+                  value={stage}
+                  onChange={(event) =>
+                    setStage(event.target.value as "research" | "analyze" | "write")
+                  }
+                  className="block w-full rounded-md border border-white/[0.08] bg-transparent px-2 py-1.5 text-sm text-foreground focus:border-primary/40 focus:outline-none"
+                >
+                  {USER_ALLOWED_STAGES.map((s) => (
+                    <option key={s} value={s} className="bg-background text-foreground">
+                      {STAGE_META[s].label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {needsCompetitor ? (
+                <label className="space-y-1 text-caption text-foreground-muted">
+                  竞品名称
+                  <input
+                    type="text"
+                    value={competitorId}
+                    onChange={(event) => setCompetitorId(event.target.value)}
+                    placeholder="如 GitHub Copilot"
+                    className="block w-full rounded-md border border-white/[0.08] bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-foreground-muted/60 focus:border-primary/40 focus:outline-none"
+                  />
+                </label>
+              ) : null}
+            </div>
+            <label className="block space-y-1 text-caption text-foreground-muted">
+              任务标题（≤ {USER_TASK_TITLE_MAX} 字符）
+              <input
+                type="text"
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="如 调研 GitHub Copilot 的定价"
+                className={cn(
+                  "block w-full rounded-md border bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-foreground-muted/60 focus:outline-none",
+                  titleTooLong
+                    ? "border-danger/60 focus:border-danger/60"
+                    : "border-white/[0.08] focus:border-primary/40",
+                )}
+              />
+            </label>
+            <label className="block space-y-1 text-caption text-foreground-muted">
+              描述（可选）
+              <textarea
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                rows={2}
+                placeholder="给 Agent 一句话上下文。"
+                className="block w-full resize-none rounded-md border border-white/[0.08] bg-transparent px-2 py-1.5 text-sm text-foreground placeholder:text-foreground-muted/60 focus:border-primary/40 focus:outline-none"
+              />
+            </label>
+            {error ? (
+              <p className="text-caption text-danger">{error}</p>
+            ) : null}
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  resetForm();
+                  setFormOpen(false);
+                }}
+              >
+                取消
+              </Button>
+              <Button type="submit" size="sm" disabled={!canSubmit}>
+                添加任务
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setFormOpen(true)}
+            disabled={atCapacity}
+            className="w-full justify-center border border-dashed border-white/[0.08]"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {atCapacity ? `已达上限 (${MAX_ADDITIONAL_TASKS})` : "添加任务"}
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
