@@ -429,10 +429,38 @@ HEARTBEAT              = "heartbeat"
 - 关键 YAGNI：(1) 不接 `useRunDetail` 复用 SSE：chat 页只 care intake 事件 + 完成跳转，draft 用首响应 + intake.clarify_request callback 内 `apiClient.get` best-effort 拉一次，避免双 EventSource 与 query 重叠；(2) 不实现 expert 模式 422 兜底：tab 路由直接通往 legacy 表单页（用户体感是"专家表单"，不暴露 `?mode=expert` 端点存在）；(3) 不加 chat 历史 localStorage：每个 run_id 走单独 thread，复读旧对话没有产品意义（重启即新 run）。
 - 验收：`npm run type-check` 0 错（已实测）；首句后 chat 页接住 `first_clarify_request` 直接渲染（无需 SSE warmup）；后续轮次 clarify 走 SSE 100ms 内到达；`intake.complete` 触发跳转。
 
-### Phase 2 (= Phase α)：Planner + 可勾选 Plan Tree（1 天）
-- 后端：planner_node + `interrupt` + `PlanConfirmRequest`（仅消费 `disabled_task_ids`）；`plan.published / plan.confirmed / plan.task.start/finish` 事件接齐。
-- 前端：`PlanConfirmPage` + Plan Tree 渲染 + checkbox。
-- 验收：intake 完成 → 看到 plan tree → 勾掉 1 个 task → 执行时该 task 跳过、其他 task 正常完成。
+### Phase 2 (= Phase α)：Planner + 可勾选 Plan Tree（**已完成 ✅**）
+
+**Phase 2 — 后端实现（已完成 ✅）**
+
+- `planner_generate_node` + `planner_wait_node` 两节点拆分（[`agents/nodes/planner.py`](backend/app/agents/nodes/planner.py)）：generate 跑 PLANNER LLM、产出 `PlanTree`、`Step+LLMCall` 落库、**镜像到 `Run.plan_tree`**、emit `plan.published`；wait 纯 `interrupt({"kind":"plan_confirm","plan_tree":...})`，resume 时验证 `PlanConfirmRequest`、按 `disabled_task_ids` 过滤、bump `version`、写入 `confirmed_at=now_iso()` 再次镜像 Run.plan_tree、emit `plan.confirmed`。Invariant A 实测通过（[`test_plan_flow.py::test_plan_flow_real_graph_postgres_resume`](backend/app/tests/test_plan_flow.py)），resume 后 generate 节点不再次执行。
+- Graph 接线：[`agents/graph.py`](backend/app/agents/graph.py) 加 `planner_generate` / `planner_wait` 节点；`_route_entry` 扩展 `phase=="planning"` → 直进 `planner_generate`（为后续 expert mode 直跳 planner 预留）；`_route_after_intake_generate` 扩展 `phase=="planning"` → `planner_generate`；`planner_generate` → `planner_wait`（conditional）；`planner_wait` → `supervisor`（直边）。`intake_generate_node` 完成态由 `phase="executing"` 改为 `phase="planning"`。legacy `POST /api/runs`（无 phase）仍走 supervisor 零侵入。
+- `PlannerAgent` prompt：[`service/llm/prompts.py`](backend/app/service/llm/prompts.py) `PLANNER_SYSTEM_PROMPT` + `build_planner_user_prompt` + fallback。强约束"每个 explicit competitor → 1 个 stage=research 任务（带 competitor_id），加 1 个 analyze + 1 个 write"。LLM 输出不可用走 `_fallback_tasks` 兜底（按 intake_draft 派生），失败时也能给出可执行计划。
+- Schema：[`schemas/plan.py`](backend/app/schemas/plan.py) `PlanTree` 加 `confirmed_at: str | None`，作为 planning→executing 的唯一信号；[`_derive_run_phase`](backend/app/router/run_rt.py) 改读 `plan_tree.confirmed_at`，无需 DB 列改动（YAGNI）。
+- 端点（[`router/run_rt.py`](backend/app/router/run_rt.py)）：`POST /api/runs/{id}/plan/confirm` 落地——`aget_state` 校验 `next == ("planner_wait",)`（否则 **409 PLAN_NOT_AWAITING_CONFIRM**，防止把 `PlanConfirmRequest` 灌进错误的 interrupt），通过则立返 `RunAcceptedResponse` + `asyncio.create_task(_resume_plan_graph_in_background)`。后台 runner 跟 `_resume_intake_graph_in_background` 同形：catch (APIException, SQLAlchemyError, RuntimeError) 写 `Run.status="failed"` + emit `run.finish`，正常完成则写 status + spawn skill_curator。
+- 测试：新增 `test_plan_flow.py`（graph + AsyncPostgresSaver 验证两节点幂等、interrupt payload 形状、disabled 过滤、`confirmed_at` 写入、镜像到 Run.plan_tree）+ `test_plan_api.py`（API e2e：完整 intake→planner→confirm→terminal 链路 + 409/404 守卫）；`test_intake_*` 同步适配（intake.complete 后断言指向 `planner_wait` / `planner_generate` 而非 `supervisor`，`phase="planning"`）。全量 `pytest tests/test_plan_*.py tests/test_intake_*.py tests/test_smoke.py tests/test_supervisor_batch.py tests/test_event_bus.py tests/test_skill_review.py tests/test_run_metrics.py tests/test_hitl_spike.py` **43 passed**。
+- 关键 YAGNI 决策：
+  1. **supervisor 零侵入**——plan_tree 仅作为可视化 + 用户确认 gate；disabled task 不在执行层强制（research 任务对应的 competitor 仍然被 supervisor 处理）。原因：`AgentState.competitors` 是 `operator.add` 累加器，shrink 不动；强制执行需要给 supervisor 加 `excluded_competitors` 字段或换累加器，风险/收益不划算。文档化为 Phase α 已知限制，由 Phase 3 LiveRunPage 真做任务级进度时再约束。
+  2. **不加 `Run.plan_confirmed_at` 列**——`plan_tree.confirmed_at`（嵌在 JSONB 内）已经是唯一信号源。
+  3. **不实现 `additional_tasks`**——planner_wait 在 Phase α 显式丢弃，Phase β 才启用。
+  4. **不加事件级 plan.task.start/finish**——supervisor 内层指标到 Phase 3 才有用，现在 emit 没有 consumer。
+- 验收：fake LLM 走完整 intake+confirm 链路；真 LLM 在容器内手工 `httpx` 验证：3 轮 intake → 自动出 4 个 task（Notion research + Cursor research + analyze + write）的 plan_tree、`confirmed_at=null` → `POST /plan/confirm disabled_task_ids=[<cursor_research>]` → run 转 completed、`confirmed_at` 落 ISO 时戳、`tasks` 只剩 3 个。
+
+**Phase 2 — 前端实现（已完成 ✅）**
+
+- 路由 [`frontend/src/app/router.tsx`](frontend/src/app/router.tsx) 加 `/app/runs/:runId/plan` lazy 挂 `PlanConfirmPage`。
+- [`frontend/src/pages/NewRunChatPage.tsx`](frontend/src/pages/NewRunChatPage.tsx) `handleIntakeComplete` 跳转目标由 `/app/runs/{id}` 改为 `/app/runs/{id}/plan`，文案同步改为"Agent 正在为你拟定一份分析计划"。
+- 新页 [`frontend/src/pages/PlanConfirmPage.tsx`](frontend/src/pages/PlanConfirmPage.tsx)：用 `useRunDetail(runId)` 拉 run 详情（SSE 订阅自动 invalidate）；plan_tree 为 null 时显示 `PlanLoadingCard`（Skeleton + "Agent 正在拟定…"），等 `plan.published` 触发 invalidation 后自动渲染；plan_tree 存在时按 4 个 stage（发现/调研/分析/撰写）分组卡片渲染，每行 checkbox + 竞品 badge + focus_dimensions badge + 描述；右侧侧栏 `IntakeSummaryCard` + `PlanMetadataCard`（plan_id / version / 任务数 / 状态）。
+  - 状态机：`useRunDetail` 数据驱动——run.status 终态 → `navigate(/app/runs/{id}, replace)`；`plan_tree.confirmed_at !== null && phase==="executing"` → 同样 replace 跳走（避免用户回退到 plan 页看陈旧 plan）。
+  - `useConfirmRunPlan` mutation：collect `disabledIds` Set → POST `/plan/confirm` → toast + 800ms 后跳 `/app/runs/{id}`；409 PLAN_NOT_AWAITING_CONFIRM 兜底（多 tab 竞争）直接 replace 到 run 详情页。
+- SSE 扩展 [`frontend/src/api/sse.ts`](frontend/src/api/sse.ts)：加 `PlanPublishedPayload` / `PlanConfirmedPayload` + `coercePlanPublishedPayload` / `coercePlanConfirmedPayload` + `onPlanPublished` / `onPlanConfirmed` 可选回调。两个 listener 都额外 invalidate run-detail + run-trace（确保 PlanConfirmPage 内 useRunDetail 自动重拉到最新 plan_tree）。
+- API 层 [`frontend/src/api/hooks.ts`](frontend/src/api/hooks.ts) 加 `useConfirmRunPlan(runId, payload)` mutation；[`frontend/src/api/types.ts`](frontend/src/api/types.ts) `PlanTree` 加 `confirmed_at: string | null`。
+- 关键 YAGNI：
+  1. **不在 PlanConfirmPage 内显式订阅 plan.* SSE 回调**——`useRunDetail` 已经在 SSE 监听器里对 plan.published / plan.confirmed 触发 cache invalidation，自动重拉；外露的 `onPlanPublished/onPlanConfirmed` 回调先保留接口（给 Phase 3 LiveRunPage 用）。
+  2. **不复用 NewRunChatPage 的 checklist 组件**——plan 页只需要"已确认/未确认"二态摘要，单独写 `PlanMetadataCard` + `IntakeSummaryCard` 比抽象组件库收益高。
+  3. **不在 PlanConfirmPage 上做 Phase β 的"+ 添加自定义 task"按钮**——backend `additional_tasks` 还没启用，UI 提前出会误导。
+  4. **不缓存用户的 disabled 选择到 localStorage**——刷新即重置为全选，简单可预期；用户多次刷新场景在 Phase 2 不优化。
+- 验收：`npm run type-check` 0 错（已实测）；从 intake 到完成可走通完整流：发起诉求 → 3 轮 clarify+reply → `/app/runs/{id}/plan` 看到计划（含 rationale + 分阶段任务 + 右侧需求摘要）→ 勾掉 1 个 task → 点"确认并启动分析" → 跳 `/app/runs/{id}` 看 run 执行完成。
 
 ### Phase 3：LiveRunPage 双栏 + 细粒度事件（1.5 天）
 - 后端：在 [`backend/app/agents/tools/*`](backend/app/agents/tools) 工具边界 emit `tool.start/finish`，在 evidence 落库点 emit `evidence.collected`；`_run_event_stream` 心跳带 phase + current_task_id。
