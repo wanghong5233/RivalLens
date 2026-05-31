@@ -18,6 +18,7 @@ ID_PREFIXES: tuple[str, ...] = (
     "artifact_",
     "ptask_",
     "plan_",
+    "fu_",
 )
 
 

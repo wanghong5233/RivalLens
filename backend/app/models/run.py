@@ -44,3 +44,12 @@ class Run(Base):
         JSONB(none_as_null=True),
         nullable=True,
     )
+    # Phase 4 follow-up inbox. List of `FollowUpEntry`-shaped dicts; pending
+    # entries (consumed_at is null) are read at supervisor entry and marked
+    # consumed after the iteration's decision is persisted. Stored on `runs`
+    # (not a separate table) because it's bounded per run + only queried by
+    # run_id; a dedicated table would add a join without buying anything.
+    follow_ups: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )

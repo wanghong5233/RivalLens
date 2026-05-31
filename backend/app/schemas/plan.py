@@ -50,7 +50,24 @@ class PlanConfirmRequest(BaseModel):
 
 
 class FollowUpRequest(BaseModel):
-    """Phase 4: mid-run user addendum consumed by the supervisor."""
+    """Phase 4 wire payload: mid-run user addendum from POST /follow-up."""
 
+    text: str = Field(min_length=1, max_length=1000)
+    applies_to_stage: PlanTaskStage | None = None
+
+
+class FollowUpEntry(BaseModel):
+    """Phase 4 storage form persisted under `runs.follow_ups` JSONB.
+
+    The supervisor reads entries with `consumed_at is None` at the start of
+    each iteration, injects them into its prompt, then marks them consumed.
+    A new entry is appended (not replaced) per POST /follow-up so the user
+    can stack multiple addenda between supervisor turns.
+    """
+
+    id: str = Field(default_factory=lambda: make_id("fu_"))
     text: str
     applies_to_stage: PlanTaskStage | None = None
+    received_at: str
+    consumed_at: str | None = None
+    consumed_in_iteration: int | None = None
