@@ -28,7 +28,7 @@ todos:
     status: completed
   - id: phase_beta
     content: Phase β：PlanConfirmRequest.additional_tasks + Supervisor user_pinned 优先级 + 前端添加 task modal（可独立合入或推迟）
-    status: pending
+    status: completed
   - id: docs
     content: 落 docs/2.7-agent-native-intake-and-live-run.md 完整版 + 同步 1-product-vision.md 与 3-schema-and-protocol.md
     status: pending
@@ -522,11 +522,36 @@ HEARTBEAT              = "heartbeat"
 - 提交：拆 5 个原子 commit——后端 3 个（data layer / supervisor 消费 / endpoint+tests）+ 前端 2 个（api 层 / LiveRunPage Composer）。
 - 验收：`pytest` 140 passed；`npm run type-check` 0 错；执行中提交"再多关注 GitHub Copilot 的 pricing"→ 顶部出现等待 chip → 下一次 supervisor.decision 携带 `consumed_follow_up_ids` 后 chip 消失，DB `runs.follow_ups[0].consumed_at` 已盖戳。
 
-### Phase β：User-injected Task（1 天，可选独立合入）
-- 后端：`PlanConfirmRequest.additional_tasks` 启用；planner_node 接受 `source="user"` task；Supervisor 优先级把 `user_pinned` 列前。
-- 前端：`PlanConfirmPage` "+ 添加 task" modal。
-- 验收：用户在 plan 阶段加一个 Agent 没列的 task → 执行时该 task 优先调度、且 Supervisor reasoning 显式说明。
-- **若此 Phase 实施时遇到优先级冲突复杂度爆炸，可停在 Phase α，演示效果不打折**。
+### Phase β：User-injected Task（**已完成 ✅**）
+
+**Phase β — 后端实现（已完成 ✅）**
+
+- `_normalize_user_tasks`（[`agents/nodes/planner.py`](backend/app/agents/nodes/planner.py)）server-side 强制 `source="user"` / `priority="user_pinned"` / `enabled=True` / 新 `ptask_` id，校验：拒 `discover` stage（Agent 专属）、research 必须有 `competitor_id`、title 非空、超长截断（title→60、description→500）。任何字段不合规 → `ValueError`，由 `planner_wait_node` 包成 `RuntimeError`，bg task 失败 → Run.status="failed"，FE 看到的是真实错误而非沉默执行。
+- `planner_wait_node` 合并逻辑：(1) `len(additional_tasks) ≤ 5` 上限；(2) `disabled_task_ids` 必须全部命中 pending plan（兜底 FE stale plan race，过去会沉默丢弃）；(3) user task 追加到 `kept_tasks` 后面（保持 Agent stage 顺序）；(4) plan_tree.version → 2 + `confirmed_at` 盖戳；(5) user-pinned research competitor 中**不在** `state.competitors` 的部分作为 diff 返回（`**state` 删去 `competitors` key 避免和 `operator.add` reducer 形成自加），supervisor 下游 hard-constraint 直接放行新竞品，不必再跑一轮 Discovery；(6) `PLAN_CONFIRMED` 事件 payload 扩 `user_task_count`。
+- Supervisor 优先级：[`_extract_user_pinned_research`](backend/app/agents/nodes/supervisor.py) 过滤 `plan_tree.tasks`（source=user ∧ priority=user_pinned ∧ stage=research ∧ enabled ∧ 未 researched），返回 `[{competitor_id, title, focus_dimensions}]`。注入 [`build_supervisor_user_prompt` / fallback](backend/app/service/llm/prompts.py) 的新 `_format_user_pinned_research` 段，prompt 显式要求"user-pinned 必须先于未触过的 Agent 候选"。fallback 路径的并行规则同步收紧（`ConductResearchBatch.topics` 优先放 pinned 目标）。
+- 端点 docstring + log line 同步：`additional_task_count` 一并入 `api.run.plan.confirm.accepted` 日志。
+- 测试：新增 [`test_phase_beta_user_tasks.py`](backend/app/tests/test_phase_beta_user_tasks.py) 11 个测试覆盖 `_normalize_user_tasks` 全分支 + `_extract_user_pinned_research` 过滤矩阵 + e2e（intake → /plan/confirm 带 "GitHub Copilot" 用户研究任务 → 终态 + plan v2 携带 user task + `Run.competitors` 含新竞品）+ 两条 negative e2e（stale disabled_task_id、user 注入 discover stage 都让 bg task 失败）。容器内全量 `pytest tests/ --ignore=tests/test_smoke.py` **151 passed**。
+- 关键 YAGNI / 设计决策：
+  1. **不允许用户注入 `discover` stage**——discovery 是节点专属逻辑（基于 `intake_draft.competitors_discovery_mode`），并 FE 也只暴露 research/analyze/write 三个选项。
+  2. **不做 user-pinned task 的 in-place 编辑或撤回 API**——FE 在确认前可移除，确认后由 supervisor 处理；改主意发 follow-up（Phase 4）即可。
+  3. **analyze / write 用户任务的语义仅在 prompt 层**——这两个 stage 是单 pass，user-pinned 只通过 prompt 告诉 LLM"有人提了一条 X 写法/分析"，不强行重排执行；强排会破坏既有 supervisor 控制流。
+  4. **不在 Pydantic 层做 stage 白名单**——`PlanTask.stage` 仍是四选一（discover 是合法值，因为 planner 自己用），白名单收紧在 `_normalize_user_tasks`。Pydantic 拿到 stage=discover 不报错，由业务层 ValueError 失败 + bg task 失败暴露。
+  5. **不让 user-pinned competitor 写 `Run.competitors` 立即持久化**——只更新 LangGraph state，等 supervisor 实际跑完 research 后 router 的 `state_values.get("competitors")` 会同步回 Run row（既有路径）。
+
+**Phase β — 前端实现（已完成 ✅）**
+
+- [`PlanConfirmPage`](frontend/src/pages/PlanConfirmPage.tsx) 在 stage 列表与确认 card 之间插入新组件 `AdditionalTasksCard`：内联 toggle 表单（非 Dialog——表单只 4 字段且 Dialog 会把"确认"按钮推出小屏视口）。
+- 字段：stage 下拉（仅 research/analyze/write）/ competitor 名称（research 才显示且必填）/ title（1..60 字符，超出红边）/ description（可选 textarea）。本地校验镜像后端 `_normalize_user_tasks` 的规则，FE 在 round-trip 前就报错。
+- 视觉差异：user task 用 warning-tint 背景 + Pin 图标 + stage badge + 右上 X 删除按钮——和 Agent task（white-tint）一眼可分。`additional_tasks` 数上限 5，FE 卡 + 提示"已达上限"。
+- payload：`/plan/confirm` 直接发 `additional_tasks: PlanTask[]`，FE 给每条任务塞 `client_<uuid>` 占位 id（仅本地 React key 用，后端重新生成 `ptask_` id）。`source/priority/enabled` 同样填好，后端再统一强制覆盖——FE 和后端 single source of truth 都是后端。
+- 关键 YAGNI 决策：
+  1. **不复用 modal/Dialog 组件**——避免拉新依赖；inline toggle 在视觉上也更连续（更像表单的一部分）。
+  2. **不在 FE 把 focus_dimensions 暴露给用户**——本期只接受 stage/title/competitor/description，focus_dimensions 由 Agent 在 supervisor prompt 阶段自己 derive。
+  3. **不在 FE 缓存 `additionalTasks` 到 localStorage**——刷新即清空，匹配"确认前可改"的契约。
+- 提交：拆 1 个原子 commit。
+- 验收：`pytest` 151 passed；`npm run type-check` 0 错；从 chat → /plan 点 "+ 添加任务"，输入 "GitHub Copilot pricing"，提交，跳 /live，左侧 plan tree 看到带 Pin 标记的 user-pinned task；终态报告 `Run.competitors` 含 "GitHub Copilot"。
+
+提交清单（5 个原子 commit）：后端 3 个（planner merge / supervisor prompt / 测试）+ 前端 1 个 + 文档 1 个。
 
 ## 7. 回滚策略
 
