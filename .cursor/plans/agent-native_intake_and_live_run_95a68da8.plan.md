@@ -13,7 +13,7 @@ todos:
     status: completed
   - id: phase1_frontend
     content: Phase 1 前端：NewRunChatPage + Intake Checklist 侧栏 + 专家模式 toggle 复用旧 NewRunPage
-    status: pending
+    status: completed
   - id: phase2
     content: Phase 2 (α)：planner_node + PlanTree interrupt + PlanConfirmPage 渲染 + checkbox 勾选取消
     status: pending
@@ -419,10 +419,15 @@ HEARTBEAT              = "heartbeat"
 - 测试：新增 7 个测试（5 API e2e + 2 graph 集成），全部通过；全量 `pytest` **138 passed**。Fake LLM 加 `_build_intake_response` 按当前 draft 自演 3 轮 clarify+complete，prompt user 部分从 indent=2 改单行 JSON（更少 token、parser 简单）。真 LLM (DeepSeek) 在容器里手工 curl 验证：首轮中文 user_query 返回合规英文 clarify question + field_targets=["user_role"] + suggested_options=["pm","founder","sales","investor"]；resume 16s 内合并 user_role 进 draft。
 - 关键 YAGNI 决策：(1) 不加 `Run.phase` 列（派生即可）；(2) 不实现 expert 模式（planner 缺失，先 422）；(3) 不加事件 emit 之外的"心跳节流"（Phase 3 真做 live page 时再说）。
 
-**Phase 1b — 前端实现（待开工）**
+**Phase 1b — 前端实现（已完成 ✅）**
 
-- 新增 `NewRunChatPage`：聊天流（user_query 首发 → 渲染 first_clarify_request → 用户答 → POST /intake/reply → SSE 订阅 `intake.clarify_request` / `intake.complete` 继续渲染下一轮）+ `Intake Checklist` 侧栏从 `intake_draft` 派生 3 项必填进度 + 专家模式 toggle 复用老 `NewRunPage`（但提交时调用 `?mode=expert` 在 Phase 2 才可用；现阶段 toggle 灰掉并显示"专家模式 Phase 2 上线"）。
-- 验收：用户首句后 Agent 反问 1–3 轮收敛到 draft，整轮 intake 在 1 分钟内；切到 live 页 SSE 立刻流出后续 supervisor 事件。
+- 路由（[`frontend/src/app/router.tsx`](frontend/src/app/router.tsx)）：`/app/runs/new` 默认走新 `NewRunChatPage`；老 `NewRunPage` 改挂 `/app/runs/new/expert`（继续走 legacy `POST /api/runs`，绕开未实现的 `mode=expert` 422，向后兼容专家用户）。
+- 新页 [`frontend/src/pages/NewRunChatPage.tsx`](frontend/src/pages/NewRunChatPage.tsx)：左侧聊天流（user / agent.clarify / agent.complete / agent.error）+ composer（textarea + suggested_options chip 多选 + 回车发送）+ 右侧 `Intake Checklist`（user_role / analysis_intent / competitors 三档进度，状态机来自 `RunIntakeDraft`）。状态机：`idle → creating → awaiting_user → replying → resuming → (awaiting_user | complete | error)`。`intake.complete` 后 `pushToast` + 1.5s 跳到 `/app/runs/{run_id}`（即既有 `RunViewPage`，自带 SSE 订阅）。
+- SSE 走 `useRunEvents(runId, { onIntakeClarify, onIntakeComplete })`：[`frontend/src/api/sse.ts`](frontend/src/api/sse.ts) 新增 `IntakeClarifyEventPayload` / `IntakeCompletePayload` + 两个事件 listener，payload 走 `JSON.parse(event.data).payload` 解出（与后端 [`_to_sse_chunk`](backend/app/router/run_rt.py) 的 `event.model_dump()` envelope 对得上）。chat 页 hook 进 `useCallback` 锁稳引用，仅在 `runId` 由 null → string 时打开 EventSource。
+- API hooks（[`frontend/src/api/hooks.ts`](frontend/src/api/hooks.ts)）：新增 `useCreateRunIntake` / `useReplyRunIntake`（暂不暴露 expert 模式 hook——后端 422 阻断它，前端切到 expert tab 直接复用 `useCreateRun` 走 legacy 路径）。
+- 模式切换：[`frontend/src/components/intake/IntakeModeSwitcher.tsx`](frontend/src/components/intake/IntakeModeSwitcher.tsx) 双 tab pill，两个页都放在 header 右上方。
+- 关键 YAGNI：(1) 不接 `useRunDetail` 复用 SSE：chat 页只 care intake 事件 + 完成跳转，draft 用首响应 + intake.clarify_request callback 内 `apiClient.get` best-effort 拉一次，避免双 EventSource 与 query 重叠；(2) 不实现 expert 模式 422 兜底：tab 路由直接通往 legacy 表单页（用户体感是"专家表单"，不暴露 `?mode=expert` 端点存在）；(3) 不加 chat 历史 localStorage：每个 run_id 走单独 thread，复读旧对话没有产品意义（重启即新 run）。
+- 验收：`npm run type-check` 0 错（已实测）；首句后 chat 页接住 `first_clarify_request` 直接渲染（无需 SSE warmup）；后续轮次 clarify 走 SSE 100ms 内到达；`intake.complete` 触发跳转。
 
 ### Phase 2 (= Phase α)：Planner + 可勾选 Plan Tree（1 天）
 - 后端：planner_node + `interrupt` + `PlanConfirmRequest`（仅消费 `disabled_task_ids`）；`plan.published / plan.confirmed / plan.task.start/finish` 事件接齐。
