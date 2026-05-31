@@ -621,6 +621,57 @@ async def _persist_iteration(
     return step.step_id
 
 
+def _extract_user_pinned_research(
+    *,
+    plan_tree: object,
+    researched_competitors: list[str],
+) -> list[dict[str, object]]:
+    """Phase β: project user-injected research tasks that are still pending.
+
+    Returns a list of {competitor_id, title, focus_dimensions} dicts the
+    supervisor prompt builder turns into a "user pinned" hint section. Filters
+    out competitors that already appear in `researched_competitors` so we
+    don't nag the LLM about work it's already done.
+    """
+    if not isinstance(plan_tree, dict):
+        return []
+    tasks_raw = plan_tree.get("tasks")
+    if not isinstance(tasks_raw, list):
+        return []
+    done = set(researched_competitors)
+    pinned: list[dict[str, object]] = []
+    for task in tasks_raw:
+        if not isinstance(task, dict):
+            continue
+        if task.get("source") != "user":
+            continue
+        if task.get("priority") != "user_pinned":
+            continue
+        if task.get("stage") != "research":
+            continue
+        if task.get("enabled") is False:
+            continue
+        competitor_id = task.get("competitor_id")
+        if not isinstance(competitor_id, str) or not competitor_id.strip():
+            continue
+        if competitor_id in done:
+            continue
+        title_raw = task.get("title")
+        focus_raw = task.get("focus_dimensions")
+        pinned.append(
+            {
+                "competitor_id": competitor_id,
+                "title": title_raw if isinstance(title_raw, str) else "",
+                "focus_dimensions": (
+                    [f for f in focus_raw if isinstance(f, str)]
+                    if isinstance(focus_raw, list)
+                    else []
+                ),
+            }
+        )
+    return pinned
+
+
 async def _load_pending_follow_ups(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -841,6 +892,10 @@ async def supervisor_node(state: AgentState) -> AgentState:
             session_factory=session_factory,
             run_id=run_id,
         )
+        user_pinned_research = _extract_user_pinned_research(
+            plan_tree=state.get("plan_tree"),
+            researched_competitors=researched_competitors,
+        )
         user_prompt = build_supervisor_user_prompt(
             user_query=user_query,
             iteration=iteration,
@@ -852,6 +907,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             qa_reject_to=qa_reject_to,
             qa_reasons=qa_reasons,
             pending_follow_ups=pending_follow_ups,
+            user_pinned_research=user_pinned_research,
         )
         llm_response = await get_llm_client().complete_json(
             model_slot="research",
@@ -865,6 +921,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 analysis_done=analysis_done,
                 report_draft_done=report_draft_done,
                 pending_follow_ups=pending_follow_ups,
+                user_pinned_research=user_pinned_research,
             ),
         )
         decision = _try_llm_decision(

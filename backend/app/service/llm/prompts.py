@@ -472,6 +472,46 @@ def _format_pending_follow_ups(pending_follow_ups: Sequence[dict[str, object]] |
     )
 
 
+def _format_user_pinned_research(user_pinned_research: Sequence[dict[str, object]] | None) -> str:
+    """Phase β: surface user-injected research tasks not yet researched.
+
+    Each entry shape: {competitor_id: str, title: str, focus_dimensions: list[str]}.
+    The supervisor reads this to bias the next ConductResearch / ConductResearchBatch
+    toward these competitors before falling back to the Agent's own picks.
+    """
+    if not user_pinned_research:
+        return ""
+    lines: list[str] = []
+    for entry in user_pinned_research:
+        if not isinstance(entry, dict):
+            continue
+        competitor_raw = entry.get("competitor_id")
+        if not isinstance(competitor_raw, str) or not competitor_raw.strip():
+            continue
+        title_raw = entry.get("title")
+        title_tag = (
+            f" — {title_raw.strip()}"
+            if isinstance(title_raw, str) and title_raw.strip()
+            else ""
+        )
+        focus_raw = entry.get("focus_dimensions")
+        focus_tag = ""
+        if isinstance(focus_raw, list) and focus_raw:
+            focus_str = ", ".join(str(f) for f in focus_raw if isinstance(f, str))
+            if focus_str:
+                focus_tag = f" [focus: {focus_str}]"
+        lines.append(f"- {competitor_raw.strip()}{title_tag}{focus_tag}")
+    if not lines:
+        return ""
+    return (
+        "\nUser-pinned research targets (Phase β). The user explicitly added "
+        "these in the plan-confirm step and they MUST be researched before any "
+        "Agent-proposed competitor that has not been touched yet:\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def build_supervisor_user_prompt(
     *,
     user_query: str,
@@ -484,6 +524,7 @@ def build_supervisor_user_prompt(
     qa_reject_to: str | None,
     qa_reasons: Sequence[str],
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
+    user_pinned_research: Sequence[dict[str, object]] | None = None,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     discovery_needed = len(competitors) == 0
@@ -520,6 +561,7 @@ def build_supervisor_user_prompt(
         f"- qa_outcome: {qa_outcome}\n"
         f"- qa_reject_to: {qa_reject_to}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
+        f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         f"{constraints}"
     )
@@ -533,6 +575,7 @@ def build_supervisor_fallback_user_prompt(
     analysis_done: bool,
     report_draft_done: bool,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
+    user_pinned_research: Sequence[dict[str, object]] | None = None,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     preferred_tool_hint: str
@@ -556,10 +599,13 @@ def build_supervisor_fallback_user_prompt(
         f"- analysis_done: {analysis_done}\n"
         f"- report_draft_done: {report_draft_done}\n"
         f"- preferred_tool_hint: {preferred_tool_hint}\n"
+        f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         "Pick exactly one next tool and keep tool_args minimal but valid.\n"
         "If competitors is empty, you MUST use DiscoverCompetitors.\n"
-        "When pending_competitors has 2+ entries, prefer ConductResearchBatch with one unique competitor per topic."
+        "When pending_competitors has 2+ entries, prefer ConductResearchBatch "
+        "with one unique competitor per topic; if any user-pinned research "
+        "targets are still unresearched, include them first."
     )
 
 
