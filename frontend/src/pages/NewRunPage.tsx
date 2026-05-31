@@ -282,8 +282,8 @@ export function NewRunPage(): JSX.Element {
         }),
       );
       pushToast({
-        title: "分析任务已创建",
-        description: "正在进入运行详情页。",
+        title: "分析任务已启动",
+        description: "正在进入实时进度页，分析将在后台进行。",
         variant: "success",
       });
       navigate(`/app/runs/${created.run_id}`);
