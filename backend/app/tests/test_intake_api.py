@@ -81,7 +81,13 @@ def test_intake_expert_mode_returns_422(test_client: TestClient) -> None:
     assert body["error_code"] == "EXPERT_MODE_NOT_AVAILABLE"
 
 
-def test_intake_reply_resumes_and_eventually_finishes(test_client: TestClient) -> None:
+def test_intake_reply_completes_and_publishes_plan(test_client: TestClient) -> None:
+    """Phase 2: after the final intake reply the graph hands off to the planner.
+
+    The run remains `status="running"` paused at planner_wait until Phase 2's
+    /plan/confirm endpoint resumes it. We assert that the planner published a
+    plan_tree onto the Run row so the FE PlanConfirmPage can render it.
+    """
     create = test_client.post(
         "/api/runs/intake",
         json={"user_query": "我想分析定价竞品"},
@@ -89,7 +95,6 @@ def test_intake_reply_resumes_and_eventually_finishes(test_client: TestClient) -
     assert create.status_code == 200
     run_id = create.json()["run_id"]
 
-    # Reply 1: user_role.
     reply_1 = test_client.post(
         f"/api/runs/{run_id}/intake/reply",
         json={"text": "pm", "selected_options": ["pm"]},
@@ -97,8 +102,6 @@ def test_intake_reply_resumes_and_eventually_finishes(test_client: TestClient) -
     assert reply_1.status_code == 200
     assert reply_1.json()["status"] == "running"
 
-    # The background resume yields another clarify; poll the detail endpoint
-    # until the intake_draft snapshot shows the user_role merged.
     deadline = time.time() + 10.0
     while time.time() < deadline:
         detail = test_client.get(f"/api/runs/{run_id}").json()
@@ -109,7 +112,6 @@ def test_intake_reply_resumes_and_eventually_finishes(test_client: TestClient) -
     else:
         pytest.fail("intake_draft.user_role never merged after first reply")
 
-    # Reply 2: analysis_intent.
     reply_2 = test_client.post(
         f"/api/runs/{run_id}/intake/reply",
         json={"text": "对比 Notion 和 Cursor 的定价策略"},
@@ -125,26 +127,41 @@ def test_intake_reply_resumes_and_eventually_finishes(test_client: TestClient) -
     else:
         pytest.fail("intake_draft.analysis_intent never merged after second reply")
 
-    # Reply 3: competitor path → completes intake → runs the supervisor pipeline.
+    # Reply 3: completes intake → planner publishes a plan and pauses at planner_wait.
     reply_3 = test_client.post(
         f"/api/runs/{run_id}/intake/reply",
         json={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
     )
     assert reply_3.status_code == 200
 
-    final_status = _wait_for_run_status(
-        run_id,
-        expected_statuses={"completed", "degraded", "failed"},
-        timeout_seconds=60.0,
-    )
-    assert final_status in {"completed", "degraded"}, f"expected terminal success, got {final_status}"
+    # Poll Run.plan_tree until the planner has published. Run.status stays
+    # "running" because the graph is paused at planner_wait, not terminal.
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        detail = test_client.get(f"/api/runs/{run_id}").json()
+        if detail.get("plan_tree") is not None:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("plan_tree never published after intake completed")
 
     detail = test_client.get(f"/api/runs/{run_id}").json()
+    assert detail["status"] == "running"
+    assert detail["phase"] == "planning"
+    plan = detail["plan_tree"]
+    assert plan is not None
+    assert plan["confirmed_at"] is None
+    assert plan["version"] == 1
+    stages = [task["stage"] for task in plan["tasks"]]
+    # Fake planner emits: research(Notion), research(Cursor), analyze, write.
+    assert "research" in stages
+    assert "analyze" in stages
+    assert "write" in stages
+
     draft = detail["intake_draft"]
     assert draft is not None
     assert draft["user_role"] == "pm"
     assert "Notion" in draft["competitors_explicit"]
-    assert detail["phase"] == "done"
 
 
 def test_intake_reply_rejects_when_not_paused(test_client: TestClient) -> None:
@@ -187,8 +204,5 @@ def test_intake_reply_empty_payload_returns_422(test_client: TestClient) -> None
     assert reply.status_code == 422
 
 
-# Note: POST /api/runs/{id}/plan/confirm is intentionally still raising
-# NotImplementedError until Phase 2 lands. We don't test it here because
-# Starlette's TestClient re-raises `NotImplementedError` past the global
-# `unhandled_exception` handler, so the response shape is asserted only after
-# Phase 2 implements the endpoint with a structured response.
+# Phase 2: POST /api/runs/{id}/plan/confirm tests live in test_plan_api.py so
+# this module stays focused on intake-stage assertions.

@@ -175,6 +175,83 @@ class _FakeLLMClient:
                     pass
         return patch
 
+    @staticmethod
+    def _extract_intake_draft_from_planner_prompt(user_prompt: str) -> dict[str, object]:
+        match = re.search(r"- intake_draft: (\{.*?\})\n", user_prompt)
+        if match is None:
+            return {}
+        try:
+            parsed = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _build_planner_response(self, user_prompt: str) -> LLMResponse:
+        # Deterministic plan: one discover task (if discovery mode or empty), one
+        # research task per explicit competitor, one analyze, one write. Mirrors
+        # planner_generate_node._fallback_tasks so tests can assert structure.
+        draft = self._extract_intake_draft_from_planner_prompt(user_prompt)
+        competitors_raw = draft.get("competitors_explicit")
+        competitors = (
+            [c for c in competitors_raw if isinstance(c, str) and c.strip()]
+            if isinstance(competitors_raw, list)
+            else []
+        )
+        discovery_mode = bool(draft.get("competitors_discovery_mode"))
+        focus_raw = draft.get("focus_dimensions")
+        focus = (
+            [d for d in focus_raw if isinstance(d, str) and d.strip()]
+            if isinstance(focus_raw, list)
+            else []
+        )
+        if not focus:
+            focus = ["feature", "pricing", "user_feedback"]
+
+        tasks: list[dict[str, object]] = []
+        if discovery_mode or not competitors:
+            tasks.append(
+                {
+                    "stage": "discover",
+                    "title": "Discover competitors",
+                    "description": "Find leading competitors in the track.",
+                    "competitor_id": None,
+                    "focus_dimensions": focus,
+                }
+            )
+        for competitor in competitors[:8]:
+            tasks.append(
+                {
+                    "stage": "research",
+                    "title": f"Research {competitor}",
+                    "description": f"Collect evidence on {competitor} per focus dimensions.",
+                    "competitor_id": competitor,
+                    "focus_dimensions": focus,
+                }
+            )
+        tasks.append(
+            {
+                "stage": "analyze",
+                "title": "Cross-competitor analysis",
+                "description": "Synthesize differentiators from collected evidence.",
+                "competitor_id": None,
+                "focus_dimensions": focus,
+            }
+        )
+        tasks.append(
+            {
+                "stage": "write",
+                "title": "Write final report",
+                "description": "Produce the battlecard report.",
+                "competitor_id": None,
+                "focus_dimensions": focus,
+            }
+        )
+        content: dict[str, object] = {
+            "rationale": "fake planner: research each known competitor then analyze and write.",
+            "tasks": tasks,
+        }
+        return self._build_response(model_slot="research", content=content)
+
     def _build_intake_response(self, user_prompt: str) -> LLMResponse:
         # Parse current_draft JSON and infer the next ask/complete decision.
         current_draft_raw = re.search(r"- current_draft: (\{.*?\})\n", user_prompt)
@@ -642,6 +719,17 @@ class _FakeLLMClient:
         if (
             model_slot == "research"
             and isinstance(system_prompt, str)
+            and "RivalLens Planner" in system_prompt
+            and isinstance(user_prompt, str)
+            and (
+                "Plan generation context" in user_prompt
+                or "Fallback plan generation" in user_prompt
+            )
+        ):
+            return self._build_planner_response(user_prompt)
+        if (
+            model_slot == "research"
+            and isinstance(system_prompt, str)
             and "Supervisor planner" in system_prompt
             and isinstance(user_prompt, str)
             and "Planning context" in user_prompt
@@ -717,6 +805,7 @@ def fake_llm_client(
     monkeypatch.setattr("service.llm.client.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.nodes.supervisor.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.nodes.intake.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("agents.nodes.planner.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.nodes.analyst.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.nodes.writer.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)

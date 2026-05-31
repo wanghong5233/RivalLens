@@ -8,8 +8,9 @@ This is the safety net for Phase 1b before any endpoint or DB column change:
   run *exactly once per turn* under real PostgreSQL persistence (Invariant A).
 - Verifies that `(await graph.aget_state(cfg)).tasks[0].interrupts[0].value` returns the
   serialized IntakeClarifyRequest (Invariant D) — the same extraction the API endpoint will use.
-- Verifies that after the IntakeAgent decides `complete`, the graph routes to `supervisor`
-  (and we stop there via `interrupt_before=["supervisor"]` to keep this test scoped to intake).
+- Verifies that after the IntakeAgent decides `complete`, the graph routes into the
+  Phase 2 planner stage (paused at `planner_generate` via `interrupt_before` to keep
+  this test scoped to intake; planner-specific behavior lives in test_plan_flow.py).
 """
 
 from __future__ import annotations
@@ -115,11 +116,12 @@ async def test_intake_flow_real_graph_postgres_resume() -> None:
     try:
         async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
             graph_builder = build_graph_uncompiled()
-            # Stop before supervisor so the test stays scoped to intake. The
-            # production runtime omits this and lets the graph continue.
+            # Stop before planner_generate AND supervisor so the test stays scoped
+            # to intake invariants. Phase 2: intake.complete now routes through
+            # planner_generate; halting before it keeps this test single-concern.
             app = graph_builder.compile(
                 checkpointer=checkpointer,
-                interrupt_before=["supervisor"],
+                interrupt_before=["planner_generate", "supervisor"],
             )
 
             initial_state: AgentState = {
@@ -163,15 +165,16 @@ async def test_intake_flow_real_graph_postgres_resume() -> None:
             }
             assert await _count_intake_steps(run_id) == 3
 
-            # Resume turn 3 → intake completes, graph routes to supervisor.
+            # Resume turn 3 → intake completes, graph routes into the planner stage.
             reply_3 = IntakeUserReply(
                 text="Notion, Cursor",
                 selected_options=["已有名单"],
             ).model_dump()
             await app.ainvoke(Command(resume=reply_3), config=cfg)
             snapshot = await app.aget_state(cfg)
-            assert snapshot.next == ("supervisor",), (
-                f"After intake.complete, graph must route to supervisor; got next={snapshot.next}"
+            assert snapshot.next == ("planner_generate",), (
+                "After intake.complete (Phase 2), graph must hand off to planner_generate; "
+                f"got next={snapshot.next}"
             )
             assert await _count_intake_steps(run_id) == 4
 
@@ -188,7 +191,7 @@ async def test_intake_flow_real_graph_postgres_resume() -> None:
             assert persisted_draft.analysis_intent == "对比 Notion 和 Cursor 的定价策略"
             assert persisted_draft.competitors_explicit == ["Notion", "Cursor"]
             assert persisted_draft.is_complete is True
-            assert values.get("phase") == "executing"
+            assert values.get("phase") == "planning"
             # History should record all three exchanges (clarify, reply) pairs.
             assert len(values.get("intake_history") or []) == 3
     finally:
@@ -214,7 +217,7 @@ async def test_intake_skip_when_phase_not_intake_routes_to_supervisor() -> None:
             graph_builder = build_graph_uncompiled()
             app = graph_builder.compile(
                 checkpointer=checkpointer,
-                interrupt_before=["supervisor"],
+                interrupt_before=["planner_generate", "supervisor"],
             )
 
             initial_state: AgentState = {

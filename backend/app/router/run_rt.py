@@ -448,6 +448,9 @@ def _derive_run_phase(run: Run) -> Literal["intake", "planning", "executing", "d
 
     Legacy runs (created via POST /api/runs without intake) have `intake_draft is None`
     and return `None` here so the FE renders them with the old layout.
+
+    Phase 2: `plan_tree.confirmed_at` is the planning→executing signal. planner_generate
+    writes `confirmed_at=None`; planner_wait sets it on resume.
     """
     intake_draft = run.intake_draft
     if intake_draft is None:
@@ -462,10 +465,9 @@ def _derive_run_phase(run: Run) -> Literal["intake", "planning", "executing", "d
     )
     if not intake_complete:
         return "intake"
-    if run.plan_tree is None:
-        # Phase 1b skips the planner; runs go straight to executing. Phase 2 will
-        # populate plan_tree before transitioning out of "planning".
-        return "executing"
+    plan_tree = run.plan_tree
+    if plan_tree is None or plan_tree.get("confirmed_at") is None:
+        return "planning"
     return "executing"
 
 
@@ -815,6 +817,68 @@ async def _persist_intake_draft_to_run(
         await session.commit()
 
 
+async def _resume_plan_graph_in_background(
+    *,
+    run_id: str,
+    graph: Any,
+    resume_payload: dict[str, object],
+    domain_hint: str | None,
+    background_tasks: set[asyncio.Task[object]],
+) -> None:
+    """Resume the planner-paused graph after the user confirms the plan.
+
+    After planner_wait returns, the graph proceeds to the supervisor and the
+    rest of the executor. Terminal handling mirrors `_execute_run_graph`
+    (status update, RUN_FINISH event, skill curator follow-up).
+    """
+    session_factory = get_session_factory()
+    config = {"configurable": {"thread_id": run_id}}
+    with bind_run(run_id):
+        try:
+            graph_state = await graph.ainvoke(Command(resume=resume_payload), config=config)
+        except (APIException, SQLAlchemyError, RuntimeError) as exc:
+            log.exception("api.run.plan.resume.failed", error=str(exc)[:500])
+            async with session_factory() as session:
+                run = await session.get(Run, run_id)
+                if run is not None:
+                    run.status = "failed"
+                    run.finished_at = datetime.now(timezone.utc)
+                    await session.commit()
+            await emit_run_event(
+                run_id=run_id,
+                event_type=RunEventType.RUN_FINISH,
+                payload=_build_run_finish_payload(run_id=run_id, status="failed"),
+            )
+            return
+
+        run_status_raw = str(graph_state.get("status", "completed")) if isinstance(graph_state, dict) else "completed"
+        run_status = run_status_raw if run_status_raw in {"completed", "degraded"} else "completed"
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise RuntimeError(f"run_id={run_id} should exist after plan confirm")
+            run.status = run_status
+            run.finished_at = datetime.now(timezone.utc)
+            if isinstance(graph_state, dict):
+                final_competitors = graph_state.get("competitors")
+                if isinstance(final_competitors, list) and final_competitors:
+                    run.competitors = final_competitors
+            await session.commit()
+            final_status = run.status
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(run_id=run_id, status=final_status),
+        )
+        curator_task = asyncio.create_task(
+            run_skill_curator_for_run(run_id=run_id, domain_hint=domain_hint),
+            name=f"skill_curator_{run_id}",
+        )
+        background_tasks.add(curator_task)
+        curator_task.add_done_callback(background_tasks.discard)
+        log.info("api.run.plan.resume.finish", status=final_status)
+
+
 async def _resume_intake_graph_in_background(
     *,
     run_id: str,
@@ -1131,9 +1195,77 @@ async def confirm_run_plan(
     payload: PlanConfirmRequest,
     request: Request,
 ) -> RunAcceptedResponse:
-    # Phase 2 (Invariant C): return accepted immediately, resume the graph in a
-    # background task via Command(resume=payload) on thread_id=run_id.
-    raise NotImplementedError("Phase 2: plan confirm resume not yet implemented.")
+    """Phase 2 (Invariant C): resume the graph past planner_wait.
+
+    The graph proceeds to the supervisor and the rest of the executor in a
+    background task. Phase α only honors `disabled_task_ids`; the planner_wait
+    node silently drops `additional_tasks` until Phase β enables them.
+    """
+    graph = getattr(request.app.state, "compiled_graph", None)
+    if graph is None:
+        raise APIException(
+            status_code=500,
+            error_code="GRAPH_NOT_INITIALIZED",
+            message="Compiled LangGraph instance is not initialized.",
+        )
+    background_tasks = getattr(request.app.state, "background_tasks", None)
+    if not isinstance(background_tasks, set):
+        raise APIException(
+            status_code=500,
+            error_code="BACKGROUND_TASKS_NOT_INITIALIZED",
+            message="Background task registry is not initialized.",
+        )
+
+    session_factory = get_session_factory()
+    with bind_run(run_id):
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=404,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} does not exist",
+                )
+            if run.status != "running":
+                raise APIException(
+                    status_code=409,
+                    error_code="RUN_NOT_RESUMABLE",
+                    message=f"run status={run.status} is not resumable",
+                )
+            domain_hint = run.domain_hint
+
+        # Verify the graph is actually paused at planner_wait. Resuming from a
+        # non-plan pause would inject the PlanConfirmRequest into the wrong
+        # interrupt payload (mirrors the intake/reply guard above).
+        snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
+        if snapshot.next != ("planner_wait",):
+            raise APIException(
+                status_code=409,
+                error_code="PLAN_NOT_AWAITING_CONFIRM",
+                message=(
+                    "run is not paused at the plan-confirm step; "
+                    f"current next_node={list(snapshot.next)}"
+                ),
+            )
+
+        resume_payload = payload.model_dump()
+        task = asyncio.create_task(
+            _resume_plan_graph_in_background(
+                run_id=run_id,
+                graph=graph,
+                resume_payload=resume_payload,
+                domain_hint=domain_hint,
+                background_tasks=background_tasks,
+            ),
+            name=f"plan_resume_{run_id}",
+        )
+        _register_background_task(request, task)
+        log.info(
+            "api.run.plan.confirm.accepted",
+            disabled_task_count=len(payload.disabled_task_ids),
+        )
+
+    return RunAcceptedResponse(run_id=run_id, status="running")
 
 
 @router.post("/api/runs/{run_id}/resume", response_model=RunCreateResponse)
