@@ -30,7 +30,7 @@ from models.supervisor_decision import SupervisorDecisionRecord
 from models.watchlist import WatchlistItem
 from schemas.ids import make_id
 from schemas.intake import IntakeClarifyRequest, IntakeUserReply, RunIntakeDraft, UserRole
-from schemas.plan import PlanConfirmRequest
+from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.metrics import build_run_metrics_snapshot
@@ -122,6 +122,16 @@ class RunAcceptedResponse(BaseModel):
 
     run_id: str
     status: str
+
+
+class FollowUpAcceptedResponse(BaseModel):
+    """Phase 4: POST /follow-up response. `follow_up_id` lets the FE display
+    the entry in any "pending instructions" UI before the supervisor consumes it.
+    """
+
+    run_id: str
+    follow_up_id: str
+    received_at: str
 
 
 class RunResetRequest(BaseModel):
@@ -1266,6 +1276,124 @@ async def confirm_run_plan(
         )
 
     return RunAcceptedResponse(run_id=run_id, status="running")
+
+
+@router.post(
+    "/api/runs/{run_id}/follow-up",
+    response_model=FollowUpAcceptedResponse,
+)
+async def submit_run_follow_up(
+    run_id: str,
+    payload: FollowUpRequest,
+    request: Request,
+) -> FollowUpAcceptedResponse:
+    """Phase 4: append a mid-run user addendum to the supervisor's inbox.
+
+    Persisted on `runs.follow_ups` (JSONB list); the supervisor reads pending
+    entries at the start of each iteration, injects them into its prompt,
+    then marks them consumed after the LLM decision. We deliberately do NOT
+    touch the LangGraph state directly: the graph is mid-execution (not at
+    an interrupt), so `aupdate_state` on a running thread is unsafe — the
+    DB inbox is the lock-free channel.
+    """
+    graph = getattr(request.app.state, "compiled_graph", None)
+    if graph is None:
+        raise APIException(
+            status_code=500,
+            error_code="GRAPH_NOT_INITIALIZED",
+            message="Compiled LangGraph instance is not initialized.",
+        )
+
+    session_factory = get_session_factory()
+    with bind_run(run_id):
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                raise APIException(
+                    status_code=404,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} does not exist",
+                )
+            if run.status != "running":
+                raise APIException(
+                    status_code=409,
+                    error_code="FOLLOWUP_RUN_NOT_RUNNING",
+                    message=(
+                        f"run status={run.status} cannot accept follow-up "
+                        "(must be running and past plan confirmation)"
+                    ),
+                )
+            plan_tree_value = run.plan_tree
+            plan_confirmed = (
+                isinstance(plan_tree_value, dict)
+                and plan_tree_value.get("confirmed_at") is not None
+            )
+            if not plan_confirmed:
+                raise APIException(
+                    status_code=409,
+                    error_code="FOLLOWUP_NOT_EXECUTING",
+                    message=(
+                        "follow-up is only accepted after plan confirmation — "
+                        "use POST /intake/reply or /plan/confirm instead"
+                    ),
+                )
+
+        snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
+        if snapshot.next in {("intake_wait",), ("planner_wait",)}:
+            raise APIException(
+                status_code=409,
+                error_code="FOLLOWUP_GRAPH_PAUSED",
+                message=(
+                    "graph is paused awaiting a structured reply; "
+                    f"use the matching endpoint instead (next_node={list(snapshot.next)})"
+                ),
+            )
+
+        received_at = datetime.now(timezone.utc).isoformat()
+        entry = FollowUpEntry(
+            text=payload.text,
+            applies_to_stage=payload.applies_to_stage,
+            received_at=received_at,
+        )
+        entry_dict = entry.model_dump(mode="json")
+
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                # Defensive: another tab could have hit /reset between our two
+                # reads. Surface 404 rather than persisting an orphan entry.
+                raise APIException(
+                    status_code=404,
+                    error_code="RUN_NOT_FOUND",
+                    message=f"run_id={run_id} no longer exists",
+                )
+            existing = list(run.follow_ups or [])
+            existing.append(entry_dict)
+            run.follow_ups = existing
+            await session.commit()
+
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.FOLLOWUP_RECEIVED,
+            payload={
+                "follow_up_id": entry.id,
+                "text": entry.text,
+                "applies_to_stage": entry.applies_to_stage,
+                "received_at": received_at,
+            },
+        )
+        log.info(
+            "api.run.follow_up.accepted",
+            follow_up_id=entry.id,
+            applies_to_stage=entry.applies_to_stage,
+            text_len=len(entry.text),
+        )
+
+    return FollowUpAcceptedResponse(
+        run_id=run_id,
+        follow_up_id=entry.id,
+        received_at=received_at,
+    )
 
 
 @router.post("/api/runs/{run_id}/resume", response_model=RunCreateResponse)
