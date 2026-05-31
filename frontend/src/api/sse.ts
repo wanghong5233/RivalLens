@@ -23,12 +23,32 @@ export interface IntakeCompletePayload {
   draft: Record<string, unknown>;
 }
 
+export interface PlanPublishedPayload {
+  plan_id: string;
+  version: number;
+  task_count: number;
+}
+
+export interface PlanConfirmedPayload {
+  plan_id: string;
+  version: number;
+  kept_task_count: number;
+  disabled_task_ids: string[];
+  confirmed_at: string | null;
+}
+
 export interface RunEventsOptions {
   // Phase 1b: surface intake event payloads to callers that drive the chat
   // page (NewRunChatPage). Generic runs that do not care about intake leave
   // these undefined and continue with cache invalidation only.
   onIntakeClarify?: (payload: IntakeClarifyEventPayload) => void;
   onIntakeComplete?: (payload: IntakeCompletePayload) => void;
+  // Phase 2: PlanConfirmPage subscribes to plan.published to render the plan
+  // the moment it appears (instead of polling Run.plan_tree). plan.confirmed
+  // is forwarded so the page can navigate to the run view once the executor
+  // takes over.
+  onPlanPublished?: (payload: PlanPublishedPayload) => void;
+  onPlanConfirmed?: (payload: PlanConfirmedPayload) => void;
 }
 
 interface RunEventEnvelope {
@@ -85,8 +105,51 @@ function coerceIntakeCompletePayload(value: unknown): IntakeCompletePayload | nu
   return { turn, draft };
 }
 
+function coercePlanPublishedPayload(value: unknown): PlanPublishedPayload | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const planIdRaw = record.plan_id;
+  if (typeof planIdRaw !== "string" || planIdRaw.length === 0) {
+    return null;
+  }
+  const versionRaw = record.version;
+  const taskCountRaw = record.task_count;
+  return {
+    plan_id: planIdRaw,
+    version: typeof versionRaw === "number" ? versionRaw : 1,
+    task_count: typeof taskCountRaw === "number" ? taskCountRaw : 0,
+  };
+}
+
+function coercePlanConfirmedPayload(value: unknown): PlanConfirmedPayload | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const planIdRaw = record.plan_id;
+  if (typeof planIdRaw !== "string" || planIdRaw.length === 0) {
+    return null;
+  }
+  const versionRaw = record.version;
+  const keptRaw = record.kept_task_count;
+  const disabledRaw = record.disabled_task_ids;
+  const disabledTaskIds = Array.isArray(disabledRaw)
+    ? disabledRaw.filter((item): item is string => typeof item === "string")
+    : [];
+  const confirmedAtRaw = record.confirmed_at;
+  return {
+    plan_id: planIdRaw,
+    version: typeof versionRaw === "number" ? versionRaw : 2,
+    kept_task_count: typeof keptRaw === "number" ? keptRaw : 0,
+    disabled_task_ids: disabledTaskIds,
+    confirmed_at: typeof confirmedAtRaw === "string" ? confirmedAtRaw : null,
+  };
+}
+
 export function useRunEvents(runId: string, options: RunEventsOptions = {}): void {
-  const { onIntakeClarify, onIntakeComplete } = options;
+  const { onIntakeClarify, onIntakeComplete, onPlanPublished, onPlanConfirmed } = options;
   useEffect(() => {
     if (!runId) {
       return;
@@ -157,6 +220,28 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
         onIntakeComplete(payload);
       }
     });
+    eventSource.addEventListener("plan.published", (event: MessageEvent<string>) => {
+      invalidateRunDetail();
+      invalidateRunTrace();
+      if (onPlanPublished === undefined) {
+        return;
+      }
+      const payload = coercePlanPublishedPayload(parseEventPayload(event.data));
+      if (payload !== null) {
+        onPlanPublished(payload);
+      }
+    });
+    eventSource.addEventListener("plan.confirmed", (event: MessageEvent<string>) => {
+      invalidateRunDetail();
+      invalidateRunTrace();
+      if (onPlanConfirmed === undefined) {
+        return;
+      }
+      const payload = coercePlanConfirmedPayload(parseEventPayload(event.data));
+      if (payload !== null) {
+        onPlanConfirmed(payload);
+      }
+    });
     eventSource.addEventListener("error", () => {
       // Browser-side EventSource handles retry; backend hints 15s.
       const _retryHintMs = RUN_RECONNECT_HINT_MS;
@@ -165,5 +250,5 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     return () => {
       eventSource.close();
     };
-  }, [runId, onIntakeClarify, onIntakeComplete]);
+  }, [runId, onIntakeClarify, onIntakeComplete, onPlanPublished, onPlanConfirmed]);
 }

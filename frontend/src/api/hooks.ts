@@ -13,6 +13,7 @@ import type {
   IntakeCreateRequest,
   IntakeCreateResponse,
   IntakeUserReply,
+  PlanConfirmRequest,
   RunAcceptedResponse,
   RunCreateRequest,
   RunCreateResponse,
@@ -172,6 +173,17 @@ async function replyRunIntake(
   const { data } = await apiClient.post<RunAcceptedResponse>(
     `/api/runs/${runId}/intake/reply`,
     reply,
+  );
+  return data;
+}
+
+async function confirmRunPlan(
+  runId: string,
+  payload: PlanConfirmRequest,
+): Promise<RunAcceptedResponse> {
+  const { data } = await apiClient.post<RunAcceptedResponse>(
+    `/api/runs/${runId}/plan/confirm`,
+    payload,
   );
   return data;
 }
@@ -338,6 +350,21 @@ export function useReplyRunIntake(): UseMutationResult<
 > {
   return useMutation({
     mutationFn: ({ runId, reply }) => replyRunIntake(runId, reply),
+  });
+}
+
+export interface ConfirmRunPlanVariables {
+  runId: string;
+  payload: PlanConfirmRequest;
+}
+
+export function useConfirmRunPlan(): UseMutationResult<
+  RunAcceptedResponse,
+  Error,
+  ConfirmRunPlanVariables
+> {
+  return useMutation({
+    mutationFn: ({ runId, payload }) => confirmRunPlan(runId, payload),
   });
 }
 

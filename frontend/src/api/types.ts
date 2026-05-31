@@ -76,6 +76,8 @@ export interface PlanTree {
   tasks: PlanTask[];
   rationale: string;
   version: number;
+  // ISO timestamp; null until planner_wait resumes from the user's confirmation.
+  confirmed_at: string | null;
 }
 
 export interface PlanConfirmRequest {
