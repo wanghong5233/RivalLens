@@ -215,6 +215,6 @@
 - [x] AgentMessage schema 定义（编排未使用，见 MSG-001）
 - [x] FastAPI 路由：runs / packs / skill-candidates / health
 - [x] 前端 Run List / NewRun / RunView / RunTrace / SkillStaging 页
-- [x] FRT-002 前端页面完善（SchemaDetail / EvidenceDetail / AgentRoles / CompetitorCompare / Survey / ReportExport 页，已通过构建验证）
+- [x] FRT-002 前端页面完善（新增11个页面：SchemaDetail / EvidenceDetail / AgentRoles / CompetitorCompare / Survey / ReportExport / Dashboard / Features / FeedbackLoop / HomePage / NotFound；修改6个页面：RunView / RunList / RunTrace / NewRun / RunEvidence / SkillStaging；更新路由配置与API层，已通过构建验证）
 - [x] main 分支保护（PR + approval + force push 禁止 + 删除禁止）
 - [x] Docker compose dev 编排（postgres + backend）
