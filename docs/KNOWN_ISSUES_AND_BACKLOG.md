@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-05-29
+最后更新: 2026-06-02
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -156,6 +156,24 @@
 | HLT-002 | Battlecard 卡片网格视图，一屏多竞品 | `frontend/src/pages/RunViewPage.tsx` |
 | HLT-003 | Prospect Voice 用户声音 / 情感分布视图 | `frontend/src/pages/RunVoicePage.tsx`（新） |
 | HLT-004 | Compare 跨竞品矩阵 | `frontend/src/pages/RunComparePage.tsx`（新） |
+
+---
+
+## 当前工作（In Progress）
+
+### [x] FRT-002 前端页面完善（2026-06-02）
+
+- **负责人**：前端开发
+- **状态**：已完成
+- **内容**：补充完善前端页面结构，新增以下页面：
+  - `SchemaDetailPage.tsx` - 竞品知识Schema详情页（功能树、定价模型、用户画像）
+  - `EvidenceDetailPage.tsx` - 证据溯源详情页（证据链可视化）
+  - `AgentRolesPage.tsx` - Agent角色管理页（各Agent职责和状态展示）
+  - `CompetitorComparePage.tsx` - 竞品对比分析页（多竞品横向对比、SWOT矩阵）
+  - `SurveyPage.tsx` - 用户调研管理页（问卷模板、访谈记录管理）
+  - `ReportExportPage.tsx` - 报告导出分享页（多格式导出、分享链接生成）
+- **入口**：`frontend/src/pages/` + `frontend/src/app/router.tsx`
+- **说明**：所有页面已通过构建验证，使用 mock 数据展示功能，待后端接口就绪后接入真实数据
 
 ---
 
