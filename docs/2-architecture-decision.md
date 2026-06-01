@@ -10,7 +10,16 @@
 >
 > 每条决策都从问题本身推导，可独立回答"为什么不选另一个候选方案"。**任何选项若违反上述三条特性中的任一条，必须在文档中显式标注权衡理由，否则不允许写入。**
 >
-> 多 Agent 架构的具体设计（Agent 边界、委派协议、QA 多目标路由、Skill 进化闭环）见 `docs/2.5-agent-architecture.md`。本文只描述系统层面的工程边界。
+> **文档地图（按职责拆分，避免单文件膨胀）**：
+>
+> | 文档 | 职责 |
+> |---|---|
+> | 本文 | 系统级工程边界：技术栈、部署、数据表分类、并发、可靠性 |
+> | `docs/2.5-agent-architecture.md` | 多 Agent 边界推导（7 核心 + 1 异步）、拓扑、委派与 QA 协议 |
+> | `docs/2.7-agent-native-intake-and-live-run.md` | Agent-native intake、Plan HITL、Live 页、follow-up inbox 的端到端工程约束 |
+> | `docs/3-schema-and-protocol.md` | 数据契约（当前 `schema_v0.3`）与 RunEvent 枚举 |
+>
+> 修订以 Git 历史为准；不在文内手写"最后更新日期"（社区 docs-as-code 惯例：日期与 diff 由版本控制承载，手写易漂移）。
 
 ## 1. 设计原则
 
@@ -18,7 +27,7 @@ RivalLens 是一个 agentic multi-agent system，输入为用户 query（可选�
 
 - **Evidence-grounded**：每条分析结论必须绑定可定位的 `evidence_id`，无证据来源的输出不进入最终报告。这是任何辅助决策类系统的可信度底线。
 - **Local-deployable**：单机 `docker compose up` 即可完整运行，不依赖云资源或外部托管。降低用户上手成本，并保证开发、测试、演示三套环境完全一致。
-- **Observable-by-default**：每个 Agent 的输入、输出、Prompt、token 消耗、延迟、错误、**LLM 决策路径**与中间 artifact 必须全链路可追踪。Agentic 系统的 LLM 决策不可见性比 workflow 高一个量级，可观测性必须前置内建——尤其是 Supervisor 的每次工具委派、Researcher 的每次 ReAct 步、QA 的每次 rejection 路由。
+- **Observable-by-default**：每个 Agent 的输入、输出、Prompt、token 消耗、延迟、错误、**LLM 决策路径**与中间 artifact 必须全链路可追踪。Agentic 系统的 LLM 决策不可见性比 workflow 高一个量级，可观测性必须前置内建——尤其是 Intake / Planner 的 HITL 回合（`intake.*` / `plan.*` SSE）、Supervisor 的每次工具委派、Researcher 的每次 ReAct 步与 `tool.*` / `evidence.collected`、QA 的每次 rejection 路由、运行中 follow-up 的 inbox 消费记录。
 - **Schema-driven**：Agent 之间交换结构化消息和 evidence 引用，不传自由文本。Pydantic 校验放在 Agent 边界，结构化失败即视为异常。Supervisor 的工具委派协议、QA 的多目标 rejection 协议、Skill Curator 的候选输出**全部**强 schema。
 - **Reuse-over-build**：基础设施层优先复用 MIT / Apache-2.0 / BSD 生态成熟方案，工程投入集中在系统原创层（Supervisor 委派协议、多目标 QA 路由、Skill 进化闭环、Schema、Evidence 模型）。
 
@@ -28,41 +37,44 @@ RivalLens 是一个 agentic multi-agent system，输入为用户 query（可选�
 docker compose（本地 localhost）
 │
 ├─ postgres:16
-│   ├─ runs / steps / llm_calls / evidence / reports / artifacts
+│   ├─ runs（含 JSONB：`intake_draft` / `plan_tree` / `follow_ups`）/ steps / llm_calls / evidence / reports / artifacts
 │   ├─ supervisor_decisions / skill_candidates
 │   └─ langgraph_checkpoints（langgraph-checkpoint-postgres 官方包）
 │
 ├─ backend（Python 3.11 + FastAPI + LangGraph）
 │   ├─ API Layer (FastAPI)
 │   │   ├─ Run / Step / Evidence / Report / Trace API（domain_hint / reference_urls 可选）
+│   │   ├─ Agent-native：`POST /api/runs/intake`、`/intake/reply`、`/plan/confirm`、`/follow-up`（详见 docs/2.7）
 │   │   ├─ Skill Candidate Review API
 │   │   ├─ Artifact Manager
 │   │   └─ Desensitization Middleware
 │   ├─ LLM Client（默认豆包 Doubao-Seed-2.0-lite，配置式多模型路由）
-│   ├─ LangGraph Orchestrator（agentic, LLM-driven；详见 docs/2.5-agent-architecture.md）
-│   │   ├─ Supervisor Agent（LLM tool calling 动态委派；max_iterations 兜底）
-│   │   ├─ Researcher Agent × N（ReAct subgraph；被 Supervisor 通过 Send fan-out）
-│   │   ├─ Analyst Agent（LLM-driven 跨竞品分析）
-│   │   ├─ Writer Agent（半确定性，模板化组装）
-│   │   ├─ QA Reviewer Agent（规则 DSL + LLM 语义混合；多目标 rejection 路由）
-│   │   └─ Skill Curator（异步，run 完成后启动；沉淀进化候选到 staging）
+│   ├─ LangGraph Orchestrator（agentic, LLM-driven；详见 docs/2.5 / docs/2.7）
+│   │   ├─ Intake Agent（HITL clarify；`intake_generate` + `intake_wait` 两节点）
+│   │   ├─ Planner Agent（HITL plan 确认；`planner_generate` + `planner_wait` 两节点）
+│   │   ├─ Supervisor Agent（executing 阶段 LLM tool calling；max_iterations 兜底）
+│   │   ├─ Researcher Agent × N（ReAct subgraph；Send fan-out）
+│   │   ├─ Analyst / Writer / QA Reviewer（同前）
+│   │   └─ Skill Curator（异步，run 完成后；staging 候选）
 │   └─ Bind mount → ./data/artifacts/
 │
 └─ frontend（Node 20 + Vite + React + TS）
-    ├─ DAG Run View（@xyflow/react；含 Supervisor 决策节点高亮）
-    ├─ Evidence Console
-    ├─ Report Viewer（Battlecard 风格）
-    ├─ Trace Timeline（含 Supervisor decision trace）
-    └─ Skill Staging Console（Curator 候选审核入口）
+    ├─ Chat Intake（`/app/runs/new` 默认）+ Expert Form（`/app/runs/new/expert`）
+    ├─ Plan Confirm（`/app/runs/:runId/plan`）
+    ├─ Live Run（`/app/runs/:runId/live`：Plan Tree + Evidence Feed + follow-up）
+    ├─ DAG Run View / Evidence Console / Report Viewer / Trace Timeline
+    └─ Skill Staging Console
 ```
 
 数据流方向：
 
-- 前端只调 FastAPI，不直接触达 LangGraph；
-- LangGraph 节点之间通过结构化消息 + checkpoint state 通信，不传自由文本；
-- **Supervisor 通过工具调用（`DiscoverCompetitors` / `ConductResearch` / `Analyze` / `Write` / `Finalize`）动态委派下游 Agent**，每次委派决策与 outcome 落 `supervisor_decisions` 表；维度与章节由运行时决策，不再绑定固定字段清单；
-- 所有 Agent 输出落 artifact 表，所有 conclusion 引用 `evidence_id`；
-- run 结束后 Skill Curator 异步消费完整 trace，产出进化候选到 `skill_candidates` 表（status=staging），等待人工审核进 industry pack 生效池。
+- 前端只调 FastAPI，不直接触达 LangGraph；本地 dev 可走 Vite `/api` 代理（见 `frontend/vite.config.ts`）；
+- 默认路径：`intake`（多轮 clarify，产出 `RunIntakeDraft`）→ `planning`（Planner 产 `PlanTree`，用户确认）→ `executing`（Supervisor 调度）→ 终态报告；专家模式跳过前两段，直进 `executing`（`docs/2.7`）；
+- HITL 统一范式：LangGraph `interrupt` + `Command(resume=...)`；resume 端点立返 + `asyncio.create_task` 后台跑图（Invariant C，`docs/2.7` §2）；
+- 运行中追加指令走 `runs.follow_ups` DB inbox（HTTP 写、Supervisor 读），不用 `graph.aupdate_state` 灌 running thread；
+- LangGraph 节点之间通过结构化消息 + checkpoint state 通信；Supervisor 在 executing 阶段通过 `DiscoverCompetitors` / `ConductResearch` / `ConductResearchBatch` / `Analyze` / `Write` / `Finalize` 动态委派，决策落 `supervisor_decisions`（含 `plan_task_ids`、`consumed_follow_up_ids`）；
+- 所有 Agent 输出落 artifact；conclusion 引用 `evidence_id`；
+- run 结束后 Skill Curator 异步消费 trace，产出 `skill_candidates`（staging），人工审核后进 `backend/skills/`。
 
 ## 3. 关键技术决策
 
@@ -72,10 +84,11 @@ docker compose（本地 localhost）
 
 RivalLens 的核心交互模式是 agentic state graph，不是固定 pipeline：
 
-- **Supervisor LLM 通过工具委派**下游 Agent（`DiscoverCompetitors` / `ConductResearch` / `Analyze` / `Write` / `Finalize`），fan-out 度由 LLM 在运行时决定，不是代码硬编码；
+- **Intake / Planner** 在 executing 之前以 HITL 子图运行（各拆 `*_generate` + `*_wait` 两节点，满足 Invariant A；细节见 `docs/2.7` §2）；
+- **Supervisor LLM 通过工具委派**下游 Agent（`DiscoverCompetitors` / `ConductResearch` / `ConductResearchBatch` / `Analyze` / `Write` / `Finalize`），fan-out 度由 LLM 在运行时决定，不是代码硬编码；
 - **Researcher 是 ReAct subgraph**，被 Supervisor 通过 LangGraph `Send` 批量委派并行执行；
 - **QA Reviewer 多目标 rejection**，可打回 Researcher / Analyst / Writer 或回到 Supervisor 重新规划；
-- 单 run 持续 5–15 分钟，节点中断恢复需要 checkpoint。
+- 单 run 持续 5–15 分钟，节点中断恢复需要 checkpoint；`thread_id = run_id` 全链路一致（Invariant F）。
 
 具备 `StateGraph + LLM tool calling + Send fan-out + Subgraph + checkpoint backend` 完整组合的开源编排框架，LangGraph 是唯一选择。CrewAI 的角色协作模型偏向 free-form multi-agent 对话，对显式 DAG + 状态回边 + 委派 tool 协议支持较弱；自研 DAG 在 checkpoint、中断恢复、Send 语义上需要重复造轮子。许可证 MIT。
 
@@ -125,7 +138,14 @@ React Flow 是 React 生态中 DAG / node-edge 视图最成熟的开源方案，
 
 引入 Langfuse / OpenTelemetry collector / Phoenix 等完整观测平台会带来额外的部署组件（采集器、存储后端、UI），且与上述 Postgres 数据模型重复。本系统的 Trace 维度（`runs / steps / llm_calls / artifacts`）字段固定、查询模式简单，自研表 + JSONB 即可覆盖；外加 `structlog` 结构化日志写文件。前端 Trace Timeline 直接从这些表渲染。
 
-在实时性上，后端使用 PostgreSQL `LISTEN/NOTIFY` 驱动的 `EventBus`（`step.start` / `step.finish` / `supervisor.decision` / `qa.outcome` / `curator.start` / `curator.finish` / `run.finish`），并通过 `GET /api/runs/{run_id}/events` 提供 SSE 流。前端 `EventSource` 接收事件后只做 query invalidation（`run-detail` / `run-trace`），断线后由 10s polling fallback 与 `/trace` append-only 回放兜底。
+在实时性上，后端使用 PostgreSQL `LISTEN/NOTIFY` 驱动的 `EventBus`，并通过 `GET /api/runs/{run_id}/events` 提供 SSE 流。事件分两类：
+
+| 类别 | 代表事件 | 前端消费模式 |
+|---|---|---|
+| 执行轨迹（既有） | `step.start` / `step.finish` / `supervisor.decision` / `qa.outcome` / `curator.*` / `run.finish` | query invalidation（`run-detail` / `run-trace`） |
+| Agent-native（`schema_v0.3`） | `intake.*` / `plan.*` / `tool.*` / `evidence.collected` / `followup.received` | Live 页本地 state + 部分 invalidation（完整枚举见 `docs/3` §4.2bis） |
+
+`EventSource` 断线后由 10s polling fallback 与 trace 表 append-only 回放兜底。新增事件类型为 **additive**，旧客户端忽略未知字段。
 
 后续若需迁移到 Langfuse 或 OTel，由于数据模型已结构化，迁移成本可控。
 
@@ -168,7 +188,7 @@ docker compose 是单机一次性起整套服务（postgres + backend + frontend
 | 维度 | 在 core 内 | 在技能库内 |
 |---|---|---|
 | 编排范式 | Supervisor LLM 委派协议、ReAct subgraph 骨架、多目标 QA 路由 | — |
-| 节点角色 | Supervisor / Researcher / Analyst / Writer / QA / Skill Curator 六类基础角色 | — |
+| 节点角色 | Intake / Planner / Supervisor / Researcher / Analyst / Writer / QA 七类核心闭环角色；Skill Curator 异步进化（见 `docs/2.5` §2） | — |
 | 协议与 Schema | AgentMessage、Supervisor 委派 schema、多目标 Rejection schema、Skill 候选 schema | — |
 | 业务流 | 打回 / 重试 / max_iterations / Skill 进化闭环等通用机制 | 领域相关的 QA 规则参数、prompt template 偏好 |
 | 输出 | 报告渲染骨架 | 章节模板（`applies_to=prompt_template`） |
@@ -184,7 +204,7 @@ docker compose 是单机一次性起整套服务（postgres + backend + frontend
 - 不同技能互不感知，可独立迭代与替换；版本由 frontmatter `version` 承载，body 改动须 bump 版本；
 - 用户在 `RunCreateRequest` 中通过 `domain_hint`（自由文本）+ `reference_urls`（可选书签）告知系统当前领域偏好，core 据此与技能 `tags` 做软匹配；**不再有 fixed bundle / 强枚举**概念。
 
-第一版预置技能见 `backend/skills/qa_rule/` 与 `backend/skills/prompt_template/`；演示用竞品种子见 `backend/demo_fixtures/competitors_seed.yaml`（仅供 NewRunPage autocomplete，不构成约束集）。
+第一版预置技能见 `backend/skills/qa_rule/` 与 `backend/skills/prompt_template/`；演示用竞品种子见 `backend/demo_fixtures/competitors_seed.yaml`（供 chat intake / 专家表单 autocomplete，`DEMO_FIXTURES_DIR` 配置，不构成约束集）。
 
 ## 6. 数据脱敏架构
 
@@ -228,7 +248,7 @@ def desensitize_text(text: str) -> str:
 
 | 表 | 类别 | 用途 |
 |---|---|---|
-| `runs` | 业务实体 | 一次完整的竞品分析任务 |
+| `runs` | 业务实体 | 一次完整的竞品分析任务；含 JSONB `intake_draft` / `plan_tree` / `follow_ups`（语义见 `docs/3` §2.8–2.10，列清单在 Alembic 迁移） |
 | `steps` | 执行轨迹 | run 内每个 Agent 节点的一次执行 |
 | `llm_calls` | 可观测 | 每次 LLM 调用的 token / latency / error |
 | `supervisor_decisions` | Agentic 可观测 | Supervisor 每次工具委派的 input / chosen_tool / args / outcome；LLM 决策路径的核心证据 |
@@ -254,7 +274,7 @@ skill_candidates ──[approved by reviewer]──> backend/skills/<applies_to>
 ### 7.3 生命周期不变量
 
 - `evidence` / `llm_calls` / `artifacts` / `supervisor_decisions` 四表 append-only，行写入后不再修改；`artifacts` 指向的文件本身也不覆写；
-- `runs` / `steps` / `reports` 允许状态字段更新，但状态机由后端服务约束，不依赖数据库触发器；
+- `runs` / `steps` / `reports` 允许状态字段更新，但状态机由后端服务约束，不依赖数据库触发器；`runs.follow_ups` 条目允许 Supervisor 写 `consumed_at`（append-only 语义上的"消费盖戳"，不删历史）；
 - `skill_candidates` 允许 `status` 从 `staging` 单向迁移到 `approved` 或 `rejected`，不允许回退；其他字段写入后不变；
 - `langgraph_checkpoints` 由 LangGraph 框架自管理，业务代码不直接操作；
 - 所有 `*_id` 外键列必须有索引；JSONB 列按真实查询模式补 GIN 索引（具体清单在迁移期决定）。
@@ -401,3 +421,17 @@ skill_candidates ──[approved by reviewer]──> backend/skills/<applies_to>
 - docker compose 自定义 network，postgres 不暴露端口给 host，仅 backend 可访问；
 - backend 端口仅绑定 `127.0.0.1`，不开公网；
 - 所有外部 HTTP 调用走 `httpx.AsyncClient` 统一配置 timeout 与 SSL 验证。
+
+## 12. 文档同步纪律
+
+与 `docs/2.5-agent-architecture.md` §10 对称。下列变更必须跨文档联动，避免"架构总图仍写 6 Agent、协议已升 v0.3"类漂移：
+
+| 变更类型 | 必须同步 |
+|---|---|
+| 新增/修改 Agent 角色或 HITL 节点 | 本文 §2 总图、`docs/2.5`、`docs/2.7`（若属 intake/live 子系统）、`docs/3` §11 I/O 总表 |
+| 新增 RunEventType 或 API 端点 | `docs/3` §4.2bis、`docs/2.7` §4–5、`docs/1-product-vision.md` 用户契约（若影响产品承诺） |
+| 新增 `runs` JSONB 列或 schema 版本 | `docs/3` §1.1 + 对应 §2.x、`docs/1.1-product-features.md`（若用户可见） |
+| 新增护栏阈值 | 本文 §10、`docs/2.5` §8 |
+| 功能盘点（✅/🚧） | `docs/1.1-product-features.md`（带实现状态表，可写盘点日期；架构决策文不写日期） |
+
+**元数据策略**：功能清单（`1.1`）允许"截至 YYYY-MM-DD"一行定位盘点快照；架构/协议文（本文、`2.5`、`3`）用文首**文档地图 + Git 修订**承载时效性，不维护手写 `last_updated` 字段（ADR 社区与 docs-as-code 的共识：单一真相源是仓库历史，不是文内横幅）。
