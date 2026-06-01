@@ -15,7 +15,7 @@ from agents.graph import compile_graph
 from core.config import settings
 from db.engine import dispose_engine, init_engine
 from exceptions.base import APIException
-from router import health_rt, run_rt, skill_rt
+from router import dashboard_rt, health_rt, run_rt, skill_rt
 from service.event_bus import EventBus, set_event_bus
 from service.skill_store import get_skill_store
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
@@ -118,4 +118,5 @@ async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONRespons
 
 app.include_router(health_rt.router)
 app.include_router(run_rt.router)
+app.include_router(dashboard_rt.router)
 app.include_router(skill_rt.router)

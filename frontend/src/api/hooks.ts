@@ -9,6 +9,7 @@ import { apiClient } from "@/api/client";
 import { getRunFallbackPollMs, useRunEvents } from "@/api/sse";
 import type {
   CompetitorSeedResponse,
+  DashboardResponse,
   EvidenceListItemResponse,
   RunCreateRequest,
   RunCreateResponse,
@@ -283,5 +284,18 @@ export function useRejectCandidate(): UseMutationResult<
   return useMutation({
     mutationFn: ({ candidateId, reviewedBy }) =>
       rejectSkillCandidate(candidateId, { reviewed_by: reviewedBy }),
+  });
+}
+
+async function fetchDashboard(): Promise<DashboardResponse> {
+  const { data } = await apiClient.get<DashboardResponse>("/api/dashboard");
+  return data;
+}
+
+export function useDashboard(): UseQueryResult<DashboardResponse, Error> {
+  return useQuery({
+    queryKey: ["dashboard"],
+    queryFn: fetchDashboard,
+    refetchInterval: 30000,
   });
 }

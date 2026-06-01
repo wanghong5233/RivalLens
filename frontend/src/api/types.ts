@@ -179,3 +179,43 @@ export interface PromotedArtifactResponse {
   action: "created" | "updated" | string;
   entry_id: string;
 }
+
+export interface AgentStatusResponse {
+  agent_name: string;
+  role: string;
+  status: string;
+  task_count: number;
+  success_rate: number;
+  avg_latency_ms: number;
+}
+
+export interface DashboardMetricsResponse {
+  total_runs: number;
+  running_runs: number;
+  completed_runs: number;
+  failed_runs: number;
+  total_evidence: number;
+  total_llm_calls: number;
+  total_tokens: number;
+  avg_run_duration_seconds: number | null;
+  overall_success_rate: number;
+}
+
+export interface DataSourceDistribution {
+  source_type: string;
+  count: number;
+  percentage: number;
+}
+
+export interface DailyRunStats {
+  date: string;
+  count: number;
+  avg_duration_seconds: number | null;
+}
+
+export interface DashboardResponse {
+  metrics: DashboardMetricsResponse;
+  agent_status: AgentStatusResponse[];
+  source_distribution: DataSourceDistribution[];
+  daily_stats: DailyRunStats[];
+}
