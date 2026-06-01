@@ -17,6 +17,7 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { useConfirmRunPlan, useRunDetail } from "@/api/hooks";
 import type { PlanTask, PlanTaskStage, PlanTree, RunIntakeDraft } from "@/api/types";
+import { CancelRunButton } from "@/components/CancelRunButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -244,7 +245,10 @@ export function PlanConfirmPage(): JSX.Element {
         </Button>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-h1 text-foreground">确认分析计划</h1>
-          <Badge variant="secondary" className="font-mono text-xs">{runId}</Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="font-mono text-xs">{runId}</Badge>
+            <CancelRunButton runId={runId} label="放弃此次分析" redirectTo="/app" />
+          </div>
         </div>
         <p className="text-caption text-foreground-muted">
           Agent 已根据需求拟定了一份分步执行计划。你可以取消不需要的任务，确认后会立即开始抓取证据。

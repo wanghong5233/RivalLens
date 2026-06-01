@@ -93,6 +93,17 @@ export interface FollowUpReceivedPayload {
   received_at: string;
 }
 
+export interface RunFinishPayload {
+  run_id: string;
+  // Backend's terminal RUN_FINISH payload. error_type / error_message are only
+  // present on failed / cancelled outcomes; consumers use them to drive the
+  // top-of-page Alert banner instead of leaving the user staring at a stale
+  // "running" UI.
+  status: "completed" | "degraded" | "failed" | "cancelled" | string;
+  error_type?: string;
+  error_message?: string;
+}
+
 export interface StepFinishEventPayload {
   agent_name: string;
   status?: string;
@@ -126,6 +137,10 @@ export interface RunEventsOptions {
   // Phase 4: LiveRunPage shows a toast / pending-instruction chip when a new
   // follow-up is accepted (either by the local user or another tab).
   onFollowUpReceived?: (payload: FollowUpReceivedPayload) => void;
+  // Terminal-state hook (failed / cancelled / completed). LiveRunPage uses it
+  // to render a reason banner; pages that only need cache invalidation can
+  // omit it and rely on the default queryClient.invalidate call.
+  onRunFinish?: (payload: RunFinishPayload) => void;
 }
 
 interface RunEventEnvelope {
@@ -196,6 +211,26 @@ function coerceIntakeUserReplyPayload(value: unknown): IntakeUserReplyPayload | 
     reply_text: replyText,
     reply_options: replyOptions,
     draft: coerceDraftRecord(record.draft),
+  };
+}
+
+function coerceRunFinishPayload(value: unknown): RunFinishPayload | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const runIdRaw = record.run_id;
+  const statusRaw = record.status;
+  if (typeof runIdRaw !== "string" || typeof statusRaw !== "string") {
+    return null;
+  }
+  const errorTypeRaw = record.error_type;
+  const errorMessageRaw = record.error_message;
+  return {
+    run_id: runIdRaw,
+    status: statusRaw,
+    error_type: typeof errorTypeRaw === "string" ? errorTypeRaw : undefined,
+    error_message: typeof errorMessageRaw === "string" ? errorMessageRaw : undefined,
   };
 }
 
@@ -411,6 +446,7 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     onSupervisorDecision,
     onStepFinish,
     onFollowUpReceived,
+    onRunFinish,
   } = options;
   useEffect(() => {
     if (!runId) {
@@ -483,10 +519,17 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     eventSource.addEventListener("curator.finish", () => {
       void queryClient.invalidateQueries({ queryKey: ["skill-candidates"] });
     });
-    eventSource.addEventListener("run.finish", () => {
+    eventSource.addEventListener("run.finish", (event: MessageEvent<string>) => {
       invalidateRunDetail();
       invalidateRunMetrics();
       invalidateRunReport();
+      if (onRunFinish === undefined) {
+        return;
+      }
+      const payload = coerceRunFinishPayload(parseEventPayload(event.data));
+      if (payload !== null) {
+        onRunFinish(payload);
+      }
     });
     eventSource.addEventListener("intake.clarify_request", (event: MessageEvent<string>) => {
       invalidateRunDetail();

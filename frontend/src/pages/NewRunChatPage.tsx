@@ -32,6 +32,7 @@ import type {
   RunIntakeDraft,
   UserRole,
 } from "@/api/types";
+import { CancelRunButton } from "@/components/CancelRunButton";
 import { IntakeModeSwitcher } from "@/components/intake/IntakeModeSwitcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -618,7 +619,17 @@ export function NewRunChatPage(): JSX.Element {
       <header className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-h1 text-foreground">新建竞品分析</h1>
-          <IntakeModeSwitcher active="chat" />
+          <div className="flex items-center gap-2">
+            {runId !== null && status !== "complete" && (
+              <CancelRunButton
+                runId={runId}
+                label="放弃此次分析"
+                redirectTo="/app"
+                size="sm"
+              />
+            )}
+            <IntakeModeSwitcher active="chat" />
+          </div>
         </div>
         <p className="text-caption text-foreground-muted">
           告诉 Agent 你想分析什么，我会用对话帮你确认身份、意图和竞品范围，再开始抓取证据。

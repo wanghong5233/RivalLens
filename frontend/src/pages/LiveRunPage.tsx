@@ -5,18 +5,21 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  CircleSlash,
   Clock,
   Compass,
   Globe2,
   Hammer,
+  Info,
   Loader2,
   Microscope,
   PenLine,
   Search,
   Sparkles,
   Wrench,
+  XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { useRunDetail, useSubmitRunFollowUp } from "@/api/hooks";
@@ -24,12 +27,14 @@ import { useRunEvents } from "@/api/sse";
 import type {
   EvidenceCollectedPayload,
   FollowUpReceivedPayload,
+  RunFinishPayload,
   StepFinishEventPayload,
   SupervisorDecisionEventPayload,
   ToolEventPayload,
   ToolFinishEventPayload,
 } from "@/api/sse";
 import type { PlanTaskStage, PlanTree } from "@/api/types";
+import { CancelRunButton } from "@/components/CancelRunButton";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
@@ -90,6 +95,13 @@ const MAX_TOOL_ENTRIES = 12;
 const MAX_EVIDENCE_ENTRIES = 30;
 const TERMINAL_REDIRECT_MS = 2_500;
 
+// Stuck detection: when the run is still "running" but no SSE traffic has been
+// seen for this long, surface a "可能已中断" hint with a one-tap stop. Empirical
+// upper bound: a single research iteration on Doubao + Tavily completes well
+// under 90s; 4 min covers slow batches without false positives.
+const STUCK_HINT_THRESHOLD_MS = 240_000;
+const STUCK_HINT_TICK_MS = 15_000;
+
 function buildToolKey(payload: ToolEventPayload): string {
   return `${payload.tool}|${payload.competitor_id ?? "-"}|${payload.dimension ?? "-"}|${payload.turn ?? 0}`;
 }
@@ -115,6 +127,17 @@ export function LiveRunPage(): JSX.Element {
   // by local /follow-up submissions and remote followup.received events;
   // pruned by consumed_follow_up_ids on supervisor.decision.
   const [pendingFollowUps, setPendingFollowUps] = useState<FollowUpReceivedPayload[]>([]);
+  // Terminal RUN_FINISH payload carries error_type / error_message which we
+  // surface on the failed / cancelled Alert banner. Keep it in state instead
+  // of synthesizing the banner from run.status alone — the reason text is
+  // what makes the failure actionable.
+  const [finishPayload, setFinishPayload] = useState<RunFinishPayload | null>(null);
+  // Wall-clock of the most recent meaningful SSE traffic; drives stuck
+  // detection. Bumped by every callback below (tool / step / decision /
+  // evidence / follow-up). useRef avoids re-rendering on every event; the
+  // tick timer reads it lazily.
+  const lastActivityAtRef = useRef<number>(Date.now());
+  const [now, setNow] = useState<number>(Date.now());
 
   // Reset the per-task runtime status whenever the plan changes (e.g. after a
   // version bump from a future edit). All tasks start as "queued".
@@ -133,8 +156,13 @@ export function LiveRunPage(): JSX.Element {
     });
   }, [planTree]);
 
+  const bumpActivity = useCallback(() => {
+    lastActivityAtRef.current = Date.now();
+  }, []);
+
   const handleSupervisorDecision = useCallback(
     (payload: SupervisorDecisionEventPayload) => {
+      bumpActivity();
       if (payload.plan_task_ids.length > 0) {
         setPlanTaskStatus((prev) => {
           const next = { ...prev };
@@ -154,11 +182,12 @@ export function LiveRunPage(): JSX.Element {
         setPendingFollowUps((prev) => prev.filter((entry) => !consumedSet.has(entry.follow_up_id)));
       }
     },
-    [],
+    [bumpActivity],
   );
 
   const handleStepFinish = useCallback(
     (payload: StepFinishEventPayload) => {
+      bumpActivity();
       const targetStage = AGENT_NAME_TO_STAGE[payload.agent_name];
       if (!targetStage || planTree === null) {
         return;
@@ -184,10 +213,11 @@ export function LiveRunPage(): JSX.Element {
         return next;
       });
     },
-    [planTree],
+    [planTree, bumpActivity],
   );
 
   const handleToolStart = useCallback((payload: ToolEventPayload) => {
+    bumpActivity();
     const key = buildToolKey(payload);
     setToolActivity((prev) => {
       const next: ToolActivityEntry = {
@@ -205,9 +235,10 @@ export function LiveRunPage(): JSX.Element {
       const without = prev.filter((entry) => entry.key !== key);
       return [next, ...without].slice(0, MAX_TOOL_ENTRIES);
     });
-  }, []);
+  }, [bumpActivity]);
 
   const handleToolFinish = useCallback((payload: ToolFinishEventPayload) => {
+    bumpActivity();
     const key = buildToolKey(payload);
     setToolActivity((prev) => {
       const existingIndex = prev.findIndex((entry) => entry.key === key);
@@ -239,24 +270,30 @@ export function LiveRunPage(): JSX.Element {
       };
       return next;
     });
-  }, []);
+  }, [bumpActivity]);
 
   const handleEvidenceCollected = useCallback((payload: EvidenceCollectedPayload) => {
+    bumpActivity();
     setEvidenceFeed((prev) => {
       if (prev.some((entry) => entry.evidence_id === payload.evidence_id)) {
         return prev;
       }
       return [payload, ...prev].slice(0, MAX_EVIDENCE_ENTRIES);
     });
-  }, []);
+  }, [bumpActivity]);
 
   const handleFollowUpReceived = useCallback((payload: FollowUpReceivedPayload) => {
+    bumpActivity();
     setPendingFollowUps((prev) => {
       if (prev.some((entry) => entry.follow_up_id === payload.follow_up_id)) {
         return prev;
       }
       return [...prev, payload];
     });
+  }, [bumpActivity]);
+
+  const handleRunFinish = useCallback((payload: RunFinishPayload) => {
+    setFinishPayload(payload);
   }, []);
 
   useRunEvents(runId, {
@@ -266,7 +303,22 @@ export function LiveRunPage(): JSX.Element {
     onToolFinish: handleToolFinish,
     onEvidenceCollected: handleEvidenceCollected,
     onFollowUpReceived: handleFollowUpReceived,
+    onRunFinish: handleRunFinish,
   });
+
+  // Stuck detection ticker: only runs while the page thinks the run is alive,
+  // and only fires often enough to update the "X 分钟前" caption. The actual
+  // threshold check is in the JSX so the badge appears immediately when the
+  // bar crosses the line.
+  useEffect(() => {
+    if (runStatus === null || TERMINAL_STATUSES.has(runStatus)) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      setNow(Date.now());
+    }, STUCK_HINT_TICK_MS);
+    return () => window.clearInterval(intervalId);
+  }, [runStatus]);
 
   // When the run reaches a terminal state, defer the navigation a moment so
   // the user can see the final flips (completed tiles + last evidence cards).
@@ -341,6 +393,9 @@ export function LiveRunPage(): JSX.Element {
 
   const isTerminal = runStatus !== null && TERMINAL_STATUSES.has(runStatus);
   const userQuery = intakeDraft?.user_query ?? runDetail.data?.user_query ?? "";
+  const isFailureTerminal = runStatus === "failed" || runStatus === "cancelled";
+  const idleMs = isTerminal ? 0 : now - lastActivityAtRef.current;
+  const isStuck = !isTerminal && idleMs >= STUCK_HINT_THRESHOLD_MS;
 
   return (
     <div className="space-y-4 px-6 py-6">
@@ -369,6 +424,9 @@ export function LiveRunPage(): JSX.Element {
               已完成 {progress.completed}/{progress.total} · 进行中 {progress.running}
             </Badge>
           ) : null}
+          {!isTerminal ? (
+            <CancelRunButton runId={runId} redirectTo={null} />
+          ) : null}
           {isTerminal ? (
             <Button asChild size="sm">
               <Link to={`/app/runs/${runId}`}>
@@ -378,6 +436,31 @@ export function LiveRunPage(): JSX.Element {
           ) : null}
         </div>
       </div>
+
+      {isFailureTerminal ? (
+        <TerminalAlert
+          tone={runStatus === "cancelled" ? "neutral" : "danger"}
+          icon={runStatus === "cancelled" ? CircleSlash : XCircle}
+          title={
+            runStatus === "cancelled" ? "此次分析已停止" : "分析未能完成"
+          }
+          message={
+            finishPayload?.error_message ??
+            (runStatus === "cancelled"
+              ? "已采集的证据保留在历史中，可重新发起新的分析。"
+              : "后台任务异常退出，请查看日志或重新发起一次分析。")
+          }
+          errorType={finishPayload?.error_type ?? null}
+          runId={runId}
+        />
+      ) : null}
+
+      {isStuck ? (
+        <StuckHintAlert
+          idleMs={idleMs}
+          runId={runId}
+        />
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <PlanTreeColumn planTree={planTree} stageTasks={stageTasks} planTaskStatus={planTaskStatus} />
@@ -719,6 +802,94 @@ function formatToolArgs(args: Record<string, unknown> | undefined): string {
     return JSON.stringify(args);
   }
   return parts.join(" · ");
+}
+
+interface TerminalAlertProps {
+  tone: "danger" | "neutral";
+  icon: typeof XCircle;
+  title: string;
+  message: string;
+  errorType: string | null;
+  runId: string;
+}
+
+function TerminalAlert({
+  tone,
+  icon: Icon,
+  title,
+  message,
+  errorType,
+  runId,
+}: TerminalAlertProps): JSX.Element {
+  const isDanger = tone === "danger";
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-2xl border p-4 lg:flex-row lg:items-center lg:justify-between",
+        isDanger
+          ? "border-danger/30 bg-danger/[0.06]"
+          : "border-white/[0.08] bg-white/[0.04]",
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <Icon
+          className={cn("mt-0.5 h-5 w-5 shrink-0", isDanger ? "text-danger" : "text-foreground-muted")}
+        />
+        <div className="space-y-1">
+          <div className={cn("text-sm font-medium", isDanger ? "text-danger" : "text-foreground")}>
+            {title}
+          </div>
+          <p className="text-sm text-foreground-muted">{message}</p>
+          {errorType !== null ? (
+            <div className="text-xs text-foreground-muted/70">错误类型：{errorType}</div>
+          ) : null}
+        </div>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <Button asChild variant="ghost" size="sm">
+          <Link to="/app">返回仪表盘</Link>
+        </Button>
+        <Button asChild size="sm">
+          <Link to={`/app/runs/${runId}`}>查看已有结果</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function formatIdleDuration(idleMs: number): string {
+  if (idleMs < 60_000) {
+    return `${Math.floor(idleMs / 1000)} 秒`;
+  }
+  if (idleMs < 3_600_000) {
+    return `${Math.floor(idleMs / 60_000)} 分钟`;
+  }
+  return `${Math.floor(idleMs / 3_600_000)} 小时`;
+}
+
+interface StuckHintAlertProps {
+  idleMs: number;
+  runId: string;
+}
+
+function StuckHintAlert({ idleMs, runId }: StuckHintAlertProps): JSX.Element {
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-warning/40 bg-warning/[0.08] p-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex items-start gap-3">
+        <Info className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+        <div className="space-y-1">
+          <div className="text-sm font-medium text-warning">分析似乎已停滞</div>
+          <p className="text-sm text-foreground-muted">
+            最近 {formatIdleDuration(idleMs)} 没有收到任何进度事件。Agent
+            可能正在处理长耗时的子任务，也可能已经中断。
+          </p>
+        </div>
+      </div>
+      <div className="flex shrink-0">
+        <CancelRunButton runId={runId} label="标记为失败并退出" redirectTo={null} size="sm" />
+      </div>
+    </div>
+  );
 }
 
 interface EvidenceFeedCardProps {

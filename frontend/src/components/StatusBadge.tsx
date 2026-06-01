@@ -1,11 +1,18 @@
 import type { LucideIcon } from "lucide-react";
-import { AlertTriangle, CheckCircle2, CircleDashed, CircleX, LoaderCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  CircleDashed,
+  CircleSlash,
+  CircleX,
+  LoaderCircle,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import type { BadgeProps } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-type StatusType = "running" | "completed" | "degraded" | "failed" | string;
+type StatusType = "running" | "completed" | "degraded" | "failed" | "cancelled" | string;
 
 interface StatusMeta {
   icon: LucideIcon;
@@ -33,6 +40,11 @@ const STATUS_META: Record<string, StatusMeta> = {
     icon: CircleX,
     label: "失败",
     variant: "danger",
+  },
+  cancelled: {
+    icon: CircleSlash,
+    label: "已停止",
+    variant: "secondary",
   },
 };
 

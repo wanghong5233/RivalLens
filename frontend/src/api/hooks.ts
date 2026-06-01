@@ -122,7 +122,7 @@ async function deleteRun(runId: string): Promise<{ run_id: string; deleted: bool
 
 async function patchRun(
   runId: string,
-  payload: { user_query?: string; status?: "cancelled" },
+  payload: { user_query?: string; status?: "cancelled"; cancel_reason?: string },
 ): Promise<RunDetailResponse> {
   const { data } = await apiClient.patch<RunDetailResponse>(`/api/runs/${runId}`, payload);
   return data;
@@ -471,7 +471,7 @@ export function useRejectCandidate(): UseMutationResult<
 
 export interface PatchRunVariables {
   runId: string;
-  payload: { user_query?: string; status?: "cancelled" };
+  payload: { user_query?: string; status?: "cancelled"; cancel_reason?: string };
 }
 
 export function useDeleteRun(): UseMutationResult<
