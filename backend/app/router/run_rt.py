@@ -386,6 +386,78 @@ async def _mark_run_failed_and_emit(
     )
 
 
+_RUN_TASK_NAME_PREFIXES: tuple[str, ...] = (
+    "run_graph_",
+    "intake_resume_",
+    "plan_resume_",
+)
+
+
+async def _handle_graph_cancelled(*, run_id: str, log_event: str) -> None:
+    """Reconcile the Run row when a graph task receives CancelledError.
+
+    Two ways this fires:
+      1. User cancel via PATCH /runs — the endpoint already flipped the row to
+         "cancelled" and emitted RUN_FINISH, so this branch is a no-op.
+      2. Unexpected cancellation (e.g. lifespan shutdown asking tasks to stop) —
+         the row is still "running"; mark it failed so the UI doesn't hang.
+    The caller MUST re-raise CancelledError per asyncio's cooperative-cancel
+    contract; failing to do so makes the task look like a normal completion.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        if run.status != "running":
+            with bind_run(run_id):
+                log.info(log_event, status=run.status, branch="already_terminal")
+            return
+        run.status = "failed"
+        run.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+    with bind_run(run_id):
+        log.warning(log_event, status="failed", branch="unexpected_cancel")
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.RUN_FINISH,
+        payload=_build_run_finish_payload(
+            run_id=run_id,
+            status="failed",
+            error_type="CancelledError",
+            error_message="后台任务被中止（可能是服务重启）",
+        ),
+    )
+
+
+def _cancel_background_tasks_for_run(
+    *,
+    background_tasks: set[asyncio.Task[object]] | None,
+    run_id: str,
+) -> int:
+    """Cancel any in-flight graph tasks bound to this run.
+
+    Tasks are named with the run_id suffix on creation (see `name=f"..._{run_id}"`
+    in this module). We don't cancel the skill_curator follow-up — it only fires
+    on terminal completion, so a cancel during execution means there's no curator
+    task to chase yet. CancelledError propagates back through the outer boundary
+    (`_mark_run_failed_and_emit`), which would normally flip the row to failed;
+    PATCH /runs caller flips it to "cancelled" first so the user's intent wins.
+    """
+    if not isinstance(background_tasks, set):
+        return 0
+    cancelled = 0
+    for task in list(background_tasks):
+        name = task.get_name()
+        if not any(name.startswith(prefix) and name.endswith(run_id) for prefix in _RUN_TASK_NAME_PREFIXES):
+            continue
+        if task.done():
+            continue
+        task.cancel()
+        cancelled += 1
+    return cancelled
+
+
 def _coerce_run_status(state: object) -> str:
     if isinstance(state, dict):
         status_raw = state.get("status", "completed")
@@ -706,6 +778,11 @@ async def _execute_run_graph(
                 initial_state,
                 config={"configurable": {"thread_id": run_id}},
             )
+        except asyncio.CancelledError:
+            await _handle_graph_cancelled(
+                run_id=run_id, log_event="api.run.execute.cancelled"
+            )
+            raise
         except Exception as exc:
             # Background-task outer boundary: every uncaught node failure
             # must update run.status and emit RUN_FINISH, otherwise the UI
@@ -887,6 +964,11 @@ async def _resume_plan_graph_in_background(
     with bind_run(run_id):
         try:
             graph_state = await graph.ainvoke(Command(resume=resume_payload), config=config)
+        except asyncio.CancelledError:
+            await _handle_graph_cancelled(
+                run_id=run_id, log_event="api.run.plan.resume.cancelled"
+            )
+            raise
         except Exception as exc:
             await _mark_run_failed_and_emit(
                 run_id=run_id, exc=exc, log_event="api.run.plan.resume.failed"
@@ -944,6 +1026,11 @@ async def _resume_intake_graph_in_background(
         try:
             await graph.ainvoke(Command(resume=resume_payload), config=config)
             snapshot = await graph.aget_state(config)
+        except asyncio.CancelledError:
+            await _handle_graph_cancelled(
+                run_id=run_id, log_event="api.run.intake.resume.cancelled"
+            )
+            raise
         except Exception as exc:
             await _mark_run_failed_and_emit(
                 run_id=run_id, exc=exc, log_event="api.run.intake.resume.failed"
@@ -1603,6 +1690,15 @@ async def get_run(run_id: str) -> RunDetailResponse:
 class RunPatchRequest(BaseModel):
     user_query: str | None = None
     status: Literal["cancelled"] | None = None
+    cancel_reason: str | None = Field(default=None, max_length=200)
+
+    @field_validator("cancel_reason")
+    @classmethod
+    def _normalize_cancel_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
 
 
 class RunDeleteResponse(BaseModel):
@@ -1636,7 +1732,19 @@ async def delete_run(run_id: str) -> RunDeleteResponse:
 
 
 @router.patch("/api/runs/{run_id}", response_model=RunDetailResponse)
-async def patch_run(run_id: str, payload: RunPatchRequest) -> RunDetailResponse:
+async def patch_run(
+    run_id: str, payload: RunPatchRequest, request: Request
+) -> RunDetailResponse:
+    """Rename + cooperative cancel.
+
+    Cancel path (status="cancelled" while run is running):
+      1. Flip DB to "cancelled" (user intent wins over the background's eventual
+         "failed" if its CancelledError races back).
+      2. Cancel any in-flight graph tasks named with this run_id.
+      3. Emit RUN_FINISH so SSE consumers (LiveRunPage) stop polling immediately.
+    """
+    should_cancel_tasks = False
+    cancel_reason = payload.cancel_reason
     session_factory = get_session_factory()
     async with session_factory() as session:
         run = await session.get(Run, run_id)
@@ -1651,8 +1759,32 @@ async def patch_run(run_id: str, payload: RunPatchRequest) -> RunDetailResponse:
         if payload.status == "cancelled" and run.status == "running":
             run.status = "cancelled"
             run.finished_at = datetime.now(timezone.utc)
+            should_cancel_tasks = True
         await session.commit()
         await session.refresh(run)
+
+    if should_cancel_tasks:
+        background_tasks = getattr(request.app.state, "background_tasks", None)
+        cancelled_count = _cancel_background_tasks_for_run(
+            background_tasks=background_tasks if isinstance(background_tasks, set) else None,
+            run_id=run_id,
+        )
+        with bind_run(run_id):
+            log.info(
+                "api.run.cancel",
+                cancelled_task_count=cancelled_count,
+                cancel_reason=cancel_reason,
+            )
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(
+                run_id=run_id,
+                status="cancelled",
+                error_type="UserCancelled",
+                error_message=cancel_reason or "用户已停止此次分析",
+            ),
+        )
     return _to_run_detail(run)
 
 

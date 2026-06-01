@@ -10,19 +10,57 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from sqlalchemy import select, update
 
 from agents.graph import compile_graph
 from core.config import settings
-from db.engine import dispose_engine, init_engine
+from db.engine import dispose_engine, get_session_factory, init_engine
 from exceptions.base import APIException
+from models.run import Run
 from router import health_rt, run_rt, skill_rt
-from service.event_bus import EventBus, set_event_bus
+from service.event_bus import EventBus, RunEventType, emit_run_event, set_event_bus
 from service.skill_store import get_skill_store
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
 from utils.request_id import new_request_id, request_id_ctx
 
 configure_logging()
 log = get_logger("app_main")
+
+
+async def _sweep_orphan_running_runs() -> None:
+    """Reconcile runs left as `running` after a previous service crash.
+
+    Without this, a server restart silently abandons every in-flight task —
+    asyncio is gone, the LangGraph checkpoint may be mid-step, but `runs.status`
+    still says "running" and the UI polls forever. We mark them all as failed
+    so the user sees an actionable terminal state and can re-submit.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(select(Run.run_id).where(Run.status == "running"))
+        orphan_ids = [row[0] for row in result.all()]
+        if not orphan_ids:
+            return
+        await session.execute(
+            update(Run)
+            .where(Run.run_id.in_(orphan_ids))
+            .values(status="failed", finished_at=datetime.now(timezone.utc))
+        )
+        await session.commit()
+    log.warning("startup.orphan_runs.swept", run_count=len(orphan_ids))
+    # Emit RUN_FINISH so any client that reconnects after restart immediately
+    # sees the row flip terminal without needing a hard refresh.
+    for run_id in orphan_ids:
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload={
+                "run_id": run_id,
+                "status": "failed",
+                "error_type": "ServerRestart",
+                "error_message": "服务重启时此任务正在执行，已标记为失败。请重新发起分析。",
+            },
+        )
 
 
 @asynccontextmanager
@@ -35,6 +73,7 @@ async def lifespan(app: FastAPI):
     await event_bus.start()
     app.state.event_bus = event_bus
     set_event_bus(event_bus)
+    await _sweep_orphan_running_runs()
     checkpoint_dsn = settings.LANGGRAPH_CHECKPOINT_DSN
     if checkpoint_dsn is None:
         raise RuntimeError("LANGGRAPH_CHECKPOINT_DSN must be configured before service startup.")
