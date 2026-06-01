@@ -7,6 +7,7 @@ interface ToastItem {
   title: string;
   description?: string;
   variant?: "default" | "success" | "warning" | "danger";
+  durationMs: number;
 }
 
 const listeners = new Set<() => void>();
@@ -47,24 +48,34 @@ export function pushToast(input: PushToastInput): void {
     title: input.title,
     description: input.description,
     variant: input.variant ?? "default",
+    durationMs: input.durationMs ?? 3500,
   };
   items = [toastItem, ...items].slice(0, 4);
   emit();
 
-  const durationMs = input.durationMs ?? 3500;
   window.setTimeout(() => {
     removeToast(toastItem.id);
-  }, durationMs);
+  }, toastItem.durationMs);
 }
 
 export function Toaster(): JSX.Element {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   return (
-    <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-[min(360px,calc(100vw-2rem))] flex-col gap-2">
+    <div
+      aria-live="polite"
+      className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[min(380px,calc(100vw-2rem))] flex-col-reverse gap-2"
+    >
       {snapshot.map((item) => (
         <div className="pointer-events-auto" key={item.id}>
-          <Toast description={item.description} title={item.title} variant={item.variant} />
+          <Toast
+            description={item.description}
+            title={item.title}
+            variant={item.variant}
+            onDismiss={() => {
+              removeToast(item.id);
+            }}
+          />
         </div>
       ))}
     </div>

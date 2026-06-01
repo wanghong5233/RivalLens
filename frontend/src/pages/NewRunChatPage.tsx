@@ -2,6 +2,7 @@ import {
   Bot,
   CheckCircle2,
   Circle,
+  CircleDot,
   Loader2,
   Sparkles,
   User as UserIcon,
@@ -17,18 +18,17 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { apiClient } from "@/api/client";
 import { useCreateRunIntake, useReplyRunIntake } from "@/api/hooks";
 import {
   useRunEvents,
   type IntakeClarifyEventPayload,
   type IntakeCompletePayload,
+  type IntakeUserReplyPayload,
 } from "@/api/sse";
 import type {
   IntakeClarifyRequest,
   IntakeCreateRequest,
   IntakeUserReply,
-  RunDetailResponse,
   RunIntakeDraft,
   UserRole,
 } from "@/api/types";
@@ -64,9 +64,69 @@ type ChatStatus =
   | "error";
 
 const WELCOME_TEXT =
-  "你好，我是 RivalLens。告诉我你想分析的问题，我会先帮你确认目标和竞品范围，再开始抓取证据。";
+  "你好，我是 RivalLens。告诉我你想做的竞品分析，我会先帮你对齐角色、意图和竞品范围，再开始抓取证据。";
 
 const POST_COMPLETE_DELAY_MS = 1500;
+
+// Curated example prompts the user can one-click into the composer. Three
+// scenarios chosen to be mutually orthogonal on (industry × user role ×
+// requirement clarity), so a stranger to the system sees the full coverage:
+//   - trae_full       → TC-I7  PM     × AI Coding   × 高密度规格（端到端示范）
+//   - b2b_sales_ai    → TC-I1  Sales  × 工业 B2B    × 完全模糊（演示 Agent 引导圈外人）
+//   - ai_resume_track → TC-I2  Founder× HR Tech     × 半模糊（创业者给投资人讲故事）
+interface ExamplePrompt {
+  id: string;
+  title: string;
+  subtitle: string;
+  recommended?: boolean;
+  query: string;
+}
+
+// Product-level pipeline only — never scenario-specific. Concrete plan tasks
+// and report sections are produced by Planner / Writer after the user sends.
+const ANALYSIS_PIPELINE_STEPS: Array<{ title: string; text: string }> = [
+  {
+    title: "澄清需求",
+    text: "Intake Agent 根据你的描述追问，补齐角色、意图与竞品范围（左侧清单同步更新）",
+  },
+  {
+    title: "确认计划",
+    text: "Planner Agent 生成任务树，你在计划页勾选、跳过或追加关注点",
+  },
+  {
+    title: "执行调研",
+    text: "多 Agent 采集公开证据，Live 页可查看工具调用与溯源过程",
+  },
+  {
+    title: "产出报告",
+    text: "生成 Battlecard 与可分享报告，结论均可追溯到 evidence",
+  },
+];
+
+const EXAMPLE_PROMPTS: ExamplePrompt[] = [
+  {
+    id: "trae_full",
+    title: "TRAE 对标全球 AI 编程工具",
+    subtitle: "产品战略 · 多竞品 · 投入方向建议",
+    recommended: true,
+    query:
+      "我们是字节 AIGC 创新孵化团队，TRAE 已在集团内部上线，下个月要给高层做汇报。请对标海外的 Cursor、GitHub Copilot、Windsurf 与国内的通义灵码、文心 Comate、豆包 AI 编程助手，重点看产品定位、定价、企业版能力，以及中国 vs 海外市场差异，最终回答 TRAE 下一步应该往哪个方向加大投入。",
+  },
+  {
+    id: "b2b_sales_ai",
+    title: "B2B 销售团队选 AI 提效工具",
+    subtitle: "圈外人 · 模糊需求 · Agent 主动澄清",
+    query:
+      "我们是做工业自动化设备销售的，30 人销售团队，主要走线下拜访 + 邮件跟单，平均成交周期 3-6 个月。最近老板一直说要用 AI 提效，让我下周拿个方案出来，但我对 AI 工具完全不了解，市面上现在都有哪些适合 B2B 销售场景的？我们该看哪一类？",
+  },
+  {
+    id: "ai_resume_track",
+    title: "AI 简历产品的赛道地图",
+    subtitle: "创业者 · 早期对标 · 给投资人讲故事",
+    query:
+      "我们三人团队在做「AI 简历优化 + 求职流程跟踪」工具，目标用户是国内应届生和 1-3 年工作经验的年轻人，MVP 已上线小红书内测。下个月要见种子轮投资人，需要搞清楚：海外像 Teal、Rezi 这种 AI 简历优化，LinkedIn 在做 AI 求职助手，国内也有公众号在卷类似产品，整个赛道到底有哪些玩家、各自切什么人群和功能、我们这个「简历 + 跟踪」的组合点位是不是已经被覆盖了？",
+  },
+];
 
 // --- Helpers --------------------------------------------------------------
 
@@ -103,38 +163,70 @@ function clarifyMessageFromPayload(
   };
 }
 
-function deriveChecklistRows(draft: RunIntakeDraft | null): Array<{
+interface ChecklistRow {
   id: string;
   label: string;
   hint: string;
   satisfied: boolean;
-}> {
+  active: boolean;
+}
+
+// Map a chat-side clarify event's field_targets to the three checklist rows
+// the right panel renders. This is what gives the "in_progress" item its
+// amber color: the row whose target field the Agent is currently asking about.
+const CHECKLIST_FIELD_MAP: Record<string, string> = {
+  user_role: "identity",
+  analysis_intent: "intent",
+  competitors_explicit: "competitors",
+  competitors_discovery_mode: "competitors",
+};
+
+function deriveChecklistRows(
+  draft: RunIntakeDraft | null,
+  activeRowIds: Set<string>,
+): ChecklistRow[] {
+  const identitySatisfied = draft?.user_role !== null && draft?.user_role !== undefined;
+  const intentSatisfied = Boolean(draft?.analysis_intent);
+  const competitorsSatisfied = competitorPathSatisfied(draft);
   return [
     {
       id: "identity",
       label: "用户身份",
       hint:
-        draft?.user_role !== null && draft?.user_role !== undefined
-          ? roleLabel(draft.user_role)
+        identitySatisfied && draft
+          ? roleLabel(draft.user_role as UserRole)
           : "PM / 创业者 / 销售 / 投资人",
-      satisfied: draft?.user_role !== null && draft?.user_role !== undefined,
+      satisfied: identitySatisfied,
+      active: !identitySatisfied && activeRowIds.has("identity"),
     },
     {
       id: "intent",
       label: "分析意图",
-      hint:
-        draft?.analysis_intent !== null && draft?.analysis_intent !== undefined
-          ? draft.analysis_intent
-          : "你最希望解决的问题或决策",
-      satisfied: Boolean(draft?.analysis_intent),
+      hint: intentSatisfied && draft?.analysis_intent
+        ? draft.analysis_intent
+        : "你最希望解决的问题或决策",
+      satisfied: intentSatisfied,
+      active: !intentSatisfied && activeRowIds.has("intent"),
     },
     {
       id: "competitors",
       label: "竞品范围",
       hint: competitorHint(draft),
-      satisfied: competitorPathSatisfied(draft),
+      satisfied: competitorsSatisfied,
+      active: !competitorsSatisfied && activeRowIds.has("competitors"),
     },
   ];
+}
+
+function activeRowIdsFromFieldTargets(fieldTargets: string[]): Set<string> {
+  const ids = new Set<string>();
+  for (const target of fieldTargets) {
+    const mapped = CHECKLIST_FIELD_MAP[target];
+    if (mapped) {
+      ids.add(mapped);
+    }
+  }
+  return ids;
 }
 
 function roleLabel(role: UserRole): string {
@@ -172,6 +264,36 @@ function competitorPathSatisfied(draft: RunIntakeDraft | null): boolean {
   return draft.competitors_explicit.length > 0 || draft.competitors_discovery_mode;
 }
 
+type ChecklistPhase = "pending" | "in_progress" | "complete";
+
+function deriveChecklistPhase(
+  rows: Array<{ satisfied: boolean }>,
+  draft: RunIntakeDraft | null,
+): ChecklistPhase {
+  if (draft?.is_complete) {
+    return "complete";
+  }
+  const satisfiedCount = rows.filter((row) => row.satisfied).length;
+  if (satisfiedCount === 0) {
+    return "pending";
+  }
+  if (satisfiedCount >= rows.length) {
+    return "complete";
+  }
+  return "in_progress";
+}
+
+function checklistPhaseLabel(phase: ChecklistPhase): string {
+  switch (phase) {
+    case "pending":
+      return "待开始";
+    case "in_progress":
+      return "进行中";
+    case "complete":
+      return "已就绪";
+  }
+}
+
 // --- Page ------------------------------------------------------------------
 
 export function NewRunChatPage(): JSX.Element {
@@ -187,6 +309,7 @@ export function NewRunChatPage(): JSX.Element {
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [composerText, setComposerText] = useState("");
   const [composerOptions, setComposerOptions] = useState<string[]>([]);
+  const [selectedExampleId, setSelectedExampleId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -205,25 +328,35 @@ export function NewRunChatPage(): JSX.Element {
     return null;
   }, [messages]);
 
-  // --- SSE: clarify_request / complete --------------------------------------
+  // --- SSE: clarify_request / user_reply / complete -------------------------
 
-  const refreshDraftFromBackend = useCallback(
-    async (refRunId: string) => {
-      try {
-        const { data } = await apiClient.get<RunDetailResponse>(`/api/runs/${refRunId}`);
-        if (data.intake_draft) {
-          setDraft(data.intake_draft);
-        }
-      } catch {
-        // Draft refresh is best-effort. The checklist will catch up on the next
-        // event. Avoid spamming the user with toast on transient network errors.
+  // Merge a partial draft snapshot (from any SSE event) into local state.
+  // Backend is the source of truth — we replace fields it sent rather than
+  // patching, so a field that backend explicitly cleared can land in FE state.
+  const applyDraftSnapshot = useCallback(
+    (snapshot: Record<string, unknown> | undefined) => {
+      if (!snapshot) {
+        return;
       }
+      setDraft((prev) => {
+        const base = prev ?? emptyDraft(typeof snapshot.user_query === "string" ? snapshot.user_query : "");
+        const next: RunIntakeDraft = { ...base, ...(snapshot as Partial<RunIntakeDraft>) };
+        // is_complete is computed server-side; recompute locally as a guard so
+        // the checklist badge cannot drift if backend forgets to send it.
+        next.is_complete =
+          next.user_role !== null &&
+          next.user_role !== undefined &&
+          Boolean(next.analysis_intent && next.analysis_intent.length > 0) &&
+          (next.competitors_explicit.length > 0 || next.competitors_discovery_mode === true);
+        return next;
+      });
     },
-    [setDraft],
+    [],
   );
 
   const handleIntakeClarify = useCallback(
     (payload: IntakeClarifyEventPayload) => {
+      applyDraftSnapshot(payload.draft);
       setMessages((prev) => [
         ...prev,
         clarifyMessageFromPayload({
@@ -234,11 +367,18 @@ export function NewRunChatPage(): JSX.Element {
       ]);
       setStatus("awaiting_user");
       setComposerOptions([]);
-      if (runId !== null) {
-        void refreshDraftFromBackend(runId);
-      }
     },
-    [runId, refreshDraftFromBackend],
+    [applyDraftSnapshot],
+  );
+
+  const handleIntakeUserReply = useCallback(
+    (payload: IntakeUserReplyPayload) => {
+      // Post-merge draft from the wait node — paints checklist before the next
+      // clarify_request arrives. This is what makes the right-side requirement
+      // checklist feel instantaneous after the user clicks Send.
+      applyDraftSnapshot(payload.draft);
+    },
+    [applyDraftSnapshot],
   );
 
   const handleIntakeComplete = useCallback(
@@ -280,6 +420,7 @@ export function NewRunChatPage(): JSX.Element {
 
   useRunEvents(runId ?? "", {
     onIntakeClarify: handleIntakeClarify,
+    onIntakeUserReply: handleIntakeUserReply,
     onIntakeComplete: handleIntakeComplete,
   });
 
@@ -413,6 +554,27 @@ export function NewRunChatPage(): JSX.Element {
     });
   }
 
+  function handleExamplePick(prompt: ExamplePrompt): void {
+    if (selectedExampleId === prompt.id) {
+      setSelectedExampleId(null);
+      setComposerText("");
+      return;
+    }
+    setSelectedExampleId(prompt.id);
+    setComposerText(prompt.query);
+  }
+
+  function handleComposerChange(nextText: string): void {
+    setComposerText(nextText);
+    if (selectedExampleId === null) {
+      return;
+    }
+    const selected = EXAMPLE_PROMPTS.find((prompt) => prompt.id === selectedExampleId);
+    if (selected !== undefined && nextText !== selected.query) {
+      setSelectedExampleId(null);
+    }
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -425,13 +587,30 @@ export function NewRunChatPage(): JSX.Element {
     await handleSend();
   }
 
-  const checklistRows = useMemo(() => deriveChecklistRows(draft), [draft]);
+  const activeRowIds = useMemo<Set<string>>(() => {
+    if (currentClarify === null || currentClarify.kind !== "assistant.clarify") {
+      return new Set();
+    }
+    return activeRowIdsFromFieldTargets(currentClarify.fieldTargets);
+  }, [currentClarify]);
+  const checklistRows = useMemo(
+    () => deriveChecklistRows(draft, activeRowIds),
+    [draft, activeRowIds],
+  );
+  const checklistPhase = useMemo(
+    () => deriveChecklistPhase(checklistRows, draft),
+    [checklistRows, draft],
+  );
+  const checklistSatisfiedCount = useMemo(
+    () => checklistRows.filter((row) => row.satisfied).length,
+    [checklistRows],
+  );
   const isBusy =
     status === "creating" || status === "replying" || status === "resuming";
   const composerDisabled = isBusy || status === "complete";
   const composerPlaceholder =
     runId === null
-      ? "例如：对比 Cursor、Windsurf 与 TRAE 在产品定位、付费转化和用户口碑上的差异"
+      ? "描述你想做的竞品分析（角色、要解决的问题、可选竞品名单）"
       : "回答 Agent 的问题，或补充更多上下文…";
 
   return (
@@ -447,9 +626,9 @@ export function NewRunChatPage(): JSX.Element {
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-3 lg:col-span-2">
-          <Card className="flex h-[28rem] flex-col">
+      <div className="grid gap-4 lg:grid-cols-3 lg:items-stretch">
+        <div className="flex flex-col gap-3 lg:col-span-2">
+          <Card className="flex min-h-[18rem] flex-1 flex-col lg:min-h-0">
             <CardHeader className="pb-2">
               <CardTitle className="inline-flex items-center gap-2 text-lg">
                 <Sparkles className="h-4 w-4 text-primary" />
@@ -473,14 +652,14 @@ export function NewRunChatPage(): JSX.Element {
             </CardContent>
           </Card>
 
-          <form onSubmit={handleSubmit}>
+          <form className="shrink-0" onSubmit={handleSubmit}>
             <Card className="border-primary/30">
               <CardContent className="space-y-2 p-4">
                 <textarea
                   aria-label="向 Agent 输入"
                   className="min-h-20 w-full resize-none rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-caption text-foreground outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-ring/40"
                   disabled={composerDisabled}
-                  onChange={(event) => setComposerText(event.target.value)}
+                  onChange={(event) => handleComposerChange(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
                   placeholder={composerPlaceholder}
                   value={composerText}
@@ -494,14 +673,40 @@ export function NewRunChatPage(): JSX.Element {
                     ))}
                   </div>
                 )}
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs text-muted-foreground">
-                    回车发送，Shift+Enter 换行。
-                    {status === "resuming"
-                      ? " Agent 正在思考下一个问题…"
-                      : ""}
-                  </p>
-                  <Button disabled={!canSend} size="sm" type="submit">
+                <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                    {runId === null && (
+                      <>
+                        <span className="shrink-0 text-xs text-foreground-subtle">试试</span>
+                        {EXAMPLE_PROMPTS.map((prompt) => {
+                          const isSelected = selectedExampleId === prompt.id;
+                          return (
+                            <button
+                              aria-pressed={isSelected}
+                              className={cn(
+                                "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition",
+                                isSelected
+                                  ? "border-primary/50 bg-primary/15 text-foreground ring-1 ring-primary/30"
+                                  : "border-white/[0.1] bg-white/[0.03] text-foreground-muted hover:border-primary/40 hover:text-foreground",
+                                composerDisabled && "cursor-not-allowed opacity-50",
+                              )}
+                              disabled={composerDisabled}
+                              key={prompt.id}
+                              onClick={() => handleExamplePick(prompt)}
+                              title={prompt.subtitle}
+                              type="button"
+                            >
+                              {prompt.recommended === true && !isSelected && (
+                                <Sparkles className="h-3 w-3 text-primary/70" aria-hidden />
+                              )}
+                              {prompt.title}
+                            </button>
+                          );
+                        })}
+                      </>
+                    )}
+                  </div>
+                  <Button className="shrink-0" disabled={!canSend} size="sm" type="submit">
                     {isBusy ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -517,13 +722,24 @@ export function NewRunChatPage(): JSX.Element {
           </form>
         </div>
 
-        <aside className="space-y-3">
+        <aside className="flex flex-col gap-3">
           <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="inline-flex items-center gap-2 text-base">
-                <CheckCircle2 className="h-4 w-4 text-primary" />
-                需求清单
-              </CardTitle>
+            <CardHeader className="space-y-3 pb-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base">需求清单</CardTitle>
+                <span className="inline-flex items-center gap-1.5 text-xs text-foreground-muted">
+                  <StatusDot phase={checklistPhase} />
+                  <span>{checklistPhaseLabel(checklistPhase)}</span>
+                  <span className="tabular-nums text-foreground-subtle">
+                    {checklistSatisfiedCount}/{checklistRows.length}
+                  </span>
+                </span>
+              </div>
+              <ChecklistProgressBar
+                phase={checklistPhase}
+                satisfied={checklistSatisfiedCount}
+                total={checklistRows.length}
+              />
             </CardHeader>
             <CardContent className="space-y-3 pt-0">
               {checklistRows.map((row) => (
@@ -532,6 +748,7 @@ export function NewRunChatPage(): JSX.Element {
                   label={row.label}
                   hint={row.hint}
                   satisfied={row.satisfied}
+                  active={row.active}
                 />
               ))}
               {draft !== null && (
@@ -561,13 +778,25 @@ export function NewRunChatPage(): JSX.Element {
             <CardHeader className="pb-3">
               <CardTitle className="text-base">为什么要对话？</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-2 pt-0 text-xs text-foreground-muted">
-              <p>
-                Agent 会先与你对齐角色、意图和竞品范围，再开始抓取证据——
-                这样可以避免「报告生成了但方向错」的浪费。
+            <CardContent className="space-y-3 pt-0 text-xs text-foreground-muted">
+              <p className="leading-relaxed text-foreground-muted">
+                Agent 会先与你对齐角色、意图和竞品范围，再开始抓取证据——这样可以避免「报告生成了但方向错」的浪费。
               </p>
-              <p>
-                如果你已经清楚自己要什么，可以切到「专家表单」一次性填完。
+              <div className="space-y-2.5 border-t border-white/[0.06] pt-3">
+                <p className="text-[11px] uppercase tracking-wider text-foreground-subtle">
+                  完整链路
+                </p>
+                {ANALYSIS_PIPELINE_STEPS.map((step, index) => (
+                  <PipelineStep
+                    key={step.title}
+                    n={index + 1}
+                    text={step.text}
+                    title={step.title}
+                  />
+                ))}
+              </div>
+              <p className="border-t border-white/[0.06] pt-3 text-foreground-subtle">
+                如果你已经清楚自己要什么，可以切到右上「专家表单」一次性填完。
               </p>
             </CardContent>
           </Card>
@@ -691,25 +920,105 @@ interface ChecklistItemProps {
   label: string;
   hint: string;
   satisfied: boolean;
+  active: boolean;
 }
 
-function ChecklistItem({ label, hint, satisfied }: ChecklistItemProps): JSX.Element {
+// Tiny status dot used in the checklist header. Pairs with the textual status
+// label ("待开始 / 进行中 / 已就绪") so the user gets both a glyph and a word —
+// matches the Linear / Vercel "ambient state indicator" pattern.
+function StatusDot({ phase }: { phase: ChecklistPhase }): JSX.Element {
+  const dotColor =
+    phase === "complete"
+      ? "bg-success"
+      : phase === "in_progress"
+        ? "bg-warning"
+        : "bg-foreground-subtle";
   return (
-    <div className="flex items-start gap-2">
-      {satisfied ? (
-        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" />
-      ) : (
-        <Circle className="mt-0.5 h-4 w-4 shrink-0 text-foreground-subtle" />
-      )}
-      <div className="min-w-0">
-        <p
+    <span
+      aria-hidden
+      className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", dotColor)}
+    />
+  );
+}
+
+// 3-segment progress bar (one segment per required field). Keeps the visual
+// weight low (h-1) and shows discrete progress instead of a continuous bar —
+// users immediately see "1 of 3 done" without reading the number.
+function ChecklistProgressBar({
+  phase,
+  satisfied,
+  total,
+}: {
+  phase: ChecklistPhase;
+  satisfied: number;
+  total: number;
+}): JSX.Element {
+  const fillColor =
+    phase === "complete"
+      ? "bg-success"
+      : phase === "in_progress"
+        ? "bg-warning"
+        : "bg-foreground-subtle/40";
+  return (
+    <div className="flex items-center gap-1" aria-hidden>
+      {Array.from({ length: Math.max(total, 1) }).map((_, index) => (
+        <div
+          key={index}
           className={cn(
-            "text-sm font-medium",
-            satisfied ? "text-foreground" : "text-foreground-muted",
+            "h-1 flex-1 rounded-full transition-colors duration-200",
+            index < satisfied ? fillColor : "bg-white/[0.06]",
           )}
-        >
-          {label}
-        </p>
+        />
+      ))}
+    </div>
+  );
+}
+
+// Static product pipeline step — not tied to example selection or Agent output.
+function PipelineStep({
+  n,
+  title,
+  text,
+}: {
+  n: number;
+  title: string;
+  text: string;
+}): JSX.Element {
+  return (
+    <div className="flex items-start gap-2.5">
+      <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-[11px] font-medium tabular-nums text-foreground-subtle">
+        {n}
+      </span>
+      <div className="min-w-0 space-y-0.5">
+        <p className="text-sm font-medium text-foreground-muted">{title}</p>
+        <p className="text-xs leading-relaxed text-foreground-subtle">{text}</p>
+      </div>
+    </div>
+  );
+}
+
+function ChecklistItem({ label, hint, satisfied, active }: ChecklistItemProps): JSX.Element {
+  const StateIcon = satisfied ? CheckCircle2 : active ? CircleDot : Circle;
+  const iconColor = satisfied
+    ? "text-success"
+    : active
+      ? "text-warning"
+      : "text-foreground-subtle";
+  const labelColor = satisfied
+    ? "text-foreground"
+    : active
+      ? "text-foreground"
+      : "text-foreground-muted";
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors",
+        active && !satisfied ? "bg-warning/[0.06]" : "bg-transparent",
+      )}
+    >
+      <StateIcon className={cn("mt-0.5 h-4 w-4 shrink-0", iconColor)} aria-hidden />
+      <div className="min-w-0">
+        <p className={cn("text-sm font-medium", labelColor)}>{label}</p>
         <p className="text-xs text-foreground-muted">{hint}</p>
       </div>
     </div>

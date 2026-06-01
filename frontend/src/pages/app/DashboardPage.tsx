@@ -7,6 +7,7 @@ import { queryClient } from "@/api/queryClient";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
@@ -209,8 +210,8 @@ export function DashboardPage(): JSX.Element {
             <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-foreground-subtle" />
             <Input className="pl-9" onChange={(e) => setSearchKeyword(e.target.value)} placeholder="搜索..." value={searchKeyword} />
           </div>
-          <select
-            className="h-9 rounded-md border border-white/[0.08] bg-white/[0.03] px-3 text-caption text-foreground"
+          <NativeSelect
+            className="w-auto shrink-0 text-caption"
             onChange={(e) => { setStatusFilter(e.target.value as StatusFilter); setOffset(0); }}
             value={statusFilter}
           >
@@ -219,7 +220,7 @@ export function DashboardPage(): JSX.Element {
             <option value="completed">已完成</option>
             <option value="degraded">降级</option>
             <option value="failed">失败</option>
-          </select>
+          </NativeSelect>
         </div>
 
         {runsQuery.isLoading && <Skeleton className="h-32 w-full" />}

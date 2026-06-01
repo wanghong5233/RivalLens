@@ -19,6 +19,7 @@ import { useConfirmRunPlan, useRunDetail } from "@/api/hooks";
 import type { PlanTask, PlanTaskStage, PlanTree, RunIntakeDraft } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
@@ -536,19 +537,18 @@ function AdditionalTasksCard({ tasks, onAdd, onRemove }: AdditionalTasksCardProp
             <div className="grid gap-2 sm:grid-cols-2">
               <label className="space-y-1 text-caption text-foreground-muted">
                 阶段
-                <select
+                <NativeSelect
                   value={stage}
                   onChange={(event) =>
                     setStage(event.target.value as "research" | "analyze" | "write")
                   }
-                  className="block w-full rounded-md border border-white/[0.08] bg-transparent px-2 py-1.5 text-sm text-foreground focus:border-primary/40 focus:outline-none"
                 >
                   {USER_ALLOWED_STAGES.map((s) => (
-                    <option key={s} value={s} className="bg-background text-foreground">
+                    <option key={s} value={s}>
                       {STAGE_META[s].label}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </label>
               {needsCompetitor ? (
                 <label className="space-y-1 text-caption text-foreground-muted">

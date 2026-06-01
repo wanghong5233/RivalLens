@@ -101,9 +101,30 @@ Output JSON schema (return STRICT JSON, no markdown, no commentary):
 }
 
 Rules:
+- EXTRACT FIRST, ASK SECOND. Before deciding to ask anything, scan user_query
+  and the latest exchange_history reply, and emit ALL fields you can confidently
+  infer into draft_patch. Example signals you must catch:
+    * "我是产品经理" / "I'm a PM at..." → user_role="pm"
+    * "我们是做工业自动化设备销售的" / "我是销售运营" → user_role="sales"
+    * "我们是初创公司创始人" / "I'm a co-founder" → user_role="founder"
+    * "我们想对标 X、Y、Z" → competitors_explicit=["X","Y","Z"]
+    * "想了解 X 赛道有哪些玩家" with no names → competitors_discovery_mode=true
+    * Industry phrases ("AI 编程"/"AI coding", "供应链"/"supply chain") → domain_hint
+  Only ask about fields you genuinely cannot infer from the available text.
 - Issue ONE question per turn. Never bundle multiple questions into one prompt.
 - Ask the most blocking missing required field first; only ask optional fields when all required fields are filled and an optional one is high-value.
 - Prefer suggested_options for closed-set fields (user_role, report_depth, competitors_discovery_mode).
+- suggested_options should be USER-FRIENDLY bilingual labels, NOT raw enum values.
+  Good: ["PM / 产品经理", "Founder / 创业者", "Sales / 销售", "Investor / 投资人"]
+  Bad:  ["pm", "founder", "sales", "investor"]
+  Good: ["我已有名单 (explicit)", "让 Agent 帮我发现 (auto-discover)"]
+  Good: ["速览 (quick)", "深度报告 (deep)"]
+  The backend wait-node normalizes labels back to enum values, so options can be
+  freely phrased. Always pair the localized term with its internal English keyword
+  in parentheses for the closed-set discovery / depth questions.
+- NEVER re-ask a field that is already populated in current_draft. If you find
+  yourself wanting to re-confirm, prefer action="complete" or move on to the
+  next missing field.
 - For competitors path, if the user clearly knows specific competitors, set competitors_explicit; if the user describes a domain/track without naming companies, propose competitors_discovery_mode=true and ask for confirmation.
 - When action="complete", draft_patch may be empty if you have nothing new to merge, but the resulting draft (current + patch) MUST satisfy all required fields.
 - Answer the user in the language of user_query (Chinese for Chinese queries, English for English).

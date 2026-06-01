@@ -47,6 +47,70 @@ _PATCHABLE_FIELDS: frozenset[str] = frozenset(
 )
 _USER_ROLES: frozenset[str] = frozenset({"pm", "founder", "sales", "investor"})
 
+# Keyword-based normalization tables for the wait node's deterministic merge.
+# Why: user-facing chips show bilingual labels (e.g. "PM / 产品经理"), and the
+# LLM may also emit free-form Chinese options. The wait node MUST translate any
+# of these back to internal enum values so user_role / discovery_mode reliably
+# land in `intake_draft` without depending on the next LLM turn's parsing.
+_ROLE_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("pm", ("pm", "product manager", "产品经理", "产品负责人")),
+    ("founder", ("founder", "co-founder", "创始人", "创业者", "ceo")),
+    ("sales", ("sales", "销售", "bd", "客户成功")),
+    ("investor", ("investor", "vc", "投资人", "投资经理", "分析师")),
+)
+_DISCOVERY_ON_KEYWORDS: tuple[str, ...] = (
+    "auto-discover",
+    "discover",
+    "帮我发现",
+    "agent 帮",
+    "agent帮",
+    "由 agent",
+    "由agent",
+    "自动发现",
+)
+_DISCOVERY_OFF_KEYWORDS: tuple[str, ...] = (
+    "我已有名单",
+    "已有名单",
+    "explicit",
+    "已知",
+    "我自己来",
+)
+_DEPTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("quick", ("quick", "速览", "快速")),
+    ("deep", ("deep", "深度", "完整", "详细")),
+)
+
+
+def _match_keyword(text: str, table: tuple[tuple[str, tuple[str, ...]], ...]) -> str | None:
+    needle = text.casefold().strip()
+    if not needle:
+        return None
+    for value, keywords in table:
+        if any(keyword.casefold() in needle for keyword in keywords):
+            return value
+    return None
+
+
+def _split_competitor_list(text: str) -> list[str]:
+    """Best-effort parse: user might list competitors in free text, comma/顿号/换行 separated."""
+    if not text or not text.strip():
+        return []
+    # Replace common CJK separators with comma, then split.
+    normalized = text.replace("、", ",").replace("，", ",").replace(";", ",").replace("\n", ",")
+    parts = [piece.strip() for piece in normalized.split(",")]
+    # Strip surrounding quotes / bullets that users often paste.
+    cleaned = [piece.strip(" \"'·-•*") for piece in parts if piece.strip(" \"'·-•*")]
+    # De-dup preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in cleaned:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
 
 def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
     session_factory = state.get("session_factory")
@@ -177,23 +241,116 @@ def _fallback_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
     """Deterministic clarify question when the LLM output is unusable.
 
     Picks the first missing required field so the run can still make progress without LLM.
+    Bilingual labels: chip text is what users see; the wait-node normalizer
+    handles label → internal value translation in one place.
     """
     if draft.user_role is None:
         return IntakeClarifyRequest(
-            question="请问您当前的角色是？",
+            question="请问您在工作中更接近以下哪个角色？",
             field_targets=["user_role"],
-            suggested_options=["pm", "founder", "sales", "investor"],
+            suggested_options=[
+                "PM / 产品经理",
+                "Founder / 创业者",
+                "Sales / 销售",
+                "Investor / 投资人",
+            ],
         )
     if not (draft.analysis_intent and draft.analysis_intent.strip()):
         return IntakeClarifyRequest(
-            question="请用一句话描述这次分析您最想了解什么？",
+            question="请用一句话描述这次分析您最想了解什么？例如「了解 X 赛道头部玩家的定价策略」。",
             field_targets=["analysis_intent"],
         )
     return IntakeClarifyRequest(
         question="您已经有想分析的竞品名单吗？没有的话可以让 Agent 帮您发现。",
         field_targets=["competitors_explicit", "competitors_discovery_mode"],
-        suggested_options=["我已有名单", "让 Agent 帮我发现"],
+        suggested_options=["我已有名单 (explicit)", "让 Agent 帮我发现 (auto-discover)"],
     )
+
+
+def _merge_reply_into_draft(
+    draft: RunIntakeDraft,
+    clarify: IntakeClarifyRequest,
+    reply: IntakeUserReply,
+) -> RunIntakeDraft:
+    """Deterministically merge a user reply into the draft based on field_targets.
+
+    This is the critical fix for the "Agent repeats the same question" bug:
+    previously the wait node only appended to history and trusted the next LLM
+    turn to re-parse the reply. With unstable LLMs that turn would often emit
+    an empty draft_patch, leaving required fields null and triggering a re-ask.
+
+    Now any user reply whose target field can be unambiguously decoded from
+    selected_options or free text is written into the draft immediately. The
+    next LLM turn still gets to refine optional fields and decide complete/ask.
+    """
+    if not clarify.field_targets:
+        return draft
+
+    targets = set(clarify.field_targets)
+    base = draft.model_dump(exclude={"is_complete"})
+    candidates: list[str] = [*reply.selected_options, reply.text]
+    combined = " ".join(c for c in candidates if c).strip()
+
+    if "user_role" in targets and base.get("user_role") is None:
+        for candidate in candidates:
+            role = _match_keyword(candidate, _ROLE_KEYWORDS)
+            if role is not None:
+                base["user_role"] = role
+                break
+
+    if "analysis_intent" in targets:
+        intent_current = base.get("analysis_intent")
+        # Prefer free-text reply when present; fall back to selected_options join.
+        if reply.text.strip():
+            base["analysis_intent"] = reply.text.strip()
+        elif not intent_current and reply.selected_options:
+            base["analysis_intent"] = ", ".join(reply.selected_options)
+
+    discovery_changed = False
+    if "competitors_discovery_mode" in targets or "competitors_explicit" in targets:
+        for candidate in candidates:
+            lowered = candidate.casefold()
+            if any(k.casefold() in lowered for k in _DISCOVERY_ON_KEYWORDS):
+                base["competitors_discovery_mode"] = True
+                discovery_changed = True
+                break
+            if any(k.casefold() in lowered for k in _DISCOVERY_OFF_KEYWORDS):
+                base["competitors_discovery_mode"] = False
+                discovery_changed = True
+                break
+
+    if "competitors_explicit" in targets and reply.text.strip():
+        parsed = _split_competitor_list(reply.text)
+        if parsed:
+            existing = base.get("competitors_explicit") or []
+            existing_keys = {c.casefold() for c in existing if isinstance(c, str)}
+            merged = list(existing)
+            for item in parsed:
+                if item.casefold() not in existing_keys:
+                    merged.append(item)
+                    existing_keys.add(item.casefold())
+            base["competitors_explicit"] = merged
+            # User listed actual competitors → discovery_mode no longer required
+            # unless they also explicitly opted in.
+            if not discovery_changed:
+                base["competitors_discovery_mode"] = base.get("competitors_discovery_mode", False)
+
+    if "report_depth" in targets:
+        for candidate in candidates:
+            depth = _match_keyword(candidate, _DEPTH_KEYWORDS)
+            if depth is not None:
+                base["report_depth"] = depth
+                break
+
+    if "domain_hint" in targets and reply.text.strip():
+        # No closed-set normalization; accept the user's domain phrase verbatim.
+        base["domain_hint"] = reply.text.strip()
+
+    # focus_dimensions / reference_urls intentionally left to the LLM —
+    # they need richer parsing the wait node should not own.
+    _ = combined  # reserved for future heuristic; keep variable to signal intent
+
+    return RunIntakeDraft.model_validate(base)
 
 
 async def _persist_intake_step(
@@ -360,6 +517,10 @@ async def intake_generate_node(state: AgentState) -> AgentState:
             "field_targets": list(clarify.field_targets),
             "suggested_options": list(clarify.suggested_options or []),
             "draft_complete": bool(next_draft.is_complete),
+            # Phase 1b fix: include the live draft so FE can update the
+            # requirement checklist immediately (was previously relying on a
+            # racey GET /api/runs/{id} from the SSE handler).
+            "draft": next_draft.model_dump(exclude={"is_complete"}),
         },
     )
     return {
@@ -410,6 +571,13 @@ async def intake_wait_node(state: AgentState) -> AgentState:
     history = _coerce_history(state)
     history = [*history, IntakeExchange(clarify=clarify, reply=reply)]
 
+    # CRITICAL FIX: merge the reply into the draft right here, NOT in the next
+    # generate turn. Letting the LLM be the only writer of draft fields means
+    # any flaky LLM turn drops user-provided info and re-asks the same question.
+    # The wait node owns the deterministic floor; the LLM enriches on top.
+    current_draft = _coerce_draft(state)
+    next_draft = _merge_reply_into_draft(current_draft, clarify, reply)
+
     await emit_run_event(
         run_id=run_id,
         event_type=RunEventType.INTAKE_USER_REPLY,
@@ -418,6 +586,9 @@ async def intake_wait_node(state: AgentState) -> AgentState:
             "turn": len(history),
             "reply_text": reply.text,
             "reply_options": list(reply.selected_options),
+            # Mirror the post-merge draft so the FE checklist updates the moment
+            # the user sends, without waiting for the next clarify turn.
+            "draft": next_draft.model_dump(exclude={"is_complete"}),
         },
     )
 
@@ -425,6 +596,7 @@ async def intake_wait_node(state: AgentState) -> AgentState:
         **cast(dict[str, Any], state),
         "run_id": run_id,
         "phase": "intake",
+        "intake_draft": next_draft,
         "intake_history": history,
         "pending_clarify": None,
     }

@@ -16,6 +16,19 @@ export interface IntakeClarifyEventPayload {
   field_targets: string[];
   suggested_options: string[];
   draft_complete: boolean;
+  // Live draft snapshot the FE checklist consumes for immediate state-driven
+  // updates. Backend started sending this after the "checklist never updates"
+  // race condition; older runs may omit it (treated as undefined).
+  draft?: Record<string, unknown>;
+}
+
+export interface IntakeUserReplyPayload {
+  turn: number;
+  reply_text: string;
+  reply_options: string[];
+  // Post-merge draft snapshot emitted by intake_wait_node, so FE can paint the
+  // checklist the instant the user sends, without waiting for the next turn.
+  draft?: Record<string, unknown>;
 }
 
 export interface IntakeCompletePayload {
@@ -93,6 +106,7 @@ export interface RunEventsOptions {
   // page (NewRunChatPage). Generic runs that do not care about intake leave
   // these undefined and continue with cache invalidation only.
   onIntakeClarify?: (payload: IntakeClarifyEventPayload) => void;
+  onIntakeUserReply?: (payload: IntakeUserReplyPayload) => void;
   onIntakeComplete?: (payload: IntakeCompletePayload) => void;
   // Phase 2: PlanConfirmPage subscribes to plan.published to render the plan
   // the moment it appears (instead of polling Run.plan_tree). plan.confirmed
@@ -127,6 +141,13 @@ function parseEventPayload(rawData: string): unknown {
   }
 }
 
+function coerceDraftRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object") {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
 function coerceIntakeClarifyPayload(value: unknown): IntakeClarifyEventPayload | null {
   if (value === null || typeof value !== "object") {
     return null;
@@ -153,6 +174,28 @@ function coerceIntakeClarifyPayload(value: unknown): IntakeClarifyEventPayload |
     field_targets: fieldTargets,
     suggested_options: suggestedOptions,
     draft_complete: draftComplete,
+    draft: coerceDraftRecord(record.draft),
+  };
+}
+
+function coerceIntakeUserReplyPayload(value: unknown): IntakeUserReplyPayload | null {
+  if (value === null || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const turnRaw = record.turn;
+  const turn = typeof turnRaw === "number" ? turnRaw : 0;
+  const replyTextRaw = record.reply_text;
+  const replyText = typeof replyTextRaw === "string" ? replyTextRaw : "";
+  const replyOptionsRaw = record.reply_options;
+  const replyOptions = Array.isArray(replyOptionsRaw)
+    ? replyOptionsRaw.filter((item): item is string => typeof item === "string")
+    : [];
+  return {
+    turn,
+    reply_text: replyText,
+    reply_options: replyOptions,
+    draft: coerceDraftRecord(record.draft),
   };
 }
 
@@ -358,6 +401,7 @@ function coercePlanConfirmedPayload(value: unknown): PlanConfirmedPayload | null
 export function useRunEvents(runId: string, options: RunEventsOptions = {}): void {
   const {
     onIntakeClarify,
+    onIntakeUserReply,
     onIntakeComplete,
     onPlanPublished,
     onPlanConfirmed,
@@ -454,6 +498,17 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
         onIntakeClarify(payload);
       }
     });
+    eventSource.addEventListener("intake.user_reply", (event: MessageEvent<string>) => {
+      // Drives the checklist to flip to its post-merge state the moment the
+      // user clicks Send, before the next clarify_request arrives.
+      if (onIntakeUserReply === undefined) {
+        return;
+      }
+      const payload = coerceIntakeUserReplyPayload(parseEventPayload(event.data));
+      if (payload !== null) {
+        onIntakeUserReply(payload);
+      }
+    });
     eventSource.addEventListener("intake.complete", (event: MessageEvent<string>) => {
       invalidateRunDetail();
       if (onIntakeComplete === undefined) {
@@ -528,6 +583,7 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
   }, [
     runId,
     onIntakeClarify,
+    onIntakeUserReply,
     onIntakeComplete,
     onPlanPublished,
     onPlanConfirmed,

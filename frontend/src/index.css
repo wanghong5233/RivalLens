@@ -89,6 +89,26 @@ body {
   min-height: 100vh;
   line-height: 1.6;
   letter-spacing: -0.011em;
+  color-scheme: dark;
+}
+
+/* Native <select> popups on Windows otherwise render white list + light inherited text */
+select,
+.native-select {
+  color-scheme: dark;
+}
+
+select option,
+.native-select option {
+  background-color: hsl(var(--color-raised));
+  color: hsl(var(--foreground));
+}
+
+@layer components {
+  .native-select {
+    @apply h-9 w-full rounded-md border border-white/[0.08] bg-raised px-3 text-sm text-foreground;
+    @apply focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/30;
+  }
 }
 
 #root {

@@ -22,11 +22,14 @@ const NAV_ITEMS = [
 ] as const;
 
 export function WorkspaceShell(): JSX.Element {
-  const pendingCandidatesQuery = useSkillCandidates({
-    status: "staging",
-    limit: 1,
-    offset: 0,
-  });
+  const pendingCandidatesQuery = useSkillCandidates(
+    {
+      status: "staging",
+      limit: 1,
+      offset: 0,
+    },
+    { errorToast: false },
+  );
   const pendingCount = pendingCandidatesQuery.data?.total ?? 0;
 
   return (

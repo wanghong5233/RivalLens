@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format";
 
@@ -74,16 +75,15 @@ export function SkillStagingPage(): JSX.Element {
         <CardContent className="grid gap-3 pt-6 md:grid-cols-4">
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">状态筛选</span>
-            <select
-              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+            <NativeSelect
               onChange={(event) => setStatusFilter(event.target.value)}
               value={statusFilter}
             >
-              <option value="all">all</option>
-              <option value="staging">staging</option>
-              <option value="approved">approved</option>
-              <option value="rejected">rejected</option>
-            </select>
+              <option value="all">全部</option>
+              <option value="staging">待审核 (staging)</option>
+              <option value="approved">已通过</option>
+              <option value="rejected">已拒绝</option>
+            </NativeSelect>
           </label>
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">applies_to</span>

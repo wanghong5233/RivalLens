@@ -431,6 +431,7 @@ export function useDeleteWatchlistItem(): UseMutationResult<WatchlistItemRespons
 
 export function useSkillCandidates(
   query: SkillCandidatesQuery = {},
+  options?: { errorToast?: boolean },
 ): UseQueryResult<SkillCandidateListResponse, Error> {
   return useQuery({
     queryKey: [
@@ -442,6 +443,7 @@ export function useSkillCandidates(
       query.offset ?? 0,
     ],
     queryFn: () => fetchSkillCandidates(query),
+    meta: { errorToast: options?.errorToast ?? true },
   });
 }
 

@@ -7,6 +7,7 @@ import { useRunDetail, useRunEvidence } from "@/api/hooks";
 import type { EvidenceListItemResponse } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format";
@@ -176,8 +177,7 @@ export function RunEvidencePage(): JSX.Element {
         <CardContent className="grid gap-3 sm:grid-cols-3">
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">competitor</span>
-            <select
-              className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
+            <NativeSelect
               onChange={(event) =>
                 patchSearchParams({
                   competitorId: event.currentTarget.value,
@@ -192,13 +192,12 @@ export function RunEvidencePage(): JSX.Element {
                   {item}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
 
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">source_type</span>
-            <select
-              className="w-full rounded-md border border-border bg-background px-2 py-2 text-sm"
+            <NativeSelect
               onChange={(event) =>
                 patchSearchParams({
                   sourceType: event.currentTarget.value,
@@ -213,7 +212,7 @@ export function RunEvidencePage(): JSX.Element {
                   {item}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
 
           <div className="flex items-end">
