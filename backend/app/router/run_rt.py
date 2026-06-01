@@ -336,8 +336,54 @@ def _register_background_task(request: Request, task: asyncio.Task[object]) -> N
     task.add_done_callback(_discard)
 
 
-def _build_run_finish_payload(*, run_id: str, status: str) -> dict[str, object]:
-    return {"run_id": run_id, "status": status}
+def _build_run_finish_payload(
+    *,
+    run_id: str,
+    status: str,
+    error_type: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"run_id": run_id, "status": status}
+    if error_type is not None:
+        payload["error_type"] = error_type
+    if error_message is not None:
+        payload["error_message"] = error_message[:500]
+    return payload
+
+
+async def _mark_run_failed_and_emit(
+    *,
+    run_id: str,
+    exc: BaseException,
+    log_event: str,
+) -> None:
+    """Background-task boundary cleanup: persist run.status=failed + emit RUN_FINISH.
+
+    Centralises the failure path so all three async graph runners stay in lockstep
+    when a node throws an unexpected error. Without this the asyncio task dies
+    silently ("Task exception was never retrieved") and the Run row stays
+    "running" forever, leaving the UI polling against a corpse.
+    """
+    error_type = type(exc).__name__
+    error_message = str(exc)[:500]
+    log.exception(log_event, error_type=error_type, error=error_message)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is not None:
+            run.status = "failed"
+            run.finished_at = datetime.now(timezone.utc)
+            await session.commit()
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.RUN_FINISH,
+        payload=_build_run_finish_payload(
+            run_id=run_id,
+            status="failed",
+            error_type=error_type,
+            error_message=error_message,
+        ),
+    )
 
 
 def _coerce_run_status(state: object) -> str:
@@ -660,20 +706,15 @@ async def _execute_run_graph(
                 initial_state,
                 config={"configurable": {"thread_id": run_id}},
             )
-        except (APIException, SQLAlchemyError, RuntimeError) as exc:
-            log.exception("api.run.execute.failed", error=str(exc)[:500])
-            async with session_factory() as session:
-                run = await session.get(Run, run_id)
-                if run is not None:
-                    run.status = "failed"
-                    run.finished_at = datetime.now(timezone.utc)
-                    await session.commit()
-            await emit_run_event(
-                run_id=run_id,
-                event_type=RunEventType.RUN_FINISH,
-                payload=_build_run_finish_payload(run_id=run_id, status="failed"),
+        except Exception as exc:
+            # Background-task outer boundary: every uncaught node failure
+            # must update run.status and emit RUN_FINISH, otherwise the UI
+            # polls forever. The `raise` keeps asyncio's "Task exception was
+            # never retrieved" warning intact for log forensics.
+            await _mark_run_failed_and_emit(
+                run_id=run_id, exc=exc, log_event="api.run.execute.failed"
             )
-            return
+            raise
 
         async with session_factory() as session:
             run = await session.get(Run, run_id)
@@ -846,20 +887,11 @@ async def _resume_plan_graph_in_background(
     with bind_run(run_id):
         try:
             graph_state = await graph.ainvoke(Command(resume=resume_payload), config=config)
-        except (APIException, SQLAlchemyError, RuntimeError) as exc:
-            log.exception("api.run.plan.resume.failed", error=str(exc)[:500])
-            async with session_factory() as session:
-                run = await session.get(Run, run_id)
-                if run is not None:
-                    run.status = "failed"
-                    run.finished_at = datetime.now(timezone.utc)
-                    await session.commit()
-            await emit_run_event(
-                run_id=run_id,
-                event_type=RunEventType.RUN_FINISH,
-                payload=_build_run_finish_payload(run_id=run_id, status="failed"),
+        except Exception as exc:
+            await _mark_run_failed_and_emit(
+                run_id=run_id, exc=exc, log_event="api.run.plan.resume.failed"
             )
-            return
+            raise
 
         run_status_raw = str(graph_state.get("status", "completed")) if isinstance(graph_state, dict) else "completed"
         run_status = run_status_raw if run_status_raw in {"completed", "degraded"} else "completed"
@@ -912,20 +944,11 @@ async def _resume_intake_graph_in_background(
         try:
             await graph.ainvoke(Command(resume=resume_payload), config=config)
             snapshot = await graph.aget_state(config)
-        except (APIException, SQLAlchemyError, RuntimeError) as exc:
-            log.exception("api.run.intake.resume.failed", error=str(exc)[:500])
-            async with session_factory() as session:
-                run = await session.get(Run, run_id)
-                if run is not None:
-                    run.status = "failed"
-                    run.finished_at = datetime.now(timezone.utc)
-                    await session.commit()
-            await emit_run_event(
-                run_id=run_id,
-                event_type=RunEventType.RUN_FINISH,
-                payload=_build_run_finish_payload(run_id=run_id, status="failed"),
+        except Exception as exc:
+            await _mark_run_failed_and_emit(
+                run_id=run_id, exc=exc, log_event="api.run.intake.resume.failed"
             )
-            return
+            raise
 
         state_values = snapshot.values if isinstance(snapshot.values, dict) else {}
         await _persist_intake_draft_to_run(run_id=run_id, state_values=state_values)

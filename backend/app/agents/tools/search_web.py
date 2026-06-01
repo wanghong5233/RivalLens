@@ -4,13 +4,33 @@ import asyncio
 from functools import lru_cache
 
 from tavily import TavilyClient
+from tavily.errors import (
+    BadRequestError as TavilyBadRequestError,
+    ForbiddenError as TavilyForbiddenError,
+    InvalidAPIKeyError as TavilyInvalidAPIKeyError,
+    MissingAPIKeyError as TavilyMissingAPIKeyError,
+    TimeoutError as TavilyTimeoutError,
+    UsageLimitExceededError as TavilyUsageLimitExceededError,
+)
 
 from core.config import settings
 from service.collector.base import BaseChannel, CollectorObservation, ToolObservationResult
-from service.collector.errors import ChannelError
+from service.collector.errors import ChannelError, FetchTimeout, RateLimited
 from service.collector.rate_limiter import PerHostLimiter
 
 from agents.tools.parse_page import infer_source_type
+
+# Tavily SDK exceptions all subclass plain Exception with no common base. Pin
+# them by name so unrelated bugs (e.g. AttributeError from a broken SDK upgrade)
+# stay loud instead of getting wrapped as a generic ChannelError.
+_TAVILY_ERRORS: tuple[type[Exception], ...] = (
+    TavilyBadRequestError,
+    TavilyForbiddenError,
+    TavilyInvalidAPIKeyError,
+    TavilyMissingAPIKeyError,
+    TavilyTimeoutError,
+    TavilyUsageLimitExceededError,
+)
 
 
 @lru_cache
@@ -21,16 +41,28 @@ def _get_tavily_rate_limiter() -> PerHostLimiter:
 async def _tavily_search(query: str, *, max_results: int) -> dict[str, object]:
     client = TavilyClient(api_key=settings.TAVILY_API_KEY)
     try:
-        return await asyncio.to_thread(
-            client.search,
-            query=query,
-            max_results=max_results,
-            search_depth="basic",
-            include_raw_content=False,
-            include_images=False,
-        )
-    except TypeError:
-        return await asyncio.to_thread(client.search, query=query, max_results=max_results)
+        try:
+            return await asyncio.to_thread(
+                client.search,
+                query=query,
+                max_results=max_results,
+                search_depth="basic",
+                include_raw_content=False,
+                include_images=False,
+            )
+        except TypeError:
+            return await asyncio.to_thread(
+                client.search, query=query, max_results=max_results
+            )
+    except TavilyTimeoutError as exc:
+        raise FetchTimeout(f"tavily search timed out: {exc}") from exc
+    except TavilyUsageLimitExceededError as exc:
+        raise RateLimited(f"tavily usage limit exceeded: {exc}") from exc
+    except _TAVILY_ERRORS as exc:
+        # The remaining tavily errors are all auth/parameter failures from the
+        # provider — translate to ChannelError so callers can keep treating
+        # search-channel boundary failures uniformly.
+        raise ChannelError(f"tavily search failed ({type(exc).__name__}): {exc}") from exc
 
 
 class TavilySearchChannel(BaseChannel):

@@ -372,12 +372,34 @@ async def planner_generate_node(state: AgentState) -> AgentState:
         },
     )
 
-    return {
-        **state,
+    # Seed state.competitors from the intake's explicit list so the supervisor's
+    # hard-constraint guard (discovery_needed = len(competitors)==0) sees them.
+    # Without this seed the supervisor forces DiscoverCompetitors even when the
+    # user already named the competitors during intake. operator.add appends, so
+    # we filter out anything already present and only return the diff.
+    state_dict = cast(dict[str, Any], state)
+    existing_competitors = list(state_dict.get("competitors") or [])
+    competitors_seed: list[str] = []
+    if not draft.competitors_discovery_mode and draft.competitors_explicit:
+        seen = set(existing_competitors)
+        for competitor in draft.competitors_explicit:
+            if competitor in seen:
+                continue
+            seen.add(competitor)
+            competitors_seed.append(competitor)
+
+    state_without_competitors = {
+        key: value for key, value in state_dict.items() if key != "competitors"
+    }
+    result: dict[str, Any] = {
+        **state_without_competitors,
         "run_id": run_id,
         "phase": "planning",
         "pending_plan_tree": plan,
     }
+    if competitors_seed:
+        result["competitors"] = competitors_seed
+    return result
 
 
 @log_node("planner_wait")

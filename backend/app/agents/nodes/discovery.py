@@ -11,6 +11,7 @@ from schemas.ids import make_id
 from service.collector.errors import ChannelError
 from service.event_bus import RunEventType, emit_run_event
 from service.llm.client import get_llm_client
+from service.llm.exceptions import LLMError
 from utils.log_node import log_node
 from utils.logger import bind_step, get_logger
 
@@ -20,7 +21,7 @@ DISCOVERY_EXTRACT_PROMPT = """You are a competitive intelligence analyst.
 Given the following search results about a market/track, extract a list of competitor product names.
 
 Rules:
-- Return ONLY a JSON object: {"competitors": ["Name1", "Name2", ...]}
+- Return ONLY a JSON object: {{"competitors": ["Name1", "Name2", ...]}}
 - Each name should be the commonly known product name (not company name unless they are the same).
 - Deduplicate: if the same product appears multiple times, include it only once.
 - Return between 3 and 10 competitors, prioritizing the most relevant ones.
@@ -87,9 +88,19 @@ async def discovery_node(state: AgentState) -> AgentState:
                 if text:
                     all_snippets.append(text[:500])
                     snippets_added += 1
-        except (ChannelError, Exception) as exc:
-            error_text = str(exc)
-            log.warning("discovery.search_failed", query=query, error=error_text)
+        except ChannelError as exc:
+            # Channel boundary contract: every recoverable failure inside the
+            # search channel (rate-limit, timeout, auth, no-snippet) is
+            # surfaced as ChannelError. Anything else (asyncio.CancelledError,
+            # KeyError from a bug, etc.) must propagate so node.error fires.
+            error_text = f"{type(exc).__name__}: {exc}"
+            with bind_step(step_id):
+                log.warning(
+                    "discovery.search_failed",
+                    query=query,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:300],
+                )
         latency_ms = int((time.monotonic() - tool_started_at) * 1000)
         await emit_run_event(
             run_id=run_id,
@@ -107,6 +118,8 @@ async def discovery_node(state: AgentState) -> AgentState:
         )
 
     discovered: list[str] = []
+    extract_error: str | None = None
+    snippet_count = len(all_snippets)
     if all_snippets:
         combined_results = "\n---\n".join(all_snippets[:20])
         extract_prompt = DISCOVERY_EXTRACT_PROMPT.format(
@@ -114,31 +127,48 @@ async def discovery_node(state: AgentState) -> AgentState:
             domain_context=domain_context,
             user_query=user_query,
         )
-        llm_response = await get_llm_client().complete_json(
-            model_slot="research",
-            system_prompt="You extract competitor names from search results. Return valid JSON only.",
-            user_prompt=extract_prompt,
-        )
-        content = llm_response.content
-        if isinstance(content, dict):
-            raw_competitors = content.get("competitors", [])
-            if isinstance(raw_competitors, list):
-                for item in raw_competitors:
-                    name = str(item).strip() if item else ""
-                    if name and name not in discovered:
-                        discovered.append(name)
+        try:
+            llm_response = await get_llm_client().complete_json(
+                model_slot="research",
+                system_prompt="You extract competitor names from search results. Return valid JSON only.",
+                user_prompt=extract_prompt,
+            )
+            content = llm_response.content
+            if isinstance(content, dict):
+                raw_competitors = content.get("competitors", [])
+                if isinstance(raw_competitors, list):
+                    for item in raw_competitors:
+                        name = str(item).strip() if item else ""
+                        if name and name not in discovered:
+                            discovered.append(name)
+        except (LLMError, KeyError, ValueError) as exc:
+            extract_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            with bind_step(step_id):
+                log.exception(
+                    "discovery.extract_failed",
+                    error_type=type(exc).__name__,
+                    snippet_count=snippet_count,
+                )
 
     with bind_step(step_id):
-        log.info("discovery.complete", discovered_count=len(discovered), queries=search_queries)
+        log.info(
+            "discovery.complete",
+            discovered_count=len(discovered),
+            snippet_count=snippet_count,
+            queries=search_queries,
+            extract_error=extract_error,
+        )
 
     async with session_factory() as session:
         step_record = await session.get(Step, step_id)
         if step_record is not None:
-            step_record.status = "completed"
+            step_record.status = "completed" if discovered else "failed"
             step_record.finished_at = datetime.now(timezone.utc)
             step_record.payload = {
                 **(step_record.payload or {}),
                 "discovered_competitors": discovered,
+                "snippet_count": snippet_count,
+                "extract_error": extract_error,
             }
             await session.commit()
 
