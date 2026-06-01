@@ -7,7 +7,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatRunTitle } from "@/lib/format";
 
 export function LandingPage(): JSX.Element {
   const completedRunsQuery = useRunsList({ status: "completed", limit: 3, offset: 0 });
@@ -140,7 +140,12 @@ export function LandingPage(): JSX.Element {
             <Link key={run.run_id} to={`/share/${run.run_id}`}>
               <Card className="h-full transition-colors hover:border-white/[0.12]">
                 <CardContent className="space-y-2 p-5">
-                  <p className="line-clamp-2 text-caption font-medium text-foreground">{run.user_query}</p>
+                  <p
+                    className="line-clamp-2 text-caption font-medium text-foreground"
+                    title={run.user_query}
+                  >
+                    {formatRunTitle(run)}
+                  </p>
                   <div className="flex items-center gap-2">
                     <StatusBadge status={run.status} />
                   </div>

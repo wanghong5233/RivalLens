@@ -42,6 +42,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
+import { formatRunTitle } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type PlanTaskRuntimeStatus = "queued" | "running" | "completed";
@@ -393,6 +394,9 @@ export function LiveRunPage(): JSX.Element {
 
   const isTerminal = runStatus !== null && TERMINAL_STATUSES.has(runStatus);
   const userQuery = intakeDraft?.user_query ?? runDetail.data?.user_query ?? "";
+  const headerTitle = runDetail.data
+    ? formatRunTitle(runDetail.data, { max: 50 })
+    : userQuery || "正在分析中…";
   const isFailureTerminal = runStatus === "failed" || runStatus === "cancelled";
   const idleMs = isTerminal ? 0 : now - lastActivityAtRef.current;
   const isStuck = !isTerminal && idleMs >= STUCK_HINT_THRESHOLD_MS;
@@ -412,8 +416,11 @@ export function LiveRunPage(): JSX.Element {
             <div className="text-xs uppercase tracking-wide text-foreground-muted">
               Live Run · {runId}
             </div>
-            <h1 className="line-clamp-1 max-w-[640px] text-h3 font-semibold text-foreground">
-              {userQuery || "正在分析中…"}
+            <h1
+              className="line-clamp-1 max-w-[640px] text-h3 font-semibold text-foreground"
+              title={userQuery || undefined}
+            >
+              {headerTitle}
             </h1>
           </div>
         </div>

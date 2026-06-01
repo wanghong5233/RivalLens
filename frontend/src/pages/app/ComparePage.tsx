@@ -8,6 +8,7 @@ import type { ConclusionItemResponse, RunConclusionsResponse } from "@/api/types
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatRunTitle } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const CONFIDENCE_COLOR: Record<string, string> = {
@@ -107,7 +108,9 @@ export function ComparePage(): JSX.Element {
                   : "border-white/[0.06] hover:border-white/[0.12]",
               )}
             >
-              <p className="line-clamp-1 font-medium text-foreground">{run.user_query}</p>
+              <p className="line-clamp-1 font-medium text-foreground" title={run.user_query}>
+                {formatRunTitle(run)}
+              </p>
               <p className="mt-0.5 text-micro text-foreground-subtle">{run.status}</p>
             </button>
           ))}

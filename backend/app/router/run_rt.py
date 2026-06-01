@@ -141,6 +141,10 @@ class RunResetRequest(BaseModel):
 class RunDetailResponse(BaseModel):
     run_id: str
     user_query: str
+    # LLM-generated short label populated at intake.complete. Nullable for
+    # legacy runs and brief intake-only window; FE falls back to truncating
+    # user_query when this is null.
+    title: str | None = None
     domain_hint: str | None
     reference_urls: list[str]
     status: str
@@ -159,6 +163,7 @@ class RunDetailResponse(BaseModel):
 class RunListItemResponse(BaseModel):
     run_id: str
     user_query: str
+    title: str | None = None
     domain_hint: str | None
     status: str
     started_at: str
@@ -603,6 +608,7 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
     return RunDetailResponse(
         run_id=run.run_id,
         user_query=run.user_query,
+        title=run.title,
         domain_hint=run.domain_hint if run.domain_hint else None,
         reference_urls=list(run.reference_urls or []),
         status=run.status,
@@ -734,6 +740,7 @@ async def list_runs(
             RunListItemResponse(
                 run_id=run.run_id,
                 user_query=run.user_query,
+                title=run.title,
                 domain_hint=run.domain_hint if run.domain_hint else None,
                 status=run.status,
                 started_at=run.started_at.isoformat(),
@@ -1689,8 +1696,20 @@ async def get_run(run_id: str) -> RunDetailResponse:
 
 class RunPatchRequest(BaseModel):
     user_query: str | None = None
+    # Manual rename for the short title. Use this instead of mutating user_query
+    # when the user just wants a cleaner card label — user_query is the
+    # original prompt and should stay immutable in most cases.
+    title: str | None = Field(default=None, max_length=120)
     status: Literal["cancelled"] | None = None
     cancel_reason: str | None = Field(default=None, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def _normalize_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
 
     @field_validator("cancel_reason")
     @classmethod
@@ -1756,6 +1775,8 @@ async def patch_run(
             )
         if payload.user_query is not None:
             run.user_query = payload.user_query
+        if payload.title is not None:
+            run.title = payload.title
         if payload.status == "cancelled" and run.status == "running":
             run.status = "cancelled"
             run.finished_at = datetime.now(timezone.utc)

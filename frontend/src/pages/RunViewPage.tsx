@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatDateTime, formatRelativeTime } from "@/lib/format";
+import { formatDateTime, formatRelativeTime, formatRunTitle } from "@/lib/format";
 import { track } from "@/lib/analytics";
 
 const CITATION_REGEX = /\[(ev_[a-zA-Z0-9_]+)\]/g;
@@ -107,10 +107,23 @@ export function RunViewPage(): JSX.Element {
       <header className="space-y-2">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <h1 className="text-h1 text-foreground">{detailQuery.data?.user_query ?? "加载中..."}</h1>
+            <h1
+              className="text-h1 text-foreground"
+              title={detailQuery.data?.user_query ?? undefined}
+            >
+              {detailQuery.data ? formatRunTitle(detailQuery.data, { max: 60 }) : "加载中..."}
+            </h1>
             <p className="mt-1 text-micro text-foreground-subtle">
               {detailQuery.data ? formatDateTime(detailQuery.data.started_at) : ""} · {runId}
             </p>
+            {detailQuery.data?.user_query ? (
+              <p
+                className="mt-2 line-clamp-2 max-w-3xl text-caption text-foreground-subtle"
+                title={detailQuery.data.user_query}
+              >
+                {detailQuery.data.user_query}
+              </p>
+            ) : null}
           </div>
           <StatusBadge status={runStatus} />
         </div>

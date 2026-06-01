@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agents.state import AgentState
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
+from models.run import Run
 from models.step import Step
 from schemas.ids import make_id
 from schemas.intake import (
@@ -170,6 +171,62 @@ def _sanitize_patch(raw_patch: object) -> dict[str, object]:
             continue
         clean[key] = value
     return clean
+
+
+# Soft upper bound matches the runs.title column (varchar 120) but we trim to
+# ~24 chars for display — the DB cap is just defense-in-depth for unicode.
+_TITLE_DISPLAY_MAX = 24
+_TITLE_DB_MAX = 120
+
+
+def _extract_summary_title(
+    content: dict[str, object],
+    draft: RunIntakeDraft,
+    user_query: str,
+) -> str | None:
+    """Return a stable short title for the run.
+
+    Source priority:
+      1. LLM-provided summary_title (the intake LLM is instructed to emit one
+         at action=complete; same call, zero extra cost).
+      2. Fallback: first 24 chars of analysis_intent (always populated when
+         action=complete) — keeps a readable label even if the LLM omits the
+         field on flaky days.
+      3. Last resort: first non-empty line of user_query, trimmed.
+    The DB column accepts None; FE falls back to truncating user_query.
+    """
+    raw_title = content.get("summary_title")
+    if isinstance(raw_title, str):
+        cleaned = raw_title.strip().strip("\"'")
+        if cleaned:
+            return cleaned[:_TITLE_DB_MAX]
+    intent = draft.analysis_intent
+    if isinstance(intent, str) and intent.strip():
+        return intent.strip()[:_TITLE_DISPLAY_MAX]
+    if user_query:
+        first_line = next(
+            (line.strip() for line in user_query.splitlines() if line.strip()),
+            "",
+        )
+        if first_line:
+            return first_line[:_TITLE_DISPLAY_MAX]
+    return None
+
+
+async def _persist_run_title(*, run_id: str, title: str) -> None:
+    """Mirror the intake-derived title onto the Run row.
+
+    Same rationale as `_persist_intake_draft_to_run` — it lets GET /api/runs
+    render a short label without poking graph state. Skips the write if the
+    row no longer exists (race with a cancel/delete is benign).
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        run.title = title[:_TITLE_DB_MAX]
+        await session.commit()
 
 
 def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDraft:
@@ -464,6 +521,10 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         action = "ask"
         clarify = _fallback_clarify(next_draft)
 
+    summary_title = (
+        _extract_summary_title(content, next_draft, user_query) if action == "complete" else None
+    )
+
     step_id = await _persist_intake_step(
         session_factory=session_factory,
         run_id=run_id,
@@ -486,6 +547,8 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         )
 
     if action == "complete":
+        if summary_title is not None:
+            await _persist_run_title(run_id=run_id, title=summary_title)
         await emit_run_event(
             run_id=run_id,
             event_type=RunEventType.INTAKE_COMPLETE,
@@ -493,6 +556,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
             payload={
                 "turn": turn,
                 "draft": next_draft.model_dump(exclude={"is_complete"}),
+                "title": summary_title,
             },
         )
         # Phase 2: intake.complete hands off to the planner. The graph's

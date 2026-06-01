@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
-import { formatDateTime, formatRelativeTime } from "@/lib/format";
+import { formatDateTime, formatRelativeTime, formatRunTitle } from "@/lib/format";
 import { track } from "@/lib/analytics";
 
 const PAGE_SIZE = 10;
@@ -82,7 +82,10 @@ export function DashboardPage(): JSX.Element {
     const trimmed = editingTitle.trim();
     if (!trimmed) { setEditingRunId(null); return; }
     try {
-      await patchMutation.mutateAsync({ runId, payload: { user_query: trimmed } });
+      // user_query is the immutable original prompt; rename should only
+      // mutate the display label so we don't corrupt downstream prompts
+      // (intake history snapshots, planner inputs, etc.).
+      await patchMutation.mutateAsync({ runId, payload: { title: trimmed } });
       pushToast({ title: "已重命名", variant: "success" });
       void queryClient.invalidateQueries({ queryKey: ["runs"] });
     } catch (error) {
@@ -184,7 +187,12 @@ export function DashboardPage(): JSX.Element {
                 to={`/app/runs/${run.run_id}`}
                 className="rounded-lg border border-white/[0.06] bg-surface p-4 transition-colors hover:border-white/[0.12]"
               >
-                <p className="line-clamp-2 text-caption font-medium text-foreground">{run.user_query}</p>
+                <p
+                  className="line-clamp-2 text-caption font-medium text-foreground"
+                  title={run.user_query}
+                >
+                  {formatRunTitle(run)}
+                </p>
                 <p className="mt-2 text-micro text-foreground-subtle">
                   {run.finished_at ? formatDateTime(run.finished_at) : "处理中"}
                 </p>
@@ -261,7 +269,12 @@ export function DashboardPage(): JSX.Element {
                   />
                 ) : (
                   <>
-                    <p className="truncate text-caption font-medium text-foreground">{run.user_query}</p>
+                    <p
+                      className="truncate text-caption font-medium text-foreground"
+                      title={run.user_query}
+                    >
+                      {formatRunTitle(run)}
+                    </p>
                     <p className="text-micro text-foreground-subtle">
                       {run.domain_hint ?? "通用"} · {run.evidence_count} 证据 · {run.step_count} 步骤
                     </p>
@@ -282,7 +295,12 @@ export function DashboardPage(): JSX.Element {
                     <button
                       type="button"
                       className="flex w-full items-center gap-2 px-3 py-1.5 text-caption text-foreground hover:bg-white/[0.06]"
-                      onClick={(e) => { e.stopPropagation(); setEditingRunId(run.run_id); setEditingTitle(run.user_query); setMenuOpenId(null); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingRunId(run.run_id);
+                        setEditingTitle(formatRunTitle(run));
+                        setMenuOpenId(null);
+                      }}
                     >
                       <Pencil className="h-3.5 w-3.5" /> 重命名
                     </button>

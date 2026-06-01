@@ -49,3 +49,36 @@ export function statusToLabel(status: RunStatus): string {
   }
   return status;
 }
+
+const TITLE_FALLBACK_MAX = 40;
+
+/**
+ * Resolve the short label shown on run cards / page headers.
+ *
+ * The LLM-derived `title` is the source of truth once intake completes; before
+ * that (and for legacy runs migrated from before column existed) we fall back
+ * to the first non-empty line of `user_query`, truncated to a sensible length.
+ *
+ * Centralizing this prevents the FE from diverging between Dashboard / Live /
+ * RunView / Home and avoids each page reinventing its own truncation rules.
+ */
+export function formatRunTitle(
+  run: { title?: string | null; user_query: string },
+  options: { max?: number } = {},
+): string {
+  const max = options.max ?? TITLE_FALLBACK_MAX;
+  if (typeof run.title === "string" && run.title.trim()) {
+    return run.title.trim();
+  }
+  const firstLine = run.user_query
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstLine) {
+    return "未命名分析";
+  }
+  if (firstLine.length <= max) {
+    return firstLine;
+  }
+  return `${firstLine.slice(0, max - 1)}…`;
+}

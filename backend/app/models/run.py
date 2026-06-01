@@ -14,6 +14,10 @@ class Run(Base):
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_query: Mapped[str] = mapped_column(Text, nullable=False)
+    # LLM-generated short summary of user_query, populated at intake.complete.
+    # Nullable because the intake flow hasn't seen the LLM output yet for very
+    # young runs; the FE falls back to truncating user_query when this is null.
+    title: Mapped[str | None] = mapped_column(String(120), nullable=True)
     domain_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     reference_urls: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True, default=list)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)

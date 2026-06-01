@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateTime, formatRelativeTime } from "@/lib/format";
+import { formatDateTime, formatRelativeTime, formatRunTitle } from "@/lib/format";
 
 export function HomePage(): JSX.Element {
   const navigate = useNavigate();
@@ -145,7 +145,9 @@ export function HomePage(): JSX.Element {
             >
               <CardHeader className="space-y-3 pb-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <CardTitle className="max-w-4xl text-xl leading-7">{run.user_query}</CardTitle>
+                  <CardTitle className="max-w-4xl text-xl leading-7" title={run.user_query}>
+                    {formatRunTitle(run)}
+                  </CardTitle>
                   <div className="flex items-center gap-2 whitespace-nowrap">
                     <StatusBadge status={run.status} />
                     {run.status === "running" ? (

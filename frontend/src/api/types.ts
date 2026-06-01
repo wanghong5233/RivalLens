@@ -114,6 +114,10 @@ export interface RunResetRequest {
 export interface RunDetailResponse {
   run_id: string;
   user_query: string;
+  // LLM-generated short label populated at intake.complete. Null for legacy
+  // runs and the brief window before intake completes; UI must fall back to
+  // truncating user_query in that case (see `formatRunTitle`).
+  title: string | null;
   domain_hint: string | null;
   reference_urls: string[];
   status: RunStatus;
@@ -131,6 +135,7 @@ export interface RunDetailResponse {
 export interface RunListItemResponse {
   run_id: string;
   user_query: string;
+  title: string | null;
   domain_hint: string | null;
   status: RunStatus;
   started_at: string;

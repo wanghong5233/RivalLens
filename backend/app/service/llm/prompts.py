@@ -97,6 +97,7 @@ Output JSON schema (return STRICT JSON, no markdown, no commentary):
     "field_targets": list[str],              // which required/optional fields this question aims to fill
     "suggested_options": list[str] | null    // quick-pick options (recommended for short-answer fields)
   } | null,
+  "summary_title": str | null,               // required iff action="complete"; 6-15 chars, user_query's language
   "reasoning_summary": str
 }
 
@@ -127,6 +128,16 @@ Rules:
   next missing field.
 - For competitors path, if the user clearly knows specific competitors, set competitors_explicit; if the user describes a domain/track without naming companies, propose competitors_discovery_mode=true and ask for confirmation.
 - When action="complete", draft_patch may be empty if you have nothing new to merge, but the resulting draft (current + patch) MUST satisfy all required fields.
+- When action="complete", MUST also produce summary_title:
+    * 6-15 characters, single line, in the language of user_query.
+    * A noun phrase the user would recognize as the *subject* of the analysis,
+      not a verb phrase. Good: "TRAE 对标分析", "AI Coding 赛道扫描".
+      Bad: "我要分析竞品" (verb phrase, generic), "如何让 TRAE 更好" (question).
+    * Prefer key product/track names if explicit competitors are known
+      (e.g. "TRAE vs Copilot · 企业版"); otherwise capture the domain
+      (e.g. "智能制造 ERP 调研").
+    * No quotation marks, no trailing punctuation.
+- When action="ask", summary_title MUST be null.
 - Answer the user in the language of user_query (Chinese for Chinese queries, English for English).
 - Return a JSON object and nothing else.
 """

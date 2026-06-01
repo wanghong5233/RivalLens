@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useRunsList } from "@/api/hooks";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatRunTitle } from "@/lib/format";
 
 export function ExamplesPage(): JSX.Element {
   const runsQuery = useRunsList({ status: "completed", limit: 12, offset: 0 });
@@ -34,7 +34,12 @@ export function ExamplesPage(): JSX.Element {
             to={`/share/${run.run_id}`}
             className="rounded-lg border border-white/[0.06] bg-surface p-5 transition-colors hover:border-white/[0.12]"
           >
-            <p className="line-clamp-2 text-caption font-medium text-foreground">{run.user_query}</p>
+            <p
+              className="line-clamp-2 text-caption font-medium text-foreground"
+              title={run.user_query}
+            >
+              {formatRunTitle(run)}
+            </p>
             <div className="mt-3 flex items-center gap-2">
               <StatusBadge status={run.status} />
             </div>
