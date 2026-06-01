@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-06-02
+最后更新: 2026-05-29
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -142,8 +142,31 @@
 - **设计**：docs/3 §4 AgentMessage + payload_type 枚举
 - **现状**：`schemas/agent_message.py` Pydantic 模型已定义；编排走 `AgentState` dict
 - **入口**：各节点输出包装为 AgentMessage，落 `step.payload`；评审决定是否物理表化（增加 `models/agent_message.py`）
-- **决策点**：物理表 vs 仅逻辑契约
 - **备注**：边际收益低于通用化主线，本周期不做
+
+### [ ] FRT-003 前端页面与后端接口联调
+
+- **设计**：docs/11-frontend-skeleton-and-integration.md 前端集成方案
+- **现状**：前端页面已完成（SchemaDetail / EvidenceDetail / AgentRoles / CompetitorCompare / Survey / ReportExport），使用 mock 数据展示功能
+- **入口**：`frontend/src/api/hooks.ts`（API 调用） + `frontend/src/pages/*.tsx`（数据接入） + `backend/app/router/*.py`（后端接口）
+- **触发**：后端接口就绪后启动联调
+- **验收**：所有前端页面成功接入真实后端数据，mock 数据可切换关闭
+
+### [ ] FRT-004 前端页面交互优化与响应式适配
+
+- **设计**：docs/11-frontend-skeleton-and-integration.md 响应式设计要求
+- **现状**：页面基本功能完成，交互体验需优化
+- **入口**：`frontend/src/pages/*.tsx` + `frontend/src/components/ui/*.tsx`
+- **备注**：边际收益低于联调主线，本周期不做；优先确保功能正确性
+- **验收**：移动端、平板、桌面端均有良好适配；交互流畅无卡顿
+
+### [ ] FRT-005 前端错误边界与异常处理
+
+- **设计**：docs/11-frontend-skeleton-and-integration.md 错误处理规范
+- **现状**：基础错误展示已实现，缺少统一错误边界封装
+- **入口**：`frontend/src/components/ErrorBoundary.tsx`（待创建） + `frontend/src/pages/*.tsx`
+- **备注**：提升用户体验，非阻塞功能
+- **验收**：页面异常时有友好错误提示；支持重试机制
 
 ---
 
@@ -156,24 +179,6 @@
 | HLT-002 | Battlecard 卡片网格视图，一屏多竞品 | `frontend/src/pages/RunViewPage.tsx` |
 | HLT-003 | Prospect Voice 用户声音 / 情感分布视图 | `frontend/src/pages/RunVoicePage.tsx`（新） |
 | HLT-004 | Compare 跨竞品矩阵 | `frontend/src/pages/RunComparePage.tsx`（新） |
-
----
-
-## 当前工作（In Progress）
-
-### [x] FRT-002 前端页面完善（2026-06-02）
-
-- **负责人**：前端开发
-- **状态**：已完成
-- **内容**：补充完善前端页面结构，新增以下页面：
-  - `SchemaDetailPage.tsx` - 竞品知识Schema详情页（功能树、定价模型、用户画像）
-  - `EvidenceDetailPage.tsx` - 证据溯源详情页（证据链可视化）
-  - `AgentRolesPage.tsx` - Agent角色管理页（各Agent职责和状态展示）
-  - `CompetitorComparePage.tsx` - 竞品对比分析页（多竞品横向对比、SWOT矩阵）
-  - `SurveyPage.tsx` - 用户调研管理页（问卷模板、访谈记录管理）
-  - `ReportExportPage.tsx` - 报告导出分享页（多格式导出、分享链接生成）
-- **入口**：`frontend/src/pages/` + `frontend/src/app/router.tsx`
-- **说明**：所有页面已通过构建验证，使用 mock 数据展示功能，待后端接口就绪后接入真实数据
 
 ---
 
