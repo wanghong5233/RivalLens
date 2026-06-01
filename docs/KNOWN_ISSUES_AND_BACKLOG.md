@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-05-29
+最后更新: 2026-06-02
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -215,5 +215,6 @@
 - [x] AgentMessage schema 定义（编排未使用，见 MSG-001）
 - [x] FastAPI 路由：runs / packs / skill-candidates / health
 - [x] 前端 Run List / NewRun / RunView / RunTrace / SkillStaging 页
+- [x] FRT-002 前端页面完善（SchemaDetail / EvidenceDetail / AgentRoles / CompetitorCompare / Survey / ReportExport 页，已通过构建验证）
 - [x] main 分支保护（PR + approval + force push 禁止 + 删除禁止）
 - [x] Docker compose dev 编排（postgres + backend）
