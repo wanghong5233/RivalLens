@@ -199,6 +199,25 @@ def _wait_for_intake_field(
     pytest.fail(f"intake_draft.{field} never set within {timeout_seconds}s")
 
 
+def _post_intake_reply_when_ready(
+    test_client: TestClient,
+    *,
+    run_id: str,
+    body: dict[str, object],
+    timeout_seconds: float = 10.0,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        response = test_client.post(f"/api/runs/{run_id}/intake/reply", json=body)
+        if response.status_code == 200:
+            return
+        if response.status_code == 409 and response.json().get("error_code") == "INTAKE_NOT_AWAITING_REPLY":
+            time.sleep(0.1)
+            continue
+        pytest.fail(f"unexpected intake reply response: {response.status_code} {response.text}")
+    pytest.fail("intake/reply never became resumable within timeout")
+
+
 def _drive_intake_to_planner_pause(test_client: TestClient) -> str:
     create = test_client.post(
         "/api/runs/intake",
@@ -207,21 +226,24 @@ def _drive_intake_to_planner_pause(test_client: TestClient) -> str:
     assert create.status_code == 200, create.text
     run_id = create.json()["run_id"]
 
-    test_client.post(
-        f"/api/runs/{run_id}/intake/reply",
-        json={"text": "pm", "selected_options": ["pm"]},
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "pm", "selected_options": ["pm"]},
     )
     _wait_for_intake_field(test_client, run_id, "user_role")
 
-    test_client.post(
-        f"/api/runs/{run_id}/intake/reply",
-        json={"text": "对比 Notion 和 Cursor 的定价策略"},
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "对比 Notion 和 Cursor 的定价策略"},
     )
     _wait_for_intake_field(test_client, run_id, "analysis_intent")
 
-    test_client.post(
-        f"/api/runs/{run_id}/intake/reply",
-        json={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
     )
 
     deadline = time.time() + 30.0

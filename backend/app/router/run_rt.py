@@ -4,16 +4,18 @@ import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 import yaml
 
 from db.engine import get_session_factory
@@ -24,6 +26,7 @@ from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.report import Report
 from models.run import Run
+from models.run_create_request import RunCreateRequestRecord
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
@@ -105,6 +108,15 @@ class IntakeCreateRequest(BaseModel):
     competitors_discovery_mode: bool = False
     focus_dimensions: list[str] = Field(default_factory=list)
     report_depth: Literal["quick", "deep"] = "quick"
+    client_request_id: str | None = None
+
+    @field_validator("client_request_id")
+    @classmethod
+    def _normalize_client_request_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
 
 
 class IntakeCreateResponse(BaseModel):
@@ -112,8 +124,8 @@ class IntakeCreateResponse(BaseModel):
     status: str
     phase: str
     intake_draft: RunIntakeDraft
-    # Invariant D: chat mode returns the first clarify question synchronously so the
-    # client can render it immediately; expert mode returns None (draft already complete).
+    # Async create contract: first clarify arrives via SSE. Keep this optional field
+    # for backward-compatibility with older clients that still read it.
     first_clarify_request: IntakeClarifyRequest | None = None
 
 
@@ -930,6 +942,42 @@ def _coerce_intake_draft_from_state(state_values: dict[str, object]) -> RunIntak
     return None
 
 
+def _normalize_idempotency_key(
+    *,
+    header_value: str | None,
+    body_value: str | None,
+) -> str:
+    """Resolve create-request idempotency key with strict precedence.
+
+    Header key is preferred so upstream gateways / SDK retries can inject it
+    without mutating JSON payloads. Falls back to body field for clients that
+    cannot set custom headers.
+    """
+    header_key = header_value.strip() if isinstance(header_value, str) else ""
+    if header_key:
+        return header_key
+    body_key = body_value.strip() if isinstance(body_value, str) else ""
+    if body_key:
+        return body_key
+    return f"idemp_{uuid4().hex}"
+
+
+def _intake_request_fingerprint(payload: IntakeCreateRequest) -> str:
+    """Stable hash for idempotency conflict detection (same key, different body)."""
+    canonical: dict[str, object] = {
+        "user_query": payload.user_query.strip(),
+        "user_role": payload.user_role,
+        "domain_hint": payload.domain_hint,
+        "reference_urls": list(payload.reference_urls or []),
+        "competitors_explicit": list(payload.competitors_explicit),
+        "competitors_discovery_mode": payload.competitors_discovery_mode,
+        "focus_dimensions": list(payload.focus_dimensions),
+        "report_depth": payload.report_depth,
+    }
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 async def _persist_intake_draft_to_run(
     *,
     run_id: str,
@@ -950,6 +998,90 @@ async def _persist_intake_draft_to_run(
             return
         run.intake_draft = draft.model_dump(exclude={"is_complete"})
         await session.commit()
+
+
+async def _start_intake_graph_in_background(
+    *,
+    run_id: str,
+    graph: Any,
+    initial_state: dict[str, object],
+    domain_hint: str | None,
+    idempotency_key: str,
+    background_tasks: set[asyncio.Task[object]],
+    accepted_at: datetime,
+) -> None:
+    """Start intake graph from scratch in background for async create contract."""
+    session_factory = get_session_factory()
+    config = {"configurable": {"thread_id": run_id}}
+    with bind_run(run_id):
+        try:
+            await graph.ainvoke(initial_state, config=config)
+            snapshot = await graph.aget_state(config)
+        except asyncio.CancelledError:
+            await _handle_graph_cancelled(
+                run_id=run_id,
+                log_event="api.run.intake.create.cancelled",
+            )
+            raise
+        except Exception as exc:
+            async with session_factory() as session:
+                record = await session.get(RunCreateRequestRecord, idempotency_key)
+                if record is not None:
+                    record.status = "failed"
+                    record.error_code = type(exc).__name__
+                    record.error_message = str(exc)[:500]
+                    await session.commit()
+            await _mark_run_failed_and_emit(
+                run_id=run_id,
+                exc=exc,
+                log_event="api.run.intake.create.background.failed",
+            )
+            raise
+
+        state_values = snapshot.values if isinstance(snapshot.values, dict) else {}
+        await _persist_intake_draft_to_run(run_id=run_id, state_values=state_values)
+
+        async with session_factory() as session:
+            record = await session.get(RunCreateRequestRecord, idempotency_key)
+            if record is not None:
+                record.status = "paused" if snapshot.next else "completed"
+                await session.commit()
+        if snapshot.next != ():
+            next_node = snapshot.next[0] if snapshot.next else None
+            log.info(
+                "api.run.intake.create.paused",
+                next_node=next_node,
+                idempotency_key=idempotency_key,
+                time_to_first_pause_ms=int(
+                    (datetime.now(timezone.utc) - accepted_at).total_seconds() * 1000
+                ),
+            )
+            return
+
+        # Defensive: intake graph might reach terminal unexpectedly; mirror the
+        # finalization behavior used by resume paths so run status can't stay running.
+        run_status_raw = str(state_values.get("status", "completed"))
+        run_status = run_status_raw if run_status_raw in {"completed", "degraded"} else "completed"
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is not None:
+                run.status = run_status
+                run.finished_at = datetime.now(timezone.utc)
+                final_competitors = state_values.get("competitors")
+                if isinstance(final_competitors, list) and final_competitors:
+                    run.competitors = final_competitors
+                await session.commit()
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.RUN_FINISH,
+            payload=_build_run_finish_payload(run_id=run_id, status=run_status),
+        )
+        curator_task = asyncio.create_task(
+            run_skill_curator_for_run(run_id=run_id, domain_hint=domain_hint),
+            name=f"skill_curator_{run_id}",
+        )
+        background_tasks.add(curator_task)
+        curator_task.add_done_callback(background_tasks.discard)
 
 
 async def _resume_plan_graph_in_background(
@@ -1086,16 +1218,14 @@ async def create_run_intake(
     payload: IntakeCreateRequest,
     request: Request,
     mode: Literal["chat", "expert"] = Query(default="chat"),
+    idempotency_key_header: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> IntakeCreateResponse:
-    """Phase 1b chat-mode intake creation.
+    """Async intake creation: accept quickly, run graph in background.
 
-    Invariant D: ainvoke synchronously until the first interrupt, read the clarify
-    payload from the snapshot, return it inline so the FE renders the first
-    question without an SSE round-trip.
-
-    Expert mode is intentionally 422 in Phase 1b — it would need to skip intake
-    and enter the planner, which Phase 2 implements. Returning 422 keeps the API
-    contract honest instead of silently routing expert traffic through chat.
+    Maturity goals:
+    - request path must not block on LLM latency;
+    - retries / double-clicks should replay idempotently;
+    - graph failures are surfaced via events + terminal run status.
     """
     if mode == "expert":
         raise APIException(
@@ -1111,8 +1241,19 @@ async def create_run_intake(
             error_code="GRAPH_NOT_INITIALIZED",
             message="Compiled LangGraph instance is not initialized.",
         )
+    background_tasks = getattr(request.app.state, "background_tasks", None)
+    if not isinstance(background_tasks, set):
+        raise APIException(
+            status_code=500,
+            error_code="BACKGROUND_TASKS_NOT_INITIALIZED",
+            message="Background task registry is not initialized.",
+        )
 
-    run_id = make_id("run_")
+    idempotency_key = _normalize_idempotency_key(
+        header_value=idempotency_key_header,
+        body_value=payload.client_request_id,
+    )
+    request_hash = _intake_request_fingerprint(payload)
     normalized_reference_urls = list(payload.reference_urls or [])
     initial_draft = RunIntakeDraft(
         user_query=payload.user_query,
@@ -1126,9 +1267,50 @@ async def create_run_intake(
     )
 
     session_factory = get_session_factory()
+    async with session_factory() as session:
+        existing = await session.get(RunCreateRequestRecord, idempotency_key)
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise APIException(
+                    status_code=409,
+                    error_code="INTAKE_CREATE_IDEMPOTENCY_CONFLICT",
+                    message=(
+                        "Idempotency-Key 已绑定到不同请求体。"
+                        "请更换 key 或重试原请求。"
+                    ),
+                )
+            run = await session.get(Run, existing.run_id)
+            if run is None:
+                raise APIException(
+                    status_code=409,
+                    error_code="INTAKE_CREATE_REPLAY_MISSING_RUN",
+                    message="幂等记录存在，但关联 run 不存在，请更换 key 重试。",
+                )
+            replay_draft = (
+                RunIntakeDraft.model_validate(run.intake_draft)
+                if isinstance(run.intake_draft, dict)
+                else initial_draft
+            )
+            log.info(
+                "api.run.intake.create.replay",
+                run_id=run.run_id,
+                idempotency_key=idempotency_key,
+                replay_status=existing.status,
+            )
+            return IntakeCreateResponse(
+                run_id=run.run_id,
+                status=run.status,
+                phase=_derive_run_phase(run) or "intake",
+                intake_draft=replay_draft,
+                first_clarify_request=None,
+            )
+
+    run_id = make_id("run_")
+    accepted_at = datetime.now(timezone.utc)
     with bind_run(run_id):
         log.info(
             "api.run.intake.create.start",
+            idempotency_key=idempotency_key,
             user_role=payload.user_role,
             competitor_explicit_count=len(payload.competitors_explicit),
             competitor_discovery_mode=payload.competitors_discovery_mode,
@@ -1147,9 +1329,51 @@ async def create_run_intake(
                     intake_draft=initial_draft.model_dump(exclude={"is_complete"}),
                 )
             )
-            await session.commit()
+            session.add(
+                RunCreateRequestRecord(
+                    idempotency_key=idempotency_key,
+                    run_id=run_id,
+                    request_hash=request_hash,
+                    status="accepted",
+                )
+            )
+            try:
+                await session.commit()
+            except IntegrityError:
+                # Concurrent request with same idempotency key won the race.
+                await session.rollback()
+                existing = await session.get(RunCreateRequestRecord, idempotency_key)
+                if existing is None:
+                    raise
+                if existing.request_hash != request_hash:
+                    raise APIException(
+                        status_code=409,
+                        error_code="INTAKE_CREATE_IDEMPOTENCY_CONFLICT",
+                        message=(
+                            "Idempotency-Key 已绑定到不同请求体。"
+                            "请更换 key 或重试原请求。"
+                        ),
+                    )
+                existing_run = await session.get(Run, existing.run_id)
+                if existing_run is None:
+                    raise APIException(
+                        status_code=409,
+                        error_code="INTAKE_CREATE_REPLAY_MISSING_RUN",
+                        message="幂等记录存在，但关联 run 不存在，请更换 key 重试。",
+                    )
+                replay_draft = (
+                    RunIntakeDraft.model_validate(existing_run.intake_draft)
+                    if isinstance(existing_run.intake_draft, dict)
+                    else initial_draft
+                )
+                return IntakeCreateResponse(
+                    run_id=existing_run.run_id,
+                    status=existing_run.status,
+                    phase=_derive_run_phase(existing_run) or "intake",
+                    intake_draft=replay_draft,
+                    first_clarify_request=None,
+                )
 
-        config = {"configurable": {"thread_id": run_id}}
         initial_state: dict[str, object] = {
             "run_id": run_id,
             "user_query": payload.user_query,
@@ -1173,66 +1397,35 @@ async def create_run_intake(
             "intake_history": [],
             "pending_clarify": None,
         }
-        try:
-            await graph.ainvoke(initial_state, config=config)
-        except (APIException, SQLAlchemyError, RuntimeError) as exc:
-            log.exception("api.run.intake.create.failed", error=str(exc)[:500])
-            async with session_factory() as session:
-                run = await session.get(Run, run_id)
-                if run is not None:
-                    run.status = "failed"
-                    run.finished_at = datetime.now(timezone.utc)
-                    await session.commit()
-            raise APIException(
-                status_code=500,
-                error_code="INTAKE_GRAPH_FAILED",
-                message=f"intake graph invocation failed: {exc}",
-            ) from exc
-
-        snapshot = await graph.aget_state(config)
-        state_values = snapshot.values if isinstance(snapshot.values, dict) else {}
-        await _persist_intake_draft_to_run(run_id=run_id, state_values=state_values)
-        final_draft = _coerce_intake_draft_from_state(state_values) or initial_draft
-
-        first_clarify: IntakeClarifyRequest | None = None
-        phase_out: str
-        if snapshot.next == ("intake_wait",):
-            clarify_raw = _extract_first_interrupt_value(snapshot)
-            if clarify_raw is None:
-                raise APIException(
-                    status_code=500,
-                    error_code="INTAKE_CLARIFY_MISSING",
-                    message="intake graph paused without an interrupt payload",
-                )
-            first_clarify = IntakeClarifyRequest.model_validate(clarify_raw)
-            phase_out = "intake"
-        elif snapshot.next == ():
-            # Edge case: the IntakeAgent decided complete on turn 1 and the graph ran
-            # the full pipeline inside this request. Status reflects the terminal state.
-            run_status_raw = str(state_values.get("status", "completed"))
-            run_status = run_status_raw if run_status_raw in {"completed", "degraded"} else "completed"
-            async with session_factory() as session:
-                run = await session.get(Run, run_id)
-                if run is not None:
-                    run.status = run_status
-                    run.finished_at = datetime.now(timezone.utc)
-                    await session.commit()
-            phase_out = "done"
-        else:
-            phase_out = "intake"
+        task = asyncio.create_task(
+            _start_intake_graph_in_background(
+                run_id=run_id,
+                graph=graph,
+                initial_state=initial_state,
+                domain_hint=payload.domain_hint,
+                idempotency_key=idempotency_key,
+                background_tasks=background_tasks,
+                accepted_at=accepted_at,
+            ),
+            name=f"intake_create_{run_id}",
+        )
+        _register_background_task(request, task)
 
         log.info(
             "api.run.intake.create.accepted",
-            paused_at=snapshot.next[0] if snapshot.next else None,
-            draft_complete=bool(final_draft.is_complete),
+            phase="intake",
+            idempotency_key=idempotency_key,
+            intake_create_accept_latency_ms=int(
+                (datetime.now(timezone.utc) - accepted_at).total_seconds() * 1000
+            ),
         )
 
     return IntakeCreateResponse(
         run_id=run_id,
         status="running",
-        phase=phase_out,
-        intake_draft=final_draft,
-        first_clarify_request=first_clarify,
+        phase="intake",
+        intake_draft=initial_draft,
+        first_clarify_request=None,
     )
 
 

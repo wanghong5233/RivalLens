@@ -181,8 +181,21 @@ async function createRun(payload: RunCreateRequest): Promise<RunCreateResponse> 
   return data;
 }
 
-async function createRunIntake(payload: IntakeCreateRequest): Promise<IntakeCreateResponse> {
-  const { data } = await apiClient.post<IntakeCreateResponse>("/api/runs/intake", payload);
+interface CreateRunIntakeOptions {
+  idempotencyKey?: string;
+}
+
+async function createRunIntake(
+  payload: IntakeCreateRequest,
+  options: CreateRunIntakeOptions = {},
+): Promise<IntakeCreateResponse> {
+  const headers =
+    options.idempotencyKey !== undefined && options.idempotencyKey.length > 0
+      ? { "Idempotency-Key": options.idempotencyKey }
+      : undefined;
+  const { data } = await apiClient.post<IntakeCreateResponse>("/api/runs/intake", payload, {
+    headers,
+  });
   return data;
 }
 
@@ -369,13 +382,15 @@ export function useCreateRun(): UseMutationResult<RunCreateResponse, Error, RunC
   });
 }
 
-export function useCreateRunIntake(): UseMutationResult<
-  IntakeCreateResponse,
-  Error,
-  IntakeCreateRequest
-> {
+export interface CreateRunIntakeVariables {
+  payload: IntakeCreateRequest;
+  idempotencyKey?: string;
+}
+
+export function useCreateRunIntake(): UseMutationResult<IntakeCreateResponse, Error, CreateRunIntakeVariables> {
   return useMutation({
-    mutationFn: createRunIntake,
+    mutationFn: ({ payload, idempotencyKey }) => createRunIntake(payload, { idempotencyKey }),
+    meta: { errorToast: false },
   });
 }
 

@@ -18,7 +18,11 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { useCreateRunIntake, useReplyRunIntake } from "@/api/hooks";
+import {
+  useCreateRunIntake,
+  useReplyRunIntake,
+  type CreateRunIntakeVariables,
+} from "@/api/hooks";
 import {
   useRunEvents,
   type IntakeClarifyEventPayload,
@@ -70,6 +74,16 @@ const WELCOME_TEXT =
   "你好，我是 RivalLens。告诉我你想做的竞品分析，我会先帮你对齐角色、意图和竞品范围，再开始抓取证据。";
 
 const POST_COMPLETE_DELAY_MS = 1500;
+
+function buildIdempotencyKey(): string {
+  if (
+    typeof globalThis.crypto !== "undefined" &&
+    typeof globalThis.crypto.randomUUID === "function"
+  ) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `intake_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
 
 // Curated example prompts the user can one-click into the composer. Three
 // scenarios chosen to be mutually orthogonal on (industry × user role ×
@@ -319,6 +333,8 @@ export function NewRunChatPage(): JSX.Element {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const ghostShownMessageIdsRef = useRef<Set<string>>(new Set());
+  const createIdempotencyKeyRef = useRef<string | null>(null);
+  const createIdempotencyQueryRef = useRef<string | null>(null);
 
   // Auto-scroll the chat thread to the latest message.
   useEffect(() => {
@@ -478,11 +494,45 @@ export function NewRunChatPage(): JSX.Element {
     setComposerText("");
     try {
       const payload: IntakeCreateRequest = { user_query: userQuery };
-      const response = await createIntake.mutateAsync(payload);
+      const idempotencyKey =
+        createIdempotencyKeyRef.current !== null && createIdempotencyQueryRef.current === userQuery
+          ? createIdempotencyKeyRef.current
+          : buildIdempotencyKey();
+      createIdempotencyKeyRef.current = idempotencyKey;
+      createIdempotencyQueryRef.current = userQuery;
+      const variables: CreateRunIntakeVariables = {
+        payload,
+        idempotencyKey,
+      };
+      const response = await createIntake.mutateAsync(variables);
+      createIdempotencyKeyRef.current = null;
+      createIdempotencyQueryRef.current = null;
       setRunId(response.run_id);
       setDraft(response.intake_draft);
-      if (response.first_clarify_request !== null) {
-        const clarify = response.first_clarify_request;
+      if (response.phase === "done") {
+        setStatus("complete");
+        pushToast({
+          title: "已开始分析",
+          description: "任务已在后台完成，正在跳转结果页。",
+          variant: "success",
+        });
+        const targetRunId = response.run_id;
+        window.setTimeout(() => navigate(`/app/runs/${targetRunId}`), POST_COMPLETE_DELAY_MS);
+        return;
+      }
+      if (response.phase === "planning") {
+        setStatus("complete");
+        pushToast({
+          title: "计划已生成",
+          description: "正在跳转到计划确认。",
+          variant: "success",
+        });
+        const targetRunId = response.run_id;
+        window.setTimeout(() => navigate(`/app/runs/${targetRunId}/plan`), POST_COMPLETE_DELAY_MS);
+        return;
+      }
+      const clarify = response.first_clarify_request;
+      if (clarify !== undefined && clarify !== null) {
         setMessages((prev) => [
           ...prev,
           clarifyMessageFromPayload({
@@ -495,15 +545,8 @@ export function NewRunChatPage(): JSX.Element {
         setStatus("awaiting_user");
         return;
       }
-      // Backend returned phase=done immediately. Navigate to the run page.
-      setStatus("complete");
-      pushToast({
-        title: "已开始分析",
-        description: "需求一次就明确，直接跳到运行详情。",
-        variant: "success",
-      });
-      const targetRunId = response.run_id;
-      window.setTimeout(() => navigate(`/app/runs/${targetRunId}`), POST_COMPLETE_DELAY_MS);
+      // Async create contract: first clarify now arrives over SSE.
+      setStatus("resuming");
     } catch (error) {
       const message = error instanceof Error ? error.message : "未知错误";
       setMessages((prev) => [

@@ -55,7 +55,7 @@ export interface IntakeCreateResponse {
   status: RunStatus;
   phase: RunPhase;
   intake_draft: RunIntakeDraft;
-  first_clarify_request: IntakeClarifyRequest | null;
+  first_clarify_request?: IntakeClarifyRequest | null;
 }
 
 export type PlanTaskStage = "discover" | "research" | "analyze" | "write";

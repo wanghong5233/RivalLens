@@ -61,6 +61,25 @@ def _wait_for_intake_field(
     pytest.fail(f"intake_draft.{field} never set within {timeout_seconds}s")
 
 
+def _post_intake_reply_when_ready(
+    test_client: TestClient,
+    *,
+    run_id: str,
+    body: dict[str, object],
+    timeout_seconds: float = 10.0,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        response = test_client.post(f"/api/runs/{run_id}/intake/reply", json=body)
+        if response.status_code == 200:
+            return
+        if response.status_code == 409 and response.json().get("error_code") == "INTAKE_NOT_AWAITING_REPLY":
+            time.sleep(0.1)
+            continue
+        pytest.fail(f"unexpected intake reply response: {response.status_code} {response.text}")
+    pytest.fail("intake/reply never became resumable within timeout")
+
+
 def _drive_intake_to_planner_pause(
     test_client: TestClient, *, user_query: str = "我想分析定价竞品"
 ) -> tuple[str, dict[str, object]]:
@@ -73,25 +92,25 @@ def _drive_intake_to_planner_pause(
     assert create.status_code == 200, create.text
     run_id = create.json()["run_id"]
 
-    reply_1 = test_client.post(
-        f"/api/runs/{run_id}/intake/reply",
-        json={"text": "pm", "selected_options": ["pm"]},
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "pm", "selected_options": ["pm"]},
     )
-    assert reply_1.status_code == 200, reply_1.text
     _wait_for_intake_field(test_client, run_id, "user_role")
 
-    reply_2 = test_client.post(
-        f"/api/runs/{run_id}/intake/reply",
-        json={"text": "对比 Notion 和 Cursor 的定价策略"},
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "对比 Notion 和 Cursor 的定价策略"},
     )
-    assert reply_2.status_code == 200, reply_2.text
     _wait_for_intake_field(test_client, run_id, "analysis_intent")
 
-    reply_3 = test_client.post(
-        f"/api/runs/{run_id}/intake/reply",
-        json={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
     )
-    assert reply_3.status_code == 200, reply_3.text
 
     deadline = time.time() + 30.0
     plan_tree: dict[str, object] | None = None
@@ -157,6 +176,7 @@ def test_plan_confirm_rejects_when_not_paused(test_client: TestClient) -> None:
     pauses (e.g., the user reaches the plan page during an intake turn).
     """
     create = test_client.post("/api/runs/intake", json={"user_query": "尚未澄清完毕"})
+    assert create.status_code == 200
     run_id = create.json()["run_id"]
 
     confirm = test_client.post(
