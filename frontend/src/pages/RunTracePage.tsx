@@ -1,9 +1,10 @@
 import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { useRunTrace } from "@/api/hooks";
+import { useRunDetail, useRunTrace } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import { RunTraceDag } from "@/components/dag/RunTraceDag";
+import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -14,6 +15,7 @@ export function RunTracePage(): JSX.Element {
   const { runId: runIdFromParams } = useParams<{ runId: string }>();
   const runId = runIdFromParams ?? "";
   useRunEvents(runId);
+  const detailQuery = useRunDetail(runId);
   const traceQuery = useRunTrace(runId);
 
   const llmSummaries = useMemo(() => {
@@ -49,13 +51,13 @@ export function RunTracePage(): JSX.Element {
   return (
     <section className="space-y-4 rounded-lg border border-border bg-black/70 p-4 font-mono text-sm text-gray-100">
       <header className="space-y-2">
+        <RunBreadcrumb
+          run={detailQuery.data}
+          current="决策回放"
+          className="text-gray-400 [&_a:hover]:text-gray-100 [&_span]:text-gray-100 [&_svg]:text-gray-500"
+        />
         <h1 className="text-xl font-semibold">开发者视图 / Trace</h1>
-        <div className="flex items-center gap-3 text-xs text-gray-400">
-          <span>run_id: {runId}</span>
-          <Link className="text-primary hover:underline" to={`/app/runs/${runId}`}>
-            返回 run 详情
-          </Link>
-        </div>
+        <div className="text-xs text-gray-400">run_id: {runId}</div>
       </header>
 
       {traceQuery.isLoading ? (

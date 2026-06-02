@@ -50,6 +50,40 @@ export function statusToLabel(status: RunStatus): string {
   return status;
 }
 
+/**
+ * Render the elapsed time between two ISO timestamps as a humanized duration.
+ *
+ * `formatRelativeTime` is intentionally NOT used here — it answers "how long
+ * ago" relative to *now*, not how long the run actually took. A run that
+ * finished 3 hours ago but lasted 12 minutes would otherwise display "3 小时前"
+ * under a "耗时" label, which is misleading.
+ */
+export function formatDuration(
+  startedAt: string | null | undefined,
+  finishedAt: string | null | undefined,
+): string {
+  if (!startedAt || !finishedAt) {
+    return "-";
+  }
+  const start = new Date(startedAt).getTime();
+  const end = new Date(finishedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) {
+    return "-";
+  }
+  const seconds = Math.round((end - start) / 1000);
+  if (seconds < 60) {
+    return `${seconds} 秒`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainSec = seconds % 60;
+  if (minutes < 60) {
+    return remainSec > 0 ? `${minutes} 分 ${remainSec} 秒` : `${minutes} 分`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainMin = minutes % 60;
+  return remainMin > 0 ? `${hours} 时 ${remainMin} 分` : `${hours} 时`;
+}
+
 const TITLE_FALLBACK_MAX = 40;
 
 /**

@@ -5,12 +5,13 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useRunDetail, useRunEvidence } from "@/api/hooks";
 import type { EvidenceListItemResponse } from "@/api/types";
+import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatRunTitle } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 interface SourceMeta {
@@ -121,22 +122,22 @@ export function RunEvidencePage(): JSX.Element {
   return (
     <section className="space-y-5">
       <header className="space-y-3">
+        <RunBreadcrumb run={detailQuery.data} current="证据库" />
         <div className="flex items-center justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <p className="inline-flex items-center gap-2 text-xs text-primary">
               <Sparkles className="h-3.5 w-3.5" />
               可追溯证据库
             </p>
-            <h1 className="text-2xl font-semibold">{detailQuery.data?.user_query ?? "证据库"}</h1>
+            <h1
+              className="truncate text-2xl font-semibold"
+              title={detailQuery.data?.user_query}
+            >
+              {detailQuery.data ? formatRunTitle(detailQuery.data, { max: 60 }) : "证据库"}
+            </h1>
             <p className="text-xs text-muted-foreground">run_id: {runId}</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Link
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:border-primary hover:text-foreground"
-              to={`/app/runs/${runId}`}
-            >
-              返回 Run 详情
-            </Link>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
             <Link
               className="rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:border-primary hover:text-foreground"
               to={`/app/runs/${runId}/trace`}

@@ -1,4 +1,12 @@
-import { Activity, Copy, Download, RotateCcw, Share2 } from "lucide-react";
+import {
+  Activity,
+  CircleSlash,
+  Copy,
+  Download,
+  RotateCcw,
+  Share2,
+  XCircle,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -9,13 +17,15 @@ import { useResetRun, useRunConclusions, useRunDetail, useRunMetrics, useRunRepo
 import { useRunEvents } from "@/api/sse";
 import { BattlecardGrid } from "@/components/battlecard";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
+import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatDateTime, formatRelativeTime, formatRunTitle } from "@/lib/format";
+import { formatDateTime, formatDuration, formatRunTitle } from "@/lib/format";
 import { track } from "@/lib/analytics";
+import { cn } from "@/lib/utils";
 
 const CITATION_REGEX = /\[(ev_[a-zA-Z0-9_]+)\]/g;
 
@@ -42,6 +52,10 @@ export function RunViewPage(): JSX.Element {
   const runStatus = detailQuery.data?.status ?? "running";
   const isRunActive = runStatus === "running";
   const isReportReady = runStatus === "completed" || runStatus === "degraded";
+  // failed/cancelled are *terminal-without-output* — KPI cards and Tabs are
+  // dead weight (they all collapse to "-" or "生成中" placeholders).
+  // We collapse them into a single outcome card with the actions that matter.
+  const isTerminalFailure = runStatus === "failed" || runStatus === "cancelled";
   const reportQuery = useRunReport(runId, { enabled: isReportReady });
   const conclusionsQuery = useRunConclusions(runId, {
     enabled: isReportReady,
@@ -105,6 +119,7 @@ export function RunViewPage(): JSX.Element {
     <section className="space-y-6">
       {/* Header */}
       <header className="space-y-2">
+        <RunBreadcrumb run={detailQuery.data} />
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <h1
@@ -142,14 +157,31 @@ export function RunViewPage(): JSX.Element {
         </div>
       )}
 
-      {detailQuery.data && (
+      {detailQuery.data && isTerminalFailure && (
+        <RunOutcomeCard
+          runId={runId}
+          status={runStatus as "failed" | "cancelled"}
+          startedAt={detailQuery.data.started_at}
+          finishedAt={detailQuery.data.finished_at}
+          onReanalyze={() => navigate(`/app/runs/new?from=${runId}`)}
+        />
+      )}
+
+      {detailQuery.data && !isTerminalFailure && (
         <>
           {/* KPI bar */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <KpiCard label="覆盖率" value={metricsQuery.data ? `${(metricsQuery.data.coverage_rate * 100).toFixed(0)}%` : "-"} />
             <KpiCard label="QA 通过" value={metricsQuery.data ? `${((1 - metricsQuery.data.qa_rejection_rate) * 100).toFixed(0)}%` : "-"} />
             <KpiCard label="证据数" value={metricsQuery.data?.evidence_count_total.toLocaleString() ?? "-"} />
-            <KpiCard label="耗时" value={detailQuery.data.finished_at ? formatRelativeTime(detailQuery.data.finished_at) : "进行中"} />
+            <KpiCard
+              label="耗时"
+              value={
+                detailQuery.data.finished_at
+                  ? formatDuration(detailQuery.data.started_at, detailQuery.data.finished_at)
+                  : "进行中"
+              }
+            />
           </div>
 
           {/* Tabs */}
@@ -295,6 +327,96 @@ function KpiCard({ label, value }: { label: string; value: string }): JSX.Elemen
     <div className="rounded-lg border border-white/[0.06] bg-surface px-4 py-3">
       <p className="text-micro text-foreground-subtle">{label}</p>
       <p className="mt-0.5 text-h3 font-semibold text-foreground">{value}</p>
+    </div>
+  );
+}
+
+interface RunOutcomeCardProps {
+  runId: string;
+  status: "failed" | "cancelled";
+  startedAt: string;
+  finishedAt: string | null;
+  onReanalyze: () => void;
+}
+
+/**
+ * Replaces the KPI + Tabs region when the run ended without producing a
+ * report. Pattern follows Vercel's "Deployment failed" page and GitHub
+ * Actions failed-run summary: large icon + status headline + brief
+ * timeline + the two actions that actually matter (re-run, see logs).
+ *
+ * We deliberately avoid showing KPI placeholders ("-") or "报告生成中" hints
+ * here — they're noise once the run is terminal-without-output.
+ */
+function RunOutcomeCard({
+  runId,
+  status,
+  startedAt,
+  finishedAt,
+  onReanalyze,
+}: RunOutcomeCardProps): JSX.Element {
+  const isFailed = status === "failed";
+  const Icon = isFailed ? XCircle : CircleSlash;
+  return (
+    <div
+      className={cn(
+        "rounded-xl border p-6",
+        isFailed
+          ? "border-danger/25 bg-danger/[0.04]"
+          : "border-white/[0.08] bg-white/[0.02]",
+      )}
+    >
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+        <div
+          className={cn(
+            "flex h-12 w-12 shrink-0 items-center justify-center rounded-full",
+            isFailed
+              ? "bg-danger/10 text-danger"
+              : "bg-white/[0.06] text-foreground-muted",
+          )}
+        >
+          <Icon className="h-6 w-6" />
+        </div>
+        <div className="min-w-0 flex-1 space-y-3">
+          <div>
+            <h2 className="text-h3 font-semibold text-foreground">
+              {isFailed ? "分析未能完成" : "分析已停止"}
+            </h2>
+            <p className="mt-1 text-caption text-foreground-muted">
+              {isFailed
+                ? "运行过程中发生错误，可在「决策回放」查看 Agent 最后操作以定位原因，或直接基于此重新发起一次。"
+                : "你在分析进行中点击了停止；可以基于同一需求重新发起一次。"}
+            </p>
+          </div>
+          <dl className="grid grid-cols-3 gap-x-4 gap-y-1.5 border-t border-white/[0.04] pt-3 text-caption">
+            <div className="space-y-0.5">
+              <dt className="text-micro text-foreground-subtle">开始时间</dt>
+              <dd className="font-medium text-foreground">{formatDateTime(startedAt)}</dd>
+            </div>
+            <div className="space-y-0.5">
+              <dt className="text-micro text-foreground-subtle">结束时间</dt>
+              <dd className="font-medium text-foreground">
+                {finishedAt ? formatDateTime(finishedAt) : "-"}
+              </dd>
+            </div>
+            <div className="space-y-0.5">
+              <dt className="text-micro text-foreground-subtle">耗时</dt>
+              <dd className="font-medium text-foreground">
+                {formatDuration(startedAt, finishedAt)}
+              </dd>
+            </div>
+          </dl>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button onClick={onReanalyze} size="sm">
+              <RotateCcw className="h-3.5 w-3.5" />
+              基于此重新分析
+            </Button>
+            <Button asChild size="sm" variant="outline">
+              <Link to={`/app/runs/${runId}/trace`}>查看决策回放</Link>
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

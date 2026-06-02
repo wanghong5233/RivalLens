@@ -115,7 +115,7 @@ export function DashboardPage(): JSX.Element {
       {/* Header */}
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-h1 text-foreground">仪表盘</h1>
+          <h1 className="text-h1 text-foreground">我的分析</h1>
           <p className="mt-1 text-caption text-foreground-muted">继续上次任务、复盘历史报告、快速启动新分析。</p>
         </div>
         <Button asChild>

@@ -2,7 +2,6 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
-  ChevronLeft,
   ChevronRight,
   CircleDot,
   CircleSlash,
@@ -36,6 +35,7 @@ import type {
 import type { PlanTaskStage, PlanTree } from "@/api/types";
 import { CancelRunButton } from "@/components/CancelRunButton";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
+import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -375,7 +375,7 @@ export function LiveRunPage(): JSX.Element {
           <CardContent className="space-y-3 py-8 text-center">
             <p className="text-foreground-muted">缺少 run id，无法打开实时进度页。</p>
             <Button asChild>
-              <Link to="/app">回到仪表盘</Link>
+              <Link to="/app">回到我的分析</Link>
             </Button>
           </CardContent>
         </Card>
@@ -403,25 +403,17 @@ export function LiveRunPage(): JSX.Element {
 
   return (
     <div className="space-y-4 px-6 py-6">
-      <div className="flex flex-col gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-center gap-3">
-          <Link
-            to="/app"
-            className="inline-flex items-center text-sm text-foreground-muted hover:text-foreground"
+      <div className="flex flex-col gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 space-y-1.5">
+          <RunBreadcrumb run={runDetail.data} current="实时监控" />
+          <h1
+            className="line-clamp-1 max-w-[640px] text-h3 font-semibold text-foreground"
+            title={userQuery || undefined}
           >
-            <ChevronLeft className="mr-1 h-4 w-4" />
-            返回
-          </Link>
-          <div>
-            <div className="text-xs uppercase tracking-wide text-foreground-muted">
-              Live Run · {runId}
-            </div>
-            <h1
-              className="line-clamp-1 max-w-[640px] text-h3 font-semibold text-foreground"
-              title={userQuery || undefined}
-            >
-              {headerTitle}
-            </h1>
+            {headerTitle}
+          </h1>
+          <div className="font-mono text-xs uppercase tracking-wide text-foreground-subtle">
+            {runId}
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -854,7 +846,7 @@ function TerminalAlert({
       </div>
       <div className="flex shrink-0 flex-wrap items-center gap-2">
         <Button asChild variant="ghost" size="sm">
-          <Link to="/app">返回仪表盘</Link>
+          <Link to="/app">返回我的分析</Link>
         </Button>
         <Button asChild size="sm">
           <Link to={`/app/runs/${runId}`}>查看已有结果</Link>

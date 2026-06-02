@@ -1,25 +1,48 @@
 import {
   BarChart3,
   FolderClock,
-  LayoutDashboard,
+  FolderKanban,
   Plus,
   Settings2,
   Shapes,
 } from "lucide-react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useSkillCandidates } from "@/api/hooks";
 import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
 
-const NAV_ITEMS = [
-  { to: "/app", icon: LayoutDashboard, label: "仪表盘", end: true },
+interface NavItem {
+  to: string;
+  icon: typeof FolderKanban;
+  label: string;
+  end: boolean;
+  /**
+   * Optional matcher that lights up the item even when the active URL is not
+   * a literal prefix of `to`. Used so /app/runs/:id (run detail variants)
+   * keep "我的分析" highlighted — without this they look orphaned in the UI.
+   */
+  matchPath?: (pathname: string) => boolean;
+}
+
+const NAV_ITEMS: readonly NavItem[] = [
+  {
+    to: "/app",
+    icon: FolderKanban,
+    label: "我的分析",
+    end: true,
+    // /app/runs/new* belongs to the "新建分析" tab, so we explicitly exclude
+    // it; everything else under /app/runs/* (detail/live/plan/trace/evidence)
+    // anchors back to "我的分析".
+    matchPath: (pathname) =>
+      pathname.startsWith("/app/runs/") && !pathname.startsWith("/app/runs/new"),
+  },
   { to: "/app/runs/new", icon: Plus, label: "新建分析", end: false },
   { to: "/app/compare", icon: BarChart3, label: "对比矩阵", end: false },
   { to: "/app/watch", icon: FolderClock, label: "竞品追踪", end: false },
   { to: "/app/templates", icon: Shapes, label: "模板库", end: false },
-] as const;
+];
 
 export function WorkspaceShell(): JSX.Element {
   const pendingCandidatesQuery = useSkillCandidates(
@@ -31,6 +54,7 @@ export function WorkspaceShell(): JSX.Element {
     { errorToast: false },
   );
   const pendingCount = pendingCandidatesQuery.data?.total ?? 0;
+  const location = useLocation();
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
@@ -45,23 +69,26 @@ export function WorkspaceShell(): JSX.Element {
 
         {/* Main nav */}
         <nav className="flex-1 space-y-0.5 px-2 py-2">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              end={item.end}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-2.5 rounded-md px-3 py-2 text-caption font-medium text-foreground-muted transition-colors",
-                  "hover:bg-white/[0.04] hover:text-foreground",
-                  isActive && "bg-white/[0.06] text-foreground",
-                )
-              }
-              to={item.to}
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              {item.label}
-            </NavLink>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const matchedExternally = item.matchPath?.(location.pathname) ?? false;
+            return (
+              <NavLink
+                key={item.to}
+                end={item.end}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-2.5 rounded-md px-3 py-2 text-caption font-medium text-foreground-muted transition-colors",
+                    "hover:bg-white/[0.04] hover:text-foreground",
+                    (isActive || matchedExternally) && "bg-white/[0.06] text-foreground",
+                  )
+                }
+                to={item.to}
+              >
+                <item.icon className="h-4 w-4 shrink-0" />
+                {item.label}
+              </NavLink>
+            );
+          })}
         </nav>
 
         {/* Bottom section */}

@@ -18,6 +18,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useConfirmRunPlan, useRunDetail } from "@/api/hooks";
 import type { PlanTask, PlanTaskStage, PlanTree, RunIntakeDraft } from "@/api/types";
 import { CancelRunButton } from "@/components/CancelRunButton";
+import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
@@ -229,20 +230,23 @@ export function PlanConfirmPage(): JSX.Element {
   return (
     <section className="space-y-5">
       <header className="space-y-3">
-        <Button
-          asChild
-          className="-ml-2 inline-flex w-fit items-center gap-1 text-caption text-foreground-muted hover:text-foreground"
-          size="sm"
-          variant="ghost"
-        >
-          <a href="/app/runs/new" onClick={(event) => {
-            event.preventDefault();
-            navigate("/app/runs/new");
-          }}>
-            <ChevronLeft className="h-3.5 w-3.5" />
-            返回对话
-          </a>
-        </Button>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <RunBreadcrumb run={runDetail.data} current="计划确认" />
+          <Button
+            asChild
+            className="inline-flex items-center gap-1 text-caption text-foreground-muted hover:text-foreground"
+            size="sm"
+            variant="ghost"
+          >
+            <a href="/app/runs/new" onClick={(event) => {
+              event.preventDefault();
+              navigate("/app/runs/new");
+            }}>
+              <ChevronLeft className="h-3.5 w-3.5" />
+              返回对话
+            </a>
+          </Button>
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-h1 text-foreground">确认分析计划</h1>
           <div className="flex items-center gap-2">
