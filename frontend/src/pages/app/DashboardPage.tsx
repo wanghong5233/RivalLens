@@ -1,8 +1,8 @@
 import { ArrowRight, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { useBatchDeleteRuns, useDeleteRun, usePatchRun, useResumeRun, useRunsList, useWatchlist } from "@/api/hooks";
+import { useBatchDeleteRuns, useClearRuns, useDeleteRun, usePatchRun, useResumeRun, useRunsList, useWatchlist } from "@/api/hooks";
 import { queryClient } from "@/api/queryClient";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -34,11 +34,17 @@ export function DashboardPage(): JSX.Element {
   const deleteMutation = useDeleteRun();
   const patchMutation = usePatchRun();
   const batchDeleteMutation = useBatchDeleteRuns();
+  const clearRunsMutation = useClearRuns();
   const [selectedRuns, setSelectedRuns] = useState<Set<string>>(new Set());
   const [editingRunId, setEditingRunId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const selectionAnchorIndexRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    selectionAnchorIndexRef.current = null;
+  }, [statusFilter, offset, searchKeyword]);
 
   const currentItems = runsQuery.data?.items ?? [];
   const filteredItems = useMemo(() => {
@@ -96,6 +102,45 @@ export function DashboardPage(): JSX.Element {
     setEditingRunId(null);
   }
 
+  function handleHistoryCheckboxClick(index: number, event: MouseEvent<HTMLInputElement>): void {
+    event.stopPropagation();
+    const run = filteredItems[index];
+    if (run === undefined) {
+      return;
+    }
+
+    if (event.shiftKey && selectionAnchorIndexRef.current !== null) {
+      // Convention (GitHub/Gmail/Linear): shift+click always extends selection.
+      // Toggling on shift would invert anchor state and surprise the user when
+      // the anchor row is already selected (the common case right after a click).
+      const anchor = selectionAnchorIndexRef.current;
+      const lo = Math.min(anchor, index);
+      const hi = Math.max(anchor, index);
+      setSelectedRuns((prev) => {
+        const next = new Set(prev);
+        for (let i = lo; i <= hi; i++) {
+          const row = filteredItems[i];
+          if (row !== undefined) {
+            next.add(row.run_id);
+          }
+        }
+        return next;
+      });
+      return;
+    }
+
+    setSelectedRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(run.run_id)) {
+        next.delete(run.run_id);
+      } else {
+        next.add(run.run_id);
+      }
+      return next;
+    });
+    selectionAnchorIndexRef.current = index;
+  }
+
   async function handleBatchDelete(): Promise<void> {
     if (selectedRuns.size === 0) return;
     try {
@@ -106,6 +151,65 @@ export function DashboardPage(): JSX.Element {
     } catch (error) {
       if (error instanceof Error) {
         pushToast({ title: "批量删除失败", description: error.message, variant: "danger" });
+      }
+    }
+  }
+
+  async function handleClearCurrentFilter(): Promise<void> {
+    const hasFilter = statusFilter !== "all" || searchKeyword.trim().length > 0;
+    const confirmMessage = hasFilter
+      ? "将清空当前筛选下的历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？"
+      : "将清空全部历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？";
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+    try {
+      const result = await clearRunsMutation.mutateAsync({
+        status: statusFilter,
+        keyword: searchKeyword.trim() || undefined,
+        include_running: false,
+      });
+      setSelectedRuns(new Set());
+      selectionAnchorIndexRef.current = null;
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+      pushToast({
+        title: `已清空 ${result.deleted_count} 条`,
+        description:
+          result.skipped_running_count > 0
+            ? `已跳过 ${result.skipped_running_count} 条进行中任务`
+            : undefined,
+        variant: "success",
+      });
+    } catch (error) {
+      if (error instanceof Error) {
+        pushToast({ title: "清空失败", description: error.message, variant: "danger" });
+      }
+    }
+  }
+
+  async function handleClearAllHistory(): Promise<void> {
+    if (!window.confirm("将清空全部历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？")) {
+      return;
+    }
+    try {
+      const result = await clearRunsMutation.mutateAsync({
+        status: "all",
+        include_running: false,
+      });
+      setSelectedRuns(new Set());
+      selectionAnchorIndexRef.current = null;
+      void queryClient.invalidateQueries({ queryKey: ["runs"] });
+      pushToast({
+        title: `已清空 ${result.deleted_count} 条`,
+        description:
+          result.skipped_running_count > 0
+            ? `已跳过 ${result.skipped_running_count} 条进行中任务`
+            : undefined,
+        variant: "success",
+      });
+    } catch (error) {
+      if (error instanceof Error) {
+        pushToast({ title: "清空失败", description: error.message, variant: "danger" });
       }
     }
   }
@@ -206,12 +310,30 @@ export function DashboardPage(): JSX.Element {
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-h3 text-foreground">历史任务</h2>
-          {selectedRuns.size > 0 && (
-            <Button size="sm" variant="danger" onClick={() => void handleBatchDelete()}>
-              <Trash2 className="h-3.5 w-3.5" />
-              删除 {selectedRuns.size} 项
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={clearRunsMutation.isPending}
+              onClick={() => void handleClearCurrentFilter()}
+            >
+              清空当前筛选
             </Button>
-          )}
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={clearRunsMutation.isPending}
+              onClick={() => void handleClearAllHistory()}
+            >
+              清空全部历史
+            </Button>
+            {selectedRuns.size > 0 && (
+              <Button size="sm" variant="danger" onClick={() => void handleBatchDelete()}>
+                <Trash2 className="h-3.5 w-3.5" />
+                删除 {selectedRuns.size} 项
+              </Button>
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex-1">
@@ -237,20 +359,22 @@ export function DashboardPage(): JSX.Element {
         )}
 
         <div className="space-y-1">
-          {filteredItems.map((run) => (
+          {filteredItems.map((run, index) => (
             <div
               key={run.run_id}
               className="group relative flex w-full items-center gap-2 rounded-md px-3 py-2.5 transition-colors hover:bg-white/[0.03]"
             >
               <input
                 type="checkbox"
-                className="h-3.5 w-3.5 shrink-0 rounded border-white/20 bg-transparent accent-primary"
+                readOnly
+                className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-white/20 bg-transparent accent-primary"
                 checked={selectedRuns.has(run.run_id)}
-                onChange={(e) => {
-                  const next = new Set(selectedRuns);
-                  if (e.target.checked) next.add(run.run_id); else next.delete(run.run_id);
-                  setSelectedRuns(next);
+                onMouseDown={(e) => {
+                  // Suppress browser's native shift+click text-range selection
+                  // which otherwise highlights row text and breaks the gesture.
+                  if (e.shiftKey) e.preventDefault();
                 }}
+                onClick={(e) => handleHistoryCheckboxClick(index, e)}
               />
               <button
                 type="button"

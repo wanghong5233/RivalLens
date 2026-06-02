@@ -1734,6 +1734,51 @@ class BatchDeleteResponse(BaseModel):
     not_found: list[str]
 
 
+ClearRunsStatus = Literal["all", "completed", "degraded", "failed", "cancelled", "running"]
+
+
+class ClearRunsRequest(BaseModel):
+    status: ClearRunsStatus = "all"
+    keyword: str | None = Field(default=None, max_length=200)
+    include_running: bool = False
+
+    @field_validator("keyword")
+    @classmethod
+    def _normalize_keyword(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
+
+
+class ClearRunsResponse(BaseModel):
+    deleted_count: int
+    deleted_run_ids: list[str]
+    skipped_running_count: int
+    pruned_skill_candidate_refs: int
+
+
+async def _prune_supporting_run_refs(
+    *,
+    session: Any,
+    deleted_run_ids: set[str],
+) -> int:
+    if not deleted_run_ids:
+        return 0
+    candidates = (await session.execute(select(SkillCandidateRecord))).scalars().all()
+    pruned_refs = 0
+    for candidate in candidates:
+        kept_ids: list[str] = []
+        for run_id in candidate.supporting_run_ids:
+            if run_id in deleted_run_ids:
+                pruned_refs += 1
+                continue
+            kept_ids.append(run_id)
+        if len(kept_ids) != len(candidate.supporting_run_ids):
+            candidate.supporting_run_ids = kept_ids
+    return pruned_refs
+
+
 @router.delete("/api/runs/{run_id}", response_model=RunDeleteResponse)
 async def delete_run(run_id: str) -> RunDeleteResponse:
     session_factory = get_session_factory()
@@ -1824,6 +1869,40 @@ async def batch_delete_runs(payload: BatchDeleteRequest) -> BatchDeleteResponse:
                 deleted_count += 1
         await session.commit()
     return BatchDeleteResponse(deleted_count=deleted_count, not_found=not_found)
+
+
+@router.post("/api/runs/clear", response_model=ClearRunsResponse)
+async def clear_runs(payload: ClearRunsRequest) -> ClearRunsResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        query = select(Run.run_id, Run.status)
+        if payload.status != "all":
+            query = query.where(Run.status == payload.status)
+        if payload.keyword is not None:
+            query = query.where(Run.user_query.ilike(f"%{payload.keyword}%"))
+        rows = (await session.execute(query)).all()
+
+        run_ids_to_delete: list[str] = []
+        skipped_running_count = 0
+        for run_id, status in rows:
+            if status == "running" and not payload.include_running:
+                skipped_running_count += 1
+                continue
+            run_ids_to_delete.append(run_id)
+        deleted_run_ids_set = set(run_ids_to_delete)
+        pruned_skill_candidate_refs = await _prune_supporting_run_refs(
+            session=session,
+            deleted_run_ids=deleted_run_ids_set,
+        )
+        if run_ids_to_delete:
+            await session.execute(delete(Run).where(Run.run_id.in_(run_ids_to_delete)))
+        await session.commit()
+    return ClearRunsResponse(
+        deleted_count=len(run_ids_to_delete),
+        deleted_run_ids=run_ids_to_delete,
+        skipped_running_count=skipped_running_count,
+        pruned_skill_candidate_refs=pruned_skill_candidate_refs,
+    )
 
 
 @router.get("/api/runs/{run_id}/report", response_model=RunReportResponse)

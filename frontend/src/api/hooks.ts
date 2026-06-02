@@ -143,6 +143,24 @@ async function batchDeleteRuns(
   return data;
 }
 
+interface ClearRunsRequest {
+  status?: "all" | "running" | "completed" | "degraded" | "failed" | "cancelled";
+  keyword?: string;
+  include_running?: boolean;
+}
+
+interface ClearRunsResponse {
+  deleted_count: number;
+  deleted_run_ids: string[];
+  skipped_running_count: number;
+  pruned_skill_candidate_refs: number;
+}
+
+async function clearRuns(payload: ClearRunsRequest): Promise<ClearRunsResponse> {
+  const { data } = await apiClient.post<ClearRunsResponse>("/api/runs/clear", payload);
+  return data;
+}
+
 async function fetchRunEvidence(
   runId: string,
   query: RunEvidenceQuery,
@@ -507,5 +525,15 @@ export function useBatchDeleteRuns(): UseMutationResult<
 > {
   return useMutation({
     mutationFn: batchDeleteRuns,
+  });
+}
+
+export function useClearRuns(): UseMutationResult<
+  ClearRunsResponse,
+  Error,
+  ClearRunsRequest
+> {
+  return useMutation({
+    mutationFn: clearRuns,
   });
 }
