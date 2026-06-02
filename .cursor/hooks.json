@@ -1,10 +1,25 @@
 {
   "version": 1,
   "hooks": {
-    "preToolUse": [],
+    "beforeShellExecution": [
+      {
+        "command": "python .cursor/hooks/safety_guard.py",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "python .cursor/hooks/safety_guard.py",
+        "timeout": 10,
+        "failClosed": false
+      }
+    ],
     "beforeReadFile": [
       {
-        "command": "python .cursor/hooks/safety_guard.py"
+        "command": "python .cursor/hooks/safety_guard.py",
+        "timeout": 10,
+        "failClosed": false
       }
     ]
   }

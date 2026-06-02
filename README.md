@@ -78,6 +78,7 @@ cd ../ && python -m compileall backend/app
 - 赛题背景：`./docs/0-problem-background.md`
 - QnA 信号：`./docs/0-qna-signals.md`
 - 合规声明：`./docs/6-compliance-statement.md`
+- 凭据与机密防御：`./docs/8-secret-defense.md`
 
 ## Contributing
 

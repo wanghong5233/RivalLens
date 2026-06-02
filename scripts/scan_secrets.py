@@ -27,6 +27,12 @@ PLACEHOLDER_HINTS: tuple[str, ...] = (
     "xxx",
 )
 
+# 结构化占位符前缀（团队约定的"模板专用"标记）。
+# 命中即认为是合法 placeholder，参见 PITFALL §1.3 / playbook 02。
+STRUCTURED_PLACEHOLDER_PATTERN: re.Pattern[str] = re.compile(
+    r"^__REPLACE__[A-Z0-9_]+__$"
+)
+
 LITERAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "Bearer token literal",
@@ -40,8 +46,18 @@ LITERAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
+        "Volcano Engine ARK key literal",
+        re.compile(r"\bark-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-[0-9a-f]{4,}\b"),
+    ),
+    (
         "Doubao endpoint id literal",
         re.compile(r"\bep-[0-9]{10,}-[a-z0-9]{4,}\b"),
+    ),
+    # 见 PITFALL §4.1 Root Cause #6：从指令片段（KEY=VALUE / export KEY=VALUE）整段
+    # 复制粘贴产生的双等号特征。无法由手敲产生，命中即视为指令复制式泄露。
+    (
+        "Double-assignment paste (instruction-copy)",
+        re.compile(r"^[A-Z][A-Z0-9_]*\s*=\s*[A-Z][A-Z0-9_]*\s*=\s*\S", re.MULTILINE),
     ),
 )
 
@@ -81,7 +97,10 @@ def _is_ignored_file(path: str) -> bool:
 
 
 def _is_placeholder_value(raw_value: str) -> bool:
-    normalized = raw_value.strip().strip("'\"").lower()
+    stripped = raw_value.strip().strip("'\"")
+    if STRUCTURED_PLACEHOLDER_PATTERN.match(stripped):
+        return True
+    normalized = stripped.lower()
     if not normalized:
         return True
     if normalized in {"none", "null"}:
