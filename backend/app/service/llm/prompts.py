@@ -95,7 +95,8 @@ Output JSON schema (return STRICT JSON, no markdown, no commentary):
   "clarify_request": {                       // required iff action="ask", must be null iff action="complete"
     "question": str,
     "field_targets": list[str],              // which required/optional fields this question aims to fill
-    "suggested_options": list[str] | null    // quick-pick options (recommended for short-answer fields)
+    "suggested_options": list[str] | null,   // quick-pick options (recommended for short-answer fields)
+    "suggested_answer": str | null           // one editable example answer for open-ended fields
   } | null,
   "summary_title": str | null,               // required iff action="complete"; 6-15 chars, user_query's language
   "reasoning_summary": str
@@ -123,6 +124,21 @@ Rules:
   The backend wait-node normalizes labels back to enum values, so options can be
   freely phrased. Always pair the localized term with its internal English keyword
   in parentheses for the closed-set discovery / depth questions.
+- For open-ended fields (especially analysis_intent / domain_hint), provide
+  clarify_request.suggested_answer:
+    * Language MUST match user_query.
+    * <= 60 characters.
+    * A direct editable statement (not a question, not meta-instructions).
+    * Must add concrete context beyond repeating question text.
+  Example good suggested_answer:
+    * "想了解 AI 编程赛道头部玩家的定价与企业版差异。"
+    * "Need a market scan of AI coding tools for SMB founders."
+  Bad:
+    * "请问您想了解什么？" (question)
+    * "我想了解这个问题" (too vague)
+    * Exact substring copied from question.
+- If suggested_options is non-empty for a closed-set field, suggested_answer
+  may be null.
 - NEVER re-ask a field that is already populated in current_draft. If you find
   yourself wanting to re-confirm, prefer action="complete" or move on to the
   next missing field.

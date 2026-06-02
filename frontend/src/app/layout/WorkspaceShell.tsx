@@ -115,8 +115,15 @@ export function WorkspaceShell(): JSX.Element {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-5xl px-8 py-6">
+      {/*
+        Why flex column + flex-1 on the inner wrapper:
+        chat-style pages need a real height edge so their internal
+        `flex-1 overflow-y-auto` actually scrolls instead of letting the
+        message list push the whole page taller. Other pages can still
+        scroll the main column when content exceeds viewport.
+      */}
+      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-8 py-6">
           <Outlet />
         </div>
       </main>

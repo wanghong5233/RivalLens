@@ -303,6 +303,65 @@
 - 至少 1 个 evidence `source_type` 命中 `vendor_official` 或 `analyst_report`（Gartner / Forrester 类报告链接）
 - 最终 report 顶部包含「跨境管辖区覆盖矩阵」与「buy vs build 建议」两个明确章节
 
+### TC-I8A 开放问答显示 ghost-text（新增）
+
+**目标**：验证 `analysis_intent` / `domain_hint` 这类开放问答会收到 `suggested_answer`，并在输入框渲染灰字示范回答。
+
+**前置**：`/app/runs/new`（chat 模式），确保后端已包含 `IntakeClarifyRequest.suggested_answer` 字段。
+
+**操作**：
+
+1. 首句输入一个模糊需求（例如：`我们在做 AI 工具，想看看竞品`）。
+2. 等 Agent 追问到开放问答字段（`field_targets` 命中 `analysis_intent` 或 `domain_hint`）。
+3. 不输入内容，观察 composer。
+
+**验收点**：
+
+- `intake.clarify_request` 事件 payload 含 `suggested_answer`（非空字符串）。
+- 输入框为空时出现灰字 ghost（内容与 `suggested_answer` 一致）。
+- 若同一轮有 `suggested_options`，ghost 不显示（互斥优先 chips）。
+
+### TC-I9 三路采纳（键盘 / 点击 / 按钮）+ 自由覆盖（新增）
+
+**目标**：验证 ghost-text 的三种等价采纳方式与非强制覆盖行为，符合 Gmail Smart Compose / Cursor Tab / Intercom Fin 的「键盘可达 + 鼠标可达 + 显式按钮」三件套。
+
+**前置**：命中 TC-I8A 场景（当前轮有 ghost，且无 chips）。
+
+**操作 + 验收（三轮各一次）**：
+
+1. **键盘路径**：光标位于输入框，按一次 `Tab`。
+   - 输入框值被填充为 ghost 文案，光标停在文本末尾。
+   - 埋点 `intake.ghost.accepted` 上报 `source = "keyboard"`。
+2. **鼠标点击灰字路径**：清空输入框后等待 ghost 重新出现，鼠标点击灰字区域。
+   - 同样填充并 focus 回输入框、光标在末尾。
+   - 埋点 `source = "click"`。
+   - 灰字 button 的 `onMouseDown.preventDefault()` 保证 textarea 焦点未被夺走。
+3. **「采纳建议」按钮路径**：清空后点右下角带 `Sparkles` 图标的「采纳建议」按钮。
+   - 同样填充、focus、光标定位。
+   - 埋点 `source = "button"`。
+4. **覆盖路径**：在任一采纳后继续键入，文本可自由编辑，ghost 不再回弹。
+
+**通用验收**：
+
+- 输入框下方常驻 hint：`Tab 或点击灰字采纳建议 · Enter 发送`（仅在 ghost 出现时显示）。
+- 「采纳建议」按钮仅在 ghost 出现时渲染，ghost 消失后按钮立即收起。
+- 任一接受路径之后再按 `Tab` 不会重复触发（`composerText` 已非空）。
+
+### TC-I10 LLM 偏差回退（新增）
+
+**目标**：验证即使 `suggested_answer` 质量不高，流程仍 fail-loud 且可用。
+
+**操作**：
+
+1. 构造一个不采纳建议的回复（完全手写，不按 Tab、不点 chips）。
+2. 或在调试环境把 `suggested_answer` 人为改成空 / 偏题值，继续提交流程。
+
+**验收点**：
+
+- 用户可忽略建议并正常发送；`IntakeUserReply.text` 仍按真实输入入库。
+- checklist 根据用户真实回复推进，不依赖 ghost 被接受。
+- 若 `suggested_answer` 缺失（`null`），UI 不报错，只显示普通输入框与 placeholder。
+
 ---
 
 ## 3. 专家模式：跳过 Intake

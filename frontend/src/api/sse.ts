@@ -15,6 +15,7 @@ export interface IntakeClarifyEventPayload {
   question: string;
   field_targets: string[];
   suggested_options: string[];
+  suggested_answer: string | null;
   draft_complete: boolean;
   // Live draft snapshot the FE checklist consumes for immediate state-driven
   // updates. Backend started sending this after the "checklist never updates"
@@ -180,6 +181,8 @@ function coerceIntakeClarifyPayload(value: unknown): IntakeClarifyEventPayload |
   const suggestedOptions = Array.isArray(suggestedRaw)
     ? suggestedRaw.filter((item): item is string => typeof item === "string")
     : [];
+  const suggestedAnswerRaw = record.suggested_answer;
+  const suggestedAnswer = typeof suggestedAnswerRaw === "string" ? suggestedAnswerRaw : null;
   const turnRaw = record.turn;
   const turn = typeof turnRaw === "number" ? turnRaw : 0;
   const draftComplete = record.draft_complete === true;
@@ -188,6 +191,7 @@ function coerceIntakeClarifyPayload(value: unknown): IntakeClarifyEventPayload |
     question,
     field_targets: fieldTargets,
     suggested_options: suggestedOptions,
+    suggested_answer: suggestedAnswer,
     draft_complete: draftComplete,
     draft: coerceDraftRecord(record.draft),
   };

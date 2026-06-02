@@ -43,6 +43,7 @@ class IntakeClarifyRequest(BaseModel):
     question: str
     field_targets: list[str] = Field(default_factory=list)
     suggested_options: list[str] | None = None
+    suggested_answer: str | None = None
 
 
 class IntakeUserReply(BaseModel):

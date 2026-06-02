@@ -284,11 +284,18 @@ def _parse_clarify(raw_clarify: object) -> IntakeClarifyRequest | None:
         if isinstance(suggested_raw, list)
         else None
     )
+    suggested_answer_raw = raw_clarify.get("suggested_answer")
+    suggested_answer = (
+        suggested_answer_raw.strip()
+        if isinstance(suggested_answer_raw, str) and suggested_answer_raw.strip()
+        else None
+    )
     try:
         return IntakeClarifyRequest(
             question=question.strip(),
             field_targets=field_targets,
             suggested_options=suggested,
+            suggested_answer=suggested_answer,
         )
     except ValidationError:
         return None
@@ -297,9 +304,16 @@ def _parse_clarify(raw_clarify: object) -> IntakeClarifyRequest | None:
 def _fallback_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
     """Deterministic clarify question when the LLM output is unusable.
 
-    Picks the first missing required field so the run can still make progress without LLM.
-    Bilingual labels: chip text is what users see; the wait-node normalizer
-    handles label → internal value translation in one place.
+    Picks the FIRST missing required field so the run can still make progress
+    without LLM. Bilingual labels: chip text is what users see; the wait-node
+    normalizer handles label → internal value translation in one place.
+
+    Invariant: caller MUST check `draft.is_complete` before delegating here.
+    Falling through this function with an already-complete draft is what
+    produced the "Agent repeats the same competitors question forever" bug
+    (LLM 401 → fallback path → this function → hardcoded competitors prompt
+    → user answers → next turn 401 again → same prompt). We `raise` to surface
+    that contract violation loudly instead of silently re-asking.
     """
     if draft.user_role is None:
         return IntakeClarifyRequest(
@@ -314,13 +328,23 @@ def _fallback_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
         )
     if not (draft.analysis_intent and draft.analysis_intent.strip()):
         return IntakeClarifyRequest(
-            question="请用一句话描述这次分析您最想了解什么？例如「了解 X 赛道头部玩家的定价策略」。",
+            question="请用一句话描述这次分析您最想了解什么？",
             field_targets=["analysis_intent"],
+            suggested_answer="想了解 AI 编程赛道头部玩家的定价与企业版差异。",
         )
-    return IntakeClarifyRequest(
-        question="您已经有想分析的竞品名单吗？没有的话可以让 Agent 帮您发现。",
-        field_targets=["competitors_explicit", "competitors_discovery_mode"],
-        suggested_options=["我已有名单 (explicit)", "让 Agent 帮我发现 (auto-discover)"],
+    has_competitors_path = bool(draft.competitors_explicit) or (
+        draft.competitors_discovery_mode is True
+    )
+    if not has_competitors_path:
+        return IntakeClarifyRequest(
+            question="您已经有想分析的竞品名单吗？没有的话可以让 Agent 帮您发现。",
+            field_targets=["competitors_explicit", "competitors_discovery_mode"],
+            suggested_options=["我已有名单 (explicit)", "让 Agent 帮我发现 (auto-discover)"],
+        )
+    raise RuntimeError(
+        "intake._fallback_clarify called on a draft that already satisfies "
+        "all required fields; caller must check draft.is_complete before "
+        "falling back."
     )
 
 
@@ -510,14 +534,33 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         else ""
     )
 
+    # Decision order matters. The key invariant: if the merged draft already
+    # satisfies all required fields, the run MUST move to `complete` regardless
+    # of what the LLM said. Without this, an unstable LLM (e.g. provider 401,
+    # malformed JSON) used to drop us into `_fallback_clarify`, which would
+    # then re-ask a hardcoded question on a fully-populated draft — creating
+    # the "Agent repeats the same competitors prompt forever" loop.
     if action_raw == "complete" and next_draft.is_complete:
         action: str = "complete"
         clarify: IntakeClarifyRequest | None = None
     elif action_raw == "ask" and parsed_clarify is not None:
         action = "ask"
         clarify = parsed_clarify
+    elif next_draft.is_complete:
+        action = "complete"
+        clarify = None
+        log.warning(
+            "intake.generate.forced_complete",
+            run_id=run_id,
+            reason="llm_unusable_but_draft_complete",
+            llm_action=action_raw,
+            llm_fallback_used=llm_response.fallback_used,
+        )
     else:
-        # Fallback: LLM output was unusable OR proposed complete on an incomplete draft.
+        # LLM output unusable AND draft genuinely incomplete → ask the next
+        # missing required field deterministically. _fallback_clarify raises
+        # if the draft is already complete; the branch above is what guards
+        # against that, so reaching here means a real missing field exists.
         action = "ask"
         clarify = _fallback_clarify(next_draft)
 
@@ -580,6 +623,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
             "question": clarify.question,
             "field_targets": list(clarify.field_targets),
             "suggested_options": list(clarify.suggested_options or []),
+            "suggested_answer": clarify.suggested_answer,
             "draft_complete": bool(next_draft.is_complete),
             # Phase 1b fix: include the live draft so FE can update the
             # requirement checklist immediately (was previously relying on a

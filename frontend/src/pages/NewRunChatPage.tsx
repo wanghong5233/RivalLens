@@ -37,6 +37,7 @@ import { IntakeModeSwitcher } from "@/components/intake/IntakeModeSwitcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 import { pushToast } from "@/components/ui/toaster";
 
@@ -50,6 +51,7 @@ type ChatMessage =
       question: string;
       fieldTargets: string[];
       suggestedOptions: string[];
+      suggestedAnswer: string | null;
     }
   | { id: string; kind: "assistant.complete"; text: string }
   | { id: string; kind: "assistant.error"; text: string }
@@ -153,6 +155,7 @@ function emptyDraft(userQuery: string): RunIntakeDraft {
 function clarifyMessageFromPayload(
   payload: Pick<IntakeClarifyRequest, "question" | "field_targets"> & {
     suggested_options: string[] | null;
+    suggested_answer: string | null;
   },
 ): ChatMessage {
   return {
@@ -161,6 +164,7 @@ function clarifyMessageFromPayload(
     question: payload.question,
     fieldTargets: [...(payload.field_targets ?? [])],
     suggestedOptions: payload.suggested_options ? [...payload.suggested_options] : [],
+    suggestedAnswer: payload.suggested_answer,
   };
 }
 
@@ -313,6 +317,8 @@ export function NewRunChatPage(): JSX.Element {
   const [selectedExampleId, setSelectedExampleId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const ghostShownMessageIdsRef = useRef<Set<string>>(new Set());
 
   // Auto-scroll the chat thread to the latest message.
   useEffect(() => {
@@ -328,6 +334,15 @@ export function NewRunChatPage(): JSX.Element {
     }
     return null;
   }, [messages]);
+  const activeGhostSuggestion = useMemo(() => {
+    if (currentClarify === null || currentClarify.kind !== "assistant.clarify") {
+      return null;
+    }
+    if (currentClarify.suggestedOptions.length > 0) {
+      return null;
+    }
+    return currentClarify.suggestedAnswer;
+  }, [currentClarify]);
 
   // --- SSE: clarify_request / user_reply / complete -------------------------
 
@@ -364,6 +379,7 @@ export function NewRunChatPage(): JSX.Element {
           question: payload.question,
           field_targets: payload.field_targets,
           suggested_options: payload.suggested_options,
+          suggested_answer: payload.suggested_answer,
         }),
       ]);
       setStatus("awaiting_user");
@@ -473,6 +489,7 @@ export function NewRunChatPage(): JSX.Element {
             question: clarify.question,
             field_targets: clarify.field_targets,
             suggested_options: clarify.suggested_options,
+            suggested_answer: clarify.suggested_answer,
           }),
         ]);
         setStatus("awaiting_user");
@@ -576,7 +593,49 @@ export function NewRunChatPage(): JSX.Element {
     }
   }
 
+  function acceptGhostSuggestion(source: "keyboard" | "click" | "button"): void {
+    if (activeGhostSuggestion === null) {
+      return;
+    }
+    if (composerText.length > 0) {
+      return;
+    }
+    const accepted = activeGhostSuggestion;
+    setComposerText(accepted);
+    track("intake.ghost.accepted", {
+      run_id: runId,
+      source,
+      field_targets:
+        currentClarify !== null && currentClarify.kind === "assistant.clarify"
+          ? currentClarify.fieldTargets
+          : [],
+    });
+    // Restore focus + park caret at end so the user can keep typing or send.
+    // requestAnimationFrame waits for React to flush the controlled value;
+    // otherwise setSelectionRange races with the value update on Chromium.
+    requestAnimationFrame(() => {
+      const el = composerTextareaRef.current;
+      if (el === null) {
+        return;
+      }
+      el.focus();
+      el.setSelectionRange(accepted.length, accepted.length);
+    });
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+    const canAcceptGhost =
+      activeGhostSuggestion !== null &&
+      composerText.length === 0 &&
+      status !== "creating" &&
+      status !== "replying" &&
+      status !== "resuming" &&
+      status !== "complete";
+    if (event.key === "Tab" && canAcceptGhost) {
+      event.preventDefault();
+      acceptGhostSuggestion("keyboard");
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void handleSend();
@@ -609,14 +668,43 @@ export function NewRunChatPage(): JSX.Element {
   const isBusy =
     status === "creating" || status === "replying" || status === "resuming";
   const composerDisabled = isBusy || status === "complete";
+  const shouldShowGhostSuggestion =
+    activeGhostSuggestion !== null &&
+    composerText.length === 0 &&
+    !composerDisabled;
   const composerPlaceholder =
     runId === null
       ? "描述你想做的竞品分析（角色、要解决的问题、可选竞品名单）"
       : "回答 Agent 的问题，或补充更多上下文…";
 
+  useEffect(() => {
+    if (runId === null) {
+      return;
+    }
+    if (currentClarify === null || currentClarify.kind !== "assistant.clarify") {
+      return;
+    }
+    if (currentClarify.suggestedOptions.length > 0 || currentClarify.suggestedAnswer === null) {
+      return;
+    }
+    if (ghostShownMessageIdsRef.current.has(currentClarify.id)) {
+      return;
+    }
+    ghostShownMessageIdsRef.current.add(currentClarify.id);
+    track("intake.ghost.shown", {
+      run_id: runId,
+      field_targets: currentClarify.fieldTargets,
+    });
+  }, [currentClarify, runId]);
+
   return (
-    <section className="space-y-5">
-      <header className="space-y-3">
+    // Why h-full + flex column: chat page must lock to viewport height so the
+    // message list scrolls inside the Card. Without this, growing messages
+    // would inflate the page and surface the outer main scrollbar, breaking
+    // the fixed composer feel that mature chat products (ChatGPT/Claude/Cursor)
+    // all rely on.
+    <section className="flex h-full min-h-0 flex-col gap-5">
+      <header className="shrink-0 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-h1 text-foreground">新建竞品分析</h1>
           <div className="flex items-center gap-2">
@@ -637,8 +725,8 @@ export function NewRunChatPage(): JSX.Element {
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-3 lg:items-stretch">
-        <div className="flex flex-col gap-3 lg:col-span-2">
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-3 lg:items-stretch">
+        <div className="flex min-h-0 flex-col gap-3 lg:col-span-2">
           <Card className="flex min-h-[18rem] flex-1 flex-col lg:min-h-0">
             <CardHeader className="pb-2">
               <CardTitle className="inline-flex items-center gap-2 text-lg">
@@ -666,15 +754,36 @@ export function NewRunChatPage(): JSX.Element {
           <form className="shrink-0" onSubmit={handleSubmit}>
             <Card className="border-primary/30">
               <CardContent className="space-y-2 p-4">
-                <textarea
-                  aria-label="向 Agent 输入"
-                  className="min-h-20 w-full resize-none rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-caption text-foreground outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-ring/40"
-                  disabled={composerDisabled}
-                  onChange={(event) => handleComposerChange(event.target.value)}
-                  onKeyDown={handleComposerKeyDown}
-                  placeholder={composerPlaceholder}
-                  value={composerText}
-                />
+                <div className="relative rounded-md border border-white/[0.08] bg-white/[0.03] transition focus-within:border-primary/40 focus-within:ring-2 focus-within:ring-ring/40">
+                  {shouldShowGhostSuggestion && (
+                    <button
+                      aria-label={`采纳 Agent 建议：${activeGhostSuggestion ?? ""}`}
+                      className="absolute left-3 right-3 top-2 z-20 cursor-pointer rounded text-left text-caption text-foreground-subtle/55 transition hover:text-foreground-subtle/90"
+                      onMouseDown={(event) => {
+                        // mouseDown.preventDefault 阻止 textarea 失焦，焦点保留在输入框
+                        event.preventDefault();
+                        acceptGhostSuggestion("click");
+                      }}
+                      tabIndex={-1}
+                      title="点击或按 Tab 采纳建议"
+                      type="button"
+                    >
+                      {activeGhostSuggestion}
+                    </button>
+                  )}
+                  <textarea
+                    aria-label="向 Agent 输入"
+                    autoComplete="off"
+                    className="relative z-10 min-h-20 w-full resize-none bg-transparent px-3 py-2 text-caption text-foreground outline-none"
+                    disabled={composerDisabled}
+                    name="intake-user-reply"
+                    onChange={(event) => handleComposerChange(event.target.value)}
+                    onKeyDown={handleComposerKeyDown}
+                    placeholder={shouldShowGhostSuggestion ? "" : composerPlaceholder}
+                    ref={composerTextareaRef}
+                    value={composerText}
+                  />
+                </div>
                 {composerOptions.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {composerOptions.map((option) => (
@@ -716,7 +825,24 @@ export function NewRunChatPage(): JSX.Element {
                         })}
                       </>
                     )}
+                    {runId !== null && shouldShowGhostSuggestion && (
+                      <span className="text-xs text-foreground-subtle">
+                        Tab 或点击灰字采纳建议 · Enter 发送
+                      </span>
+                    )}
                   </div>
+                  {shouldShowGhostSuggestion && (
+                    <Button
+                      className="shrink-0"
+                      onClick={() => acceptGhostSuggestion("button")}
+                      size="sm"
+                      type="button"
+                      variant="secondary"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" aria-hidden />
+                      采纳建议
+                    </Button>
+                  )}
                   <Button className="shrink-0" disabled={!canSend} size="sm" type="submit">
                     {isBusy ? (
                       <>
@@ -733,7 +859,7 @@ export function NewRunChatPage(): JSX.Element {
           </form>
         </div>
 
-        <aside className="flex flex-col gap-3">
+        <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
           <Card>
             <CardHeader className="space-y-3 pb-3">
               <div className="flex items-center justify-between gap-2">

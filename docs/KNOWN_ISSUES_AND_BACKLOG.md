@@ -99,6 +99,21 @@
 - **入口**：`backend/app/service/llm/budget.py` + `service/llm/client.py`（call 前检查） + `core/config.py`（slot 预算字段）
 - **验收**：每个 model_slot 有 token 预算；超限触发降级 prompt 或 skip
 
+### [ ] UX-INTAKE-001 Intake Smart Compose 流式 ghost-text（升级路径）
+
+- **设计**：`docs/2.8-intake-suggested-answer-and-smart-compose.md` §4（A/B 分层）；A 已上线 one-shot `suggested_answer`，B 为逐键流式补全
+- **现状**：当前仅支持「每轮 clarify 一次性 suggested_answer + Tab 接受」；不支持用户输入过程中的连续预测
+- **备注**：B 方案体验吸引力高，但需要额外的延迟与成本工程，不纳入当前迭代
+- **入口**：`backend/app/router/run_rt.py`（新增 compose endpoint） + `backend/app/service/llm/client.py`（流式补全） + `frontend/src/pages/NewRunChatPage.tsx`（debounce + AbortController + ghost 增量渲染）
+- **难点清单**：
+  - 流式协议选型（SSE / WS）与断线恢复语义
+  - 输入防抖（约 200-300ms）与并发取消（AbortController）
+  - prompt cache key 与重复请求去重
+  - 成本封顶（QPS / token budget）与慢响应降级策略
+  - P95 输入到可见建议延迟目标（< 800ms）
+- **触发**：观测到 A 方案 `ghost_accept_rate` 达标，且用户反馈明确要求「边输入边补全」
+- **验收**：输入 2-3 字符即可稳定给出可接受补全，Tab 接受率提升且未显著拉高单 run LLM 成本
+
 ### [ ] SURVEY-001 问卷 / 访谈采集 channel 扩展（演示边界外）
 
 - **设计**：`docs/0-problem-background.md` 核心功能提及“问卷设计 / 问卷调研 / 用户访谈”；`docs/0-qna-signals.md`（2026-05-20）答疑明确放宽为“可选，能做更好”

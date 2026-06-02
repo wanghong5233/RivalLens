@@ -31,6 +31,7 @@ export interface IntakeClarifyRequest {
   question: string;
   field_targets: string[];
   suggested_options: string[] | null;
+  suggested_answer: string | null;
 }
 
 export interface IntakeUserReply {
