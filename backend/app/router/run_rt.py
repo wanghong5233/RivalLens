@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Awaitable, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, Query, Request
@@ -38,10 +39,56 @@ from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.metrics import build_run_metrics_snapshot
 from service.skill_curator.tasks import run_skill_curator_for_run
-from utils.logger import bind_run, get_logger
+from utils.logger import bind_run, format_exception_for_log, get_logger
 
 router = APIRouter()
 log = get_logger("router.run_rt")
+
+_RUN_PROGRESS_INTERVAL_SECONDS = 60
+
+
+async def _run_graph_with_progress_heartbeat(
+    *,
+    run_id: str,
+    phase: str,
+    graph: Any,
+    config: dict[str, object],
+    invoke_coro: Awaitable[Any],
+) -> Any:
+    """Emit structlog heartbeats while a long graph.ainvoke is in flight."""
+    started_at = datetime.now(timezone.utc)
+    stop_event = asyncio.Event()
+
+    async def _heartbeat_loop() -> None:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=_RUN_PROGRESS_INTERVAL_SECONDS)
+            except asyncio.TimeoutError:
+                checkpoint_next: str | None = None
+                try:
+                    snapshot = await graph.aget_state(config)
+                    if snapshot.next:
+                        checkpoint_next = str(snapshot.next[0])
+                except (AttributeError, RuntimeError, TypeError, ValueError):
+                    checkpoint_next = None
+                log.info(
+                    "run.progress",
+                    run_id=run_id,
+                    phase=phase,
+                    elapsed_ms=int(
+                        (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+                    ),
+                    checkpoint_next=checkpoint_next,
+                )
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(), name=f"run_progress_{run_id}")
+    try:
+        return await invoke_coro
+    finally:
+        stop_event.set()
+        heartbeat_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat_task
 
 ResetToStage = Literal["analyst", "writer"]
 RESETTABLE_RUN_STATUS = {"completed", "degraded"}
@@ -347,10 +394,20 @@ def _register_background_task(request: Request, task: asyncio.Task[object]) -> N
         return
     background_tasks.add(task)
 
-    def _discard(finished_task: asyncio.Task[object]) -> None:
+    def _on_done(finished_task: asyncio.Task[object]) -> None:
         background_tasks.discard(finished_task)
+        if finished_task.cancelled():
+            return
+        task_exc = finished_task.exception()
+        if task_exc is not None:
+            log.error(
+                "api.background_task.failed",
+                task_name=finished_task.get_name(),
+                exc_type=type(task_exc).__name__,
+                error=format_exception_for_log(task_exc),
+            )
 
-    task.add_done_callback(_discard)
+    task.add_done_callback(_on_done)
 
 
 def _build_run_finish_payload(
@@ -382,8 +439,8 @@ async def _mark_run_failed_and_emit(
     "running" forever, leaving the UI polling against a corpse.
     """
     error_type = type(exc).__name__
-    error_message = str(exc)[:500]
-    log.exception(log_event, error_type=error_type, error=error_message)
+    error_message = format_exception_for_log(exc)
+    log.error(log_event, error_type=error_type, error=error_message)
     session_factory = get_session_factory()
     async with session_factory() as session:
         run = await session.get(Run, run_id)
@@ -791,11 +848,15 @@ async def _execute_run_graph(
     propagate to asyncio so they remain visible instead of being silently hidden.
     """
     session_factory = get_session_factory()
+    config = {"configurable": {"thread_id": run_id}}
     with bind_run(run_id):
         try:
-            graph_state = await graph.ainvoke(
-                initial_state,
-                config={"configurable": {"thread_id": run_id}},
+            graph_state = await _run_graph_with_progress_heartbeat(
+                run_id=run_id,
+                phase="execute",
+                graph=graph,
+                config=config,
+                invoke_coro=graph.ainvoke(initial_state, config=config),
             )
         except asyncio.CancelledError:
             await _handle_graph_cancelled(
@@ -803,14 +864,12 @@ async def _execute_run_graph(
             )
             raise
         except Exception as exc:
-            # Background-task outer boundary: every uncaught node failure
-            # must update run.status and emit RUN_FINISH, otherwise the UI
-            # polls forever. The `raise` keeps asyncio's "Task exception was
-            # never retrieved" warning intact for log forensics.
+            # Background-task outer boundary: persist failed + RUN_FINISH; do not re-raise
+            # or asyncio emits unstructured "Task exception was never retrieved" noise.
             await _mark_run_failed_and_emit(
                 run_id=run_id, exc=exc, log_event="api.run.execute.failed"
             )
-            raise
+            return
 
         async with session_factory() as session:
             run = await session.get(Run, run_id)
@@ -1015,7 +1074,13 @@ async def _start_intake_graph_in_background(
     config = {"configurable": {"thread_id": run_id}}
     with bind_run(run_id):
         try:
-            await graph.ainvoke(initial_state, config=config)
+            await _run_graph_with_progress_heartbeat(
+                run_id=run_id,
+                phase="intake_create",
+                graph=graph,
+                config=config,
+                invoke_coro=graph.ainvoke(initial_state, config=config),
+            )
             snapshot = await graph.aget_state(config)
         except asyncio.CancelledError:
             await _handle_graph_cancelled(
@@ -1029,14 +1094,14 @@ async def _start_intake_graph_in_background(
                 if record is not None:
                     record.status = "failed"
                     record.error_code = type(exc).__name__
-                    record.error_message = str(exc)[:500]
+                    record.error_message = format_exception_for_log(exc)
                     await session.commit()
             await _mark_run_failed_and_emit(
                 run_id=run_id,
                 exc=exc,
                 log_event="api.run.intake.create.background.failed",
             )
-            raise
+            return
 
         state_values = snapshot.values if isinstance(snapshot.values, dict) else {}
         await _persist_intake_draft_to_run(run_id=run_id, state_values=state_values)
@@ -1102,7 +1167,13 @@ async def _resume_plan_graph_in_background(
     config = {"configurable": {"thread_id": run_id}}
     with bind_run(run_id):
         try:
-            graph_state = await graph.ainvoke(Command(resume=resume_payload), config=config)
+            graph_state = await _run_graph_with_progress_heartbeat(
+                run_id=run_id,
+                phase="plan_resume",
+                graph=graph,
+                config=config,
+                invoke_coro=graph.ainvoke(Command(resume=resume_payload), config=config),
+            )
         except asyncio.CancelledError:
             await _handle_graph_cancelled(
                 run_id=run_id, log_event="api.run.plan.resume.cancelled"
@@ -1112,7 +1183,7 @@ async def _resume_plan_graph_in_background(
             await _mark_run_failed_and_emit(
                 run_id=run_id, exc=exc, log_event="api.run.plan.resume.failed"
             )
-            raise
+            return
 
         run_status_raw = str(graph_state.get("status", "completed")) if isinstance(graph_state, dict) else "completed"
         run_status = run_status_raw if run_status_raw in {"completed", "degraded"} else "completed"
@@ -1163,7 +1234,13 @@ async def _resume_intake_graph_in_background(
     config = {"configurable": {"thread_id": run_id}}
     with bind_run(run_id):
         try:
-            await graph.ainvoke(Command(resume=resume_payload), config=config)
+            await _run_graph_with_progress_heartbeat(
+                run_id=run_id,
+                phase="intake_resume",
+                graph=graph,
+                config=config,
+                invoke_coro=graph.ainvoke(Command(resume=resume_payload), config=config),
+            )
             snapshot = await graph.aget_state(config)
         except asyncio.CancelledError:
             await _handle_graph_cancelled(
@@ -1174,7 +1251,7 @@ async def _resume_intake_graph_in_background(
             await _mark_run_failed_and_emit(
                 run_id=run_id, exc=exc, log_event="api.run.intake.resume.failed"
             )
-            raise
+            return
 
         state_values = snapshot.values if isinstance(snapshot.values, dict) else {}
         await _persist_intake_draft_to_run(run_id=run_id, state_values=state_values)
