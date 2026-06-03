@@ -15,6 +15,7 @@ from schemas.contracts import validate_dimension, validate_source_type
 from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
 from service.event_bus import RunEventType, emit_run_event
+from service.desensitize import normalize_text_for_storage
 from utils.log_node import log_node
 
 
@@ -200,6 +201,12 @@ def _build_evidence_rows(
         sanitized_text = sanitized_text_raw if isinstance(sanitized_text_raw, str) else quote_raw
         source_url = source_url_raw if isinstance(source_url_raw, str) else None
         source_title = source_title_raw if isinstance(source_title_raw, str) else None
+        quote_raw = normalize_text_for_storage(quote_raw)
+        sanitized_text = normalize_text_for_storage(sanitized_text)
+        if source_url is not None:
+            source_url = normalize_text_for_storage(source_url)
+        if source_title is not None:
+            source_title = normalize_text_for_storage(source_title)
         metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
         evidence_id = make_id("ev_")
         evidence_ids.append(evidence_id)

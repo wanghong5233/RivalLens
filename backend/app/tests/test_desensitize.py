@@ -5,6 +5,13 @@ import pytest
 from service.desensitize import desensitize_text
 
 
+def test_desensitize_text_strips_null_bytes() -> None:
+    raw = "通义灵码\x00产品介绍"
+    sanitized = desensitize_text(raw)
+    assert "\x00" not in sanitized
+    assert "通义灵码产品介绍" in sanitized
+
+
 @pytest.mark.parametrize(
     ("raw_text", "expected_fragment", "forbidden_fragment"),
     [

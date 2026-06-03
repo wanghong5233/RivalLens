@@ -69,7 +69,7 @@ class BaseChannel(ABC):
         source_title: str | None,
         metadata: dict[str, object] | None = None,
     ) -> CollectorSnippet:
-        from service.desensitize.engine import desensitize_text
+        from service.desensitize.engine import desensitize_text, normalize_text_for_storage
 
         desensitized_text = desensitize_text(raw_text)
         safety_result = sanitize_text(desensitized_text)
@@ -79,11 +79,18 @@ class BaseChannel(ABC):
         snippet_metadata["retrieved_at"] = self._now_iso()
         snippet_metadata["desensitize_changed"] = desensitized_text != raw_text
 
+        normalized_url = (
+            normalize_text_for_storage(source_url) if isinstance(source_url, str) else None
+        )
+        normalized_title = (
+            normalize_text_for_storage(source_title) if isinstance(source_title, str) else None
+        )
+
         return CollectorSnippet(
             quote=safety_result.text,
             sanitized_text=safety_result.text,
-            source_url=source_url,
-            source_title=source_title,
+            source_url=normalized_url,
+            source_title=normalized_title,
             source_type=source_type,
             desensitized=True,
             metadata=snippet_metadata,
