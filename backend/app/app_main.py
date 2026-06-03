@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import inspect
 from typing import Any
 
@@ -36,8 +36,12 @@ async def _sweep_orphan_running_runs() -> None:
     so the user sees an actionable terminal state and can re-submit.
     """
     session_factory = get_session_factory()
+    grace_seconds = settings.ORPHAN_RUN_SWEEP_GRACE_SECONDS
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=grace_seconds)
     async with session_factory() as session:
-        result = await session.execute(select(Run.run_id).where(Run.status == "running"))
+        result = await session.execute(
+            select(Run.run_id).where(Run.status == "running", Run.started_at < cutoff)
+        )
         orphan_ids = [row[0] for row in result.all()]
         if not orphan_ids:
             return
@@ -47,7 +51,12 @@ async def _sweep_orphan_running_runs() -> None:
             .values(status="failed", finished_at=datetime.now(timezone.utc))
         )
         await session.commit()
-    log.warning("startup.orphan_runs.swept", run_count=len(orphan_ids))
+    log.warning(
+        "startup.orphan_runs.swept",
+        run_count=len(orphan_ids),
+        grace_seconds=grace_seconds,
+        run_ids=orphan_ids[:10],
+    )
     # Emit RUN_FINISH so any client that reconnects after restart immediately
     # sees the row flip terminal without needing a hard refresh.
     for run_id in orphan_ids:

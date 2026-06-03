@@ -623,7 +623,7 @@ Compare top open-source vector databases (Chroma / Qdrant / Weaviate) for a RAG 
 | TC-M3 批量删 | 复选 3 条不同状态的 run | 响应 `deleted_count=3, not_found=[]` |
 | TC-M4 Live Run 停止分析 | 在 LiveRunPage header 点「停止分析」→ 弹窗确认 | PATCH `{status:"cancelled",cancel_reason:"用户主动停止"}`；后端 cancel 对应 background asyncio task；emit `run.finish` 含 `status="cancelled"`、`error_type="UserCancelled"`、`error_message="用户主动停止"`；前端立刻显示「已停止」横幅 + StatusBadge 「已停止」；后台日志不再出现该 run 的 LLM 调用 |
 | TC-M5 Intake 阶段放弃 | 在 NewRunChatPage 第二轮澄清时点 header「放弃此次分析」 | 不必等 intake 完成即可终止；run.status 转 `cancelled`；返回仪表盘后该 run 显示「已停止」 |
-| TC-M6 服务重启清扫 | 故意 `docker restart rivallens_api_dev` 时同时有 1 条 running run | 启动日志含 `startup.orphan_runs.swept run_count=1`；该 run.status 自动变 `failed`，error_message="服务重启时此任务正在执行..."；前端再访问立刻看到失败横幅，不再无限「进行中」 |
+| TC-M6 服务重启清扫 | 故意 `docker restart rivallens_api_dev` 时同时有 1 条 running run，且 `started_at` 早于 `ORPHAN_RUN_SWEEP_GRACE_SECONDS`（默认 300s） | 启动日志含 `startup.orphan_runs.swept run_count=1 grace_seconds=300`；该 run.status 自动变 `failed`；grace 窗口内新启动/暂停中的 run 不被误杀 |
 | TC-M7 卡死提示 | running 状态超过 4 分钟无任何 SSE 事件 | LiveRunPage 顶部出现「分析似乎已停滞」警告横幅，文案显示 idle 时长，并附「标记为失败并退出」按钮 |
 
 ---
