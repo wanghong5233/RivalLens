@@ -4,6 +4,7 @@ import pytest
 
 from core.config import settings
 from service.llm.client import LLMClient
+from service.llm.exceptions import LLMRequestError
 from service.llm.response import ProviderRawResponse
 from utils.logger import configure_logging
 
@@ -67,3 +68,52 @@ async def test_llm_client_logs_redact_prompt_and_fake_key(
     assert fake_key not in logged
     assert system_prompt not in logged
     assert user_prompt not in logged
+
+
+@pytest.mark.asyncio
+async def test_llm_client_logs_call_error_on_terminal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+    monkeypatch.setattr(settings, "LLM_PROVIDER_RESEARCH", "doubao")
+    monkeypatch.setattr(settings, "LLM_MODEL_RESEARCH", None)
+    provider = _SingleResponseProvider(
+        ProviderRawResponse(
+            content_raw="{}",
+            model_name="ep-default",
+            prompt_tokens=1,
+            completion_tokens=1,
+        )
+    )
+
+    async def _raise_request_error(
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        timeout_seconds: int,
+    ) -> ProviderRawResponse:
+        del system_prompt, user_prompt, model, timeout_seconds
+        raise LLMRequestError("connection reset")
+
+    provider.complete_json = _raise_request_error  # type: ignore[method-assign]
+
+    client = LLMClient(
+        providers={"doubao": provider},
+        max_retries=0,
+        timeout_seconds=5,
+        global_concurrency=1,
+    )
+
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    logged = capsys.readouterr().out
+    assert response.error is not None
+    assert "llm.call.error" in logged
+    assert "llm.call.finish" in logged
+    assert "error_class" in logged

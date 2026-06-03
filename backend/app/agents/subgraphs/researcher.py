@@ -639,6 +639,7 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         "researcher.tool_call",
         tool=action_raw,
         dimension=dimension,
+        competitor_id=state.get("competitor_id"),
         turn_count=next_turn_count,
         has_error="error" in observation_row,
     )
