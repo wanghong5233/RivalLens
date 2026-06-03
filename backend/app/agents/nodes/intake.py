@@ -8,10 +8,12 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from agents.state_coercion import coerce_intake_draft_or_default, coerce_intake_history
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.run import Run
 from models.step import Step
+from schemas.agent_outputs import IntakeTurnOutput
 from schemas.ids import make_id
 from schemas.intake import (
     IntakeClarifyRequest,
@@ -23,29 +25,16 @@ from service.event_bus import RunEventType, emit_run_event
 from service.llm import (
     INTAKE_SYSTEM_PROMPT,
     build_intake_fallback_user_prompt,
+    build_intake_repair_user_prompt,
     build_intake_user_prompt,
 )
-from service.llm.client import get_llm_client
+from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
 from utils.log_node import log_node
 from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.intake")
 
-# Optional draft fields the IntakeAgent is allowed to patch. Any unknown key in
-# `draft_patch` is silently dropped to keep the contract tight.
-_PATCHABLE_FIELDS: frozenset[str] = frozenset(
-    {
-        "user_role",
-        "analysis_intent",
-        "competitors_explicit",
-        "competitors_discovery_mode",
-        "domain_hint",
-        "focus_dimensions",
-        "report_depth",
-        "reference_urls",
-    }
-)
 _USER_ROLES: frozenset[str] = frozenset({"pm", "founder", "sales", "investor"})
 
 # Keyword-based normalization tables for the wait node's deterministic merge.
@@ -120,32 +109,6 @@ def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
     return get_session_factory()
 
 
-def _coerce_draft(state: AgentState) -> RunIntakeDraft:
-    draft = state.get("intake_draft")
-    if isinstance(draft, RunIntakeDraft):
-        return draft
-    if isinstance(draft, dict):
-        # Checkpoint round-trip may serialize Pydantic models to dicts.
-        return RunIntakeDraft.model_validate(draft)
-    user_query = state.get("user_query") or ""
-    return RunIntakeDraft(user_query=user_query)
-
-
-def _coerce_history(state: AgentState) -> list[IntakeExchange]:
-    raw = state.get("intake_history") or []
-    out: list[IntakeExchange] = []
-    for item in raw:
-        if isinstance(item, IntakeExchange):
-            out.append(item)
-            continue
-        if isinstance(item, dict):
-            try:
-                out.append(IntakeExchange.model_validate(item))
-            except ValidationError:
-                continue
-    return out
-
-
 def _history_to_prompt(history: list[IntakeExchange]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for exchange in history:
@@ -158,19 +121,6 @@ def _history_to_prompt(history: list[IntakeExchange]) -> list[dict[str, object]]
             }
         )
     return rows
-
-
-def _sanitize_patch(raw_patch: object) -> dict[str, object]:
-    if not isinstance(raw_patch, dict):
-        return {}
-    clean: dict[str, object] = {}
-    for key, value in raw_patch.items():
-        if key not in _PATCHABLE_FIELDS:
-            continue
-        if value is None:
-            continue
-        clean[key] = value
-    return clean
 
 
 # Soft upper bound matches the runs.title column (varchar 120) but we trim to
@@ -229,6 +179,16 @@ async def _persist_run_title(*, run_id: str, title: str) -> None:
         await session.commit()
 
 
+async def _persist_intake_draft_to_run(*, run_id: str, draft: RunIntakeDraft) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        run.intake_draft = draft.model_dump(exclude={"is_complete"})
+        await session.commit()
+
+
 def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDraft:
     if not patch:
         return draft
@@ -264,41 +224,6 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
         if normalized:
             base["reference_urls"] = normalized
     return RunIntakeDraft.model_validate(base)
-
-
-def _parse_clarify(raw_clarify: object) -> IntakeClarifyRequest | None:
-    if not isinstance(raw_clarify, dict):
-        return None
-    question = raw_clarify.get("question")
-    if not isinstance(question, str) or not question.strip():
-        return None
-    field_targets_raw = raw_clarify.get("field_targets")
-    field_targets = (
-        [str(f) for f in field_targets_raw if isinstance(f, str) and f.strip()]
-        if isinstance(field_targets_raw, list)
-        else []
-    )
-    suggested_raw = raw_clarify.get("suggested_options")
-    suggested = (
-        [str(s) for s in suggested_raw if isinstance(s, str) and s.strip()]
-        if isinstance(suggested_raw, list)
-        else None
-    )
-    suggested_answer_raw = raw_clarify.get("suggested_answer")
-    suggested_answer = (
-        suggested_answer_raw.strip()
-        if isinstance(suggested_answer_raw, str) and suggested_answer_raw.strip()
-        else None
-    )
-    try:
-        return IntakeClarifyRequest(
-            question=question.strip(),
-            field_targets=field_targets,
-            suggested_options=suggested,
-            suggested_answer=suggested_answer,
-        )
-    except ValidationError:
-        return None
 
 
 def _fallback_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
@@ -500,39 +425,54 @@ async def intake_generate_node(state: AgentState) -> AgentState:
     session_factory = _resolve_session_factory(state)
     run_id = state.get("run_id") or make_id("run_")
     user_query = state.get("user_query") or ""
-    draft = _coerce_draft(state)
-    history = _coerce_history(state)
+    draft = coerce_intake_draft_or_default(state)
+    history = coerce_intake_history(state)
     turn = len(history) + 1
+    draft_dump = draft.model_dump(exclude={"is_complete"})
 
     user_prompt = build_intake_user_prompt(
         user_query=user_query,
-        current_draft=draft.model_dump(exclude={"is_complete"}),
+        current_draft=draft_dump,
         history=_history_to_prompt(history),
     )
     fallback_user_prompt = build_intake_fallback_user_prompt(
         user_query=user_query,
-        current_draft=draft.model_dump(exclude={"is_complete"}),
+        current_draft=draft_dump,
     )
-    llm_response = await get_llm_client().complete_json(
+    harness_result = await complete_structured(
         model_slot="research",
         system_prompt=INTAKE_SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        output_model=IntakeTurnOutput,
+        parser=IntakeTurnOutput.parse_llm_content,
         fallback_system_prompt=INTAKE_SYSTEM_PROMPT,
         fallback_user_prompt=fallback_user_prompt,
+        repair_user_prompt_builder=lambda errors: build_intake_repair_user_prompt(
+            validation_errors=errors,
+            user_query=user_query,
+            current_draft=draft_dump,
+        ),
+        log_event="intake.harness.finish",
     )
+    llm_response = harness_result.llm_response
 
-    content = llm_response.content if isinstance(llm_response.content, dict) else {}
-    action_raw = content.get("action")
-    patch = _sanitize_patch(content.get("draft_patch"))
-    next_draft = _apply_patch(draft, patch)
-    raw_clarify = content.get("clarify_request")
-    parsed_clarify = _parse_clarify(raw_clarify)
-    reasoning_summary_raw = content.get("reasoning_summary")
-    reasoning_summary = (
-        reasoning_summary_raw.strip()
-        if isinstance(reasoning_summary_raw, str)
-        else ""
-    )
+    parsed_turn = harness_result.value
+    if parsed_turn is not None:
+        action_raw = parsed_turn.action
+        patch = parsed_turn.draft_patch
+        next_draft = _apply_patch(draft, patch)
+        parsed_clarify = (
+            parsed_turn.clarify_request.to_request() if parsed_turn.clarify_request else None
+        )
+        reasoning_summary = parsed_turn.reasoning_summary
+        title_content: dict[str, object] = {"summary_title": parsed_turn.summary_title}
+    else:
+        action_raw = None
+        patch = {}
+        next_draft = draft
+        parsed_clarify = None
+        reasoning_summary = ""
+        title_content = {}
 
     # Decision order matters. The key invariant: if the merged draft already
     # satisfies all required fields, the run MUST move to `complete` regardless
@@ -565,7 +505,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         clarify = _fallback_clarify(next_draft)
 
     summary_title = (
-        _extract_summary_title(content, next_draft, user_query) if action == "complete" else None
+        _extract_summary_title(title_content, next_draft, user_query) if action == "complete" else None
     )
 
     step_id = await _persist_intake_step(
@@ -590,6 +530,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         )
 
     if action == "complete":
+        await _persist_intake_draft_to_run(run_id=run_id, draft=next_draft)
         if summary_title is not None:
             await _persist_run_title(run_id=run_id, title=summary_title)
         await emit_run_event(
@@ -676,14 +617,14 @@ async def intake_wait_node(state: AgentState) -> AgentState:
         raise RuntimeError(f"intake_wait resume value failed validation: {exc}") from exc
 
     run_id = state.get("run_id") or make_id("run_")
-    history = _coerce_history(state)
+    history = coerce_intake_history(state)
     history = [*history, IntakeExchange(clarify=clarify, reply=reply)]
 
     # CRITICAL FIX: merge the reply into the draft right here, NOT in the next
     # generate turn. Letting the LLM be the only writer of draft fields means
     # any flaky LLM turn drops user-provided info and re-asks the same question.
     # The wait node owns the deterministic floor; the LLM enriches on top.
-    current_draft = _coerce_draft(state)
+    current_draft = coerce_intake_draft_or_default(state)
     next_draft = _merge_reply_into_draft(current_draft, clarify, reply)
 
     await emit_run_event(

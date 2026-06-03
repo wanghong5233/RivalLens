@@ -11,15 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from models.evidence import EvidenceRecord
 from models.report import Report
+from schemas.agent_outputs import QASemanticOutput
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection, RetryPolicy
 from service.llm import (
-    QA_SEMANTIC_ALLOWED_REJECT_TO,
     QA_SEMANTIC_SYSTEM_PROMPT,
     build_qa_semantic_fallback_user_prompt,
+    build_qa_semantic_repair_user_prompt,
     build_qa_semantic_user_prompt,
 )
-from service.llm.client import get_llm_client
+from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
 from service.qa.promoted_rules import evaluate_promoted_rule_yaml
 from service.qa.rules import RuleResult, evaluate_fast_path_rules
@@ -195,35 +196,6 @@ def _load_promoted_qa_rules_from_skill_store() -> list[PromotedQARulePayload]:
     return promoted_rules
 
 
-def _normalize_semantic_content(
-    content: dict[str, object],
-) -> dict[str, object] | None:
-    audit_passed_raw = content.get("semantic_audit_passed")
-    finding_raw = content.get("finding")
-    reject_to_raw = content.get("reject_to")
-    severity_raw = content.get("severity")
-    required_fields_raw = content.get("required_fields")
-
-    if not isinstance(audit_passed_raw, bool):
-        return None
-    if not isinstance(finding_raw, str) or not finding_raw.strip():
-        return None
-    if not isinstance(reject_to_raw, str) or reject_to_raw not in QA_SEMANTIC_ALLOWED_REJECT_TO:
-        return None
-    if not isinstance(severity_raw, str) or severity_raw not in {"blocking", "warning"}:
-        return None
-    if not isinstance(required_fields_raw, list):
-        return None
-    required_fields = [item for item in required_fields_raw if isinstance(item, str)]
-    return {
-        "semantic_audit_passed": audit_passed_raw,
-        "finding": finding_raw.strip(),
-        "reject_to": reject_to_raw,
-        "severity": severity_raw,
-        "required_fields": required_fields,
-    }
-
-
 def _semantic_rule_result(semantic_output: dict[str, object]) -> RuleResult:
     reject_to = semantic_output["reject_to"]
     if not isinstance(reject_to, str):
@@ -377,16 +349,24 @@ async def evaluate_report(
         failed_rule_ids=failed_rule_ids,
         evidence_count=len(evidence_items),
     )
-    semantic_response = await get_llm_client().complete_json(
+    harness_result = await complete_structured(
         model_slot="qa",
         system_prompt=QA_SEMANTIC_SYSTEM_PROMPT,
         user_prompt=semantic_user_prompt,
+        output_model=QASemanticOutput,
+        parser=QASemanticOutput.parse_llm_content,
         fallback_system_prompt=QA_SEMANTIC_SYSTEM_PROMPT,
         fallback_user_prompt=semantic_fallback_prompt,
+        repair_user_prompt_builder=lambda errors: build_qa_semantic_repair_user_prompt(
+            validation_errors=errors,
+            failed_rule_ids=failed_rule_ids,
+        ),
+        log_event="qa.harness.finish",
     )
+    semantic_response = harness_result.llm_response
     semantic_output = (
-        _normalize_semantic_content(semantic_response.content)
-        if semantic_response.error is None
+        harness_result.value.to_normalized_dict()
+        if harness_result.value is not None
         else None
     )
     semantic_mode: Literal["applied", "degraded_rule_only"] = "degraded_rule_only"

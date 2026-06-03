@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
@@ -15,14 +14,16 @@ from models.supervisor_decision import SupervisorDecisionRecord
 from service.llm import (
     SUPERVISOR_SYSTEM_PROMPT,
     build_supervisor_fallback_user_prompt,
+    build_supervisor_repair_user_prompt,
     build_supervisor_user_prompt,
 )
-from service.llm.client import get_llm_client
+from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
 from utils.log_node import log_node
 from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.supervisor")
+from schemas.agent_outputs import SupervisorToolCallOutput
 from schemas.ids import make_id
 from schemas.supervisor import (
     Analyze,
@@ -36,7 +37,6 @@ from schemas.supervisor import (
 from service.event_bus import RunEventType, emit_run_event
 
 MAX_SUPERVISOR_ITERATIONS = 10
-VALID_TOOLS = {"DiscoverCompetitors", "ConductResearch", "ConductResearchBatch", "Analyze", "Write", "Finalize"}
 DIMENSION_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pricing", ("pricing", "price", "cost", "套餐", "定价", "收费")),
     ("user_feedback", ("review", "feedback", "rating", "评价", "口碑", "用户声音")),
@@ -483,74 +483,24 @@ def _decision_from_qa_feedback(
     )
 
 
-def _try_llm_decision(
+def _decision_from_tool_output(
     *,
     run_id: str,
     iteration: int,
-    llm_response: LLMResponse,
+    output: SupervisorToolCallOutput,
     triggered_by: TriggerSource,
-) -> SupervisorDecision | None:
-    content = llm_response.content
-    if not isinstance(content, dict):
-        return None
-
-    chosen_tool = content.get("chosen_tool")
-    if not isinstance(chosen_tool, str) or chosen_tool not in VALID_TOOLS:
-        return None
-
-    tool_args_raw = content.get("tool_args")
-    if not isinstance(tool_args_raw, dict):
-        return None
-
-    chosen_tool_literal: Literal[
-        "DiscoverCompetitors",
-        "ConductResearch",
-        "ConductResearchBatch",
-        "Analyze",
-        "Write",
-        "Finalize",
-    ]
-    try:
-        if chosen_tool == "DiscoverCompetitors":
-            chosen_tool_literal = "DiscoverCompetitors"
-            tool_args = DiscoverCompetitors.model_validate(tool_args_raw).model_dump()
-        elif chosen_tool == "ConductResearch":
-            chosen_tool_literal = "ConductResearch"
-            tool_args = ConductResearch.model_validate(tool_args_raw).model_dump()
-        elif chosen_tool == "ConductResearchBatch":
-            chosen_tool_literal = "ConductResearchBatch"
-            batch_args = ConductResearchBatch.model_validate(tool_args_raw)
-            topic_competitors = [topic.competitor_id for topic in batch_args.topics]
-            if len(set(topic_competitors)) != len(topic_competitors):
-                return None
-            tool_args = batch_args.model_dump()
-        elif chosen_tool == "Analyze":
-            chosen_tool_literal = "Analyze"
-            tool_args = Analyze.model_validate(tool_args_raw).model_dump()
-        elif chosen_tool == "Write":
-            chosen_tool_literal = "Write"
-            tool_args = Write.model_validate(tool_args_raw).model_dump()
-        else:
-            chosen_tool_literal = "Finalize"
-            tool_args = Finalize.model_validate(tool_args_raw).model_dump()
-    except ValidationError:
-        return None
-
-    reasoning_summary_raw = content.get("reasoning_summary")
-    if not isinstance(reasoning_summary_raw, str) or not reasoning_summary_raw.strip():
-        return None
-
+) -> SupervisorDecision:
     now = _now_iso()
     outcome: Literal["dispatched", "succeeded"] = (
-        "succeeded" if chosen_tool_literal == "Finalize" else "dispatched"
+        "succeeded" if output.chosen_tool == "Finalize" else "dispatched"
     )
     return SupervisorDecision(
         id=make_id("decision_"),
         run_id=run_id,
         iteration=iteration,
-        chosen_tool=chosen_tool_literal,
-        tool_args=tool_args,
-        reasoning_summary=reasoning_summary_raw.strip(),
+        chosen_tool=output.chosen_tool,
+        tool_args=output.tool_args,
+        reasoning_summary=output.reasoning_summary,
         triggered_by=triggered_by,
         outcome=outcome,
         outcome_recorded_at=now,
@@ -909,28 +859,40 @@ async def supervisor_node(state: AgentState) -> AgentState:
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
         )
-        llm_response = await get_llm_client().complete_json(
+        fallback_user_prompt = build_supervisor_fallback_user_prompt(
+            user_query=user_query,
+            competitors=competitors,
+            researched_competitors=researched_competitors,
+            analysis_done=analysis_done,
+            report_draft_done=report_draft_done,
+            pending_follow_ups=pending_follow_ups,
+            user_pinned_research=user_pinned_research,
+        )
+        harness_result = await complete_structured(
             model_slot="research",
             system_prompt=SUPERVISOR_SYSTEM_PROMPT,
             user_prompt=user_prompt,
+            output_model=SupervisorToolCallOutput,
+            parser=SupervisorToolCallOutput.parse_llm_content,
             fallback_system_prompt=SUPERVISOR_SYSTEM_PROMPT,
-            fallback_user_prompt=build_supervisor_fallback_user_prompt(
+            fallback_user_prompt=fallback_user_prompt,
+            repair_user_prompt_builder=lambda errors: build_supervisor_repair_user_prompt(
+                validation_errors=errors,
                 user_query=user_query,
+                iteration=iteration,
                 competitors=competitors,
-                researched_competitors=researched_competitors,
-                analysis_done=analysis_done,
-                report_draft_done=report_draft_done,
-                pending_follow_ups=pending_follow_ups,
-                user_pinned_research=user_pinned_research,
             ),
+            log_event="supervisor.harness.finish",
         )
-        decision = _try_llm_decision(
-            run_id=run_id,
-            iteration=iteration,
-            llm_response=llm_response,
-            triggered_by=triggered_by,
-        )
-        if decision is None:
+        llm_response = harness_result.llm_response
+        if harness_result.value is not None:
+            decision = _decision_from_tool_output(
+                run_id=run_id,
+                iteration=iteration,
+                output=harness_result.value,
+                triggered_by=triggered_by,
+            )
+        else:
             decision = _fallback_decision(
                 run_id=run_id,
                 iteration=iteration,

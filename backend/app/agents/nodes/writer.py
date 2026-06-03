@@ -16,6 +16,7 @@ from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.report import Report
 from models.step import Step
+from schemas.agent_outputs import AnalystOutput, WriterExecutionContext, WriterReportOutput
 from schemas.ids import make_id
 from schemas.supervisor import Write
 from schemas.contracts import validate_section_id
@@ -24,14 +25,23 @@ from service.conclusion import load_conclusions_for_run
 from service.llm import (
     WRITER_SYSTEM_PROMPT,
     build_writer_fallback_user_prompt,
+    build_writer_repair_user_prompt,
     build_writer_user_prompt,
 )
-from service.llm.client import get_llm_client
+from service.llm.harness import complete_structured
 from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.writer")
-DEFAULT_FALLBACK_SECTIONS = ["feature", "pricing", "user_feedback"]
+
+
+def _is_valid_section_id(value: str) -> bool:
+    try:
+        validate_section_id(value)
+    except ValueError:
+        return False
+    return True
+
 
 _SECTION_DIMENSION_ALIASES: dict[str, tuple[str, ...]] = {
     "pricing": ("pricing", "pricing_model_details", "pricing_strategy"),
@@ -114,82 +124,7 @@ def _stable_unique(items: list[str]) -> list[str]:
     return ordered
 
 
-def _is_valid_section_id(value: str) -> bool:
-    try:
-        validate_section_id(value)
-    except ValueError:
-        return False
-    return True
-
-
-def _normalize_analyst_payload(payload: object) -> dict[str, object]:
-    if not isinstance(payload, dict):
-        return {
-            "summary": "",
-            "insights": [],
-            "risk_flags": [],
-            "recommended_sections": [],
-        }
-
-    summary_raw = payload.get("summary")
-    summary = summary_raw.strip() if isinstance(summary_raw, str) else ""
-
-    insights_raw = payload.get("insights")
-    insights: list[dict[str, object]] = []
-    if isinstance(insights_raw, list):
-        for item in insights_raw:
-            if not isinstance(item, dict):
-                continue
-            dimension_raw = item.get("dimension")
-            finding_raw = item.get("finding")
-            confidence_raw = item.get("confidence")
-            evidence_ids_raw = item.get("evidence_ids")
-            if (
-                not isinstance(dimension_raw, str)
-                or not _is_valid_section_id(dimension_raw)
-                or not isinstance(finding_raw, str)
-                or not finding_raw.strip()
-                or not isinstance(evidence_ids_raw, list)
-            ):
-                continue
-            evidence_ids = [item for item in evidence_ids_raw if isinstance(item, str)]
-            confidence = (
-                confidence_raw
-                if isinstance(confidence_raw, str) and confidence_raw in {"high", "medium", "low"}
-                else "medium"
-            )
-            insights.append(
-                {
-                    "dimension": dimension_raw,
-                    "finding": finding_raw.strip(),
-                    "confidence": confidence,
-                    "evidence_ids": evidence_ids,
-                }
-            )
-
-    risk_flags_raw = payload.get("risk_flags")
-    risk_flags = (
-        [item for item in risk_flags_raw if isinstance(item, str)]
-        if isinstance(risk_flags_raw, list)
-        else []
-    )
-    recommended_sections_raw = payload.get("recommended_sections")
-    if isinstance(recommended_sections_raw, list):
-        recommended_sections = [
-            item for item in recommended_sections_raw if isinstance(item, str) and _is_valid_section_id(item)
-        ]
-    else:
-        recommended_sections = []
-
-    return {
-        "summary": summary,
-        "insights": insights,
-        "risk_flags": risk_flags,
-        "recommended_sections": _stable_unique(recommended_sections),
-    }
-
-
-def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> dict[str, object]:
+def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> AnalystOutput:
     insights: list[dict[str, object]] = []
     risk_flags: list[str] = []
     recommended_sections: list[str] = []
@@ -216,7 +151,6 @@ def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> d
         )
         insights.append(
             {
-                "insight_id": f"insight_{index + 1}",
                 "dimension": section_raw,
                 "finding": claim_raw.strip(),
                 "confidence": confidence,
@@ -233,21 +167,24 @@ def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> d
         if insights
         else ""
     )
-    return _normalize_analyst_payload(
+    parsed = AnalystOutput.parse_persisted(
         {
-            "summary": summary,
+            "summary": summary or "Conclusions loaded from structured storage.",
             "insights": insights,
             "risk_flags": _stable_unique(risk_flags),
             "recommended_sections": _stable_unique(recommended_sections),
         }
     )
+    if parsed is None:
+        return AnalystOutput.build_fallback(focus_dimensions=[], evidence_briefs=[])
+    return parsed
 
 
 async def _load_writer_inputs(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     run_id: str,
-) -> tuple[list[EvidenceRecord], dict[str, object]]:
+) -> tuple[list[EvidenceRecord], AnalystOutput]:
     async with session_factory() as session:
         evidence_rows = (
             await session.execute(
@@ -290,10 +227,19 @@ async def _load_writer_inputs(
             )
         ).scalars().first()
 
+    evidence_briefs = _build_evidence_briefs(evidence_rows)
     if analyst_step is None:
-        return evidence_rows, _normalize_analyst_payload({})
-    analyst_payload_raw = analyst_step.payload.get("analysis_payload")
-    return evidence_rows, _normalize_analyst_payload(analyst_payload_raw)
+        return evidence_rows, AnalystOutput.build_fallback(
+            focus_dimensions=[],
+            evidence_briefs=evidence_briefs,
+        )
+    parsed = AnalystOutput.parse_persisted(analyst_step.payload.get("analysis_payload"))
+    if parsed is None:
+        return evidence_rows, AnalystOutput.build_fallback(
+            focus_dimensions=[],
+            evidence_briefs=evidence_briefs,
+        )
+    return evidence_rows, parsed
 
 
 def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str, str]]:
@@ -317,151 +263,24 @@ def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str
 
 def _build_insight_briefs(
     *,
-    analyst_payload: dict[str, object],
+    analyst_output: AnalystOutput,
     allowed_evidence_ids: set[str],
 ) -> list[dict[str, object]]:
     insight_briefs: list[dict[str, object]] = []
-    insights_raw = analyst_payload.get("insights")
-    if not isinstance(insights_raw, list):
-        return insight_briefs
-    for index, item in enumerate(insights_raw):
-        if not isinstance(item, dict):
-            continue
-        dimension_raw = item.get("dimension")
-        finding_raw = item.get("finding")
-        confidence_raw = item.get("confidence")
-        evidence_ids_raw = item.get("evidence_ids")
-        if (
-            not isinstance(dimension_raw, str)
-            or not _is_valid_section_id(dimension_raw)
-            or not isinstance(finding_raw, str)
-            or not finding_raw.strip()
-            or not isinstance(evidence_ids_raw, list)
-        ):
-            continue
+    for index, insight in enumerate(analyst_output.insights):
         evidence_ids = [
-            evidence_id
-            for evidence_id in evidence_ids_raw
-            if isinstance(evidence_id, str) and evidence_id in allowed_evidence_ids
+            evidence_id for evidence_id in insight.evidence_ids if evidence_id in allowed_evidence_ids
         ]
         insight_briefs.append(
             {
                 "insight_id": f"insight_{index + 1}",
-                "dimension": dimension_raw,
-                "finding": finding_raw.strip(),
-                "confidence": confidence_raw if isinstance(confidence_raw, str) else "medium",
+                "dimension": insight.dimension,
+                "finding": insight.finding,
+                "confidence": insight.confidence,
                 "evidence_ids": evidence_ids,
             }
         )
     return insight_briefs
-
-
-def _resolve_target_sections(
-    *,
-    requested_sections: list[str] | None,
-    recommended_sections: list[str],
-) -> list[str]:
-    targets: list[str] = []
-    if requested_sections:
-        targets.extend(
-            section_id
-            for section_id in requested_sections
-            if isinstance(section_id, str) and _is_valid_section_id(section_id)
-        )
-    if not targets:
-        targets.extend(section_id for section_id in recommended_sections if _is_valid_section_id(section_id))
-    if not targets:
-        targets = DEFAULT_FALLBACK_SECTIONS
-    return _stable_unique(targets)
-
-
-def _normalize_writer_output(
-    *,
-    content: dict[str, object],
-    template_id: str | None,
-    target_sections: list[str],
-    allowed_evidence_ids: set[str],
-    allowed_insight_ids: set[str],
-    default_risk_callouts: list[str],
-) -> dict[str, object] | None:
-    title_raw = content.get("title")
-    executive_summary_raw = content.get("executive_summary")
-    template_id_raw = content.get("template_id")
-    sections_raw = content.get("sections")
-    if (
-        not isinstance(title_raw, str)
-        or not title_raw.strip()
-        or not isinstance(executive_summary_raw, str)
-        or not executive_summary_raw.strip()
-        or (template_id is not None and (not isinstance(template_id_raw, str) or template_id_raw != template_id))
-        or (template_id is None and not isinstance(template_id_raw, str))
-        or not isinstance(sections_raw, list)
-    ):
-        return None
-
-    normalized_sections: list[dict[str, object]] = []
-    for item in sections_raw:
-        if not isinstance(item, dict):
-            continue
-        section_id_raw = item.get("section_id")
-        section_title_raw = item.get("title")
-        content_markdown_raw = item.get("content_markdown")
-        evidence_refs_raw = item.get("evidence_refs")
-        insight_refs_raw = item.get("insight_refs")
-        if (
-            not isinstance(section_id_raw, str)
-            or not _is_valid_section_id(section_id_raw)
-            or not isinstance(section_title_raw, str)
-            or not section_title_raw.strip()
-            or not isinstance(content_markdown_raw, str)
-            or len(content_markdown_raw.strip()) < 60
-            or not isinstance(evidence_refs_raw, list)
-        ):
-            continue
-        evidence_refs = [
-            evidence_id
-            for evidence_id in evidence_refs_raw
-            if isinstance(evidence_id, str) and evidence_id in allowed_evidence_ids
-        ]
-        if not evidence_refs:
-            continue
-        if isinstance(insight_refs_raw, list):
-            insight_refs = [
-                insight_id
-                for insight_id in insight_refs_raw
-                if isinstance(insight_id, str) and insight_id in allowed_insight_ids
-            ]
-        else:
-            insight_refs = []
-        normalized_sections.append(
-            {
-                "section_id": section_id_raw,
-                "title": section_title_raw.strip(),
-                "content_markdown": content_markdown_raw.strip(),
-                "evidence_refs": _stable_unique(evidence_refs),
-                "insight_refs": _stable_unique(insight_refs),
-            }
-        )
-
-    if not normalized_sections:
-        return None
-    normalized_ids = {section["section_id"] for section in normalized_sections}
-    if target_sections and not all(section_id in normalized_ids for section_id in target_sections):
-        return None
-
-    risk_callouts_raw = content.get("risk_callouts")
-    if isinstance(risk_callouts_raw, list):
-        risk_callouts = [item for item in risk_callouts_raw if isinstance(item, str)]
-    else:
-        risk_callouts = default_risk_callouts
-
-    return {
-        "template_id": template_id if template_id is not None else str(template_id_raw).strip(),
-        "title": title_raw.strip(),
-        "executive_summary": executive_summary_raw.strip(),
-        "sections": normalized_sections,
-        "risk_callouts": risk_callouts,
-    }
 
 
 def _build_fallback_report(
@@ -646,14 +465,14 @@ async def writer_node(state: AgentState) -> AgentState:
         },
     )
     report_id = f"report_{uuid4().hex[:12]}"
-    evidence_rows, analyst_payload = await _load_writer_inputs(
+    evidence_rows, analyst_output = await _load_writer_inputs(
         session_factory=session_factory,
         run_id=run_id,
     )
     evidence_briefs = _build_evidence_briefs(evidence_rows)
     allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
     insight_briefs = _build_insight_briefs(
-        analyst_payload=analyst_payload,
+        analyst_output=analyst_output,
         allowed_evidence_ids=allowed_evidence_ids,
     )
     allowed_insight_ids = {
@@ -661,67 +480,71 @@ async def writer_node(state: AgentState) -> AgentState:
         for item in insight_briefs
         if isinstance(item.get("insight_id"), str)
     }
-    recommended_sections_raw = analyst_payload.get("recommended_sections")
-    if isinstance(recommended_sections_raw, list):
-        recommended_sections = [
-            item
-            for item in recommended_sections_raw
-            if isinstance(item, str) and _is_valid_section_id(item)
-        ]
-    else:
-        recommended_sections = []
-    target_sections = _resolve_target_sections(
+    execution_context = WriterExecutionContext.resolve(
+        template_id=request.template_id,
         requested_sections=request.sections,
-        recommended_sections=recommended_sections,
+        analyst_output=analyst_output,
+        allowed_evidence_ids=allowed_evidence_ids,
+        allowed_insight_ids=allowed_insight_ids,
     )
-    analyst_summary_raw = analyst_payload.get("summary")
-    analyst_summary = analyst_summary_raw if isinstance(analyst_summary_raw, str) else ""
-    risk_flags_raw = analyst_payload.get("risk_flags")
-    risk_flags = [item for item in risk_flags_raw if isinstance(item, str)] if isinstance(risk_flags_raw, list) else []
-
-    llm_response = await get_llm_client().complete_json(
+    target_sections = execution_context.target_sections
+    analyst_summary = analyst_output.summary
+    risk_flags = list(analyst_output.risk_flags)
+    fallback_user_prompt = build_writer_fallback_user_prompt(
+        template_id=request.template_id,
+        requested_sections=target_sections,
+        evidence_ids=sorted(allowed_evidence_ids),
+        analyst_summary=analyst_summary,
+    )
+    harness_result = await complete_structured(
         model_slot="writer",
         system_prompt=WRITER_SYSTEM_PROMPT,
         user_prompt=build_writer_user_prompt(
             user_query=str(state.get("user_query", "")),
             template_id=request.template_id,
-            requested_sections=target_sections,
+            target_sections=target_sections,
+            requested_sections=request.sections or [],
             competitors=list(state.get("competitors", [])),
             evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=sorted(allowed_evidence_ids),
             analyst_summary=analyst_summary,
             analyst_insights=insight_briefs,
             risk_flags=risk_flags,
-            recommended_sections=recommended_sections,
+            recommended_sections=analyst_output.recommended_sections,
+        ),
+        output_model=WriterReportOutput,
+        parser=lambda content: WriterReportOutput.parse_llm_content(
+            content,
+            execution_context=execution_context,
         ),
         fallback_system_prompt=WRITER_SYSTEM_PROMPT,
-        fallback_user_prompt=build_writer_fallback_user_prompt(
+        fallback_user_prompt=fallback_user_prompt,
+        repair_user_prompt_builder=lambda errors: build_writer_repair_user_prompt(
+            validation_errors=errors,
             template_id=request.template_id,
-            requested_sections=target_sections,
+            target_sections=target_sections,
             evidence_ids=sorted(allowed_evidence_ids),
             analyst_summary=analyst_summary,
         ),
+        log_event="writer.harness.finish",
     )
-
+    llm_response = harness_result.llm_response
     writer_schema_error: str | None = None
-    normalized = _normalize_writer_output(
-        content=llm_response.content,
-        template_id=request.template_id,
-        target_sections=target_sections,
-        allowed_evidence_ids=allowed_evidence_ids,
-        allowed_insight_ids=allowed_insight_ids,
-        default_risk_callouts=risk_flags,
-    )
     writer_mode: Literal["llm", "fallback"]
-    if llm_response.error is None and normalized is not None:
+    if harness_result.value is not None:
         writer_mode = "llm"
-        report_mode = "primary" if not llm_response.fallback_used else "llm_fallback"
-        report_content = normalized
+        report_mode = (
+            "primary"
+            if harness_result.outcome in {"primary", "repaired"}
+            else "llm_fallback"
+        )
+        report_content = harness_result.value.to_report_content()
         fallback_reason = llm_response.fallback_reason
     else:
         writer_mode = "fallback"
         report_mode = "deterministic_fallback"
-        if llm_response.error is None and normalized is None:
-            writer_schema_error = "writer_output_schema_invalid"
+        if llm_response.error is None:
+            writer_schema_error = harness_result.schema_error or "writer_output_schema_invalid"
         fallback_reason = llm_response.error or writer_schema_error
         report_content = _build_fallback_report(
             template_id=request.template_id,
@@ -736,6 +559,10 @@ async def writer_node(state: AgentState) -> AgentState:
         "writer.report_mode",
         report_mode=report_mode,
         writer_mode=writer_mode,
+        harness_outcome=harness_result.outcome,
+        target_sections=target_sections,
+        fallback_reason=fallback_reason,
+        writer_schema_error=writer_schema_error,
         section_count=len(report_content.get("sections", []))
         if isinstance(report_content.get("sections"), list)
         else 0,

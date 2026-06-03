@@ -659,6 +659,11 @@ def _derive_run_phase(run: Run) -> Literal["intake", "planning", "executing", "d
         return None
     if run.status in {"completed", "degraded", "failed"}:
         return "done"
+    plan_tree = run.plan_tree
+    if plan_tree is not None:
+        if plan_tree.get("confirmed_at") is not None:
+            return "executing"
+        return "planning"
     intake_complete = bool(intake_draft.get("user_role")) and bool(
         intake_draft.get("analysis_intent")
     ) and (
@@ -667,10 +672,7 @@ def _derive_run_phase(run: Run) -> Literal["intake", "planning", "executing", "d
     )
     if not intake_complete:
         return "intake"
-    plan_tree = run.plan_tree
-    if plan_tree is None or plan_tree.get("confirmed_at") is None:
-        return "planning"
-    return "executing"
+    return "planning"
 
 
 def _to_run_detail(run: Run) -> RunDetailResponse:

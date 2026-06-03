@@ -13,6 +13,7 @@ from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.step import Step
+from schemas.agent_outputs import AnalystOutput
 from schemas.ids import make_id
 from schemas.supervisor import Analyze
 from service.event_bus import RunEventType, emit_run_event
@@ -20,9 +21,10 @@ from service.conclusion import persist_conclusions_for_step
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
     build_analyst_fallback_user_prompt,
+    build_analyst_repair_user_prompt,
     build_analyst_user_prompt,
 )
-from service.llm.client import get_llm_client
+from service.llm.harness import complete_structured
 from utils.log_node import log_node
 from utils.logger import get_logger
 
@@ -69,118 +71,6 @@ def _build_evidence_briefs(
             }
         )
     return briefs
-
-
-def _normalize_analysis_output(
-    *,
-    content: dict[str, object],
-    allowed_evidence_ids: set[str],
-    allowed_dimensions: set[str],
-) -> dict[str, object] | None:
-    summary_raw = content.get("summary")
-    if not isinstance(summary_raw, str) or not summary_raw.strip():
-        return None
-
-    insights_raw = content.get("insights")
-    if not isinstance(insights_raw, list):
-        return None
-
-    insights: list[dict[str, object]] = []
-    for item in insights_raw:
-        if not isinstance(item, dict):
-            continue
-        dimension_raw = item.get("dimension")
-        finding_raw = item.get("finding")
-        evidence_ids_raw = item.get("evidence_ids")
-        confidence_raw = item.get("confidence")
-        if (
-            not isinstance(dimension_raw, str)
-            or dimension_raw not in allowed_dimensions
-            or not isinstance(finding_raw, str)
-            or not finding_raw.strip()
-            or not isinstance(evidence_ids_raw, list)
-        ):
-            continue
-        evidence_ids = [
-            evidence_id
-            for evidence_id in evidence_ids_raw
-            if isinstance(evidence_id, str) and evidence_id in allowed_evidence_ids
-        ]
-        if not evidence_ids:
-            continue
-        confidence = (
-            confidence_raw
-            if isinstance(confidence_raw, str) and confidence_raw in {"high", "medium", "low"}
-            else "medium"
-        )
-        insights.append(
-            {
-                "dimension": dimension_raw,
-                "finding": finding_raw.strip(),
-                "evidence_ids": evidence_ids,
-                "confidence": confidence,
-            }
-        )
-
-    if not insights:
-        return None
-
-    risk_flags_raw = content.get("risk_flags")
-    risk_flags = (
-        [item for item in risk_flags_raw if isinstance(item, str)]
-        if isinstance(risk_flags_raw, list)
-        else []
-    )
-    recommended_sections_raw = content.get("recommended_sections")
-    if isinstance(recommended_sections_raw, list):
-        recommended_sections = [item for item in recommended_sections_raw if isinstance(item, str)]
-    else:
-        recommended_sections = sorted({item["dimension"] for item in insights})
-
-    return {
-        "summary": summary_raw.strip(),
-        "insights": insights,
-        "risk_flags": risk_flags,
-        "recommended_sections": recommended_sections,
-    }
-
-
-def _build_fallback_analysis(
-    *,
-    focus_dimensions: list[str],
-    evidence_briefs: list[dict[str, str]],
-) -> dict[str, object]:
-    if evidence_briefs:
-        first = evidence_briefs[0]
-        summary = (
-            f"Fallback analysis generated from {len(evidence_briefs)} evidence snippets "
-            f"across {len(focus_dimensions)} dimensions."
-        )
-        insight = {
-            "dimension": first["dimension"],
-            "finding": (
-                f"Preliminary signal from {first['competitor_id']} on {first['dimension']} "
-                "requires deeper analyst iteration."
-            ),
-            "evidence_ids": [first["evidence_id"]],
-            "confidence": "low",
-        }
-    else:
-        summary = "Fallback analysis generated without evidence; analyst should re-run after research recovers."
-        first_dimension = focus_dimensions[0] if focus_dimensions else "general"
-        insight = {
-            "dimension": first_dimension,
-            "finding": "No evidence available for analyst pass.",
-            "evidence_ids": [],
-            "confidence": "low",
-        }
-
-    return {
-        "summary": summary,
-        "insights": [insight],
-        "risk_flags": ["analyst_fallback_mode"],
-        "recommended_sections": focus_dimensions,
-    }
 
 
 @log_node("analyst")
@@ -245,6 +135,7 @@ async def analyst_node(state: AgentState) -> AgentState:
         if not focus_dimensions:
             focus_dimensions = ["general", "feature", "pricing"]
     allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
+    allowed_dimensions = set(focus_dimensions)
     user_prompt = build_analyst_user_prompt(
         user_query=user_query,
         competitors=competitors,
@@ -256,33 +147,42 @@ async def analyst_node(state: AgentState) -> AgentState:
         focus_dimensions=focus_dimensions,
         evidence_ids=sorted(allowed_evidence_ids),
     )
-    llm_response = await get_llm_client().complete_json(
+    harness_result = await complete_structured(
         model_slot="summarization",
         system_prompt=ANALYST_SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        output_model=AnalystOutput,
+        parser=lambda content: AnalystOutput.parse_llm_content(
+            content,
+            allowed_evidence_ids=allowed_evidence_ids,
+            allowed_dimensions=allowed_dimensions,
+        ),
         fallback_system_prompt=ANALYST_SYSTEM_PROMPT,
         fallback_user_prompt=fallback_prompt,
+        repair_user_prompt_builder=lambda errors: build_analyst_repair_user_prompt(
+            validation_errors=errors,
+            focus_dimensions=focus_dimensions,
+            evidence_ids=sorted(allowed_evidence_ids),
+        ),
+        log_event="analyst.harness.finish",
     )
+    llm_response = harness_result.llm_response
 
     analysis_schema_error: str | None = None
-    normalized = _normalize_analysis_output(
-        content=llm_response.content,
-        allowed_evidence_ids=allowed_evidence_ids,
-        allowed_dimensions=set(focus_dimensions),
-    )
-    if llm_response.error is None and normalized is not None:
+    if harness_result.value is not None:
         analysis_mode = "llm"
-        analysis_result: dict[str, object] = normalized
+        analysis_output = harness_result.value
         fallback_reason = llm_response.fallback_reason
     else:
         analysis_mode = "fallback"
-        if llm_response.error is None and normalized is None:
-            analysis_schema_error = "analyst_output_schema_invalid"
+        if llm_response.error is None:
+            analysis_schema_error = harness_result.schema_error or "analyst_output_schema_invalid"
         fallback_reason = llm_response.error or analysis_schema_error
-        analysis_result = _build_fallback_analysis(
+        analysis_output = AnalystOutput.build_fallback(
             focus_dimensions=focus_dimensions,
             evidence_briefs=evidence_briefs,
         )
+    analysis_result = analysis_output.to_persisted_dict()
     analysis_insights = (
         [item for item in analysis_result["insights"] if isinstance(item, dict)]
         if isinstance(analysis_result.get("insights"), list)

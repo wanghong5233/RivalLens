@@ -360,6 +360,7 @@ Output JSON schema:
 
 Rules:
 - Every insight must reference existing evidence_ids from user prompt.
+- recommended_sections must use snake_case section ids that match insight dimension values.
 - Do not fabricate competitor facts.
 - Return JSON object only.
 """
@@ -854,6 +855,24 @@ def build_analyst_fallback_user_prompt(
     )
 
 
+def build_analyst_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    focus_dimensions: Sequence[str],
+    evidence_ids: Sequence[str],
+) -> str:
+    return (
+        "Repair analysis JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
+        "Rules:\n"
+        "- recommended_sections must be snake_case ids matching insight dimension values.\n"
+        "- Every insight must cite only evidence_ids listed above.\n"
+        "- Return JSON object only."
+    )
+
+
 def build_qa_semantic_user_prompt(
     *,
     report_markdown: str,
@@ -888,9 +907,11 @@ def build_writer_user_prompt(
     *,
     user_query: str,
     template_id: str | None,
+    target_sections: Sequence[str],
     requested_sections: Sequence[str],
     competitors: Sequence[str],
     evidence_briefs: Sequence[dict[str, object]],
+    allowed_evidence_ids: Sequence[str],
     analyst_summary: str,
     analyst_insights: Sequence[dict[str, object]],
     risk_flags: Sequence[str],
@@ -902,15 +923,39 @@ def build_writer_user_prompt(
         f"- user_query: {user_query}\n"
         f"- template_id: {template_id}\n"
         f"- domain_hint: {domain_hint}\n"
+        f"- target_sections: {_json(list(target_sections))}\n"
         f"- requested_sections: {_json(list(requested_sections))}\n"
+        f"- recommended_sections: {_json(list(recommended_sections))}\n"
+        f"- allowed_evidence_ids: {_json(list(allowed_evidence_ids))}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n"
         f"- analyst_summary: {analyst_summary}\n"
         f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
-        f"- risk_flags: {_json(list(risk_flags))}\n"
-        f"- recommended_sections: {_json(list(recommended_sections))}\n\n"
-        "Write a battlecard with grounded evidence refs. Prefer requested_sections; "
-        "if requested_sections is empty, follow recommended_sections."
+        f"- risk_flags: {_json(list(risk_flags))}\n\n"
+        "Write a battlecard with grounded evidence refs. "
+        "section_id must exactly match target_sections entries."
+    )
+
+
+def build_writer_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    template_id: str | None,
+    target_sections: Sequence[str],
+    evidence_ids: Sequence[str],
+    analyst_summary: str,
+) -> str:
+    return (
+        "Repair writer JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- template_id: {template_id}\n"
+        f"- target_sections: {_json(list(target_sections))}\n"
+        f"- evidence_ids: {_json(list(evidence_ids))}\n"
+        f"- analyst_summary: {analyst_summary}\n\n"
+        "Rules:\n"
+        "- Every section must include content_markdown (>=60 chars) and evidence_refs from evidence_ids.\n"
+        "- section_id must exactly match target_sections.\n"
+        "- Return JSON object only."
     )
 
 
@@ -928,6 +973,191 @@ def build_writer_fallback_user_prompt(
         f"- evidence_ids: {_json(list(evidence_ids))}\n"
         f"- analyst_summary: {analyst_summary}\n\n"
         "Return minimal valid JSON report with at least one section and evidence_refs."
+    )
+
+
+def build_intake_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    user_query: str,
+    current_draft: dict[str, object],
+) -> str:
+    return (
+        "Repair intake JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- user_query: {user_query}\n"
+        f"- current_draft: {_json(current_draft)}\n\n"
+        "Rules:\n"
+        "- action must be ask or complete.\n"
+        "- action=ask requires clarify_request with non-empty question.\n"
+        "- action=complete requires clarify_request=null.\n"
+        "- draft_patch keys must be patchable intake fields only.\n"
+        "- Return JSON object only."
+    )
+
+
+def build_planner_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    intake_draft: dict[str, object],
+) -> str:
+    return (
+        "Repair planner JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- intake_draft: {_json(intake_draft)}\n\n"
+        "Rules:\n"
+        "- tasks must be a non-empty list with valid stage/title.\n"
+        "- research tasks require competitor_id.\n"
+        "- Return JSON object only."
+    )
+
+
+def build_supervisor_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    user_query: str,
+    iteration: int,
+    competitors: Sequence[str],
+) -> str:
+    return (
+        "Repair supervisor JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- user_query: {user_query}\n"
+        f"- iteration: {iteration}\n"
+        f"- competitors: {_json(list(competitors))}\n\n"
+        "Rules:\n"
+        "- chosen_tool must be a valid supervisor tool name.\n"
+        "- tool_args must match the chosen_tool schema.\n"
+        "- reasoning_summary must be non-empty.\n"
+        "- Return JSON object only."
+    )
+
+
+DISCOVERY_EXTRACT_SYSTEM_PROMPT = (
+    "You extract competitor names from search results. Return valid JSON only."
+)
+
+
+def build_discovery_extract_user_prompt(
+    *,
+    search_results: str,
+    domain_context: str,
+    user_query: str,
+) -> str:
+    return (
+        "You are a competitive intelligence analyst.\n"
+        "Given the following search results about a market/track, extract a list of competitor product names.\n\n"
+        "Rules:\n"
+        '- Return ONLY a JSON object: {"competitors": ["Name1", "Name2", ...]}\n'
+        "- Each name should be the commonly known product name.\n"
+        "- Deduplicate and return between 3 and 10 competitors.\n\n"
+        f"Search results:\n{search_results}\n\n"
+        f"Domain context: {domain_context}\n"
+        f"User query: {user_query}"
+    )
+
+
+def build_discovery_extract_fallback_user_prompt(
+    *,
+    domain_context: str,
+    user_query: str,
+) -> str:
+    return (
+        "Fallback competitor extraction request:\n"
+        f"- domain_context: {domain_context}\n"
+        f"- user_query: {user_query}\n\n"
+        'Return minimal valid JSON: {"competitors": ["Name1", "Name2", "Name3"]}.'
+    )
+
+
+def build_discovery_extract_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    domain_context: str,
+) -> str:
+    return (
+        "Repair discovery extract JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- domain_context: {domain_context}\n\n"
+        "Rules:\n"
+        "- competitors must be a non-empty list of unique product names.\n"
+        "- Return JSON object only."
+    )
+
+
+def build_researcher_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    competitor_id: str,
+    pending_dimensions: Sequence[str],
+) -> str:
+    return (
+        "Repair researcher decision JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- competitor_id: {competitor_id}\n"
+        f"- pending_dimensions: {_json(list(pending_dimensions))}\n\n"
+        "Rules:\n"
+        "- action must be a valid researcher action.\n"
+        "- action_args must include required fields for the chosen action.\n"
+        "- Return JSON object only."
+    )
+
+
+def build_compression_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    observation_count: int,
+) -> str:
+    return (
+        "Repair compression JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- observation_count: {observation_count}\n\n"
+        "Rules:\n"
+        "- compressed_summary must be a non-empty string.\n"
+        "- Return JSON object only."
+    )
+
+
+def build_qa_semantic_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    failed_rule_ids: Sequence[str],
+) -> str:
+    return (
+        "Repair QA semantic audit JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n\n"
+        f"reject_to must be one of {_json(list(QA_SEMANTIC_ALLOWED_REJECT_TO))}.\n"
+        "Return JSON object only."
+    )
+
+
+EXTRACT_STRUCTURED_SYSTEM_PROMPT = """You are a data extraction helper for RivalLens.
+Return STRICT JSON:
+{
+  "quote": str,
+  "source_title": str | null
+}
+
+Rules:
+- Keep quote factual and concise.
+- Do not invent facts not present in input text.
+- Return JSON object only.
+"""
+
+
+def build_extract_structured_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    text_preview: str,
+) -> str:
+    return (
+        "Repair extract_structured JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- text_preview: {_json(text_preview[:600])}\n\n"
+        "Rules:\n"
+        "- quote must be a non-empty string grounded in the input text.\n"
+        "- Return JSON object only."
     )
 
 

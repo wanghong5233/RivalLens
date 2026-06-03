@@ -1,0 +1,496 @@
+from __future__ import annotations
+
+from typing import Literal, Self, cast
+
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+from schemas.contracts import validate_dimension
+from schemas.intake import IntakeClarifyRequest, RunIntakeDraft
+from schemas.plan import PlanTask, PlanTaskStage
+from schemas.supervisor import (
+    Analyze,
+    ConductResearch,
+    ConductResearchBatch,
+    DiscoverCompetitors,
+    Finalize,
+    Write,
+)
+from service.llm.prompts import QA_SEMANTIC_ALLOWED_REJECT_TO, SKILL_CURATOR_ALLOWED_TYPES
+
+from schemas.agent_outputs import stable_unique
+
+IntakeAction = Literal["ask", "complete"]
+SupervisorToolName = Literal[
+    "DiscoverCompetitors",
+    "ConductResearch",
+    "ConductResearchBatch",
+    "Analyze",
+    "Write",
+    "Finalize",
+]
+ResearcherActionName = Literal[
+    "search_web",
+    "fetch_url",
+    "parse_page",
+    "extract_structured",
+    "load_skill",
+    "read_skill_file",
+    "finalize",
+]
+QASeverity = Literal["blocking", "warning"]
+SkillCuratorCandidateType = Literal["qa_rule", "prompt_template", "source_routing"]
+
+INTAKE_PATCHABLE_FIELDS: frozenset[str] = frozenset(
+    {
+        "user_role",
+        "analysis_intent",
+        "competitors_explicit",
+        "competitors_discovery_mode",
+        "domain_hint",
+        "focus_dimensions",
+        "report_depth",
+        "reference_urls",
+    }
+)
+PLANNER_VALID_STAGES: frozenset[str] = frozenset({"discover", "research", "analyze", "write"})
+PLANNER_MAX_RESEARCH_TASKS = 8
+PLANNER_MAX_TOTAL_TASKS = 12
+SUPERVISOR_VALID_TOOLS: frozenset[str] = frozenset(
+    {
+        "DiscoverCompetitors",
+        "ConductResearch",
+        "ConductResearchBatch",
+        "Analyze",
+        "Write",
+        "Finalize",
+    }
+)
+DISCOVERY_MIN_COMPETITORS = 1
+DISCOVERY_MAX_COMPETITORS = 10
+
+
+class IntakeClarifyOutput(BaseModel):
+    question: str = Field(min_length=1)
+    field_targets: list[str] = Field(default_factory=list)
+    suggested_options: list[str] | None = None
+    suggested_answer: str | None = None
+
+    def to_request(self) -> IntakeClarifyRequest:
+        return IntakeClarifyRequest(
+            question=self.question,
+            field_targets=list(self.field_targets),
+            suggested_options=self.suggested_options,
+            suggested_answer=self.suggested_answer,
+        )
+
+
+class IntakeTurnOutput(BaseModel):
+    action: IntakeAction
+    draft_patch: dict[str, object] = Field(default_factory=dict)
+    clarify_request: IntakeClarifyOutput | None = None
+    summary_title: str | None = None
+    reasoning_summary: str = ""
+
+    @model_validator(mode="after")
+    def _validate_action_clarify(self) -> Self:
+        if self.action == "ask" and self.clarify_request is None:
+            raise ValueError("clarify_request is required when action=ask")
+        if self.action == "complete" and self.clarify_request is not None:
+            raise ValueError("clarify_request must be null when action=complete")
+        return self
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> IntakeTurnOutput:
+        action_raw = content.get("action")
+        if action_raw not in {"ask", "complete"}:
+            raise ValueError("action must be ask or complete")
+        patch_raw = content.get("draft_patch")
+        sanitized: dict[str, object] = {}
+        if isinstance(patch_raw, dict):
+            for key, value in patch_raw.items():
+                if key in INTAKE_PATCHABLE_FIELDS and value is not None:
+                    sanitized[key] = value
+        clarify: IntakeClarifyOutput | None = None
+        clarify_raw = content.get("clarify_request")
+        if isinstance(clarify_raw, dict):
+            clarify = IntakeClarifyOutput.model_validate(clarify_raw)
+        reasoning_raw = content.get("reasoning_summary")
+        reasoning = reasoning_raw.strip() if isinstance(reasoning_raw, str) else ""
+        summary_title_raw = content.get("summary_title")
+        summary_title = (
+            summary_title_raw.strip()
+            if isinstance(summary_title_raw, str) and summary_title_raw.strip()
+            else None
+        )
+        return cls.model_validate(
+            {
+                "action": action_raw,
+                "draft_patch": sanitized,
+                "clarify_request": clarify,
+                "summary_title": summary_title,
+                "reasoning_summary": reasoning,
+            }
+        )
+
+
+class PlannerTaskDraft(BaseModel):
+    stage: PlanTaskStage
+    title: str = Field(min_length=1)
+    description: str = ""
+    competitor_id: str | None = None
+    focus_dimensions: list[str] = Field(default_factory=list)
+
+
+class PlannerOutput(BaseModel):
+    rationale: str = ""
+    tasks: list[PlannerTaskDraft] = Field(min_length=1)
+
+    @classmethod
+    def parse_llm_content(
+        cls,
+        content: dict[str, object],
+        *,
+        draft: RunIntakeDraft,
+    ) -> PlannerOutput:
+        tasks_raw = content.get("tasks")
+        if not isinstance(tasks_raw, list) or not tasks_raw:
+            raise ValueError("tasks must be a non-empty list")
+        default_focus = list(draft.focus_dimensions)[:5] or ["feature", "pricing", "user_feedback"]
+        parsed_tasks: list[PlannerTaskDraft] = []
+        research_count = 0
+        for item in tasks_raw:
+            if not isinstance(item, dict):
+                continue
+            stage_raw = item.get("stage")
+            if not isinstance(stage_raw, str) or stage_raw not in PLANNER_VALID_STAGES:
+                continue
+            title_raw = item.get("title")
+            if not isinstance(title_raw, str) or not title_raw.strip():
+                continue
+            description_raw = item.get("description")
+            description = description_raw.strip() if isinstance(description_raw, str) else ""
+            competitor_raw = item.get("competitor_id")
+            competitor_id = (
+                competitor_raw.strip()
+                if isinstance(competitor_raw, str) and competitor_raw.strip()
+                else None
+            )
+            if stage_raw == "research":
+                if competitor_id is None:
+                    continue
+                if research_count >= PLANNER_MAX_RESEARCH_TASKS:
+                    continue
+                research_count += 1
+            focus_raw = item.get("focus_dimensions")
+            if isinstance(focus_raw, list):
+                focus = [str(v).strip() for v in focus_raw if isinstance(v, str) and v.strip()][:5]
+            else:
+                focus = list(default_focus)
+            if not focus:
+                focus = list(default_focus)
+            parsed_tasks.append(
+                PlannerTaskDraft(
+                    stage=cast(PlanTaskStage, stage_raw),
+                    title=title_raw.strip()[:60],
+                    description=description,
+                    competitor_id=competitor_id,
+                    focus_dimensions=focus,
+                )
+            )
+            if len(parsed_tasks) >= PLANNER_MAX_TOTAL_TASKS:
+                break
+        if not parsed_tasks:
+            raise ValueError("No valid planner tasks remain after validation")
+        rationale_raw = content.get("rationale")
+        rationale = rationale_raw.strip() if isinstance(rationale_raw, str) else ""
+        return cls(rationale=rationale, tasks=parsed_tasks)
+
+    def to_plan_tasks(self) -> list[PlanTask]:
+        return [
+            PlanTask(
+                stage=task.stage,
+                title=task.title,
+                description=task.description,
+                competitor_id=task.competitor_id,
+                focus_dimensions=list(task.focus_dimensions),
+                source="agent",
+                enabled=True,
+                priority="normal",
+            )
+            for task in self.tasks
+        ]
+
+
+class SupervisorToolCallOutput(BaseModel):
+    chosen_tool: SupervisorToolName
+    tool_args: dict[str, object]
+    reasoning_summary: str = Field(min_length=1)
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> SupervisorToolCallOutput:
+        chosen_tool_raw = content.get("chosen_tool")
+        if not isinstance(chosen_tool_raw, str) or chosen_tool_raw not in SUPERVISOR_VALID_TOOLS:
+            raise ValueError("chosen_tool is invalid")
+        tool_args_raw = content.get("tool_args")
+        if not isinstance(tool_args_raw, dict):
+            raise ValueError("tool_args must be an object")
+        chosen_tool = cast(SupervisorToolName, chosen_tool_raw)
+        if chosen_tool == "DiscoverCompetitors":
+            tool_args = DiscoverCompetitors.model_validate(tool_args_raw).model_dump()
+        elif chosen_tool == "ConductResearch":
+            tool_args = ConductResearch.model_validate(tool_args_raw).model_dump()
+        elif chosen_tool == "ConductResearchBatch":
+            batch_args = ConductResearchBatch.model_validate(tool_args_raw)
+            topic_competitors = [topic.competitor_id for topic in batch_args.topics]
+            if len(set(topic_competitors)) != len(topic_competitors):
+                raise ValueError("ConductResearchBatch topics must have unique competitor_id")
+            tool_args = batch_args.model_dump()
+        elif chosen_tool == "Analyze":
+            tool_args = Analyze.model_validate(tool_args_raw).model_dump()
+        elif chosen_tool == "Write":
+            tool_args = Write.model_validate(tool_args_raw).model_dump()
+        else:
+            tool_args = Finalize.model_validate(tool_args_raw).model_dump()
+        reasoning_raw = content.get("reasoning_summary")
+        if not isinstance(reasoning_raw, str) or not reasoning_raw.strip():
+            raise ValueError("reasoning_summary is required")
+        return cls(
+            chosen_tool=chosen_tool,
+            tool_args=tool_args,
+            reasoning_summary=reasoning_raw.strip(),
+        )
+
+
+class DiscoveryExtractOutput(BaseModel):
+    competitors: list[str] = Field(min_length=DISCOVERY_MIN_COMPETITORS)
+
+    @field_validator("competitors")
+    @classmethod
+    def _normalize_competitors(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            name = value.strip() if isinstance(value, str) else str(value).strip()
+            if name and name not in normalized:
+                normalized.append(name)
+        if len(normalized) < DISCOVERY_MIN_COMPETITORS:
+            raise ValueError("competitors must contain at least one name")
+        return normalized[:DISCOVERY_MAX_COMPETITORS]
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> DiscoveryExtractOutput:
+        competitors_raw = content.get("competitors")
+        if not isinstance(competitors_raw, list):
+            raise ValueError("competitors must be a list")
+        names = [str(item) for item in competitors_raw if item]
+        return cls.model_validate({"competitors": names})
+
+
+class ResearcherDecisionOutput(BaseModel):
+    action: ResearcherActionName
+    action_args: dict[str, object] = Field(default_factory=dict)
+    reasoning_summary: str = ""
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> ResearcherDecisionOutput:
+        action_raw = content.get("action")
+        if not isinstance(action_raw, str):
+            raise ValueError("action is required")
+        action_args_raw = content.get("action_args")
+        action_args = action_args_raw if isinstance(action_args_raw, dict) else {}
+        reasoning_raw = content.get("reasoning_summary")
+        reasoning = reasoning_raw.strip() if isinstance(reasoning_raw, str) else ""
+        return cls.model_validate(
+            {
+                "action": action_raw,
+                "action_args": action_args,
+                "reasoning_summary": reasoning,
+            }
+        )
+
+    def to_action_tuple(
+        self,
+        *,
+        competitor_id: str,
+    ) -> tuple[str, dict[str, object]] | None:
+        action = self.action
+        action_args = dict(self.action_args)
+        if action == "finalize":
+            return ("finalize", action_args)
+        if action == "search_web":
+            query_raw = action_args.get("query")
+            max_results_raw = action_args.get("max_results")
+            if isinstance(query_raw, str) and query_raw.strip():
+                normalized: dict[str, object] = {"query": query_raw.strip()}
+                if isinstance(max_results_raw, int):
+                    normalized["max_results"] = max_results_raw
+                dimension_raw = action_args.get("dimension")
+                if isinstance(dimension_raw, str):
+                    try:
+                        normalized["dimension"] = validate_dimension(dimension_raw)
+                    except ValueError:
+                        pass
+                return ("search_web", normalized)
+            return None
+        if action == "fetch_url":
+            url_raw = action_args.get("url")
+            if isinstance(url_raw, str) and url_raw.strip():
+                normalized = {"url": url_raw.strip(), "competitor_id": competitor_id}
+                dimension_raw = action_args.get("dimension")
+                if isinstance(dimension_raw, str):
+                    try:
+                        normalized["dimension"] = validate_dimension(dimension_raw)
+                    except ValueError:
+                        pass
+                return ("fetch_url", normalized)
+            return None
+        if action == "parse_page":
+            html_raw = action_args.get("html")
+            if isinstance(html_raw, str) and html_raw.strip():
+                normalized = {"html": html_raw}
+                for key in ("source_url", "source_title"):
+                    value = action_args.get(key)
+                    if isinstance(value, str):
+                        normalized[key] = value
+                return ("parse_page", normalized)
+            return None
+        if action == "extract_structured":
+            text_raw = action_args.get("text")
+            if isinstance(text_raw, str) and text_raw.strip():
+                normalized = {"text": text_raw}
+                for key in ("source_url", "source_title"):
+                    value = action_args.get(key)
+                    if isinstance(value, str):
+                        normalized[key] = value
+                source_type_raw = action_args.get("source_type")
+                if isinstance(source_type_raw, str):
+                    normalized["source_type"] = source_type_raw
+                dimension_raw = action_args.get("dimension")
+                if isinstance(dimension_raw, str):
+                    try:
+                        normalized["dimension"] = validate_dimension(dimension_raw)
+                    except ValueError:
+                        pass
+                comp_raw = action_args.get("competitor_id")
+                normalized["competitor_id"] = (
+                    comp_raw.strip()
+                    if isinstance(comp_raw, str) and comp_raw.strip()
+                    else competitor_id
+                )
+                return ("extract_structured", normalized)
+            return None
+        if action == "load_skill":
+            skill_id_raw = action_args.get("skill_id")
+            if isinstance(skill_id_raw, str) and skill_id_raw.strip():
+                return ("load_skill", {"skill_id": skill_id_raw.strip()})
+            return None
+        if action == "read_skill_file":
+            skill_id_raw = action_args.get("skill_id")
+            filename_raw = action_args.get("filename")
+            if (
+                isinstance(skill_id_raw, str)
+                and skill_id_raw.strip()
+                and isinstance(filename_raw, str)
+                and filename_raw.strip()
+            ):
+                return (
+                    "read_skill_file",
+                    {"skill_id": skill_id_raw.strip(), "filename": filename_raw.strip()},
+                )
+            return None
+        return None
+
+
+class ResearcherCompressionOutput(BaseModel):
+    compressed_summary: str = Field(min_length=1)
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> ResearcherCompressionOutput:
+        summary_raw = content.get("compressed_summary")
+        if not isinstance(summary_raw, str) or not summary_raw.strip():
+            raise ValueError("compressed_summary is required")
+        return cls(compressed_summary=summary_raw.strip())
+
+
+class ExtractStructuredOutput(BaseModel):
+    quote: str = Field(min_length=1)
+    source_title: str | None = None
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> ExtractStructuredOutput:
+        quote_raw = content.get("quote")
+        if not isinstance(quote_raw, str) or not quote_raw.strip():
+            raise ValueError("quote is required")
+        title_raw = content.get("source_title")
+        source_title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+        return cls(quote=quote_raw.strip(), source_title=source_title)
+
+
+class QASemanticOutput(BaseModel):
+    semantic_audit_passed: bool
+    reject_to: Literal["supervisor", "researcher", "analyst", "writer"]
+    severity: QASeverity
+    finding: str = Field(min_length=1)
+    required_fields: list[str] = Field(default_factory=list)
+
+    @field_validator("reject_to")
+    @classmethod
+    def _validate_reject_to(cls, value: str) -> str:
+        if value not in QA_SEMANTIC_ALLOWED_REJECT_TO:
+            raise ValueError(f"reject_to must be one of {QA_SEMANTIC_ALLOWED_REJECT_TO}")
+        return value
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> QASemanticOutput:
+        return cls.model_validate(content)
+
+    def to_normalized_dict(self) -> dict[str, object]:
+        return {
+            "semantic_audit_passed": self.semantic_audit_passed,
+            "finding": self.finding,
+            "reject_to": self.reject_to,
+            "severity": self.severity,
+            "required_fields": list(self.required_fields),
+        }
+
+
+class SkillCuratorCandidateOutput(BaseModel):
+    candidate_type: SkillCuratorCandidateType
+    tags: list[str] = Field(default_factory=list)
+    payload: dict[str, object]
+    rationale: str = Field(min_length=1)
+    confidence: Literal["low", "medium", "high"] = "medium"
+    supporting_run_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("candidate_type")
+    @classmethod
+    def _validate_candidate_type(cls, value: str) -> str:
+        if value not in SKILL_CURATOR_ALLOWED_TYPES:
+            raise ValueError(f"candidate_type must be one of {SKILL_CURATOR_ALLOWED_TYPES}")
+        return value
+
+
+class SkillCuratorHarnessOutput(BaseModel):
+    candidates: list[SkillCuratorCandidateOutput] = Field(default_factory=list)
+
+    @classmethod
+    def parse_llm_content(
+        cls,
+        content: dict[str, object],
+        *,
+        allowed_types: frozenset[str],
+    ) -> SkillCuratorHarnessOutput:
+        candidates_raw = content.get("candidates")
+        if not isinstance(candidates_raw, list):
+            raise ValueError("candidates must be a list")
+        parsed: list[SkillCuratorCandidateOutput] = []
+        for item in candidates_raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                candidate = SkillCuratorCandidateOutput.model_validate(item)
+            except ValidationError:
+                continue
+            if candidate.candidate_type not in allowed_types:
+                continue
+            parsed.append(candidate)
+        return cls(candidates=parsed)

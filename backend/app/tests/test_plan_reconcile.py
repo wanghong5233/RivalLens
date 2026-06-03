@@ -49,3 +49,4 @@ def test_reconcile_plan_tree_skips_duplicate_competitors() -> None:
     ]
     assert research_competitors == ["Notion", "Cursor"]
     assert reconciled.version == 4
+

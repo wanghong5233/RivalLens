@@ -15,16 +15,18 @@ from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError
 from service.event_bus import RunEventType, emit_run_event
 from service.llm.prompts import evidence_draft_refs_for_prompt
+from schemas.agent_outputs import ResearcherCompressionOutput, ResearcherDecisionOutput
 from service.llm import (
     RESEARCHER_COMPRESSION_PROMPT,
     RESEARCHER_SYSTEM_PROMPT,
     build_compression_fallback_user_prompt,
+    build_compression_repair_user_prompt,
     build_compression_user_prompt,
     build_researcher_fallback_user_prompt,
-    build_researcher_minimal_user_prompt,
+    build_researcher_repair_user_prompt,
     build_researcher_user_prompt,
 )
-from service.llm.client import get_llm_client
+from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
 from service.skill_store import get_skill_store
 from utils.logger import get_logger
@@ -243,16 +245,6 @@ def _effective_prompt_size(state: ResearcherSubState) -> int:
     return size
 
 
-def _llm_response_usable(llm_response: LLMResponse) -> bool:
-    if llm_response.error:
-        return False
-    content = llm_response.content
-    if not isinstance(content, dict):
-        return False
-    action = content.get("action")
-    return isinstance(action, str) and bool(action.strip())
-
-
 def _guess_skill_id(domain_hint: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "_", domain_hint.strip().lower()).strip("_")
     if not normalized:
@@ -405,116 +397,6 @@ def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension)
     return None
 
 
-def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
-    llm_calls = list(state.get("llm_calls", []))
-    if not llm_calls:
-        return _fallback_action(state)
-
-    latest_content = llm_calls[-1].get("content")
-    if not isinstance(latest_content, dict):
-        return _fallback_action(state)
-
-    action_raw = latest_content.get("action")
-    action = action_raw if isinstance(action_raw, str) else None
-    action_args_raw = latest_content.get("action_args", {})
-    action_args = action_args_raw if isinstance(action_args_raw, dict) else {}
-
-    if action == "finalize":
-        return ("finalize", action_args)
-
-    if action == "search_web":
-        query_raw = action_args.get("query")
-        max_results_raw = action_args.get("max_results")
-        if isinstance(query_raw, str) and query_raw.strip():
-            normalized_args: dict[str, object] = {"query": query_raw.strip()}
-            if isinstance(max_results_raw, int):
-                normalized_args["max_results"] = max_results_raw
-            dimension_raw = action_args.get("dimension")
-            if isinstance(dimension_raw, str):
-                try:
-                    normalized_args["dimension"] = validate_dimension(dimension_raw)
-                except ValueError:
-                    pass
-            return ("search_web", normalized_args)
-
-    if action == "fetch_url":
-        url_raw = action_args.get("url")
-        if isinstance(url_raw, str) and url_raw.strip():
-            normalized_args: dict[str, object] = {
-                "url": url_raw.strip(),
-                "competitor_id": state["competitor_id"],
-            }
-            dimension_raw = action_args.get("dimension")
-            if isinstance(dimension_raw, str):
-                try:
-                    normalized_args["dimension"] = validate_dimension(dimension_raw)
-                except ValueError:
-                    pass
-            return ("fetch_url", normalized_args)
-
-    if action == "parse_page":
-        html_raw = action_args.get("html")
-        source_url_raw = action_args.get("source_url")
-        source_title_raw = action_args.get("source_title")
-        if isinstance(html_raw, str) and html_raw.strip():
-            normalized_args = {"html": html_raw}
-            if isinstance(source_url_raw, str):
-                normalized_args["source_url"] = source_url_raw
-            if isinstance(source_title_raw, str):
-                normalized_args["source_title"] = source_title_raw
-            return ("parse_page", normalized_args)
-
-    if action == "extract_structured":
-        text_raw = action_args.get("text")
-        source_url_raw = action_args.get("source_url")
-        source_title_raw = action_args.get("source_title")
-        if isinstance(text_raw, str) and text_raw.strip():
-            normalized_args = {"text": text_raw}
-            if isinstance(source_url_raw, str):
-                normalized_args["source_url"] = source_url_raw
-            if isinstance(source_title_raw, str):
-                normalized_args["source_title"] = source_title_raw
-            source_type_raw = action_args.get("source_type")
-            if isinstance(source_type_raw, str):
-                normalized_args["source_type"] = source_type_raw
-            dimension_raw = action_args.get("dimension")
-            if isinstance(dimension_raw, str):
-                try:
-                    normalized_args["dimension"] = validate_dimension(dimension_raw)
-                except ValueError:
-                    pass
-            competitor_id_raw = action_args.get("competitor_id")
-            if isinstance(competitor_id_raw, str) and competitor_id_raw.strip():
-                normalized_args["competitor_id"] = competitor_id_raw.strip()
-            else:
-                normalized_args["competitor_id"] = state["competitor_id"]
-            return ("extract_structured", normalized_args)
-
-    if action == "load_skill":
-        skill_id_raw = action_args.get("skill_id")
-        if isinstance(skill_id_raw, str) and skill_id_raw.strip():
-            return ("load_skill", {"skill_id": skill_id_raw.strip()})
-
-    if action == "read_skill_file":
-        skill_id_raw = action_args.get("skill_id")
-        filename_raw = action_args.get("filename")
-        if (
-            isinstance(skill_id_raw, str)
-            and skill_id_raw.strip()
-            and isinstance(filename_raw, str)
-            and filename_raw.strip()
-        ):
-            return (
-                "read_skill_file",
-                {
-                    "skill_id": skill_id_raw.strip(),
-                    "filename": filename_raw.strip(),
-                },
-            )
-
-    return _fallback_action(state)
-
-
 def _needs_compress(state: ResearcherSubState) -> bool:
     turn_count = int(state.get("turn_count", 0))
     if turn_count < COMPRESS_AFTER_TURNS:
@@ -577,49 +459,30 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         reference_urls=reference_urls,
         discovered_urls=discovered_urls,
     )
-    llm_response = await get_llm_client().complete_json(
+    pending_dimensions = list(state.get("pending_dimensions", []))
+    harness_result = await complete_structured(
         model_slot="research",
         system_prompt=RESEARCHER_SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        output_model=ResearcherDecisionOutput,
+        parser=ResearcherDecisionOutput.parse_llm_content,
         fallback_system_prompt=RESEARCHER_SYSTEM_PROMPT,
         fallback_user_prompt=build_researcher_fallback_user_prompt(
             competitor_id=state["competitor_id"],
-            pending_dimensions=list(state.get("pending_dimensions", [])),
+            pending_dimensions=pending_dimensions,
             queried_dimensions=list(state.get("queried_dimensions", [])),
             turn_count=int(state.get("turn_count", 0)),
             max_turns=max_turns,
             domain_hint=domain_hint,
         ),
-    )
-
-    if not _llm_response_usable(llm_response):
-        log.warning(
-            "researcher.llm_decide.format_retry",
-            competitor_id=state.get("competitor_id"),
-            turn_count=int(state.get("turn_count", 0)),
-            error=llm_response.error,
-        )
-        minimal_prompt = build_researcher_minimal_user_prompt(
+        repair_user_prompt_builder=lambda errors: build_researcher_repair_user_prompt(
+            validation_errors=errors,
             competitor_id=state["competitor_id"],
-            pending_dimensions=list(state.get("pending_dimensions", [])),
-            compressed_summary=compressed_summary,
-            observation_briefs=observation_briefs,
-        )
-        llm_response = await get_llm_client().complete_json(
-            model_slot="research",
-            system_prompt=RESEARCHER_SYSTEM_PROMPT,
-            user_prompt=minimal_prompt,
-            fallback_system_prompt=RESEARCHER_SYSTEM_PROMPT,
-            fallback_user_prompt=build_researcher_fallback_user_prompt(
-                competitor_id=state["competitor_id"],
-                pending_dimensions=list(state.get("pending_dimensions", [])),
-                queried_dimensions=list(state.get("queried_dimensions", [])),
-                turn_count=int(state.get("turn_count", 0)),
-                max_turns=max_turns,
-                domain_hint=domain_hint,
-            ),
-        )
-        user_prompt = minimal_prompt
+            pending_dimensions=pending_dimensions,
+        ),
+        log_event="researcher.harness.finish",
+    )
+    llm_response = harness_result.llm_response
 
     llm_calls = list(state.get("llm_calls", []))
     llm_calls.append(llm_response.to_dict())
@@ -628,12 +491,15 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
     messages.append({"role": "user", "content": user_prompt})
     messages.append({"role": "assistant", "content": str(llm_response.content)})
 
-    action, action_args = _extract_action(
-        {
-            **state,
-            "llm_calls": llm_calls,
-        }
+    action_tuple = (
+        harness_result.value.to_action_tuple(competitor_id=state["competitor_id"])
+        if harness_result.value is not None
+        else None
     )
+    if action_tuple is not None:
+        action, action_args = action_tuple
+    else:
+        action, action_args = _fallback_action(state)
     if (
         domain_hint is not None
         and int(state.get("turn_count", 0)) == 0
@@ -913,25 +779,33 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
         evidence_drafts=list(state.get("evidence_drafts", [])),
         compressed_summary=prior_summary,
     )
-    llm_response = await get_llm_client().complete_json(
+    observations_log = list(state.get("observations_log", []))
+    harness_result = await complete_structured(
         model_slot="compression",
         system_prompt=RESEARCHER_COMPRESSION_PROMPT,
         user_prompt=user_prompt,
+        output_model=ResearcherCompressionOutput,
+        parser=ResearcherCompressionOutput.parse_llm_content,
         fallback_system_prompt=RESEARCHER_COMPRESSION_PROMPT,
         fallback_user_prompt=build_compression_fallback_user_prompt(
-            observations_log=list(state.get("observations_log", [])),
+            observations_log=observations_log,
             evidence_drafts=list(state.get("evidence_drafts", [])),
         ),
+        repair_user_prompt_builder=lambda errors: build_compression_repair_user_prompt(
+            validation_errors=errors,
+            observation_count=len(observations_log),
+        ),
+        log_event="researcher.compress.harness.finish",
     )
+    llm_response = harness_result.llm_response
 
     llm_calls = list(state.get("llm_calls", []))
     llm_calls.append(llm_response.to_dict())
 
-    summary_raw = llm_response.content.get("compressed_summary")
-    if isinstance(summary_raw, str) and summary_raw.strip():
-        summary = summary_raw.strip()
+    if harness_result.value is not None:
+        summary = harness_result.value.compressed_summary
     else:
-        summary = f"compressed with {len(state.get('observations_log', []))} observations"
+        summary = f"compressed with {len(observations_log)} observations"
     next_compression_count = int(state.get("compression_count", 0)) + 1
     pruned_observations = _archive_observations_log(list(state.get("observations_log", [])))
     pruned_briefs = list(state.get("observation_briefs", []))[-12:]

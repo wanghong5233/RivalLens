@@ -797,28 +797,18 @@ def fake_llm_client(
     node_path = str(request.node.path)
     if any(
         name in node_path
-        for name in ("test_llm_client.py", "test_llm_providers.py", "test_llm_routing.py")
+        for name in (
+            "test_llm_client.py",
+            "test_llm_providers.py",
+            "test_llm_routing.py",
+            "test_llm_harness.py",
+        )
     ):
         return None
 
     fake_client = _FakeLLMClient()
     monkeypatch.setattr("service.llm.client.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("agents.nodes.supervisor.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("agents.nodes.intake.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("agents.nodes.planner.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("agents.nodes.analyst.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("agents.nodes.writer.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("service.qa.engine.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr("service.skill_curator.generators.qa_rule.get_llm_client", lambda: fake_client)
-    monkeypatch.setattr(
-        "service.skill_curator.generators.prompt_template.get_llm_client",
-        lambda: fake_client,
-    )
-    monkeypatch.setattr(
-        "service.skill_curator.generators.source_routing.get_llm_client",
-        lambda: fake_client,
-    )
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
     return fake_client
 
 

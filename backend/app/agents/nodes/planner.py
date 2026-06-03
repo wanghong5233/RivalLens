@@ -8,10 +8,16 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from agents.state_coercion import (
+    coerce_intake_draft_or_default,
+    coerce_pending_plan_tree,
+    coerce_plan_tree,
+)
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.run import Run
 from models.step import Step
+from schemas.agent_outputs import PlannerOutput
 from schemas.ids import make_id
 from schemas.intake import RunIntakeDraft
 from schemas.plan import PlanConfirmRequest, PlanTask, PlanTaskStage, PlanTree
@@ -19,16 +25,16 @@ from service.event_bus import RunEventType, emit_run_event
 from service.llm import (
     PLANNER_SYSTEM_PROMPT,
     build_planner_fallback_user_prompt,
+    build_planner_repair_user_prompt,
     build_planner_user_prompt,
 )
-from service.llm.client import get_llm_client
+from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
 from utils.log_node import log_node
 from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.planner")
 
-_VALID_STAGES: frozenset[str] = frozenset({"discover", "research", "analyze", "write"})
 _MAX_RESEARCH_TASKS = 8
 _MAX_TOTAL_TASKS = 12
 _DEFAULT_FOCUS_DIMENSIONS: tuple[str, ...] = ("feature", "pricing", "user_feedback")
@@ -48,91 +54,8 @@ def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSessi
     return get_session_factory()
 
 
-def _coerce_draft(state: AgentState) -> RunIntakeDraft:
-    draft = state.get("intake_draft")
-    if isinstance(draft, RunIntakeDraft):
-        return draft
-    if isinstance(draft, dict):
-        return RunIntakeDraft.model_validate(draft)
-    user_query = state.get("user_query") or ""
-    return RunIntakeDraft(user_query=user_query)
-
-
 def _coerce_pending_plan(state: AgentState) -> PlanTree:
-    pending = state.get("pending_plan_tree")
-    if isinstance(pending, PlanTree):
-        return pending
-    if isinstance(pending, dict):
-        return PlanTree.model_validate(pending)
-    raise RuntimeError(
-        "planner_wait_node entered without pending_plan_tree in state; check graph wiring."
-    )
-
-
-def _normalize_focus_dimensions(values: object, draft_focus: list[str]) -> list[str]:
-    if isinstance(values, list):
-        cleaned = [str(v).strip() for v in values if isinstance(v, str) and v.strip()]
-        if cleaned:
-            return cleaned[:5]
-    if draft_focus:
-        return list(draft_focus)[:5]
-    return list(_DEFAULT_FOCUS_DIMENSIONS)
-
-
-def _parse_llm_tasks(
-    raw_tasks: object, *, draft: RunIntakeDraft
-) -> list[PlanTask] | None:
-    """Return validated PlanTasks or None if the LLM output is unusable."""
-    if not isinstance(raw_tasks, list) or not raw_tasks:
-        return None
-    out: list[PlanTask] = []
-    research_count = 0
-    for item in raw_tasks:
-        if not isinstance(item, dict):
-            continue
-        stage_raw = item.get("stage")
-        if not isinstance(stage_raw, str) or stage_raw not in _VALID_STAGES:
-            continue
-        title_raw = item.get("title")
-        if not isinstance(title_raw, str) or not title_raw.strip():
-            continue
-        description_raw = item.get("description")
-        description = description_raw.strip() if isinstance(description_raw, str) else ""
-        competitor_raw = item.get("competitor_id")
-        competitor_id = (
-            competitor_raw.strip()
-            if isinstance(competitor_raw, str) and competitor_raw.strip()
-            else None
-        )
-        if stage_raw == "research":
-            if competitor_id is None:
-                # Reject research tasks without competitor_id; planner_generate spec requires it.
-                continue
-            if research_count >= _MAX_RESEARCH_TASKS:
-                continue
-            research_count += 1
-        focus = _normalize_focus_dimensions(
-            item.get("focus_dimensions"), list(draft.focus_dimensions)
-        )
-        try:
-            task = PlanTask(
-                stage=cast(PlanTaskStage, stage_raw),
-                title=title_raw.strip()[:60],
-                description=description,
-                competitor_id=competitor_id,
-                focus_dimensions=focus,
-                source="agent",
-                enabled=True,
-                priority="normal",
-            )
-        except ValidationError:
-            continue
-        out.append(task)
-        if len(out) >= _MAX_TOTAL_TASKS:
-            break
-    if not out:
-        return None
-    return out
+    return coerce_pending_plan_tree(state)
 
 
 def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
@@ -192,7 +115,9 @@ def reconcile_plan_tree_after_discovery(
     focus_dimensions: list[str] | None = None,
 ) -> PlanTree:
     """Materialize per-competitor research tasks after discovery completes."""
-    plan = PlanTree.model_validate(plan_tree) if isinstance(plan_tree, dict) else plan_tree
+    plan = coerce_plan_tree(plan_tree)
+    if plan is None:
+        raise ValueError("plan_tree is required to reconcile after discovery.")
     if not discovered_competitors:
         return plan
 
@@ -368,33 +293,35 @@ async def planner_generate_node(state: AgentState) -> AgentState:
     """
     session_factory = _resolve_session_factory(state)
     run_id = state.get("run_id") or make_id("run_")
-    draft = _coerce_draft(state)
+    draft = coerce_intake_draft_or_default(state)
+    intake_dump = draft.model_dump(exclude={"is_complete"})
 
-    user_prompt = build_planner_user_prompt(
-        intake_draft=draft.model_dump(exclude={"is_complete"})
-    )
-    fallback_user_prompt = build_planner_fallback_user_prompt(
-        intake_draft=draft.model_dump(exclude={"is_complete"})
-    )
-    llm_response = await get_llm_client().complete_json(
+    user_prompt = build_planner_user_prompt(intake_draft=intake_dump)
+    fallback_user_prompt = build_planner_fallback_user_prompt(intake_draft=intake_dump)
+    harness_result = await complete_structured(
         model_slot="research",
         system_prompt=PLANNER_SYSTEM_PROMPT,
         user_prompt=user_prompt,
+        output_model=PlannerOutput,
+        parser=lambda content: PlannerOutput.parse_llm_content(content, draft=draft),
         fallback_system_prompt=PLANNER_SYSTEM_PROMPT,
         fallback_user_prompt=fallback_user_prompt,
+        repair_user_prompt_builder=lambda errors: build_planner_repair_user_prompt(
+            validation_errors=errors,
+            intake_draft=intake_dump,
+        ),
+        log_event="planner.harness.finish",
     )
+    llm_response = harness_result.llm_response
 
-    content = llm_response.content if isinstance(llm_response.content, dict) else {}
-    rationale_raw = content.get("rationale")
-    rationale = rationale_raw.strip() if isinstance(rationale_raw, str) else ""
-
-    parsed_tasks = _parse_llm_tasks(content.get("tasks"), draft=draft)
-    if parsed_tasks is None:
-        tasks = _fallback_tasks(draft)
-        action = "publish_fallback"
-    else:
-        tasks = parsed_tasks
+    if harness_result.value is not None:
+        tasks = harness_result.value.to_plan_tasks()
+        rationale = harness_result.value.rationale
         action = "publish"
+    else:
+        tasks = _fallback_tasks(draft)
+        rationale = ""
+        action = "publish_fallback"
 
     plan = PlanTree(tasks=tasks, rationale=rationale, version=1, confirmed_at=None)
 

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from agents.nodes.planner import reconcile_plan_tree_after_discovery
 from agents.state import AgentState
+from agents.state_coercion import coerce_plan_tree
 from agents.tools import get_channel_registry
 from db.engine import get_session_factory
 from models.run import Run
@@ -12,29 +13,18 @@ from models.step import Step
 from schemas.ids import make_id
 from service.collector.errors import ChannelError
 from service.event_bus import RunEventType, emit_run_event
-from service.llm.client import get_llm_client
-from service.llm.exceptions import LLMError
+from schemas.agent_outputs import DiscoveryExtractOutput
+from service.llm import (
+    DISCOVERY_EXTRACT_SYSTEM_PROMPT,
+    build_discovery_extract_fallback_user_prompt,
+    build_discovery_extract_repair_user_prompt,
+    build_discovery_extract_user_prompt,
+)
+from service.llm.harness import complete_structured
 from utils.log_node import log_node
 from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.discovery")
-
-DISCOVERY_EXTRACT_PROMPT = """You are a competitive intelligence analyst.
-Given the following search results about a market/track, extract a list of competitor product names.
-
-Rules:
-- Return ONLY a JSON object: {{"competitors": ["Name1", "Name2", ...]}}
-- Each name should be the commonly known product name (not company name unless they are the same).
-- Deduplicate: if the same product appears multiple times, include it only once.
-- Return between 3 and 10 competitors, prioritizing the most relevant ones.
-- Do NOT include generic terms, categories, or non-product entities.
-
-Search results:
-{search_results}
-
-Domain context: {domain_context}
-User query: {user_query}
-"""
 
 
 @log_node("discovery")
@@ -124,26 +114,35 @@ async def discovery_node(state: AgentState) -> AgentState:
     snippet_count = len(all_snippets)
     if all_snippets:
         combined_results = "\n---\n".join(all_snippets[:20])
-        extract_prompt = DISCOVERY_EXTRACT_PROMPT.format(
+        extract_prompt = build_discovery_extract_user_prompt(
             search_results=combined_results,
             domain_context=domain_context,
             user_query=user_query,
         )
+        fallback_prompt = build_discovery_extract_fallback_user_prompt(
+            domain_context=domain_context,
+            user_query=user_query,
+        )
         try:
-            llm_response = await get_llm_client().complete_json(
+            harness_result = await complete_structured(
                 model_slot="research",
-                system_prompt="You extract competitor names from search results. Return valid JSON only.",
+                system_prompt=DISCOVERY_EXTRACT_SYSTEM_PROMPT,
                 user_prompt=extract_prompt,
+                output_model=DiscoveryExtractOutput,
+                parser=DiscoveryExtractOutput.parse_llm_content,
+                fallback_system_prompt=DISCOVERY_EXTRACT_SYSTEM_PROMPT,
+                fallback_user_prompt=fallback_prompt,
+                repair_user_prompt_builder=lambda errors: build_discovery_extract_repair_user_prompt(
+                    validation_errors=errors,
+                    domain_context=domain_context,
+                ),
+                log_event="discovery.harness.finish",
             )
-            content = llm_response.content
-            if isinstance(content, dict):
-                raw_competitors = content.get("competitors", [])
-                if isinstance(raw_competitors, list):
-                    for item in raw_competitors:
-                        name = str(item).strip() if item else ""
-                        if name and name not in discovered:
-                            discovered.append(name)
-        except (LLMError, KeyError, ValueError) as exc:
+            if harness_result.value is not None:
+                discovered = list(harness_result.value.competitors)
+            elif harness_result.llm_response.error is not None:
+                extract_error = harness_result.llm_response.error[:300]
+        except (KeyError, ValueError) as exc:
             extract_error = f"{type(exc).__name__}: {str(exc)[:300]}"
             with bind_step(step_id):
                 log.exception(
@@ -182,14 +181,14 @@ async def discovery_node(state: AgentState) -> AgentState:
     )
 
     reconciled_plan_tree: dict[str, object] | None = None
-    plan_tree_raw = state.get("plan_tree")
-    if discovered and isinstance(plan_tree_raw, dict):
+    plan = coerce_plan_tree(state.get("plan_tree"))
+    if discovered and plan is not None:
         intake_draft = state.get("intake_draft")
         focus_dimensions: list[str] | None = None
         if intake_draft is not None and hasattr(intake_draft, "focus_dimensions"):
             focus_dimensions = list(intake_draft.focus_dimensions)
         reconciled = reconcile_plan_tree_after_discovery(
-            plan_tree=plan_tree_raw,
+            plan_tree=plan,
             discovered_competitors=discovered,
             focus_dimensions=focus_dimensions,
         )
