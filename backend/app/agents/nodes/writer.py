@@ -33,6 +33,68 @@ from utils.logger import get_logger
 log = get_logger("agents.writer")
 DEFAULT_FALLBACK_SECTIONS = ["feature", "pricing", "user_feedback"]
 
+_SECTION_DIMENSION_ALIASES: dict[str, tuple[str, ...]] = {
+    "pricing": ("pricing", "pricing_model_details", "pricing_strategy"),
+    "feature": ("feature", "product_market_positioning", "enterprise_version_capabilities"),
+    "positioning": ("positioning", "product_positioning", "product_market_positioning"),
+    "differentiation": ("differentiation", "competitive_differentiation", "product_market_positioning"),
+    "user_feedback": ("user_feedback", "product_market_positioning"),
+}
+
+
+def _insight_matches_section(*, insight: dict[str, object], section_id: str) -> bool:
+    dimension_raw = insight.get("dimension")
+    if not isinstance(dimension_raw, str):
+        return False
+    dimension = dimension_raw.strip().lower()
+    if dimension == section_id:
+        return True
+    aliases = _SECTION_DIMENSION_ALIASES.get(section_id, ())
+    return dimension in aliases
+
+
+def _select_insights_for_section(
+    *,
+    section_id: str,
+    section_index: int,
+    insight_briefs: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    matched = [
+        insight
+        for insight in insight_briefs
+        if _insight_matches_section(insight=insight, section_id=section_id)
+    ]
+    if matched:
+        return matched[:3]
+    if not insight_briefs:
+        return []
+    start = (section_index * 2) % len(insight_briefs)
+    return [insight_briefs[(start + offset) % len(insight_briefs)] for offset in range(min(2, len(insight_briefs)))]
+
+
+def _select_evidence_ids_for_section(
+    *,
+    section_id: str,
+    section_index: int,
+    evidence_briefs: list[dict[str, str]],
+    evidence_ids: list[str],
+) -> list[str]:
+    aliases = _SECTION_DIMENSION_ALIASES.get(section_id, (section_id,))
+    matched = [
+        item["evidence_id"]
+        for item in evidence_briefs
+        if item.get("evidence_id") in evidence_ids
+        and item.get("dimension", "").lower() in aliases
+    ]
+    if matched:
+        return _stable_unique(matched)[:3]
+    if not evidence_ids:
+        return []
+    start = section_index % len(evidence_ids)
+    if len(evidence_ids) == 1:
+        return [evidence_ids[0]]
+    return _stable_unique([evidence_ids[start], evidence_ids[(start + 1) % len(evidence_ids)]])
+
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
     session_factory = state.get("session_factory")
@@ -409,17 +471,16 @@ def _build_fallback_report(
     evidence_ids: list[str],
     analyst_summary: str,
     insight_briefs: list[dict[str, object]],
+    evidence_briefs: list[dict[str, str]],
     risk_flags: list[str],
 ) -> dict[str, object]:
     sections: list[dict[str, object]] = []
-    for section_id in target_sections:
-        related_insights = [
-            insight
-            for insight in insight_briefs
-            if isinstance(insight.get("dimension"), str) and insight["dimension"] == section_id
-        ]
-        if not related_insights:
-            related_insights = insight_briefs[:2]
+    for section_index, section_id in enumerate(target_sections):
+        related_insights = _select_insights_for_section(
+            section_id=section_id,
+            section_index=section_index,
+            insight_briefs=insight_briefs,
+        )
         if related_insights:
             insight_refs = [
                 item["insight_id"]
@@ -429,16 +490,20 @@ def _build_fallback_report(
         else:
             insight_refs = []
 
-        evidence_refs: list[str] = []
+        evidence_refs = _select_evidence_ids_for_section(
+            section_id=section_id,
+            section_index=section_index,
+            evidence_briefs=evidence_briefs,
+            evidence_ids=evidence_ids,
+        )
         for insight in related_insights:
             evidence_ids_raw = insight.get("evidence_ids")
             if not isinstance(evidence_ids_raw, list):
                 continue
             for evidence_id in evidence_ids_raw:
-                if isinstance(evidence_id, str):
+                if isinstance(evidence_id, str) and evidence_id in evidence_ids:
                     evidence_refs.append(evidence_id)
-        if not evidence_refs:
-            evidence_refs = evidence_ids[:2]
+        evidence_refs = _stable_unique([item for item in evidence_refs if item in evidence_ids])[:4]
 
         if related_insights:
             insight_lines = [
@@ -448,19 +513,21 @@ def _build_fallback_report(
             ]
         else:
             insight_lines = [
+                f"- {item['quote_preview']} [{item['competitor_id']}]"
+                for item in evidence_briefs
+                if item.get("evidence_id") in evidence_refs and item.get("quote_preview")
+            ][:3]
+        if not insight_lines:
+            insight_lines = [
                 "- Analyst insight is pending; this section summarizes available evidence for follow-up."
             ]
-        content_markdown = (
-            "This section is generated in fallback mode based on available analyst outputs "
-            "and evidence records to keep the report usable for QA and reviewer traceability.\n\n"
-            + "\n".join(insight_lines)
-        )
+        content_markdown = "\n".join(insight_lines)
         sections.append(
             {
                 "section_id": section_id,
                 "title": section_id.replace("_", " ").title(),
                 "content_markdown": content_markdown,
-                "evidence_refs": _stable_unique([item for item in evidence_refs if item in evidence_ids]),
+                "evidence_refs": evidence_refs,
                 "insight_refs": _stable_unique(insight_refs),
             }
         )
@@ -647,10 +714,12 @@ async def writer_node(state: AgentState) -> AgentState:
     writer_mode: Literal["llm", "fallback"]
     if llm_response.error is None and normalized is not None:
         writer_mode = "llm"
+        report_mode = "primary" if not llm_response.fallback_used else "llm_fallback"
         report_content = normalized
         fallback_reason = llm_response.fallback_reason
     else:
         writer_mode = "fallback"
+        report_mode = "deterministic_fallback"
         if llm_response.error is None and normalized is None:
             writer_schema_error = "writer_output_schema_invalid"
         fallback_reason = llm_response.error or writer_schema_error
@@ -660,8 +729,18 @@ async def writer_node(state: AgentState) -> AgentState:
             evidence_ids=sorted(allowed_evidence_ids),
             analyst_summary=analyst_summary,
             insight_briefs=insight_briefs,
+            evidence_briefs=evidence_briefs,
             risk_flags=risk_flags,
         )
+    log.info(
+        "writer.report_mode",
+        report_mode=report_mode,
+        writer_mode=writer_mode,
+        section_count=len(report_content.get("sections", []))
+        if isinstance(report_content.get("sections"), list)
+        else 0,
+        llm_fallback_used=llm_response.fallback_used,
+    )
     markdown = _render_report_markdown(report_content)
     llm_call_error = llm_response.error or writer_schema_error
     llm_call_error_trimmed = llm_call_error[:2000] if llm_call_error is not None else None
@@ -753,5 +832,6 @@ async def writer_node(state: AgentState) -> AgentState:
         "report_draft_done": True,
         "pending_tool_args": {},
         "pending_review_target_step_id": step_id,
+        "writer_report_fallback_mode": writer_mode == "fallback",
         "status": "running",
     }

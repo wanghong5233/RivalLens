@@ -1,3 +1,4 @@
+/** Terminal run status; `degraded` means the report finished with known quality issues. */
 export type RunStatus = "running" | "completed" | "degraded" | "failed" | string;
 
 export type RunPhase = "intake" | "planning" | "executing" | "done";

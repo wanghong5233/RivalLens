@@ -1003,7 +1003,12 @@ async def supervisor_node(state: AgentState) -> AgentState:
         next_report_draft_done = False
 
     if decision.chosen_tool == "Finalize":
-        if completion_reason == "max_iterations_hit" or forced_degraded_by_qa:
+        writer_fallback = bool(state.get("writer_report_fallback_mode"))
+        if (
+            completion_reason == "max_iterations_hit"
+            or forced_degraded_by_qa
+            or writer_fallback
+        ):
             status = "degraded"
         else:
             status = "completed"

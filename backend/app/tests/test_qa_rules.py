@@ -13,6 +13,7 @@ from service.qa.rules import (
     rule_report_section_count_in_bounds,
     rule_report_template_id_present,
     rule_writer_must_cite_evidence,
+    rule_writer_no_fallback_mode,
     rule_writer_sections_must_have_content,
 )
 
@@ -122,6 +123,12 @@ def test_rule_writer_must_cite_evidence_pass_and_fail() -> None:
 def test_rule_evidence_must_be_desensitized_pass_and_fail() -> None:
     assert rule_evidence_must_be_desensitized([_make_evidence(desensitized=True)]).passed is True
     assert rule_evidence_must_be_desensitized([_make_evidence(desensitized=False)]).passed is False
+
+
+def test_rule_writer_no_fallback_mode_pass_and_fail() -> None:
+    assert rule_writer_no_fallback_mode({"risk_callouts": []}).passed is True
+    assert rule_writer_no_fallback_mode({"risk_callouts": ["writer_fallback_mode"]}).passed is False
+    assert rule_writer_no_fallback_mode({"risk_callouts": ["pricing volatility"]}).passed is True
 
 
 def test_engine_aggregation_rejects_when_blocking_failed() -> None:

@@ -146,6 +146,22 @@ def rule_evidence_must_be_desensitized(evidence_items: list[EvidenceRecord]) -> 
     )
 
 
+def rule_writer_no_fallback_mode(content_json: dict[str, object]) -> RuleResult:
+    risk_callouts_raw = content_json.get("risk_callouts")
+    has_fallback_flag = (
+        isinstance(risk_callouts_raw, list)
+        and "writer_fallback_mode" in risk_callouts_raw
+    )
+    passed = not has_fallback_flag
+    return RuleResult(
+        rule_id="rule_writer_no_fallback_mode",
+        passed=passed,
+        severity="blocking",
+        reject_to="writer",
+        message="Report must not be generated in deterministic writer fallback mode.",
+    )
+
+
 def evaluate_fast_path_rules(
     *,
     content_markdown: str,
@@ -163,5 +179,6 @@ def evaluate_fast_path_rules(
             content_json=content_json,
             allowed_evidence_ids=allowed_evidence_ids,
         ),
+        rule_writer_no_fallback_mode(content_json),
         rule_evidence_must_be_desensitized(evidence_items),
     ]

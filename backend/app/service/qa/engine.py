@@ -30,6 +30,13 @@ MAX_QA_REJECTIONS = 3
 SEMANTIC_RULE_ID = "rule_qa_semantic_audit"
 log = get_logger("service.qa.engine")
 
+
+def _report_has_writer_fallback_mode(content_json: dict[str, object]) -> bool:
+    risk_callouts_raw = content_json.get("risk_callouts")
+    if not isinstance(risk_callouts_raw, list):
+        return False
+    return "writer_fallback_mode" in risk_callouts_raw
+
 _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_report_must_have_markdown_content": ["reports.content_markdown"],
     "rule_report_template_id_present": ["reports.content_json.template_id"],
@@ -37,6 +44,7 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_report_section_count_in_bounds": ["reports.content_json.sections"],
     "rule_writer_sections_must_have_content": ["reports.content_json.sections[].content_markdown"],
     "rule_writer_must_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
+    "rule_writer_no_fallback_mode": ["reports.content_json.risk_callouts"],
     "rule_evidence_must_be_desensitized": ["evidence.desensitized"],
     "rule_report_exists": ["reports.report_id"],
 }
@@ -404,6 +412,7 @@ async def evaluate_report(
             and qa_rejection_count >= 1
             and len(evidence_items) >= 12
             and not has_blocking_failures_pre_semantic
+            and not _report_has_writer_fallback_mode(report.content_json)
         ):
             # If deterministic QA already passed and semantic retry still bounces between
             # analyst/researcher, stop the loop and accept with warning-level metadata.

@@ -130,6 +130,16 @@ def test_fallback_report_render_contains_evidence_citations() -> None:
                 "evidence_ids": ["ev_001"],
             }
         ],
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_001",
+                "dimension": "feature",
+                "competitor_id": "Cursor",
+                "quote_preview": "repository context indexing",
+                "source_title": "Cursor Docs",
+                "source_url": "https://cursor.com",
+            }
+        ],
         risk_flags=["writer_fallback_mode"],
     )
     markdown = _render_report_markdown(report_content)
@@ -137,6 +147,67 @@ def test_fallback_report_render_contains_evidence_citations() -> None:
     assert report_content["sections"][0]["evidence_refs"] == ["ev_001"]
     assert "[ev_001]" in markdown
     assert "## Executive Summary" in markdown
+
+
+def test_fallback_report_sections_use_distinct_insights() -> None:
+    report_content = _build_fallback_report(
+        template_id="battlecard_default",
+        target_sections=["pricing", "feature", "positioning"],
+        evidence_ids=["ev_001", "ev_002", "ev_003"],
+        analyst_summary="Summary",
+        insight_briefs=[
+            {
+                "insight_id": "insight_pricing",
+                "dimension": "pricing_model_details",
+                "finding": "Pricing insight A.",
+                "confidence": "high",
+                "evidence_ids": ["ev_001"],
+            },
+            {
+                "insight_id": "insight_feature",
+                "dimension": "product_market_positioning",
+                "finding": "Feature insight B.",
+                "confidence": "medium",
+                "evidence_ids": ["ev_002"],
+            },
+            {
+                "insight_id": "insight_positioning",
+                "dimension": "product_positioning",
+                "finding": "Positioning insight C.",
+                "confidence": "high",
+                "evidence_ids": ["ev_003"],
+            },
+        ],
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_001",
+                "dimension": "pricing_model_details",
+                "competitor_id": "Windsurf",
+                "quote_preview": "pricing quote",
+                "source_title": "",
+                "source_url": "",
+            },
+            {
+                "evidence_id": "ev_002",
+                "dimension": "product_market_positioning",
+                "competitor_id": "Cursor",
+                "quote_preview": "feature quote",
+                "source_title": "",
+                "source_url": "",
+            },
+            {
+                "evidence_id": "ev_003",
+                "dimension": "product_positioning",
+                "competitor_id": "Copilot",
+                "quote_preview": "positioning quote",
+                "source_title": "",
+                "source_url": "",
+            },
+        ],
+        risk_flags=["writer_fallback_mode"],
+    )
+    bodies = [section["content_markdown"] for section in report_content["sections"]]
+    assert len(set(bodies)) == 3
 
 
 def test_normalize_writer_output_allows_template_auto_mode() -> None:
