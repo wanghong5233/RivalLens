@@ -48,6 +48,44 @@ def _trim_for_log(value: str | None, *, limit: int = 200) -> str | None:
     return value[:limit]
 
 
+def _resolve_timeout_seconds(model_slot: str) -> int:
+    if model_slot == "writer":
+        return settings.LLM_TIMEOUT_WRITER
+    return settings.LLM_TIMEOUT_SECONDS
+
+
+def _classify_llm_error(error: LLMRequestError | LLMResponseFormatError | str) -> str:
+    message = str(error).lower()
+    if "timed out" in message or "timeout" in message:
+        return "timeout"
+    if "connection" in message:
+        return "connection"
+    if "400" in message or "422" in message or "bad request" in message:
+        return "http_4xx"
+    if isinstance(error, LLMResponseFormatError):
+        return "format"
+    return "unknown"
+
+
+def _log_call_error(
+    *,
+    model_slot: str,
+    provider: str,
+    error: LLMRequestError | LLMResponseFormatError | str,
+    attempt: int | None = None,
+    retryable: bool = False,
+) -> None:
+    log.warning(
+        "llm.call.error",
+        model_slot=model_slot,
+        provider=provider,
+        error_class=_classify_llm_error(error),
+        attempt=attempt,
+        retryable=retryable,
+        error=_trim_for_log(_format_error(error) if not isinstance(error, str) else error),
+    )
+
+
 def _log_finish(
     *,
     model_slot: str,
@@ -186,6 +224,7 @@ class LLMClient:
         prompt_preview = _prompt_preview(system_prompt=system_prompt, user_prompt=user_prompt)
         provider_name, model_name = resolve_slot(slot=model_slot, providers=self._providers)
         provider = self._providers[provider_name]
+        slot_timeout_seconds = _resolve_timeout_seconds(model_slot)
         log.info(
             "llm.call.start",
             model_slot=model_slot,
@@ -193,6 +232,7 @@ class LLMClient:
             prompt_hash=prompt_hash,
             prompt_preview_len=len(prompt_preview),
             fallback_configured=fallback_system_prompt is not None,
+            timeout_seconds=slot_timeout_seconds,
         )
 
         request_error: LLMRequestError | None = None
@@ -205,7 +245,7 @@ class LLMClient:
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         model=model_name,
-                        timeout_seconds=self._timeout_seconds,
+                        timeout_seconds=slot_timeout_seconds,
                     )
             except LLMRequestError as exc:
                 request_error = exc
@@ -228,6 +268,13 @@ class LLMClient:
             try:
                 content = _parse_json_object(raw_response.content_raw)
             except LLMResponseFormatError as exc:
+                _log_call_error(
+                    model_slot=model_slot,
+                    provider=provider_name,
+                    error=exc,
+                    attempt=attempt_index + 1,
+                    retryable=False,
+                )
                 response = LLMResponse(
                     model_slot=model_slot,
                     provider=provider_name,
@@ -305,10 +352,17 @@ class LLMClient:
                         system_prompt=fallback_system_prompt,
                         user_prompt=fallback_user_prompt,
                         model=model_name,
-                        timeout_seconds=self._timeout_seconds,
+                        timeout_seconds=slot_timeout_seconds,
                     )
             except LLMRequestError as fallback_exc:
                 fallback_elapsed_ms = int((perf_counter() - started_at) * 1000)
+                _log_call_error(
+                    model_slot=model_slot,
+                    provider=provider_name,
+                    error=fallback_exc,
+                    attempt=self._max_retries + 2,
+                    retryable=False,
+                )
                 response = LLMResponse(
                     model_slot=model_slot,
                     provider=provider_name,
@@ -345,6 +399,13 @@ class LLMClient:
             try:
                 content = _parse_json_object(raw_response.content_raw)
             except LLMResponseFormatError as exc:
+                _log_call_error(
+                    model_slot=model_slot,
+                    provider=provider_name,
+                    error=exc,
+                    attempt=self._max_retries + 2,
+                    retryable=False,
+                )
                 response = LLMResponse(
                     model_slot=model_slot,
                     provider=provider_name,
@@ -406,6 +467,13 @@ class LLMClient:
         if request_error is None:
             raise RuntimeError("LLM request retry loop reached unreachable state.")
 
+        _log_call_error(
+            model_slot=model_slot,
+            provider=provider_name,
+            error=request_error,
+            attempt=self._max_retries + 1,
+            retryable=False,
+        )
         response = LLMResponse(
             model_slot=model_slot,
             provider=provider_name,

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from core.config import settings
+from service.llm.client import _resolve_timeout_seconds
 from service.llm.exceptions import LLMRequestError
 from service.llm.routing import resolve_slot
 
@@ -70,3 +71,11 @@ def test_resolve_slot_rejects_missing_provider(monkeypatch: pytest.MonkeyPatch) 
             slot="qa",
             providers={"doubao": _DummyProvider(default_model="ep-default")},
         )
+
+
+def test_resolve_timeout_seconds_uses_writer_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_WRITER", 180)
+
+    assert _resolve_timeout_seconds("research") == 30
+    assert _resolve_timeout_seconds("writer") == 180

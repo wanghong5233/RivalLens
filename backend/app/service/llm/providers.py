@@ -2,11 +2,48 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Protocol
 
+import structlog
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from core.config import settings
 from service.llm.exceptions import LLMRequestError, LLMResponseFormatError
 from service.llm.response import ProviderRawResponse
+from utils.logger import get_logger
+
+log = get_logger("service.llm.providers")
+
+_json_mode_fallback_keys: set[str] = set()
+_JSON_MODE_FALLBACK_KEY_LIMIT = 512
+
+
+def _log_json_mode_fallback(
+    *,
+    provider: str,
+    model: str,
+    http_status: object,
+    error_preview: str,
+) -> None:
+    ctx = structlog.contextvars.get_contextvars()
+    run_id_raw = ctx.get("run_id")
+    run_id = run_id_raw if isinstance(run_id_raw, str) else "unknown"
+    key = f"{run_id}:{provider}:{model}"
+    if key in _json_mode_fallback_keys:
+        log.debug(
+            "llm.call.json_mode_fallback",
+            provider=provider,
+            http_status=http_status,
+            repeat=True,
+        )
+        return
+    _json_mode_fallback_keys.add(key)
+    if len(_json_mode_fallback_keys) > _JSON_MODE_FALLBACK_KEY_LIMIT:
+        _json_mode_fallback_keys.clear()
+    log.info(
+        "llm.call.json_mode_fallback",
+        provider=provider,
+        http_status=http_status,
+        error_preview=error_preview,
+    )
 
 
 class LLMProvider(Protocol):
@@ -80,6 +117,25 @@ def _request_error_message(provider_name: str, model: str, exc: Exception) -> st
     return f"{provider_name} request failed for model={model}: {exc}"
 
 
+def _status_error_body_snippet(exc: APIStatusError, *, limit: int = 200) -> str | None:
+    body = getattr(exc, "body", None)
+    if body is None:
+        return None
+    body_text = str(body)
+    return body_text[:limit] if body_text else None
+
+
+def _should_retry_without_json_mode(exc: APIStatusError) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code not in {400, 422}:
+        return False
+    if _is_json_mode_unsupported(exc):
+        return True
+    # Doubao and some compatible APIs return generic 400 for json_object without
+    # a descriptive message — still worth one retry without response_format.
+    return True
+
+
 def _is_json_mode_unsupported(exc: APIStatusError) -> bool:
     status_code = getattr(exc, "status_code", None)
     if status_code not in {400, 422}:
@@ -143,7 +199,13 @@ class _OpenAICompatibleProvider:
                 use_json_mode=True,
             )
         except APIStatusError as exc:
-            if _is_json_mode_unsupported(exc):
+            if _should_retry_without_json_mode(exc):
+                _log_json_mode_fallback(
+                    provider=self.name,
+                    model=model,
+                    http_status=getattr(exc, "status_code", None),
+                    error_preview=str(exc)[:200],
+                )
                 try:
                     response = await _create_completion(
                         client=self._client,
@@ -154,12 +216,38 @@ class _OpenAICompatibleProvider:
                         use_json_mode=False,
                     )
                 except (APIConnectionError, APITimeoutError, APIStatusError, RateLimitError) as fallback_exc:
+                    log.warning(
+                        "llm.call.error",
+                        provider=self.name,
+                        error_class="http_4xx" if isinstance(fallback_exc, APIStatusError) else "connection",
+                        http_status=(
+                            getattr(fallback_exc, "status_code", None)
+                            if isinstance(fallback_exc, APIStatusError)
+                            else None
+                        ),
+                        error_preview=_request_error_message(self.name, model, fallback_exc)[:200],
+                    )
                     raise LLMRequestError(
                         _request_error_message(self.name, model, fallback_exc)
                     ) from fallback_exc
             else:
+                log.warning(
+                    "llm.call.error",
+                    provider=self.name,
+                    error_class="http_4xx",
+                    http_status=getattr(exc, "status_code", None),
+                    error_preview=_status_error_body_snippet(exc) or str(exc)[:200],
+                )
                 raise LLMRequestError(_request_error_message(self.name, model, exc)) from exc
         except (APIConnectionError, APITimeoutError, RateLimitError) as exc:
+            error_class = "timeout" if isinstance(exc, APITimeoutError) else "connection"
+            log.warning(
+                "llm.call.error",
+                provider=self.name,
+                error_class=error_class,
+                http_status=None,
+                error_preview=_request_error_message(self.name, model, exc)[:200],
+            )
             raise LLMRequestError(_request_error_message(self.name, model, exc)) from exc
 
         content_raw = _extract_message_content(response)
