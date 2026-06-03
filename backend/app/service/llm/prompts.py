@@ -432,6 +432,39 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+RESEARCH_PROMPT_CHAR_BUDGET = 8000
+COMPRESSION_PROMPT_CHAR_BUDGET = 12000
+OBSERVATION_BRIEF_QUOTE_LIMIT = 200
+
+
+def truncate_for_prompt(value: object, *, max_chars: int) -> str:
+    serialized = _json(value)
+    if len(serialized) <= max_chars:
+        return serialized
+    return serialized[: max_chars - 3] + "..."
+
+
+def evidence_draft_refs_for_prompt(
+    evidence_drafts: Sequence[dict[str, object]],
+) -> list[dict[str, object]]:
+    refs: list[dict[str, object]] = []
+    for draft in list(evidence_drafts)[-8:]:
+        if not isinstance(draft, dict):
+            continue
+        quote_raw = draft.get("quote") or draft.get("sanitized_text")
+        quote_len = len(quote_raw) if isinstance(quote_raw, str) else 0
+        refs.append(
+            {
+                "dimension": draft.get("dimension"),
+                "competitor_id": draft.get("competitor_id"),
+                "source_url": draft.get("source_url"),
+                "source_title": draft.get("source_title"),
+                "quote_len": quote_len,
+            }
+        )
+    return refs
+
+
 def build_intake_user_prompt(
     *,
     user_query: str,
@@ -666,11 +699,19 @@ def build_researcher_user_prompt(
     queried_dimensions: Sequence[str],
     turn_count: int,
     max_turns: int,
-    observations_log: Sequence[dict[str, object]],
+    observation_briefs: Sequence[dict[str, object]],
+    compressed_summary: str = "",
     domain_hint: str | None = None,
     reference_urls: Sequence[str] | None = None,
+    discovered_urls: Sequence[str] | None = None,
 ) -> str:
     reference_urls_row = list(reference_urls) if reference_urls is not None else []
+    discovered_urls_row = list(discovered_urls) if discovered_urls is not None else []
+    summary_block = compressed_summary.strip() if compressed_summary.strip() else "(none)"
+    briefs_payload = truncate_for_prompt(
+        list(observation_briefs)[-6:],
+        max_chars=RESEARCH_PROMPT_CHAR_BUDGET // 2,
+    )
     return (
         "Research assignment:\n"
         f"- research_topic: {research_topic}\n"
@@ -682,12 +723,37 @@ def build_researcher_user_prompt(
         f"- max_turns: {max_turns}\n"
         f"- domain_hint: {domain_hint}\n"
         f"- reference_urls: {_json(reference_urls_row)}\n"
-        f"- observations_log: {_json(list(observations_log)[-6:])}\n\n"
+        f"- discovered_urls: {_json(discovered_urls_row)}\n"
+        f"- compressed_summary: {summary_block}\n"
+        f"- observation_briefs: {briefs_payload}\n\n"
         "Action guidance:\n"
         "1) Prefer search_web -> fetch_url -> parse_page -> extract_structured for online collection.\n"
-        "2) Use load_skill when domain_hint implies specialized schema or source routing.\n"
-        "3) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
-        "4) action_args.dimension should come from focus_dimensions whenever possible.\n"
+        "2) Use fetch_url only with URLs from discovered_urls or reference_urls.\n"
+        "3) Use load_skill when domain_hint implies specialized schema or source routing.\n"
+        "4) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
+        "5) action_args.dimension should come from focus_dimensions whenever possible.\n"
+    )
+
+
+def build_researcher_minimal_user_prompt(
+    *,
+    competitor_id: str,
+    pending_dimensions: Sequence[str],
+    compressed_summary: str,
+    observation_briefs: Sequence[dict[str, object]],
+) -> str:
+    summary_block = compressed_summary.strip() if compressed_summary.strip() else "(none)"
+    briefs_payload = truncate_for_prompt(
+        list(observation_briefs)[-2:],
+        max_chars=RESEARCH_PROMPT_CHAR_BUDGET // 4,
+    )
+    return (
+        "Minimal researcher action request (context reduced after format error):\n"
+        f"- competitor_id: {competitor_id}\n"
+        f"- pending_dimensions: {_json(list(pending_dimensions))}\n"
+        f"- compressed_summary: {summary_block}\n"
+        f"- recent_observation_briefs: {briefs_payload}\n\n"
+        "Return one valid JSON action. Prefer finalize if evidence is sufficient."
     )
 
 
@@ -715,14 +781,29 @@ def build_researcher_fallback_user_prompt(
 def build_compression_user_prompt(
     *,
     messages: Sequence[dict[str, str]],
-    observations_log: Sequence[dict[str, object]],
+    observation_briefs: Sequence[dict[str, object]],
     evidence_drafts: Sequence[dict[str, object]],
+    compressed_summary: str = "",
 ) -> str:
+    summary_block = compressed_summary.strip() if compressed_summary.strip() else "(none)"
+    briefs_payload = truncate_for_prompt(
+        list(observation_briefs)[-10:],
+        max_chars=COMPRESSION_PROMPT_CHAR_BUDGET // 3,
+    )
+    refs_payload = truncate_for_prompt(
+        evidence_draft_refs_for_prompt(evidence_drafts),
+        max_chars=COMPRESSION_PROMPT_CHAR_BUDGET // 3,
+    )
+    messages_payload = truncate_for_prompt(
+        list(messages)[-6:],
+        max_chars=COMPRESSION_PROMPT_CHAR_BUDGET // 4,
+    )
     return (
         "Compress current researcher trace context.\n"
-        f"- messages_tail: {_json(list(messages)[-10:])}\n"
-        f"- observations_tail: {_json(list(observations_log)[-8:])}\n"
-        f"- evidence_drafts_tail: {_json(list(evidence_drafts)[-8:])}\n"
+        f"- prior_compressed_summary: {summary_block}\n"
+        f"- messages_tail: {messages_payload}\n"
+        f"- observation_briefs: {briefs_payload}\n"
+        f"- evidence_refs: {refs_payload}\n"
     )
 
 

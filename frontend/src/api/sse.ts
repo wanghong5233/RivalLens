@@ -43,6 +43,8 @@ export interface PlanPublishedPayload {
   task_count: number;
 }
 
+export type PlanReconciledPayload = PlanPublishedPayload;
+
 export interface PlanConfirmedPayload {
   plan_id: string;
   version: number;
@@ -587,6 +589,10 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
       if (payload !== null) {
         onPlanConfirmed(payload);
       }
+    });
+    eventSource.addEventListener("plan.reconciled", () => {
+      invalidateRunDetail();
+      invalidateRunTrace();
     });
     eventSource.addEventListener("tool.start", (event: MessageEvent<string>) => {
       if (onToolStart === undefined) {

@@ -68,12 +68,15 @@ def _build_initial_substate(
         "last_compressed_turn": -1,
         "messages": [],
         "observations_log": [],
+        "observation_briefs": [],
         "evidence_drafts": [],
         "llm_calls": [],
         "next_action": "tool_exec",
         "final_summary": "",
+        "compressed_summary": "",
         "domain_hint": domain_hint,
         "reference_urls": reference_urls,
+        "discovered_urls": [],
     }
 
 

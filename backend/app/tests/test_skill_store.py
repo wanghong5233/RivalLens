@@ -71,3 +71,29 @@ def test_skill_store_read_supporting_file(tmp_path: Path) -> None:
     store.scan()
 
     assert store.read_supporting_file("prefer_docs_source", "note.txt") == "hello"
+
+
+def test_skill_store_rescans_only_when_mtime_changes(tmp_path: Path) -> None:
+    _write_skill(
+        base_dir=tmp_path,
+        applies_to="qa_rule",
+        skill_name="rule_once",
+        body_markdown="## Rule\n",
+    )
+    store = SkillStore(tmp_path)
+    store.scan()
+    first_count = len(store.get_skill_names())
+    store.get_metadata("rule_once")
+    store.load("rule_once")
+    store.list_by_applies_to("qa_rule")
+    assert len(store.get_skill_names()) == first_count
+
+    _write_skill(
+        base_dir=tmp_path,
+        applies_to="qa_rule",
+        skill_name="rule_twice",
+        body_markdown="## Rule 2\n",
+    )
+    store.invalidate()
+    store.scan()
+    assert len(store.get_skill_names()) == first_count + 1

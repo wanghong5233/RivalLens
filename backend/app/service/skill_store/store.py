@@ -18,15 +18,37 @@ class SkillStore:
         self._metadata_cache: dict[str, SkillMetadata] = {}
         self._content_cache: dict[str, ParsedSkill] = {}
         self._scanned = False
+        self._skills_dir_mtime: float | None = None
 
-    def scan(self) -> dict[str, SkillMetadata]:
+    def _skills_dir_signature(self) -> float | None:
+        if not self.skills_dir.exists():
+            return None
+        latest_mtime = self.skills_dir.stat().st_mtime
+        for skill_file in self.skills_dir.rglob("SKILL.md"):
+            latest_mtime = max(latest_mtime, skill_file.stat().st_mtime)
+        return latest_mtime
+
+    def invalidate(self) -> None:
+        self._metadata_cache.clear()
+        self._content_cache.clear()
+        self._scanned = False
+        self._skills_dir_mtime = None
+
+    def _ensure_scanned(self) -> None:
+        signature = self._skills_dir_signature()
+        if self._scanned and signature == self._skills_dir_mtime:
+            return
+        self._rescan(signature=signature)
+
+    def _rescan(self, *, signature: float | None) -> None:
         self._metadata_cache.clear()
         self._content_cache.clear()
 
         if not self.skills_dir.exists():
             log.info("skill_store.scan.skip", reason="skills_dir_not_found", skills_dir=str(self.skills_dir))
             self._scanned = True
-            return self._metadata_cache
+            self._skills_dir_mtime = signature
+            return
 
         for skill_file in sorted(self.skills_dir.rglob("SKILL.md")):
             try:
@@ -46,23 +68,27 @@ class SkillStore:
             self._metadata_cache[skill_name] = metadata
 
         self._scanned = True
+        self._skills_dir_mtime = signature
         log.info(
             "skill_store.scan.finish",
             skill_count=len(self._metadata_cache),
             skills_dir=str(self.skills_dir),
         )
+
+    def scan(self) -> dict[str, SkillMetadata]:
+        self._ensure_scanned()
         return self._metadata_cache
 
     def get_skill_names(self) -> list[str]:
-        self.scan()
+        self._ensure_scanned()
         return sorted(self._metadata_cache.keys())
 
     def get_metadata(self, skill_name: str) -> SkillMetadata | None:
-        self.scan()
+        self._ensure_scanned()
         return self._metadata_cache.get(skill_name)
 
     def load(self, skill_name: str) -> ParsedSkill | None:
-        self.scan()
+        self._ensure_scanned()
         if skill_name in self._content_cache:
             return self._content_cache[skill_name]
 
@@ -79,7 +105,7 @@ class SkillStore:
         return parsed
 
     def list_by_tag(self, tag: str) -> list[str]:
-        self.scan()
+        self._ensure_scanned()
         target = tag.strip().lower()
         if not target:
             return []
@@ -90,7 +116,7 @@ class SkillStore:
         )
 
     def list_by_applies_to(self, applies_to: str) -> list[str]:
-        self.scan()
+        self._ensure_scanned()
         target = applies_to.strip().lower()
         if not target:
             return []
@@ -99,7 +125,7 @@ class SkillStore:
         )
 
     def list_supporting_files(self, skill_name: str) -> list[str]:
-        self.scan()
+        self._ensure_scanned()
         metadata = self._metadata_cache.get(skill_name)
         if metadata is None or metadata.path is None:
             return []
@@ -112,7 +138,7 @@ class SkillStore:
         return files
 
     def read_supporting_file(self, skill_name: str, filename: str) -> str:
-        self.scan()
+        self._ensure_scanned()
         metadata = self._metadata_cache.get(skill_name)
         if metadata is None or metadata.path is None:
             raise FileNotFoundError(f"Skill not found: {skill_name}")

@@ -14,6 +14,35 @@ log = get_logger("service.llm.providers")
 
 _json_mode_fallback_keys: set[str] = set()
 _JSON_MODE_FALLBACK_KEY_LIMIT = 512
+_json_mode_capability_cache: dict[tuple[str, str], bool] = {}
+
+
+def _json_mode_cache_key(*, provider: str, model: str) -> tuple[str, str]:
+    return (provider, model)
+
+
+def _provider_default_json_mode(provider_name: str) -> bool:
+    if not settings.LLM_JSON_MODE_ENABLED:
+        return False
+    if provider_name == "doubao":
+        return False
+    return True
+
+
+def _resolve_json_mode(*, provider_name: str, model: str) -> bool:
+    cache_key = _json_mode_cache_key(provider=provider_name, model=model)
+    cached = _json_mode_capability_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    return _provider_default_json_mode(provider_name)
+
+
+def _remember_json_mode_unsupported(*, provider_name: str, model: str) -> None:
+    _json_mode_capability_cache[_json_mode_cache_key(provider=provider_name, model=model)] = False
+
+
+def clear_json_mode_capability_cache() -> None:
+    _json_mode_capability_cache.clear()
 
 
 def _log_json_mode_fallback(
@@ -189,6 +218,7 @@ class _OpenAICompatibleProvider:
         model: str,
         timeout_seconds: int,
     ) -> ProviderRawResponse:
+        use_json_mode = _resolve_json_mode(provider_name=self.name, model=model)
         try:
             response = await _create_completion(
                 client=self._client,
@@ -196,10 +226,11 @@ class _OpenAICompatibleProvider:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 timeout_seconds=timeout_seconds,
-                use_json_mode=True,
+                use_json_mode=use_json_mode,
             )
         except APIStatusError as exc:
-            if _should_retry_without_json_mode(exc):
+            if use_json_mode and _should_retry_without_json_mode(exc):
+                _remember_json_mode_unsupported(provider_name=self.name, model=model)
                 _log_json_mode_fallback(
                     provider=self.name,
                     model=model,

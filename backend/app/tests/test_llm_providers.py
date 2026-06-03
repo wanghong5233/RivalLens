@@ -78,9 +78,47 @@ async def test_doubao_provider_wraps_connection_error(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_doubao_provider_fallbacks_when_json_mode_unsupported(
+async def test_doubao_provider_skips_json_mode_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    llm_providers.clear_json_mode_capability_cache()
+    call_kwargs: list[dict[str, object]] = []
+
+    async def fake_create(**kwargs: object):
+        call_kwargs.append(dict(kwargs))
+        return _fake_response(
+            model="doubao-seed",
+            content='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
+            prompt_tokens=12,
+            completion_tokens=6,
+        )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = DoubaoProvider(
+        base_url="https://ark.example.com/v3",
+        api_key="fake-key",
+        default_model="ep-demo",
+    )
+    response = await provider.complete_json(
+        system_prompt="system",
+        user_prompt="user",
+        model="ep-demo",
+        timeout_seconds=10,
+    )
+
+    assert response.model_name == "doubao-seed"
+    assert len(call_kwargs) == 1
+    assert "response_format" not in call_kwargs[0]
+
+
+@pytest.mark.asyncio
+async def test_doubao_provider_caches_json_mode_unsupported_after_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_providers.clear_json_mode_capability_cache()
+
     class DummyStatusError(Exception):
         def __init__(self, message: str) -> None:
             super().__init__(message)
@@ -95,7 +133,7 @@ async def test_doubao_provider_fallbacks_when_json_mode_unsupported(
                 "InvalidParameter: response_format.type json_object is not supported by this model"
             )
         return _fake_response(
-            model="doubao-seed",
+            model="gpt-4o-mini",
             content='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
             prompt_tokens=12,
             completion_tokens=6,
@@ -105,39 +143,40 @@ async def test_doubao_provider_fallbacks_when_json_mode_unsupported(
     monkeypatch.setattr(llm_providers, "APIStatusError", DummyStatusError)
     monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
 
-    provider = DoubaoProvider(
-        base_url="https://ark.example.com/v3",
+    provider = OpenAIProvider(
+        base_url="https://api.openai.com/v1",
         api_key="fake-key",
-        default_model="ep-demo",
+        default_model="gpt-4o-mini",
     )
-    response = await provider.complete_json(
+    await provider.complete_json(
         system_prompt="system",
         user_prompt="user",
-        model="ep-demo",
+        model="gpt-4o-mini",
+        timeout_seconds=10,
+    )
+    call_kwargs.clear()
+    await provider.complete_json(
+        system_prompt="system",
+        user_prompt="user",
+        model="gpt-4o-mini",
         timeout_seconds=10,
     )
 
-    assert response.model_name == "doubao-seed"
-    assert len(call_kwargs) == 2
-    assert "response_format" in call_kwargs[0]
-    assert "response_format" not in call_kwargs[1]
+    assert len(call_kwargs) == 1
+    assert "response_format" not in call_kwargs[0]
 
 
 @pytest.mark.asyncio
-async def test_doubao_provider_retries_on_generic_json_mode_400(
+async def test_doubao_provider_fallbacks_when_json_mode_unsupported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class DummyStatusError(Exception):
-        def __init__(self, message: str) -> None:
-            super().__init__(message)
-            self.status_code = 400
+    """Doubao skips json_mode by default; no 400 probe round-trip."""
+    llm_providers.clear_json_mode_capability_cache()
 
     call_kwargs: list[dict[str, object]] = []
 
     async def fake_create(**kwargs: object):
         call_kwargs.append(dict(kwargs))
-        if "response_format" in kwargs:
-            raise DummyStatusError("Bad Request")
         return _fake_response(
             model="doubao-seed",
             content='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
@@ -146,7 +185,6 @@ async def test_doubao_provider_retries_on_generic_json_mode_400(
         )
 
     fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
-    monkeypatch.setattr(llm_providers, "APIStatusError", DummyStatusError)
     monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
 
     provider = DoubaoProvider(
@@ -162,9 +200,46 @@ async def test_doubao_provider_retries_on_generic_json_mode_400(
     )
 
     assert response.model_name == "doubao-seed"
-    assert len(call_kwargs) == 2
-    assert "response_format" in call_kwargs[0]
-    assert "response_format" not in call_kwargs[1]
+    assert len(call_kwargs) == 1
+    assert "response_format" not in call_kwargs[0]
+
+
+@pytest.mark.asyncio
+async def test_doubao_provider_retries_on_generic_json_mode_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Doubao never sends json_mode on first attempt."""
+    llm_providers.clear_json_mode_capability_cache()
+
+    call_kwargs: list[dict[str, object]] = []
+
+    async def fake_create(**kwargs: object):
+        call_kwargs.append(dict(kwargs))
+        return _fake_response(
+            model="doubao-seed",
+            content='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
+            prompt_tokens=12,
+            completion_tokens=6,
+        )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = DoubaoProvider(
+        base_url="https://ark.example.com/v3",
+        api_key="fake-key",
+        default_model="ep-demo",
+    )
+    response = await provider.complete_json(
+        system_prompt="system",
+        user_prompt="user",
+        model="ep-demo",
+        timeout_seconds=10,
+    )
+
+    assert response.model_name == "doubao-seed"
+    assert len(call_kwargs) == 1
+    assert "response_format" not in call_kwargs[0]
 
 
 @pytest.mark.asyncio

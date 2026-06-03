@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from functools import lru_cache
 import re
@@ -13,21 +14,26 @@ from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError
 from service.event_bus import RunEventType, emit_run_event
+from service.llm.prompts import evidence_draft_refs_for_prompt
 from service.llm import (
     RESEARCHER_COMPRESSION_PROMPT,
     RESEARCHER_SYSTEM_PROMPT,
     build_compression_fallback_user_prompt,
     build_compression_user_prompt,
     build_researcher_fallback_user_prompt,
+    build_researcher_minimal_user_prompt,
     build_researcher_user_prompt,
 )
 from service.llm.client import get_llm_client
+from service.llm.response import LLMResponse
 from service.skill_store import get_skill_store
 from utils.logger import get_logger
 
 MAX_REACT_TURNS = 6
 COMPRESS_AFTER_TURNS = 4
 COMPRESS_AFTER_CHARS = 2400
+OBSERVATIONS_FULL_RETAIN = 2
+TOOL_ERROR_PREVIEW_LIMIT = 200
 TOOL_ACTIONS = {
     "search_web",
     "fetch_url",
@@ -74,16 +80,177 @@ class ResearcherSubState(TypedDict, total=False):
     last_compressed_turn: int
     messages: list[dict[str, str]]
     observations_log: list[dict[str, object]]
+    observation_briefs: list[dict[str, object]]
     evidence_drafts: list[dict[str, object]]
     llm_calls: list[dict[str, object]]
     next_action: Literal["tool_exec", "compress", "finalize"]
     final_summary: str
+    compressed_summary: str
     domain_hint: str | None
     reference_urls: list[str]
+    discovered_urls: list[str]
 
 
 def _approx_chars(messages: list[dict[str, str]]) -> int:
     return sum(len(item.get("content", "")) for item in messages)
+
+
+def _classify_tool_error(exc: Exception) -> str:
+    error_type = type(exc).__name__
+    message = str(exc).lower()
+    if error_type == "ConnectError" or "connecterror" in message or "connection" in message:
+        return "connection"
+    if isinstance(exc, ChannelNotRegisteredError):
+        return "channel_not_registered"
+    if isinstance(exc, DesensitizeError):
+        return "desensitize"
+    if isinstance(exc, ChannelError):
+        return "channel"
+    if isinstance(exc, (ValueError, TypeError)):
+        return "validation"
+    if isinstance(exc, RuntimeError):
+        return "runtime"
+    return "unknown"
+
+
+def _tool_observation_log_fields(
+    *,
+    observation_row: dict[str, object],
+    exc: Exception | None = None,
+) -> dict[str, object]:
+    if "error" in observation_row:
+        error_text = str(observation_row.get("error", ""))
+        error_class = _classify_tool_error(exc) if exc is not None else "unknown"
+        if error_class == "unknown":
+            error_class = _classify_tool_error(RuntimeError(error_text))
+        return {
+            "success": False,
+            "error_class": error_class,
+            "error_preview": error_text[:TOOL_ERROR_PREVIEW_LIMIT],
+        }
+    return {"success": True, "error_class": None, "error_preview": None}
+
+
+def _build_observation_brief(
+    *,
+    tool: str,
+    args: dict[str, object],
+    observation_row: dict[str, object],
+    dimension: str | None,
+) -> dict[str, object]:
+    brief: dict[str, object] = {
+        "tool": tool,
+        "dimension": dimension if dimension is not None else args.get("dimension"),
+    }
+    url_raw = args.get("url")
+    if isinstance(url_raw, str) and url_raw.strip():
+        brief["url"] = url_raw.strip()
+
+    if "error" in observation_row:
+        brief["error_preview"] = str(observation_row.get("error", ""))[:TOOL_ERROR_PREVIEW_LIMIT]
+        return brief
+
+    result_section = observation_row.get("result")
+    if not isinstance(result_section, dict):
+        return brief
+
+    snippets_section = result_section.get("snippets")
+    if not isinstance(snippets_section, list):
+        return brief
+
+    brief["snippet_count"] = len(snippets_section)
+    previews: list[str] = []
+    for snippet in snippets_section[:3]:
+        if not isinstance(snippet, dict):
+            continue
+        quote_raw = snippet.get("quote") or snippet.get("sanitized_text")
+        if isinstance(quote_raw, str) and quote_raw.strip():
+            previews.append(quote_raw.strip()[:TOOL_ERROR_PREVIEW_LIMIT])
+    if previews:
+        brief["quote_preview"] = " | ".join(previews)[:TOOL_ERROR_PREVIEW_LIMIT]
+    return brief
+
+
+def _extract_urls_from_observation(observation_row: dict[str, object]) -> list[str]:
+    result_section = observation_row.get("result")
+    if not isinstance(result_section, dict):
+        return []
+    snippets_section = result_section.get("snippets")
+    if not isinstance(snippets_section, list):
+        return []
+    urls: list[str] = []
+    for snippet in snippets_section:
+        if not isinstance(snippet, dict):
+            continue
+        source_url = snippet.get("source_url")
+        if isinstance(source_url, str) and source_url.strip():
+            urls.append(source_url.strip())
+    return urls
+
+
+def _merge_discovered_urls(existing: list[str], new_urls: list[str]) -> list[str]:
+    merged = list(existing)
+    seen = set(merged)
+    for url in new_urls:
+        if url not in seen:
+            merged.append(url)
+            seen.add(url)
+    return merged
+
+
+def _archive_observations_log(observations_log: list[dict[str, object]]) -> list[dict[str, object]]:
+    if len(observations_log) <= OBSERVATIONS_FULL_RETAIN:
+        return observations_log
+    archived: list[dict[str, object]] = []
+    cutoff = len(observations_log) - OBSERVATIONS_FULL_RETAIN
+    for index, item in enumerate(observations_log):
+        if index < cutoff and isinstance(item, dict):
+            args_raw = item.get("args", {})
+            args = args_raw if isinstance(args_raw, dict) else {}
+            archived.append(
+                {
+                    "tool": item.get("tool"),
+                    "archived": True,
+                    "dimension": args.get("dimension"),
+                    "url": args.get("url"),
+                    "snippet_count": (
+                        len(item["result"]["snippets"])
+                        if isinstance(item.get("result"), dict)
+                        and isinstance(item["result"].get("snippets"), list)
+                        else 0
+                    ),
+                    "error_preview": (
+                        str(item.get("error"))[:TOOL_ERROR_PREVIEW_LIMIT]
+                        if "error" in item
+                        else None
+                    ),
+                }
+            )
+            continue
+        archived.append(item)
+    return archived
+
+
+def _effective_prompt_size(state: ResearcherSubState) -> int:
+    briefs = list(state.get("observation_briefs", []))
+    compressed_summary = state.get("compressed_summary", "")
+    messages = list(state.get("messages", []))
+    evidence_refs = evidence_draft_refs_for_prompt(list(state.get("evidence_drafts", [])))
+    size = len(compressed_summary) if isinstance(compressed_summary, str) else 0
+    size += _approx_chars(messages)
+    size += len(json.dumps(briefs[-6:], ensure_ascii=False))
+    size += len(json.dumps(evidence_refs[-8:], ensure_ascii=False))
+    return size
+
+
+def _llm_response_usable(llm_response: LLMResponse) -> bool:
+    if llm_response.error:
+        return False
+    content = llm_response.content
+    if not isinstance(content, dict):
+        return False
+    action = content.get("action")
+    return isinstance(action, str) and bool(action.strip())
 
 
 def _guess_skill_id(domain_hint: str) -> str:
@@ -105,14 +272,13 @@ def _has_tool_attempt(state: ResearcherSubState, tool_name: str) -> bool:
 
 def _resolve_bootstrap_skill_id(domain_hint: str | None) -> str | None:
     store = get_skill_store()
-    metadata = store.scan()
-    if not metadata:
+    skill_names = store.get_skill_names()
+    if not skill_names:
         if domain_hint is None:
             return None
         guessed = _guess_skill_id(domain_hint)
         return guessed if guessed else None
 
-    skill_names = sorted(metadata.keys())
     if domain_hint is not None:
         guessed = _guess_skill_id(domain_hint)
         if guessed:
@@ -171,14 +337,16 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                 },
             )
         if not _has_attempt("fetch_url"):
-            return (
-                "fetch_url",
-                {
-                    "url": _fallback_fetch_url(state=state, dimension=dimension),
-                    "competitor_id": state["competitor_id"],
-                    "dimension": dimension,
-                },
-            )
+            fetch_url = _fallback_fetch_url(state=state, dimension=dimension)
+            if fetch_url is not None:
+                return (
+                    "fetch_url",
+                    {
+                        "url": fetch_url,
+                        "competitor_id": state["competitor_id"],
+                        "dimension": dimension,
+                    },
+                )
         if not _has_attempt("extract_structured"):
             return (
                 "extract_structured",
@@ -197,7 +365,24 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
     return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 
 
-def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension) -> str:
+def _pick_url_for_dimension(urls: list[str], dimension: FocusDimension) -> str | None:
+    if not urls:
+        return None
+    dimension_lower = dimension.lower()
+    if "pricing" in dimension_lower:
+        for url in urls:
+            lowered = url.lower()
+            if "pricing" in lowered or "plan" in lowered:
+                return url
+    if "feature" in dimension_lower or "tech" in dimension_lower or "integration" in dimension_lower:
+        for url in urls:
+            lowered = url.lower()
+            if "docs" in lowered or "help" in lowered:
+                return url
+    return urls[0]
+
+
+def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension) -> str | None:
     reference_urls_raw = state.get("reference_urls", [])
     reference_urls = (
         [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
@@ -205,23 +390,19 @@ def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension)
         else []
     )
     if reference_urls:
-        dimension_lower = dimension.lower()
-        if "pricing" in dimension_lower:
-            for url in reference_urls:
-                if "pricing" in url.lower() or "plan" in url.lower():
-                    return url
-        if "feature" in dimension_lower or "tech" in dimension_lower or "integration" in dimension_lower:
-            for url in reference_urls:
-                if "docs" in url.lower() or "help" in url.lower():
-                    return url
-        return reference_urls[0]
+        selected = _pick_url_for_dimension(reference_urls, dimension)
+        if selected is not None:
+            return selected
 
-    default_url = f"https://{state['competitor_id']}.example.com".rstrip("/")
-    if "pricing" in dimension:
-        return f"{default_url}/pricing"
-    if "feature" in dimension or "tech" in dimension or "integration" in dimension:
-        return f"{default_url}/docs"
-    return default_url
+    discovered_urls_raw = state.get("discovered_urls", [])
+    discovered_urls = (
+        [item.strip() for item in discovered_urls_raw if isinstance(item, str) and item.strip()]
+        if isinstance(discovered_urls_raw, list)
+        else []
+    )
+    if discovered_urls:
+        return _pick_url_for_dimension(discovered_urls, dimension)
+    return None
 
 
 def _extract_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
@@ -344,6 +525,8 @@ def _needs_compress(state: ResearcherSubState) -> bool:
     messages = list(state.get("messages", []))
     if len(messages) >= 8:
         return True
+    if _effective_prompt_size(state) >= COMPRESS_AFTER_CHARS:
+        return True
     return _approx_chars(messages) >= COMPRESS_AFTER_CHARS
 
 
@@ -370,6 +553,15 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         if isinstance(reference_urls_raw, list)
         else []
     )
+    discovered_urls_raw = state.get("discovered_urls", [])
+    discovered_urls = (
+        [item for item in discovered_urls_raw if isinstance(item, str)]
+        if isinstance(discovered_urls_raw, list)
+        else []
+    )
+    compressed_summary_raw = state.get("compressed_summary", "")
+    compressed_summary = compressed_summary_raw if isinstance(compressed_summary_raw, str) else ""
+    observation_briefs = list(state.get("observation_briefs", []))
 
     user_prompt = build_researcher_user_prompt(
         research_topic=state["research_topic"],
@@ -379,9 +571,11 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         queried_dimensions=list(state.get("queried_dimensions", [])),
         turn_count=int(state.get("turn_count", 0)),
         max_turns=max_turns,
-        observations_log=list(state.get("observations_log", [])),
+        observation_briefs=observation_briefs,
+        compressed_summary=compressed_summary,
         domain_hint=domain_hint,
         reference_urls=reference_urls,
+        discovered_urls=discovered_urls,
     )
     llm_response = await get_llm_client().complete_json(
         model_slot="research",
@@ -397,6 +591,35 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
             domain_hint=domain_hint,
         ),
     )
+
+    if not _llm_response_usable(llm_response):
+        log.warning(
+            "researcher.llm_decide.format_retry",
+            competitor_id=state.get("competitor_id"),
+            turn_count=int(state.get("turn_count", 0)),
+            error=llm_response.error,
+        )
+        minimal_prompt = build_researcher_minimal_user_prompt(
+            competitor_id=state["competitor_id"],
+            pending_dimensions=list(state.get("pending_dimensions", [])),
+            compressed_summary=compressed_summary,
+            observation_briefs=observation_briefs,
+        )
+        llm_response = await get_llm_client().complete_json(
+            model_slot="research",
+            system_prompt=RESEARCHER_SYSTEM_PROMPT,
+            user_prompt=minimal_prompt,
+            fallback_system_prompt=RESEARCHER_SYSTEM_PROMPT,
+            fallback_user_prompt=build_researcher_fallback_user_prompt(
+                competitor_id=state["competitor_id"],
+                pending_dimensions=list(state.get("pending_dimensions", [])),
+                queried_dimensions=list(state.get("queried_dimensions", [])),
+                turn_count=int(state.get("turn_count", 0)),
+                max_turns=max_turns,
+                domain_hint=domain_hint,
+            ),
+        )
+        user_prompt = minimal_prompt
 
     llm_calls = list(state.get("llm_calls", []))
     llm_calls.append(llm_response.to_dict())
@@ -553,6 +776,7 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         )
 
     tool_started_at = time.monotonic()
+    tool_exc: Exception | None = None
     try:
         observation = await registry.invoke(channel_action, args=action_args)
         observation_row = {
@@ -568,17 +792,18 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         TypeError,
         RuntimeError,
     ) as exc:
+        tool_exc = exc
         observation_row = {
             "tool": action_raw,
             "args": action_args,
             "error": str(exc),
         }
     latency_ms = int((time.monotonic() - tool_started_at) * 1000)
+    log_fields = _tool_observation_log_fields(observation_row=observation_row, exc=tool_exc)
 
     if run_id is not None:
-        success = "error" not in observation_row
         snippet_count = 0
-        if success:
+        if log_fields["success"]:
             result_section = observation_row.get("result")
             if isinstance(result_section, dict):
                 snippets_section = result_section.get("snippets")
@@ -592,15 +817,34 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
                 "competitor_id": competitor_id,
                 "dimension": dimension,
                 "turn": turn_index,
-                "success": success,
+                "success": log_fields["success"],
                 "snippet_count": snippet_count,
                 "latency_ms": latency_ms,
-                "error": str(observation_row.get("error"))[:300] if not success else None,
+                "error_class": log_fields["error_class"],
+                "error_preview": log_fields["error_preview"],
+                "error": log_fields["error_preview"],
             },
         )
 
     observations_log = list(state.get("observations_log", []))
     observations_log.append(observation_row)
+
+    observation_briefs = list(state.get("observation_briefs", []))
+    observation_briefs.append(
+        _build_observation_brief(
+            tool=action_raw,
+            args=action_args,
+            observation_row=observation_row,
+            dimension=dimension,
+        )
+    )
+
+    discovered_urls = list(state.get("discovered_urls", []))
+    if action_raw == "search_web" and "error" not in observation_row:
+        discovered_urls = _merge_discovered_urls(
+            discovered_urls,
+            _extract_urls_from_observation(observation_row),
+        )
 
     result_payload_raw = observation_row.get("result", {}) if isinstance(observation_row, dict) else {}
     if isinstance(result_payload_raw, dict):
@@ -641,13 +885,17 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         dimension=dimension,
         competitor_id=state.get("competitor_id"),
         turn_count=next_turn_count,
-        has_error="error" in observation_row,
+        success=log_fields["success"],
+        error_class=log_fields["error_class"],
+        error_preview=log_fields["error_preview"],
     )
 
     return {
         **state,
         "turn_count": next_turn_count,
         "observations_log": observations_log,
+        "observation_briefs": observation_briefs,
+        "discovered_urls": discovered_urls,
         "evidence_drafts": evidence_drafts,
         "pending_dimensions": pending_dimensions,
         "queried_dimensions": queried_dimensions,
@@ -657,10 +905,13 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
 
 
 async def compress(state: ResearcherSubState) -> ResearcherSubState:
+    compressed_summary_raw = state.get("compressed_summary", "")
+    prior_summary = compressed_summary_raw if isinstance(compressed_summary_raw, str) else ""
     user_prompt = build_compression_user_prompt(
         messages=list(state.get("messages", [])),
-        observations_log=list(state.get("observations_log", [])),
+        observation_briefs=list(state.get("observation_briefs", [])),
         evidence_drafts=list(state.get("evidence_drafts", [])),
+        compressed_summary=prior_summary,
     )
     llm_response = await get_llm_client().complete_json(
         model_slot="compression",
@@ -682,6 +933,8 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
     else:
         summary = f"compressed with {len(state.get('observations_log', []))} observations"
     next_compression_count = int(state.get("compression_count", 0)) + 1
+    pruned_observations = _archive_observations_log(list(state.get("observations_log", [])))
+    pruned_briefs = list(state.get("observation_briefs", []))[-12:]
     log.info(
         "researcher.compress",
         compression_count=next_compression_count,
@@ -694,6 +947,9 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
         "compression_count": next_compression_count,
         "last_compressed_turn": int(state.get("turn_count", 0)),
         "llm_calls": llm_calls,
+        "observations_log": pruned_observations,
+        "observation_briefs": pruned_briefs,
+        "compressed_summary": summary,
         "messages": [
             {"role": "system", "content": "compressed researcher context"},
             {"role": "assistant", "content": summary},

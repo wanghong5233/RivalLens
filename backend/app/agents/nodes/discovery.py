@@ -3,9 +3,11 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
+from agents.nodes.planner import reconcile_plan_tree_after_discovery
 from agents.state import AgentState
 from agents.tools import get_channel_registry
 from db.engine import get_session_factory
+from models.run import Run
 from models.step import Step
 from schemas.ids import make_id
 from service.collector.errors import ChannelError
@@ -179,8 +181,41 @@ async def discovery_node(state: AgentState) -> AgentState:
         payload={"agent_name": "discovery", "discovered_competitors": discovered},
     )
 
-    return {
+    reconciled_plan_tree: dict[str, object] | None = None
+    plan_tree_raw = state.get("plan_tree")
+    if discovered and isinstance(plan_tree_raw, dict):
+        intake_draft = state.get("intake_draft")
+        focus_dimensions: list[str] | None = None
+        if intake_draft is not None and hasattr(intake_draft, "focus_dimensions"):
+            focus_dimensions = list(intake_draft.focus_dimensions)
+        reconciled = reconcile_plan_tree_after_discovery(
+            plan_tree=plan_tree_raw,
+            discovered_competitors=discovered,
+            focus_dimensions=focus_dimensions,
+        )
+        reconciled_plan_tree = reconciled.model_dump()
+        async with session_factory() as session:
+            run_row = await session.get(Run, run_id)
+            if run_row is not None:
+                run_row.plan_tree = reconciled_plan_tree
+                await session.commit()
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.PLAN_RECONCILED,
+            payload={
+                "plan_id": reconciled.plan_id,
+                "task_count": len(reconciled.tasks),
+                "version": reconciled.version,
+                "plan_tree": reconciled_plan_tree,
+                "discovered_competitors": discovered,
+            },
+        )
+
+    result: dict[str, object] = {
         "competitors": discovered,
         "discovered_competitors": discovered,
         "last_completed_node": None,
     }
+    if reconciled_plan_tree is not None:
+        result["plan_tree"] = reconciled_plan_tree
+    return result

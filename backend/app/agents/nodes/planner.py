@@ -185,6 +185,64 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
     return tasks[:_MAX_TOTAL_TASKS]
 
 
+def reconcile_plan_tree_after_discovery(
+    *,
+    plan_tree: PlanTree | dict[str, object],
+    discovered_competitors: list[str],
+    focus_dimensions: list[str] | None = None,
+) -> PlanTree:
+    """Materialize per-competitor research tasks after discovery completes."""
+    plan = PlanTree.model_validate(plan_tree) if isinstance(plan_tree, dict) else plan_tree
+    if not discovered_competitors:
+        return plan
+
+    existing_research = {
+        task.competitor_id
+        for task in plan.tasks
+        if task.stage == "research" and isinstance(task.competitor_id, str) and task.competitor_id.strip()
+    }
+
+    focus = list(focus_dimensions or [])
+    if not focus:
+        for task in plan.tasks:
+            if task.focus_dimensions:
+                focus = list(task.focus_dimensions)
+                break
+    if not focus:
+        focus = list(_DEFAULT_FOCUS_DIMENSIONS)
+
+    insert_at = 0
+    for index, task in enumerate(plan.tasks):
+        if task.stage == "discover":
+            insert_at = index + 1
+    for index, task in enumerate(plan.tasks):
+        if task.stage == "research":
+            insert_at = index + 1
+
+    new_research_tasks: list[PlanTask] = []
+    for competitor in discovered_competitors[:_MAX_RESEARCH_TASKS]:
+        if competitor in existing_research:
+            continue
+        new_research_tasks.append(
+            PlanTask(
+                stage="research",
+                title=f"调研 {competitor}"[:60],
+                description=f"按维度收集 {competitor} 的事实证据。",
+                competitor_id=competitor,
+                focus_dimensions=focus,
+                source="agent",
+                enabled=True,
+            )
+        )
+
+    if not new_research_tasks:
+        return plan
+
+    tasks = list(plan.tasks)
+    tasks[insert_at:insert_at] = new_research_tasks
+    return plan.model_copy(update={"tasks": tasks, "version": plan.version + 1})
+
+
 async def _persist_planner_step(
     *,
     session_factory: async_sessionmaker[AsyncSession],

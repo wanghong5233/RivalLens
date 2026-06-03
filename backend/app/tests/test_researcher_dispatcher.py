@@ -72,14 +72,18 @@ def _base_state() -> ResearcherSubState:
         "turn_count": 0,
         "max_turns": 6,
         "compression_count": 0,
+        "last_compressed_turn": -1,
         "messages": [],
         "observations_log": [],
+        "observation_briefs": [],
         "evidence_drafts": [],
         "llm_calls": [],
         "next_action": "tool_exec",
         "final_summary": "",
+        "compressed_summary": "",
         "domain_hint": None,
         "reference_urls": [],
+        "discovered_urls": [],
     }
 
 

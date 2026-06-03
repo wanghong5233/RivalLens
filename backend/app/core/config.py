@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 30
     LLM_TIMEOUT_WRITER: int = 180
     LLM_MAX_RETRIES: int = 2
+    LLM_JSON_MODE_ENABLED: bool = True
     ORPHAN_RUN_SWEEP_GRACE_SECONDS: int = 300
     COLLECTOR_PER_HOST_QPS: int = 1
     COLLECTOR_USER_AGENT: str = "RivalLens-Researcher/0.1"
