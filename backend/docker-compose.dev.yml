@@ -34,7 +34,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:pg123456@rivallens_db:5432/rivallens_dev
       DATABASE_URL_SYNC: postgresql+psycopg2://postgres:pg123456@rivallens_db:5432/rivallens_dev
       PYTHONPATH: /app
-      LOG_LEVEL: DEBUG
+      LOG_LEVEL: INFO
       DEMO_FIXTURES_DIR: /demo_fixtures
     ports:
       - "8010:8010"

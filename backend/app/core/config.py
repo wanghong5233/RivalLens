@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8010
     LOG_LEVEL: str = "INFO"
+    HTTP_CLIENT_LOG_LEVEL: str = "WARNING"
 
     DATABASE_URL: str
     DATABASE_URL_SYNC: str
@@ -49,7 +50,9 @@ class Settings(BaseSettings):
 
     LLM_GLOBAL_CONCURRENCY: int = 4
     LLM_TIMEOUT_SECONDS: int = 30
+    LLM_TIMEOUT_WRITER: int = 180
     LLM_MAX_RETRIES: int = 2
+    ORPHAN_RUN_SWEEP_GRACE_SECONDS: int = 300
     COLLECTOR_PER_HOST_QPS: int = 1
     COLLECTOR_USER_AGENT: str = "RivalLens-Researcher/0.1"
     TAVILY_API_KEY: str | None = None
@@ -112,6 +115,10 @@ class Settings(BaseSettings):
 
         if self.LLM_TIMEOUT_SECONDS <= 0:
             raise ValueError("LLM_TIMEOUT_SECONDS must be positive.")
+        if self.LLM_TIMEOUT_WRITER <= 0:
+            raise ValueError("LLM_TIMEOUT_WRITER must be positive.")
+        if self.ORPHAN_RUN_SWEEP_GRACE_SECONDS < 0:
+            raise ValueError("ORPHAN_RUN_SWEEP_GRACE_SECONDS cannot be negative.")
         if self.LLM_MAX_RETRIES < 0:
             raise ValueError("LLM_MAX_RETRIES cannot be negative.")
         if self.LLM_GLOBAL_CONCURRENCY <= 0:
