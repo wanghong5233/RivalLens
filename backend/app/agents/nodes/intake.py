@@ -255,7 +255,7 @@ def _fallback_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
         return IntakeClarifyRequest(
             question="请用一句话描述这次分析您最想了解什么？",
             field_targets=["analysis_intent"],
-            suggested_answer="想了解 AI 编程赛道头部玩家的定价与企业版差异。",
+            suggested_answer="想了解目标赛道主要竞品的定价、功能与用户反馈差异。",
         )
     has_competitors_path = bool(draft.competitors_explicit) or (
         draft.competitors_discovery_mode is True

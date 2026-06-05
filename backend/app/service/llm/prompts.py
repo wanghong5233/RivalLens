@@ -111,7 +111,7 @@ Rules:
     * "我们是初创公司创始人" / "I'm a co-founder" → user_role="founder"
     * "我们想对标 X、Y、Z" → competitors_explicit=["X","Y","Z"]
     * "想了解 X 赛道有哪些玩家" with no names → competitors_discovery_mode=true
-    * Industry phrases ("AI 编程"/"AI coding", "供应链"/"supply chain") → domain_hint
+    * Industry phrases ("AI 编程"/"AI coding", "供应链"/"supply chain", "ERP"/"CRM") → domain_hint
   Only ask about fields you genuinely cannot infer from the available text.
 - Issue ONE question per turn. Never bundle multiple questions into one prompt.
 - Ask the most blocking missing required field first; only ask optional fields when all required fields are filled and an optional one is high-value.
@@ -131,8 +131,9 @@ Rules:
     * A direct editable statement (not a question, not meta-instructions).
     * Must add concrete context beyond repeating question text.
   Example good suggested_answer:
-    * "想了解 AI 编程赛道头部玩家的定价与企业版差异。"
-    * "Need a market scan of AI coding tools for SMB founders."
+    * "想了解供应链 SaaS 的实施风险、集成与定价差异。"
+    * "Need a market scan of CRM tools for renewal-risk teams."
+    * "想比较 AI 编程工具的企业版功能与合规差异。"
   Bad:
     * "请问您想了解什么？" (question)
     * "我想了解这个问题" (too vague)
@@ -147,10 +148,10 @@ Rules:
 - When action="complete", MUST also produce summary_title:
     * 6-15 characters, single line, in the language of user_query.
     * A noun phrase the user would recognize as the *subject* of the analysis,
-      not a verb phrase. Good: "TRAE 对标分析", "AI Coding 赛道扫描".
-      Bad: "我要分析竞品" (verb phrase, generic), "如何让 TRAE 更好" (question).
+      not a verb phrase. Good: "供应链 ERP 调研", "CRM 续费风险", "AI 编程工具对比".
+      Bad: "我要分析竞品" (verb phrase, generic), "如何让产品更好" (question).
     * Prefer key product/track names if explicit competitors are known
-      (e.g. "TRAE vs Copilot · 企业版"); otherwise capture the domain
+      (e.g. "[产品A] vs [产品B] · 企业版"); otherwise capture the domain
       (e.g. "智能制造 ERP 调研").
     * No quotation marks, no trailing punctuation.
 - When action="ask", summary_title MUST be null.
