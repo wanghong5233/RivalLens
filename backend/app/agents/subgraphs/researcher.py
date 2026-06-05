@@ -381,20 +381,6 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                         "dimension": dimension,
                     },
                 )
-        if not _has_attempt("extract_structured"):
-            return (
-                "extract_structured",
-                {
-                    "text": (
-                        f"{state['competitor_id']} {dimension} signal captured for "
-                        f"{state['research_topic']}."
-                    ),
-                    "source_title": f"{state['competitor_id']} {dimension} seed",
-                    "source_type": "article",
-                    "dimension": dimension,
-                    "competitor_id": state["competitor_id"],
-                },
-            )
         return ("finalize", {"summary": "fallback finalize after online attempts exhausted"})
     return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 

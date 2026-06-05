@@ -5,6 +5,7 @@ from agents.subgraphs.researcher import (
     _archive_observations_log,
     _build_observation_brief,
     _effective_prompt_size,
+    _fallback_action,
     _fallback_fetch_url,
 )
 from service.llm.prompts import (
@@ -94,6 +95,25 @@ def test_fallback_fetch_url_prefers_discovered_urls() -> None:
         "discovered_urls": ["https://news.example.com/pricing"],
     }
     assert _fallback_fetch_url(state=state, dimension="pricing") == "https://news.example.com/pricing"
+
+
+def test_fallback_action_finalizes_without_synthetic_extract() -> None:
+    state: ResearcherSubState = {
+        "research_topic": "cursor pricing",
+        "competitor_id": "comp_cursor",
+        "pending_dimensions": ["pricing"],
+        "observations_log": [
+            {"tool": "search_web", "args": {"dimension": "pricing"}, "result": {"snippets": []}},
+            {"tool": "fetch_url", "args": {"dimension": "pricing"}, "error": "timeout"},
+        ],
+        "reference_urls": [],
+        "discovered_urls": [],
+    }
+
+    action, args = _fallback_action(state)
+
+    assert action == "finalize"
+    assert args == {"summary": "fallback finalize after online attempts exhausted"}
 
 
 def test_effective_prompt_size_counts_briefs() -> None:

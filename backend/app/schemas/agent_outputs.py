@@ -169,6 +169,24 @@ class AnalystOutput(BaseModel):
         focus_dimensions: list[str],
         evidence_briefs: list[dict[str, str]],
     ) -> AnalystOutput:
+        covered_dimensions = stable_unique(
+            [
+                item["dimension"]
+                for item in evidence_briefs
+                if isinstance(item.get("dimension"), str)
+            ]
+        )
+        uncovered_dimensions = [
+            dimension
+            for dimension in focus_dimensions
+            if dimension not in covered_dimensions
+        ]
+        risk_flags = stable_unique(
+            [
+                "analyst_fallback_mode",
+                *(f"uncovered_dimension:{dimension}" for dimension in uncovered_dimensions),
+            ]
+        )
         if evidence_briefs:
             first = evidence_briefs[0]
             summary = (
@@ -197,8 +215,8 @@ class AnalystOutput(BaseModel):
         return cls(
             summary=summary,
             insights=[insight],
-            risk_flags=["analyst_fallback_mode"],
-            recommended_sections=focus_dimensions or [dimension],
+            risk_flags=risk_flags,
+            recommended_sections=covered_dimensions or focus_dimensions or [dimension],
         )
 
 
@@ -303,7 +321,12 @@ class WriterReportOutput(BaseModel):
             present = {section.section_id for section in normalized_sections}
             missing = [section_id for section_id in target_sections if section_id not in present]
             if missing:
-                raise ValueError(f"Missing required sections: {missing}")
+                self.risk_callouts = stable_unique(
+                    [
+                        *self.risk_callouts,
+                        *(f"uncovered_section:{section_id}" for section_id in missing),
+                    ]
+                )
 
         self.sections = normalized_sections
         return self

@@ -72,34 +72,55 @@ def test_writer_execution_context_aligns_with_analyst_output() -> None:
     assert context.target_sections == ["feature"]
 
 
-def test_writer_report_output_requires_target_sections() -> None:
+def test_analyst_fallback_marks_uncovered_dimensions() -> None:
+    analyst = AnalystOutput.build_fallback(
+        focus_dimensions=["feature", "pricing"],
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_001",
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote_preview": "Cursor pricing starts at a public monthly plan.",
+                "source_title": "Cursor Pricing",
+                "source_url": "https://cursor.com/pricing",
+            }
+        ],
+    )
+
+    assert analyst.recommended_sections == ["pricing"]
+    assert analyst.risk_flags == ["analyst_fallback_mode", "uncovered_dimension:feature"]
+
+
+def test_writer_report_output_marks_uncovered_target_sections() -> None:
     context = WriterExecutionContext(
         template_id="battlecard_default",
         target_sections=["feature", "pricing"],
         allowed_evidence_ids=frozenset({"ev_001"}),
         allowed_insight_ids=frozenset(),
     )
-    with pytest.raises(ValidationError):
-        WriterReportOutput.parse_llm_content(
-            {
-                "template_id": "battlecard_default",
-                "title": "Battlecard",
-                "executive_summary": "Executive summary grounded in collected evidence.",
-                "sections": [
-                    {
-                        "section_id": "feature",
-                        "title": "Feature",
-                        "content_markdown": (
-                            "Feature comparison with enough detail to satisfy writer schema validation."
-                        ),
-                        "evidence_refs": ["ev_001"],
-                        "insight_refs": [],
-                    }
-                ],
-                "risk_callouts": [],
-            },
-            execution_context=context,
-        )
+    output = WriterReportOutput.parse_llm_content(
+        {
+            "template_id": "battlecard_default",
+            "title": "Battlecard",
+            "executive_summary": "Executive summary grounded in collected evidence.",
+            "sections": [
+                {
+                    "section_id": "feature",
+                    "title": "Feature",
+                    "content_markdown": (
+                        "Feature comparison with enough detail to satisfy writer schema validation."
+                    ),
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": [],
+                }
+            ],
+            "risk_callouts": [],
+        },
+        execution_context=context,
+    )
+
+    assert [section.section_id for section in output.sections] == ["feature"]
+    assert output.risk_callouts == ["uncovered_section:pricing"]
 
 
 def test_intake_turn_output_requires_clarify_for_ask() -> None:
