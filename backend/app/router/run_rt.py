@@ -45,7 +45,7 @@ from utils.logger import bind_run, format_exception_for_log, get_logger
 router = APIRouter()
 log = get_logger("router.run_rt")
 
-_RUN_PROGRESS_INTERVAL_SECONDS = 60
+_RUN_PROGRESS_INTERVAL_SECONDS = 180
 
 
 async def _run_graph_with_progress_heartbeat(
@@ -72,7 +72,7 @@ async def _run_graph_with_progress_heartbeat(
                         checkpoint_next = str(snapshot.next[0])
                 except (AttributeError, RuntimeError, TypeError, ValueError):
                     checkpoint_next = None
-                log.info(
+                log.debug(
                     "run.progress",
                     run_id=run_id,
                     phase=phase,

@@ -176,7 +176,7 @@ class LLMClient:
                 user_prompt=user_prompt,
             )
             prompt_preview = build_prompt_preview(prompt_text)
-            log.info(
+            log.debug(
                 "llm.call.start",
                 model_slot=model_slot,
                 provider_target="legacy_stub",
@@ -231,7 +231,7 @@ class LLMClient:
         provider_name, model_name = resolve_slot(slot=model_slot, providers=self._providers)
         provider = self._providers[provider_name]
         slot_timeout_seconds = _resolve_timeout_seconds(model_slot)
-        log.info(
+        log.debug(
             "llm.call.start",
             model_slot=model_slot,
             provider_target=provider_name,

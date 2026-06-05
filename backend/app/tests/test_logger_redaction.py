@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from core.config import settings
@@ -7,6 +9,18 @@ from service.llm.client import LLMClient
 from service.llm.exceptions import LLMRequestError
 from service.llm.response import ProviderRawResponse
 from utils.logger import configure_logging
+
+
+def _json_log_lines(logged: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line in logged.splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
 
 
 class _SingleResponseProvider:
@@ -63,8 +77,15 @@ async def test_llm_client_logs_redact_prompt_and_fake_key(
     )
 
     logged = capsys.readouterr().out
-    assert "llm.call.start" in logged
-    assert "llm.call.finish" in logged
+    rows = _json_log_lines(logged)
+    assert not any(
+        row.get("event") == "llm.call.start" and row.get("level") == "info"
+        for row in rows
+    )
+    assert any(
+        row.get("event") == "llm.call.finish" and row.get("level") == "info"
+        for row in rows
+    )
     assert fake_key not in logged
     assert system_prompt not in logged
     assert user_prompt not in logged
@@ -116,6 +137,6 @@ async def test_llm_client_logs_call_error_on_terminal_failure(
 
     logged = capsys.readouterr().out
     assert response.error is not None
-    assert "llm.call.error" in logged
+    assert logged.count("llm.call.error") == 1
     assert "llm.call.finish" in logged
     assert "error_class" in logged

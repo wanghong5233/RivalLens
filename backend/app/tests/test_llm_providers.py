@@ -7,6 +7,7 @@ import pytest
 from service.llm import providers as llm_providers
 from service.llm.exceptions import LLMRequestError
 from service.llm.providers import DoubaoProvider, OpenAIProvider, QwenProvider
+from utils.logger import configure_logging
 
 
 def _fake_response(*, model: str, content: str, prompt_tokens: int, completion_tokens: int):
@@ -52,7 +53,12 @@ async def test_doubao_provider_complete_json_success(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_doubao_provider_wraps_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_doubao_provider_wraps_connection_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+
     class DummyConnectionError(Exception):
         pass
 
@@ -75,6 +81,11 @@ async def test_doubao_provider_wraps_connection_error(monkeypatch: pytest.Monkey
             model="ep-demo",
             timeout_seconds=10,
         )
+    logged = capsys.readouterr().out
+    assert "llm.provider.error" in logged
+    assert "llm.call.error" not in logged
+    assert "retryable" in logged
+    assert "attempt" in logged
 
 
 @pytest.mark.asyncio

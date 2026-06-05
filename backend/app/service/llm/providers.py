@@ -248,14 +248,17 @@ class _OpenAICompatibleProvider:
                     )
                 except (APIConnectionError, APITimeoutError, APIStatusError, RateLimitError) as fallback_exc:
                     log.warning(
-                        "llm.call.error",
+                        "llm.provider.error",
                         provider=self.name,
+                        model=model,
                         error_class="http_4xx" if isinstance(fallback_exc, APIStatusError) else "connection",
                         http_status=(
                             getattr(fallback_exc, "status_code", None)
                             if isinstance(fallback_exc, APIStatusError)
                             else None
                         ),
+                        retryable=False,
+                        attempt=2,
                         error_preview=_request_error_message(self.name, model, fallback_exc)[:200],
                     )
                     raise LLMRequestError(
@@ -263,20 +266,26 @@ class _OpenAICompatibleProvider:
                     ) from fallback_exc
             else:
                 log.warning(
-                    "llm.call.error",
+                    "llm.provider.error",
                     provider=self.name,
+                    model=model,
                     error_class="http_4xx",
                     http_status=getattr(exc, "status_code", None),
+                    retryable=False,
+                    attempt=1,
                     error_preview=_status_error_body_snippet(exc) or str(exc)[:200],
                 )
                 raise LLMRequestError(_request_error_message(self.name, model, exc)) from exc
         except (APIConnectionError, APITimeoutError, RateLimitError) as exc:
             error_class = "timeout" if isinstance(exc, APITimeoutError) else "connection"
             log.warning(
-                "llm.call.error",
+                "llm.provider.error",
                 provider=self.name,
+                model=model,
                 error_class=error_class,
                 http_status=None,
+                retryable=False,
+                attempt=1,
                 error_preview=_request_error_message(self.name, model, exc)[:200],
             )
             raise LLMRequestError(_request_error_message(self.name, model, exc)) from exc
