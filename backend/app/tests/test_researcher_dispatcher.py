@@ -144,7 +144,7 @@ async def test_researcher_dispatcher_uses_registry_and_collects_source_type(
             ]
         }
     )
-    monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.subgraphs.researcher.get_channel_registry", lambda: _FakeSuccessRegistry())
 
     output = await get_researcher_subgraph().ainvoke(_base_state())
@@ -180,7 +180,7 @@ async def test_researcher_dispatcher_channel_failure_does_not_abort_run(
             ]
         }
     )
-    monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("agents.subgraphs.researcher.get_channel_registry", lambda: _FakeFailureRegistry())
 
     output = await get_researcher_subgraph().ainvoke(_base_state())

@@ -120,7 +120,7 @@ async def test_researcher_subgraph_collects_evidence_from_observation(
             ]
         }
     )
-    monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
 
     known_quotes = {"Cursor starts at $20 per user/month."}
 
@@ -181,7 +181,7 @@ async def test_researcher_subgraph_triggers_compression(monkeypatch: pytest.Monk
             ],
         }
     )
-    monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
 
     state = _base_state()
     state["turn_count"] = COMPRESS_AFTER_TURNS
@@ -201,7 +201,7 @@ async def test_researcher_subgraph_forces_finalize_when_turn_limit_hit(
 ) -> None:
     get_researcher_subgraph.cache_clear()
     fake_client = _FakeSequentialLLMClient(responses_by_slot={"research": []})
-    monkeypatch.setattr("agents.subgraphs.researcher.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
 
     state = _base_state()
     state["turn_count"] = 1
