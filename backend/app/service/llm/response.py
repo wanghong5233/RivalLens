@@ -26,6 +26,8 @@ class LLMResponse:
     error: str | None
     fallback_used: bool = False
     fallback_reason: str | None = None
+    prompt_text: str | None = None
+    response_raw: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +43,8 @@ class LLMResponse:
             "error": self.error,
             "fallback_used": self.fallback_used,
             "fallback_reason": self.fallback_reason,
+            "prompt_text": self.prompt_text,
+            "response_raw": self.response_raw,
         }
 
     def get(self, key: str, default: Any = None) -> Any:

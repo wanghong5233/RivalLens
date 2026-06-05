@@ -7,12 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
 from db.engine import get_session_factory
-from models.llm_call import LLMCall
 from models.report import Report
 from models.step import Step
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection
 from service.event_bus import RunEventType, emit_run_event
+from service.llm.records import build_llm_call_record
 from service.qa.engine import MAX_QA_REJECTIONS, evaluate_report
 from utils.log_node import log_node
 from utils.logger import get_logger
@@ -200,24 +200,7 @@ async def qa_node(state: AgentState) -> AgentState:
         session.add(step)
         await session.flush()
         if semantic_llm_response is not None:
-            semantic_error = (
-                semantic_llm_response.error[:2000]
-                if semantic_llm_response.error is not None
-                else None
-            )
-            session.add(
-                LLMCall(
-                    step_id=qa_step_id,
-                    model_slot=semantic_llm_response.model_slot,
-                    provider=semantic_llm_response.provider,
-                    model_name=semantic_llm_response.model_name,
-                    prompt_hash=semantic_llm_response.prompt_hash,
-                    prompt_tokens=semantic_llm_response.prompt_tokens,
-                    completion_tokens=semantic_llm_response.completion_tokens,
-                    latency_ms=semantic_llm_response.latency_ms,
-                    error=semantic_error,
-                )
-            )
+            session.add(build_llm_call_record(step_id=qa_step_id, response=semantic_llm_response))
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()

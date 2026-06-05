@@ -95,6 +95,41 @@ async def test_llm_client_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.prompt_tokens == 9
     assert response.completion_tokens == 3
     assert response.content["chosen_tool"] == "Finalize"
+    assert response.prompt_text == "[system]\nsystem\n\n[user]\nuser"
+    assert response.prompt_preview == "[system]\\nsystem\\n\\n[user]\\nuser"
+    assert response.response_raw is not None
+    assert response.response_raw.startswith('{"chosen_tool"')
+
+
+@pytest.mark.asyncio
+async def test_llm_client_trace_fields_are_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_research_slot(monkeypatch)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[
+            ProviderRawResponse(
+                content_raw='{"result":"ok","echoed_secret":"api_key=raw-secret"}',
+                model_name="ep-default",
+                prompt_tokens=9,
+                completion_tokens=3,
+            )
+        ],
+    )
+    client = _make_client(provider)
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system api_key=system-secret",
+        user_prompt="user token=user-secret",
+    )
+
+    assert response.error is None
+    assert response.prompt_text is not None
+    assert "system-secret" not in response.prompt_text
+    assert "user-secret" not in response.prompt_text
+    assert "api_key=[REDACTED]" in response.prompt_text
+    assert response.response_raw is not None
+    assert "raw-secret" not in response.response_raw
+    assert "api_key=[REDACTED]" in response.response_raw
 
 
 @pytest.mark.asyncio

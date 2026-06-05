@@ -17,6 +17,7 @@ from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
 from service.event_bus import RunEventType, emit_run_event
 from service.desensitize import normalize_text_for_storage
+from service.llm.records import build_llm_call_record_from_mapping
 from utils.log_node import log_node
 
 
@@ -250,28 +251,9 @@ def _build_llm_call_rows(
         model_slot_raw = item.get("model_slot")
         if not isinstance(model_slot_raw, str):
             continue
-        provider_raw = item.get("provider")
-        model_name_raw = item.get("model_name")
-        prompt_hash_raw = item.get("prompt_hash")
-        prompt_tokens_raw = item.get("prompt_tokens")
-        completion_tokens_raw = item.get("completion_tokens")
-        latency_ms_raw = item.get("latency_ms")
-        error_raw = item.get("error")
-        rows.append(
-            LLMCall(
-                step_id=step_id,
-                model_slot=model_slot_raw,
-                provider=provider_raw if isinstance(provider_raw, str) else None,
-                model_name=model_name_raw if isinstance(model_name_raw, str) else None,
-                prompt_hash=prompt_hash_raw if isinstance(prompt_hash_raw, str) else None,
-                prompt_tokens=prompt_tokens_raw if isinstance(prompt_tokens_raw, int) else None,
-                completion_tokens=completion_tokens_raw
-                if isinstance(completion_tokens_raw, int)
-                else None,
-                latency_ms=latency_ms_raw if isinstance(latency_ms_raw, int) else None,
-                error=error_raw if isinstance(error_raw, str) else None,
-            )
-        )
+        row = build_llm_call_record_from_mapping(step_id=step_id, item=item)
+        if row is not None:
+            rows.append(row)
     return rows
 
 

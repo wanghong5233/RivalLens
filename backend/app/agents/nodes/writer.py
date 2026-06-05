@@ -13,7 +13,6 @@ from core.config import settings
 from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
-from models.llm_call import LLMCall
 from models.report import Report
 from models.step import Step
 from schemas.agent_outputs import AnalystOutput, WriterExecutionContext, WriterReportOutput
@@ -29,6 +28,7 @@ from service.llm import (
     build_writer_user_prompt,
 )
 from service.llm.harness import complete_structured
+from service.llm.records import build_llm_call_record
 from utils.log_node import log_node
 from utils.logger import get_logger
 
@@ -570,7 +570,6 @@ async def writer_node(state: AgentState) -> AgentState:
     )
     markdown = _render_report_markdown(report_content)
     llm_call_error = llm_response.error or writer_schema_error
-    llm_call_error_trimmed = llm_call_error[:2000] if llm_call_error is not None else None
     section_count = (
         len(report_content["sections"])
         if isinstance(report_content.get("sections"), list)
@@ -609,16 +608,10 @@ async def writer_node(state: AgentState) -> AgentState:
         session.add(step)
         await session.flush()
         session.add(
-            LLMCall(
+            build_llm_call_record(
                 step_id=step_id,
-                model_slot=llm_response.model_slot,
-                provider=llm_response.provider,
-                model_name=llm_response.model_name,
-                prompt_hash=llm_response.prompt_hash,
-                prompt_tokens=llm_response.prompt_tokens,
-                completion_tokens=llm_response.completion_tokens,
-                latency_ms=llm_response.latency_ms,
-                error=llm_call_error_trimmed,
+                response=llm_response,
+                error=llm_call_error,
             )
         )
         session.add(

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from models.base import Base
@@ -22,10 +23,19 @@ class LLMCall(Base):
     provider: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    prompt_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_content: Mapped[dict[str, object] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )
+    response_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fallback_used: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fallback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

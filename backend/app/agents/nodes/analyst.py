@@ -11,7 +11,6 @@ from agents.state import AgentState
 from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
-from models.llm_call import LLMCall
 from models.step import Step
 from schemas.agent_outputs import AnalystOutput
 from schemas.ids import make_id
@@ -25,6 +24,7 @@ from service.llm import (
     build_analyst_user_prompt,
 )
 from service.llm.harness import complete_structured
+from service.llm.records import build_llm_call_record
 from utils.log_node import log_node
 from utils.logger import get_logger
 
@@ -197,8 +197,6 @@ async def analyst_node(state: AgentState) -> AgentState:
     evidence_lookup = {row.id: row for row in evidence_rows}
 
     llm_call_error = llm_response.error or analysis_schema_error
-    llm_call_error_trimmed = llm_call_error[:2000] if llm_call_error is not None else None
-
     async with session_factory() as session:
         step_payload: dict[str, object] = {
             **request.model_dump(),
@@ -226,16 +224,10 @@ async def analyst_node(state: AgentState) -> AgentState:
         session.add(step)
         await session.flush()
         session.add(
-            LLMCall(
+            build_llm_call_record(
                 step_id=step_id,
-                model_slot=llm_response.model_slot,
-                provider=llm_response.provider,
-                model_name=llm_response.model_name,
-                prompt_hash=llm_response.prompt_hash,
-                prompt_tokens=llm_response.prompt_tokens,
-                completion_tokens=llm_response.completion_tokens,
-                latency_ms=llm_response.latency_ms,
-                error=llm_call_error_trimmed,
+                response=llm_response,
+                error=llm_call_error,
             )
         )
         session.add(

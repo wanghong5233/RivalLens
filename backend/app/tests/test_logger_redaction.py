@@ -68,6 +68,8 @@ async def test_llm_client_logs_redact_prompt_and_fake_key(
     assert fake_key not in logged
     assert system_prompt not in logged
     assert user_prompt not in logged
+    assert "prompt_text" not in logged
+    assert "response_raw" not in logged
 
 
 @pytest.mark.asyncio

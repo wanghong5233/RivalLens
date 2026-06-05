@@ -12,6 +12,7 @@ from service.llm.exceptions import LLMRequestError, LLMResponseFormatError
 from service.llm.providers import LLMProvider, build_providers
 from service.llm.response import LLMResponse
 from service.llm.routing import resolve_slot
+from service.llm.trace import build_prompt_preview, build_prompt_trace_text, sanitize_trace_text
 from utils.logger import get_logger
 
 LEGACY_SYSTEM_PROMPT = "legacy_supervisor_prompt"
@@ -27,11 +28,6 @@ def _format_error(error: LLMRequestError | LLMResponseFormatError) -> str:
 
 def _prompt_hash(*, system_prompt: str, user_prompt: str) -> str:
     return hashlib.sha256(f"{system_prompt}\n{user_prompt}".encode("utf-8")).hexdigest()[:64]
-
-
-def _prompt_preview(*, system_prompt: str, user_prompt: str) -> str:
-    preview = f"{system_prompt}\n{user_prompt}".strip().replace("\n", "\\n")
-    return preview[:256]
 
 
 def _merge_request_errors(*, primary_error: Exception, fallback_error: Exception | None) -> str:
@@ -175,25 +171,31 @@ class LLMClient:
             # Keep old supervisor path stable until all callers are migrated.
             system_prompt = LEGACY_SYSTEM_PROMPT
             user_prompt = prompt
+            prompt_text = build_prompt_trace_text(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+            prompt_preview = build_prompt_preview(prompt_text)
             log.info(
                 "llm.call.start",
                 model_slot=model_slot,
                 provider_target="legacy_stub",
                 prompt_hash=_prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt),
-                prompt_preview_len=len(_prompt_preview(system_prompt=system_prompt, user_prompt=user_prompt)),
+                prompt_preview_len=len(prompt_preview),
                 fallback_configured=False,
             )
             response = LLMResponse(
                 model_slot=model_slot,
                 provider="legacy_stub",
                 model_name="legacy_stub",
-                prompt_preview=_prompt_preview(system_prompt=system_prompt, user_prompt=user_prompt),
+                prompt_preview=prompt_preview,
                 prompt_hash=_prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt),
                 content={},
                 prompt_tokens=None,
                 completion_tokens=None,
                 latency_ms=0,
                 error=None,
+                prompt_text=prompt_text,
             )
             _log_finish(
                 model_slot=model_slot,
@@ -221,7 +223,11 @@ class LLMClient:
             )
 
         prompt_hash = _prompt_hash(system_prompt=system_prompt, user_prompt=user_prompt)
-        prompt_preview = _prompt_preview(system_prompt=system_prompt, user_prompt=user_prompt)
+        prompt_text = build_prompt_trace_text(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+        prompt_preview = build_prompt_preview(prompt_text)
         provider_name, model_name = resolve_slot(slot=model_slot, providers=self._providers)
         provider = self._providers[provider_name]
         slot_timeout_seconds = _resolve_timeout_seconds(model_slot)
@@ -286,6 +292,8 @@ class LLMClient:
                     completion_tokens=raw_response.completion_tokens,
                     latency_ms=elapsed_ms,
                     error=_format_error(exc),
+                    prompt_text=prompt_text,
+                    response_raw=sanitize_trace_text(raw_response.content_raw),
                 )
                 _log_finish(
                     model_slot=model_slot,
@@ -313,6 +321,8 @@ class LLMClient:
                 completion_tokens=raw_response.completion_tokens,
                 latency_ms=elapsed_ms,
                 error=None,
+                prompt_text=prompt_text,
+                response_raw=sanitize_trace_text(raw_response.content_raw),
             )
             _log_finish(
                 model_slot=model_slot,
@@ -334,10 +344,11 @@ class LLMClient:
                 system_prompt=fallback_system_prompt,
                 user_prompt=fallback_user_prompt,
             )
-            fallback_prompt_preview = _prompt_preview(
+            fallback_prompt_text = build_prompt_trace_text(
                 system_prompt=fallback_system_prompt,
                 user_prompt=fallback_user_prompt,
             )
+            fallback_prompt_preview = build_prompt_preview(fallback_prompt_text)
             formatted_primary_error = _format_error(request_error)
             log.info(
                 "llm.call.fallback",
@@ -379,6 +390,7 @@ class LLMClient:
                     ),
                     fallback_used=True,
                     fallback_reason=formatted_primary_error,
+                    prompt_text=fallback_prompt_text,
                 )
                 _log_finish(
                     model_slot=model_slot,
@@ -419,6 +431,8 @@ class LLMClient:
                     error=_format_error(exc),
                     fallback_used=True,
                     fallback_reason=formatted_primary_error,
+                    prompt_text=fallback_prompt_text,
+                    response_raw=sanitize_trace_text(raw_response.content_raw),
                 )
                 _log_finish(
                     model_slot=model_slot,
@@ -448,6 +462,8 @@ class LLMClient:
                 error=None,
                 fallback_used=True,
                 fallback_reason=formatted_primary_error,
+                prompt_text=fallback_prompt_text,
+                response_raw=sanitize_trace_text(raw_response.content_raw),
             )
             _log_finish(
                 model_slot=model_slot,
@@ -485,6 +501,7 @@ class LLMClient:
             completion_tokens=None,
             latency_ms=elapsed_ms,
             error=_format_error(request_error),
+            prompt_text=prompt_text,
         )
         _log_finish(
             model_slot=model_slot,

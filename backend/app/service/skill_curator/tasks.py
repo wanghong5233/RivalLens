@@ -8,12 +8,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from db.engine import get_session_factory
 from models.evidence import EvidenceRecord
-from models.llm_call import LLMCall
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
 from service.event_bus import RunEventType, emit_run_event
+from service.llm.records import build_llm_call_record
 from service.skill_curator import generate_skill_candidates
 from utils.logger import bind_run, get_logger
 
@@ -188,15 +188,9 @@ async def run_skill_curator_for_run(*, run_id: str, domain_hint: str | None) -> 
                 session.add(step)
                 await session.flush()
                 session.add(
-                    LLMCall(
+                    build_llm_call_record(
                         step_id=step_id,
-                        model_slot=llm_response.model_slot,
-                        provider=llm_response.provider,
-                        model_name=llm_response.model_name,
-                        prompt_hash=llm_response.prompt_hash,
-                        prompt_tokens=llm_response.prompt_tokens,
-                        completion_tokens=llm_response.completion_tokens,
-                        latency_ms=llm_response.latency_ms,
+                        response=llm_response,
                         error=llm_error_trimmed,
                     )
                 )
