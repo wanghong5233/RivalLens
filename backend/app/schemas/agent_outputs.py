@@ -4,10 +4,11 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
+from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from schemas.contracts import validate_dimension, validate_section_id, validate_template_id
 
 ConfidenceLevel = Literal["high", "medium", "low"]
-DEFAULT_WRITER_SECTIONS: tuple[str, ...] = ("feature", "pricing", "user_feedback")
+DEFAULT_WRITER_SECTIONS: tuple[str, ...] = DEFAULT_FOCUS_DIMENSIONS
 MIN_WRITER_SECTION_CHARS = 60
 
 

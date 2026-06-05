@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
 from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph
+from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
@@ -32,7 +33,7 @@ def _resolve_focus_dimensions(
 ) -> list[FocusDimension]:
     focus_dimensions = list(request.focus_dimensions or [])
     if not focus_dimensions:
-        focus_dimensions = ["feature", "pricing", "user_feedback"]
+        focus_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)
     if not focus_dimensions:
         raise RuntimeError(f"No focus_dimensions available for competitor_id={request.competitor_id}.")
     normalized: list[str] = []

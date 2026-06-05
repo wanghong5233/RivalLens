@@ -6,6 +6,7 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.run import Run
@@ -96,11 +97,11 @@ def _derive_focus_dimensions(*, user_query: str, competitors: list[str]) -> list
             derived.append(dimension)
 
     if not derived:
-        derived.extend(["feature", "pricing", "user_feedback"])
+        derived.extend(DEFAULT_FOCUS_DIMENSIONS)
     if len(competitors) >= 3 and "positioning" not in derived:
         derived.append("positioning")
     if len(derived) < 3:
-        derived.extend(["feature", "pricing", "user_feedback"])
+        derived.extend(DEFAULT_FOCUS_DIMENSIONS)
     return _stable_unique(derived)[:5]
 
 

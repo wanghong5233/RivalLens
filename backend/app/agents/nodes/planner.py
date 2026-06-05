@@ -13,6 +13,7 @@ from agents.state_coercion import (
     coerce_pending_plan_tree,
     coerce_plan_tree,
 )
+from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.run import Run
@@ -37,7 +38,6 @@ log = get_logger("agents.planner")
 
 _MAX_RESEARCH_TASKS = 8
 _MAX_TOTAL_TASKS = 12
-_DEFAULT_FOCUS_DIMENSIONS: tuple[str, ...] = ("feature", "pricing", "user_feedback")
 # Phase β: cap user-injected tasks. Backend defends; FE should also enforce so
 # the validation message reaches the user before a round-trip.
 _MAX_ADDITIONAL_TASKS = 5
@@ -64,7 +64,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
     Mirrors the supervisor's reachable execution path so the visible plan
     never lies about what the executor would do.
     """
-    focus = list(draft.focus_dimensions) or list(_DEFAULT_FOCUS_DIMENSIONS)
+    focus = list(draft.focus_dimensions) or list(DEFAULT_FOCUS_DIMENSIONS)
     tasks: list[PlanTask] = []
     competitors = list(draft.competitors_explicit)
     if draft.competitors_discovery_mode or not competitors:
@@ -134,7 +134,7 @@ def reconcile_plan_tree_after_discovery(
                 focus = list(task.focus_dimensions)
                 break
     if not focus:
-        focus = list(_DEFAULT_FOCUS_DIMENSIONS)
+        focus = list(DEFAULT_FOCUS_DIMENSIONS)
 
     insert_at = 0
     for index, task in enumerate(plan.tasks):

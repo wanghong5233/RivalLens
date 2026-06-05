@@ -4,6 +4,7 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from schemas.contracts import validate_dimension
 from schemas.intake import IntakeClarifyRequest, RunIntakeDraft
 from schemas.plan import PlanTask, PlanTaskStage
@@ -155,7 +156,7 @@ class PlannerOutput(BaseModel):
         tasks_raw = content.get("tasks")
         if not isinstance(tasks_raw, list) or not tasks_raw:
             raise ValueError("tasks must be a non-empty list")
-        default_focus = list(draft.focus_dimensions)[:5] or ["feature", "pricing", "user_feedback"]
+        default_focus = list(draft.focus_dimensions)[:5] or list(DEFAULT_FOCUS_DIMENSIONS)
         parsed_tasks: list[PlannerTaskDraft] = []
         research_count = 0
         for item in tasks_raw:

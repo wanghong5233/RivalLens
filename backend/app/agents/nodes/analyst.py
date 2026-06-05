@@ -133,6 +133,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             }
         )
         if not focus_dimensions:
+            # Empty-evidence fallback is intentionally broader than the default intake focus.
             focus_dimensions = ["general", "feature", "pricing"]
     allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
     allowed_dimensions = set(focus_dimensions)

@@ -19,6 +19,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 import yaml
 
+from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from db.engine import get_session_factory
 from core.config import settings
 from exceptions.base import APIException
@@ -566,7 +567,7 @@ def _build_reset_state_values(*, reset_to: ResetToStage) -> dict[str, object]:
         values["report_draft_done"] = False
         values["pending_tool_args"] = {
             "template_id": None,
-            "sections": ["feature", "pricing", "user_feedback", "differentiation"],
+            "sections": [*DEFAULT_FOCUS_DIMENSIONS, "differentiation"],
         }
         return values
 
@@ -574,7 +575,7 @@ def _build_reset_state_values(*, reset_to: ResetToStage) -> dict[str, object]:
     values["analysis_done"] = False
     values["report_draft_done"] = False
     values["pending_tool_args"] = {
-        "focus_dimensions": ["feature", "pricing", "user_feedback", "positioning"],
+        "focus_dimensions": [*DEFAULT_FOCUS_DIMENSIONS, "positioning"],
         "parallel_by_dimension": False,
         "require_cross_competitor": True,
     }
