@@ -186,6 +186,60 @@ def test_fallback_report_sections_follow_target_sections() -> None:
 
     section_ids = [section["section_id"] for section in report_content["sections"]]
     assert section_ids == ["feature", "pricing"]
+    pricing_section = report_content["sections"][1]
+    assert pricing_section["evidence_refs"] == []
+    assert "uncovered_section:pricing" in report_content["risk_callouts"]
+
+
+def test_fallback_report_does_not_round_robin_unmatched_insights_or_evidence() -> None:
+    report_content = _build_fallback_report(
+        template_id="battlecard_default",
+        target_sections=["pricing"],
+        evidence_ids=["ev_001"],
+        analyst_summary="Summary.",
+        insight_briefs=[
+            {
+                "insight_id": "insight_1",
+                "dimension": "feature",
+                "finding": "Feature depth is stronger.",
+                "confidence": "high",
+                "evidence_ids": ["ev_001"],
+            }
+        ],
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_001",
+                "dimension": "feature",
+                "competitor_id": "comp_a",
+                "quote_preview": "feature quote",
+                "source_title": "title",
+                "source_url": "https://example.com",
+            }
+        ],
+        risk_flags=[],
+    )
+
+    section = report_content["sections"][0]
+    assert section["section_id"] == "pricing"
+    assert section["evidence_refs"] == []
+    assert section["insight_refs"] == []
+    assert "uncovered_section:pricing" in report_content["risk_callouts"]
+
+
+def test_fallback_report_handles_empty_target_sections_without_name_error() -> None:
+    report_content = _build_fallback_report(
+        template_id=None,
+        target_sections=[],
+        evidence_ids=["ev_001"],
+        analyst_summary="Summary.",
+        insight_briefs=[],
+        evidence_briefs=[],
+        risk_flags=[],
+    )
+
+    assert report_content["sections"][0]["section_id"] == "general"
+    assert report_content["sections"][0]["evidence_refs"] == []
+    assert "uncovered_section:general" in report_content["risk_callouts"]
 
 
 def test_writer_report_output_allows_template_auto_mode() -> None:

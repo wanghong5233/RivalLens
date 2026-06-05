@@ -43,30 +43,16 @@ def _is_valid_section_id(value: str) -> bool:
     return True
 
 
-_SECTION_DIMENSION_ALIASES: dict[str, tuple[str, ...]] = {
-    "pricing": ("pricing", "pricing_model_details", "pricing_strategy"),
-    "feature": ("feature", "product_market_positioning", "enterprise_version_capabilities"),
-    "positioning": ("positioning", "product_positioning", "product_market_positioning"),
-    "differentiation": ("differentiation", "competitive_differentiation", "product_market_positioning"),
-    "user_feedback": ("user_feedback", "product_market_positioning"),
-}
-
-
 def _insight_matches_section(*, insight: dict[str, object], section_id: str) -> bool:
     dimension_raw = insight.get("dimension")
     if not isinstance(dimension_raw, str):
         return False
-    dimension = dimension_raw.strip().lower()
-    if dimension == section_id:
-        return True
-    aliases = _SECTION_DIMENSION_ALIASES.get(section_id, ())
-    return dimension in aliases
+    return dimension_raw.strip().lower() == section_id
 
 
 def _select_insights_for_section(
     *,
     section_id: str,
-    section_index: int,
     insight_briefs: list[dict[str, object]],
 ) -> list[dict[str, object]]:
     matched = [
@@ -74,36 +60,23 @@ def _select_insights_for_section(
         for insight in insight_briefs
         if _insight_matches_section(insight=insight, section_id=section_id)
     ]
-    if matched:
-        return matched[:3]
-    if not insight_briefs:
-        return []
-    start = (section_index * 2) % len(insight_briefs)
-    return [insight_briefs[(start + offset) % len(insight_briefs)] for offset in range(min(2, len(insight_briefs)))]
+    return matched[:3]
 
 
 def _select_evidence_ids_for_section(
     *,
     section_id: str,
-    section_index: int,
-    evidence_briefs: list[dict[str, str]],
+    evidence_briefs: list[dict[str, object]],
     evidence_ids: list[str],
 ) -> list[str]:
-    aliases = _SECTION_DIMENSION_ALIASES.get(section_id, (section_id,))
     matched = [
         item["evidence_id"]
         for item in evidence_briefs
         if item.get("evidence_id") in evidence_ids
-        and item.get("dimension", "").lower() in aliases
+        and isinstance(item.get("dimension"), str)
+        and str(item.get("dimension")).lower() == section_id
     ]
-    if matched:
-        return _stable_unique(matched)[:3]
-    if not evidence_ids:
-        return []
-    start = section_index % len(evidence_ids)
-    if len(evidence_ids) == 1:
-        return [evidence_ids[0]]
-    return _stable_unique([evidence_ids[start], evidence_ids[(start + 1) % len(evidence_ids)]])
+    return _stable_unique(matched)[:3]
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -242,8 +215,8 @@ async def _load_writer_inputs(
     return evidence_rows, parsed
 
 
-def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str, str]]:
-    briefs: list[dict[str, str]] = []
+def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str, object]]:
+    briefs: list[dict[str, object]] = []
     for row in evidence_rows:
         span = row.span if isinstance(row.span, dict) else {}
         dimension_raw = span.get("dimension")
@@ -251,7 +224,7 @@ def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str
         briefs.append(
             {
                 "evidence_id": row.id,
-                "dimension": dimension_raw if isinstance(dimension_raw, str) else "unknown",
+                "dimension": dimension_raw if isinstance(dimension_raw, str) else None,
                 "competitor_id": competitor_id_raw if isinstance(competitor_id_raw, str) else "unknown",
                 "quote_preview": row.sanitized_text[:220],
                 "source_title": row.source_title or "",
@@ -290,14 +263,14 @@ def _build_fallback_report(
     evidence_ids: list[str],
     analyst_summary: str,
     insight_briefs: list[dict[str, object]],
-    evidence_briefs: list[dict[str, str]],
+    evidence_briefs: list[dict[str, object]],
     risk_flags: list[str],
 ) -> dict[str, object]:
     sections: list[dict[str, object]] = []
-    for section_index, section_id in enumerate(target_sections):
+    uncovered_sections: list[str] = []
+    for section_id in target_sections:
         related_insights = _select_insights_for_section(
             section_id=section_id,
-            section_index=section_index,
             insight_briefs=insight_briefs,
         )
         if related_insights:
@@ -311,7 +284,6 @@ def _build_fallback_report(
 
         evidence_refs = _select_evidence_ids_for_section(
             section_id=section_id,
-            section_index=section_index,
             evidence_briefs=evidence_briefs,
             evidence_ids=evidence_ids,
         )
@@ -337,8 +309,9 @@ def _build_fallback_report(
                 if item.get("evidence_id") in evidence_refs and item.get("quote_preview")
             ][:3]
         if not insight_lines:
+            uncovered_sections.append(section_id)
             insight_lines = [
-                "- Analyst insight is pending; this section summarizes available evidence for follow-up."
+                "- No grounded evidence matched this section; keep it open for follow-up research."
             ]
         content_markdown = "\n".join(insight_lines)
         sections.append(
@@ -352,15 +325,17 @@ def _build_fallback_report(
         )
 
     if not sections:
+        section_id = target_sections[0] if target_sections else "general"
+        uncovered_sections.append(section_id)
         sections.append(
             {
-                "section_id": "feature",
-                "title": DEFAULT_FALLBACK_SECTIONS[0].replace("_", " ").title(),
+                "section_id": section_id,
+                "title": section_id.replace("_", " ").title(),
                 "content_markdown": (
                     "Fallback writer generated a minimal section because no valid target sections were resolved "
                     "from request/recommended inputs."
                 ),
-                "evidence_refs": evidence_ids[:1],
+                "evidence_refs": [],
                 "insight_refs": [],
             }
         )
@@ -371,7 +346,12 @@ def _build_fallback_report(
         "title": "RivalLens Competitive Battlecard",
         "executive_summary": summary,
         "sections": sections,
-        "risk_callouts": risk_flags or ["writer_fallback_mode"],
+        "risk_callouts": _stable_unique(
+            [
+                *(risk_flags or ["writer_fallback_mode"]),
+                *(f"uncovered_section:{section_id}" for section_id in uncovered_sections),
+            ]
+        ),
     }
 
 
