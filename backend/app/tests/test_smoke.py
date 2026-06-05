@@ -377,6 +377,18 @@ def _fetch_latest_report_evidence_refs(run_id: str) -> set[str]:
     return _extract_report_evidence_refs(latest_report_row["content_json"])
 
 
+def _assert_trace_payload_omits_raw_llm_content(value: object) -> None:
+    if isinstance(value, dict):
+        assert "prompt_text" not in value
+        assert "response_raw" not in value
+        for nested in value.values():
+            _assert_trace_payload_omits_raw_llm_content(nested)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _assert_trace_payload_omits_raw_llm_content(nested)
+
+
 def test_health_endpoint(test_client: TestClient) -> None:
     response = test_client.get("/health")
     payload = response.json()
@@ -467,6 +479,36 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
     assert trace_payload["run"]["run_id"] == run_id
     assert len(trace_payload["steps"]) >= 4
     assert len(trace_payload["supervisor_decisions"]) >= 3
+    assert len(trace_payload["llm_calls"]) >= 1
+    assert len(trace_payload["timeline"]) >= (
+        len(trace_payload["steps"])
+        + len(trace_payload["supervisor_decisions"])
+        + len(trace_payload["llm_calls"])
+    )
+    timeline_timestamps = [
+        datetime.fromisoformat(item["timestamp"]) for item in trace_payload["timeline"]
+    ]
+    assert timeline_timestamps == sorted(timeline_timestamps)
+    timeline_kinds = {item["kind"] for item in trace_payload["timeline"]}
+    assert {"step", "decision", "llm_call"}.issubset(timeline_kinds)
+    llm_call = trace_payload["llm_calls"][0]
+    assert {
+        "id",
+        "step_id",
+        "model_slot",
+        "provider",
+        "model_name",
+        "prompt_hash",
+        "prompt_preview",
+        "prompt_tokens",
+        "completion_tokens",
+        "latency_ms",
+        "error",
+        "fallback_used",
+        "fallback_reason",
+        "created_at",
+    } == set(llm_call.keys())
+    _assert_trace_payload_omits_raw_llm_content(trace_payload)
     decision_tools = [item["chosen_tool"] for item in trace_payload["supervisor_decisions"]]
     step_agents = [item["agent_name"] for item in trace_payload["steps"]]
     assert decision_tools[-1] == "Write"

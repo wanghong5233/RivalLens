@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 import yaml
 
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
@@ -38,7 +38,7 @@ from schemas.intake import IntakeClarifyRequest, IntakeUserReply, RunIntakeDraft
 from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
-from service.metrics import build_run_metrics_snapshot
+from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot
 from service.skill_curator.tasks import run_skill_curator_for_run
 from utils.logger import bind_run, format_exception_for_log, get_logger
 
@@ -266,10 +266,38 @@ class SupervisorDecisionTraceResponse(BaseModel):
     created_at: str
 
 
+class LLMCallTraceResponse(BaseModel):
+    id: int
+    step_id: str
+    model_slot: str
+    provider: str | None
+    model_name: str | None
+    prompt_hash: str | None
+    prompt_preview: str | None
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    latency_ms: int | None
+    error: str | None
+    fallback_used: bool | None
+    fallback_reason: str | None
+    created_at: str
+
+
+class TraceTimelineItemResponse(BaseModel):
+    kind: Literal["step", "decision", "llm_call"]
+    timestamp: str
+    step_id: str | None
+    agent_name: str | None
+    summary: str
+    payload: dict[str, object]
+
+
 class RunTraceResponse(BaseModel):
     run: RunDetailResponse
     steps: list[StepTraceResponse]
     supervisor_decisions: list[SupervisorDecisionTraceResponse]
+    llm_calls: list[LLMCallTraceResponse]
+    timeline: list[TraceTimelineItemResponse]
 
 
 class EvidenceBriefResponse(BaseModel):
@@ -695,6 +723,163 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
     )
 
 
+def _to_step_trace_response(step: Step) -> StepTraceResponse:
+    return StepTraceResponse(
+        step_id=step.step_id,
+        run_id=step.run_id,
+        agent_name=step.agent_name,
+        status=step.status,
+        retry_count=step.retry_count,
+        payload=step.payload,
+        started_at=step.started_at.isoformat(),
+        finished_at=_to_iso(step.finished_at),
+        created_at=step.created_at.isoformat(),
+    )
+
+
+def _to_supervisor_decision_trace_response(
+    decision: SupervisorDecisionRecord,
+) -> SupervisorDecisionTraceResponse:
+    return SupervisorDecisionTraceResponse(
+        id=decision.id,
+        run_id=decision.run_id,
+        iteration=decision.iteration,
+        chosen_tool=decision.chosen_tool,
+        tool_args=decision.tool_args,
+        reasoning_summary=decision.reasoning_summary,
+        triggered_by=decision.triggered_by,
+        outcome=decision.outcome,
+        outcome_recorded_at=_to_iso(decision.outcome_recorded_at),
+        created_at=decision.created_at.isoformat(),
+    )
+
+
+def _to_llm_call_trace_response(llm_call: LLMCall) -> LLMCallTraceResponse:
+    return LLMCallTraceResponse(
+        id=llm_call.id,
+        step_id=llm_call.step_id,
+        model_slot=llm_call.model_slot,
+        provider=llm_call.provider,
+        model_name=llm_call.model_name,
+        prompt_hash=llm_call.prompt_hash,
+        prompt_preview=llm_call.prompt_preview,
+        prompt_tokens=llm_call.prompt_tokens,
+        completion_tokens=llm_call.completion_tokens,
+        latency_ms=llm_call.latency_ms,
+        error=llm_call.error,
+        fallback_used=llm_call.fallback_used,
+        fallback_reason=llm_call.fallback_reason,
+        created_at=llm_call.created_at.isoformat(),
+    )
+
+
+def _build_trace_timeline(
+    *,
+    step_rows: list[Step],
+    decision_rows: list[SupervisorDecisionRecord],
+    llm_rows: list[LLMCall],
+) -> list[TraceTimelineItemResponse]:
+    timeline_rows: list[tuple[datetime, int, TraceTimelineItemResponse]] = []
+    step_agent_by_id = {step.step_id: step.agent_name for step in step_rows}
+
+    for step in step_rows:
+        timeline_rows.append(
+            (
+                step.created_at,
+                0,
+                TraceTimelineItemResponse(
+                    kind="step",
+                    timestamp=step.created_at.isoformat(),
+                    step_id=step.step_id,
+                    agent_name=step.agent_name,
+                    summary=f"{step.agent_name} {step.status}",
+                    payload={
+                        "status": step.status,
+                        "retry_count": step.retry_count,
+                        "started_at": step.started_at.isoformat(),
+                        "finished_at": _to_iso(step.finished_at),
+                    },
+                ),
+            )
+        )
+
+    for decision in decision_rows:
+        summary_parts = [decision.chosen_tool]
+        if decision.outcome:
+            summary_parts.append(decision.outcome)
+        timeline_rows.append(
+            (
+                decision.created_at,
+                1,
+                TraceTimelineItemResponse(
+                    kind="decision",
+                    timestamp=decision.created_at.isoformat(),
+                    step_id=None,
+                    agent_name="supervisor",
+                    summary=" ".join(summary_parts),
+                    payload={
+                        "decision_id": decision.id,
+                        "iteration": decision.iteration,
+                        "chosen_tool": decision.chosen_tool,
+                        "triggered_by": decision.triggered_by,
+                        "outcome": decision.outcome,
+                    },
+                ),
+            )
+        )
+
+    for llm_call in llm_rows:
+        provider_label = llm_call.provider or "unknown_provider"
+        timeline_rows.append(
+            (
+                llm_call.created_at,
+                2,
+                TraceTimelineItemResponse(
+                    kind="llm_call",
+                    timestamp=llm_call.created_at.isoformat(),
+                    step_id=llm_call.step_id,
+                    agent_name=step_agent_by_id.get(llm_call.step_id),
+                    summary=f"{llm_call.model_slot} {provider_label}",
+                    payload={
+                        "llm_call_id": llm_call.id,
+                        "model_slot": llm_call.model_slot,
+                        "provider": llm_call.provider,
+                        "model_name": llm_call.model_name,
+                        "prompt_hash": llm_call.prompt_hash,
+                        "prompt_preview": llm_call.prompt_preview,
+                        "prompt_tokens": llm_call.prompt_tokens,
+                        "completion_tokens": llm_call.completion_tokens,
+                        "latency_ms": llm_call.latency_ms,
+                        "error": llm_call.error,
+                        "fallback_used": llm_call.fallback_used,
+                        "fallback_reason": llm_call.fallback_reason,
+                    },
+                ),
+            )
+        )
+
+    timeline_rows.sort(key=lambda row: (row[0], row[1]))
+    return [item for _, _, item in timeline_rows]
+
+
+def _build_run_summary_fields(
+    *,
+    snapshot: RunMetricsSnapshot,
+    status: str,
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "run_wall_clock_seconds": snapshot.run_wall_clock_seconds,
+        "llm_call_count": snapshot.llm_call_count,
+        "llm_token_total": snapshot.llm_token_total,
+        "llm_latency_p50_ms": snapshot.llm_latency_p50_ms,
+        "coverage_rate": snapshot.coverage_rate,
+        "evidence_count_total": snapshot.evidence_count_total,
+        "qa_rejection_rate": snapshot.qa_rejection_rate,
+        "supervisor_iterations": snapshot.supervisor_iterations,
+    }
+
+
 def _to_watchlist_item(item: WatchlistItem) -> WatchlistItemResponse:
     return WatchlistItemResponse(
         watch_id=item.watch_id,
@@ -891,6 +1076,7 @@ async def _execute_run_graph(
             event_type=RunEventType.RUN_FINISH,
             payload=_build_run_finish_payload(run_id=run_id, status=final_status),
         )
+        await _log_run_summary(run_id=run_id, status=final_status)
         curator_task = asyncio.create_task(
             run_skill_curator_for_run(run_id=run_id, domain_hint=domain_hint),
             name=f"skill_curator_{run_id}",
@@ -898,6 +1084,76 @@ async def _execute_run_graph(
         background_tasks.add(curator_task)
         curator_task.add_done_callback(background_tasks.discard)
         log.info("api.run.execute.finish", status=final_status)
+
+
+async def _log_run_summary(*, run_id: str, status: str) -> None:
+    session_factory = get_session_factory()
+    try:
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None:
+                log.warning(
+                    "api.run.summary.failed",
+                    reason="run_not_found",
+                )
+                return
+
+            evidence_rows = (
+                await session.execute(
+                    select(EvidenceRecord)
+                    .where(EvidenceRecord.run_id == run_id)
+                    .order_by(EvidenceRecord.created_at.asc())
+                )
+            ).scalars().all()
+            step_rows = (
+                await session.execute(
+                    select(Step)
+                    .where(Step.run_id == run_id)
+                    .order_by(Step.created_at.asc())
+                )
+            ).scalars().all()
+            llm_rows = (
+                await session.execute(
+                    select(LLMCall)
+                    .join(Step, LLMCall.step_id == Step.step_id)
+                    .where(Step.run_id == run_id)
+                    .order_by(LLMCall.created_at.asc())
+                )
+            ).scalars().all()
+            decision_rows = (
+                await session.execute(
+                    select(SupervisorDecisionRecord)
+                    .where(SupervisorDecisionRecord.run_id == run_id)
+                    .order_by(SupervisorDecisionRecord.created_at.asc())
+                )
+            ).scalars().all()
+            candidate_rows = (
+                await session.execute(select(SkillCandidateRecord))
+            ).scalars().all()
+            candidate_rows = [
+                row
+                for row in candidate_rows
+                if run_id
+                in (row.supporting_run_ids if isinstance(row.supporting_run_ids, list) else [])
+            ]
+
+        snapshot = build_run_metrics_snapshot(
+            run=run,
+            evidence_rows=list(evidence_rows),
+            step_rows=list(step_rows),
+            llm_rows=list(llm_rows),
+            decision_rows=list(decision_rows),
+            candidate_rows=list(candidate_rows),
+        )
+        log.info(
+            "api.run.summary",
+            **_build_run_summary_fields(snapshot=snapshot, status=status),
+        )
+    except (SQLAlchemyError, TypeError, ValueError, AttributeError) as exc:
+        log.warning(
+            "api.run.summary.failed",
+            error=format_exception_for_log(exc),
+        )
 
 
 @router.post("/api/runs", response_model=RunCreateResponse)
@@ -2441,41 +2697,31 @@ async def get_run_trace(run_id: str) -> RunTraceResponse:
                     .order_by(SupervisorDecisionRecord.created_at.asc())
                 )
             ).scalars().all()
+            llm_rows = (
+                await session.execute(
+                    select(LLMCall)
+                    .join(Step, LLMCall.step_id == Step.step_id)
+                    .where(Step.run_id == run_id)
+                    .order_by(LLMCall.created_at.asc())
+                )
+            ).scalars().all()
         log.info(
             "api.run.trace.query.finish",
             step_count=len(step_rows),
             decision_count=len(decision_rows),
+            llm_call_count=len(llm_rows),
         )
 
     return RunTraceResponse(
         run=_to_run_detail(run),
-        steps=[
-            StepTraceResponse(
-                step_id=step.step_id,
-                run_id=step.run_id,
-                agent_name=step.agent_name,
-                status=step.status,
-                retry_count=step.retry_count,
-                payload=step.payload,
-                started_at=step.started_at.isoformat(),
-                finished_at=_to_iso(step.finished_at),
-                created_at=step.created_at.isoformat(),
-            )
-            for step in step_rows
-        ],
+        steps=[_to_step_trace_response(step) for step in step_rows],
         supervisor_decisions=[
-            SupervisorDecisionTraceResponse(
-                id=decision.id,
-                run_id=decision.run_id,
-                iteration=decision.iteration,
-                chosen_tool=decision.chosen_tool,
-                tool_args=decision.tool_args,
-                reasoning_summary=decision.reasoning_summary,
-                triggered_by=decision.triggered_by,
-                outcome=decision.outcome,
-                outcome_recorded_at=_to_iso(decision.outcome_recorded_at),
-                created_at=decision.created_at.isoformat(),
-            )
-            for decision in decision_rows
+            _to_supervisor_decision_trace_response(decision) for decision in decision_rows
         ],
+        llm_calls=[_to_llm_call_trace_response(llm_call) for llm_call in llm_rows],
+        timeline=_build_trace_timeline(
+            step_rows=list(step_rows),
+            decision_rows=list(decision_rows),
+            llm_rows=list(llm_rows),
+        ),
     )

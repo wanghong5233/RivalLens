@@ -8,8 +8,45 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from core.config import settings
+from router.run_rt import _build_run_summary_fields
+from service.metrics import RunMetricsSnapshot
 
 _TERMINAL_RUN_STATUSES = {"completed", "degraded", "failed"}
+
+
+def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
+    snapshot = RunMetricsSnapshot(
+        run_id="run_summary_fields",
+        coverage_rate=0.5,
+        evidence_count_total=3,
+        evidence_count_by_competitor={"comp_cursor": 2},
+        source_type_distribution={"web": 3},
+        desensitization_coverage=1.0,
+        qa_total_steps=2,
+        qa_rejected_steps=1,
+        qa_rejection_rate=0.5,
+        supervisor_iterations=4,
+        llm_token_total=1234,
+        llm_call_count=5,
+        llm_latency_p50_ms=321,
+        manual_review_rate=0.0,
+        manual_review_is_proxy=True,
+        run_wall_clock_seconds=42,
+    )
+
+    fields = _build_run_summary_fields(snapshot=snapshot, status="completed")
+
+    assert fields == {
+        "status": "completed",
+        "run_wall_clock_seconds": 42,
+        "llm_call_count": 5,
+        "llm_token_total": 1234,
+        "llm_latency_p50_ms": 321,
+        "coverage_rate": 0.5,
+        "evidence_count_total": 3,
+        "qa_rejection_rate": 0.5,
+        "supervisor_iterations": 4,
+    }
 
 
 def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 30.0) -> str:
