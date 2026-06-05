@@ -41,8 +41,13 @@ class ConductResearch(BaseModel):
 
 
 class ConductResearchBatch(BaseModel):
-    topics: list[ConductResearch] = Field(min_length=1, max_length=8)
+    topics: list[ConductResearch] = Field(min_length=1)
     parallelism_rationale: str
+
+    @field_validator("topics")
+    @classmethod
+    def _cap_topics(cls, value: list[ConductResearch]) -> list[ConductResearch]:
+        return value[:8]
 
 
 class Analyze(BaseModel):

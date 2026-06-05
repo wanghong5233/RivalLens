@@ -49,10 +49,16 @@ def resolve_writer_target_sections(
 def _filter_valid_section_ids(values: list[str]) -> list[str]:
     normalized: list[str] = []
     for value in values:
+        raw_value = value.strip()
         try:
-            normalized.append(validate_section_id(value))
+            canonical = validate_section_id(raw_value)
         except ValueError:
             continue
+        # Analyst-recommended sections must already be canonical section IDs.
+        # Free-form titles should fall back to insight dimensions.
+        if canonical != raw_value:
+            continue
+        normalized.append(canonical)
     return stable_unique(normalized)
 
 

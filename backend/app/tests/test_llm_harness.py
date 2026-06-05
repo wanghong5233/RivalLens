@@ -58,6 +58,10 @@ async def test_complete_structured_repairs_after_validation_failure() -> None:
     assert result.value is not None
     assert result.value.message == "valid"
     assert client.complete_json.await_count == 2
+    repair_prompt = client.complete_json.await_args_list[1].kwargs["user_prompt"]
+    assert "Previous invalid JSON output (must be corrected):" in repair_prompt
+    assert '{"message": "x"}' in repair_prompt
+    assert "repair:" in repair_prompt
 
 
 @pytest.mark.asyncio

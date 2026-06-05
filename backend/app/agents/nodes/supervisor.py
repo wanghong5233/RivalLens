@@ -414,7 +414,7 @@ def _decision_from_qa_feedback(
                 max_iterations=3,
                 fallback_to_offline=True,
             )
-            for competitor_id in competitors
+            for competitor_id in competitors[:8]
         ]
         if not topics:
             return None
