@@ -1,6 +1,6 @@
 ---
 name: writing-tech-article
-description: Write or refactor dense personal-portfolio tech writing — blog/Feishu 干货 and cross-project engineering playbook (跨项目工程直觉, publish 飞书/blog NOT GitHub). Use when editing `docs/private/tech-articles/*.md` or `docs/private/engineering-playbook/*.md`, or user asks 写技术博客/复习笔记/面试沉淀/干货/高密度/沉淀工程经验/playbook/第一性原理/跨项目复用/去AI味/用图表达. Do NOT use for README (writing-readme), problem records (writing-problem-records), or ADR (writing-architecture-docs). Tone: writing-deslop.
+description: Write or refactor dense personal-portfolio tech writing — blog/Feishu 干货 and cross-project engineering playbook (跨项目工程直觉, publish 飞书/blog NOT GitHub). Use when editing `docs/private/tech-articles/*.md` or `docs/private/engineering-playbook/*.md`, or user asks 写技术博客/复习笔记/面试沉淀/干货/高密度/沉淀工程经验/playbook/第一性原理/跨项目复用/去AI味/用图表达. Do NOT use for README (writing-readme), problem records (writing-problem-records), or ADR (writing-architecture-docs). Pairs with writing-deslop.
 ---
 
 # Writing Tech Articles

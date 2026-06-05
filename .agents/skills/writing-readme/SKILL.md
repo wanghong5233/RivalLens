@@ -1,6 +1,6 @@
 ---
 name: writing-readme
-description: Write or refactor public README per standard-readme spec + GitHub 10-second rule. Use when editing `README.md`/`README_EN.md`/subfolder README, or user asks 写/同步/修改/更新 README, or complains README has 口水话/啰嗦/AI味/AI痕迹/中英混写/不像专业 GitHub 项目. Do NOT use for `docs/*.md`. Tone: writing-deslop.
+description: Write or refactor public README per standard-readme spec + GitHub 10-second rule. Use when editing `README.md`/`README_EN.md`/subfolder README, or user asks 写/同步/修改/更新 README, or complains README has 口水话/啰嗦/AI味/AI痕迹/中英混写/不像专业 GitHub 项目. Do NOT use for `docs/*.md`. Pairs with writing-deslop.
 ---
 
 # Writing READMEs

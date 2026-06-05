@@ -1,6 +1,6 @@
 ---
 name: writing-architecture-docs
-description: Write or refactor architecture/design/ADR docs (current-state + first-principles form). Use when editing `docs/*设计*`/`*架构*`/`*ADR*`/`*RFC*`, or user asks write/修改 architecture/设计/ADR docs, or complains doc is 啰嗦/口水/AI味/AI痕迹/对话记录/辩证过程. Do NOT use for README (writing-readme) or problem records (writing-problem-records). Tone: writing-deslop.
+description: Write or refactor architecture/design/ADR docs (current-state + first-principles form). Use when editing `docs/*设计*`/`*架构*`/`*ADR*`/`*RFC*`, or user asks write/修改 architecture/设计/ADR docs, or complains doc is 啰嗦/口水/AI味/AI痕迹/对话记录/辩证过程. Do NOT use for README (writing-readme) or problem records (writing-problem-records). Pairs with writing-deslop.
 ---
 
 # Writing Architecture Docs

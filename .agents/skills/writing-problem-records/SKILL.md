@@ -1,6 +1,6 @@
 ---
 name: writing-problem-records
-description: Write or refactor problem records across the lifecycle — active Known-Issues/Backlog (unresolved, evidence-before-solution) and Pitfall Archive (converged recurring-failure invariants). Use when editing `docs/KNOWN_ISSUES_AND_BACKLOG*.md` / `*PITFALL*` / `*MANUAL*` / `*RUNBOOK*` / `*坑*`, or user asks 记录 bug/补 issue/整理待办/沉淀踩坑/故障复盘/不再犯同样错误, or an entry has 拍脑袋解法/补丁式方案/启发式/先入为主. Do NOT use for single postmortems (git/private) or cross-project playbook. Tone rules: writing-deslop.
+description: Write or refactor problem records across the lifecycle — active Known-Issues/Backlog (unresolved, evidence-before-solution) and Pitfall Archive (converged recurring-failure invariants). Use when editing `docs/KNOWN_ISSUES_AND_BACKLOG*.md` / `*PITFALL*` / `*MANUAL*` / `*RUNBOOK*` / `*坑*`, or user asks 记录 bug/补 issue/整理待办/沉淀踩坑/故障复盘/不再犯同样错误, or an entry has 拍脑袋解法/补丁式方案/启发式/先入为主. Do NOT use for single postmortems (git/private) or cross-project playbook. Pairs with writing-deslop.
 ---
 
 # Writing Problem Records
