@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import nullcontext
 from functools import lru_cache
 import re
 from typing import Any, Literal, TypedDict
@@ -29,7 +30,7 @@ from service.llm import (
 from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
 from service.skill_store import get_skill_store
-from utils.logger import get_logger
+from utils.logger import bind_step, get_logger
 
 MAX_REACT_TURNS = 6
 COMPRESS_AFTER_TURNS = 4
@@ -68,8 +69,49 @@ def _safe_tool_args_summary(args: dict[str, object]) -> dict[str, Any]:
     return summary
 
 
+def _state_step_id(state: ResearcherSubState) -> str | None:
+    step_id = state.get("step_id")
+    return step_id if isinstance(step_id, str) and step_id.strip() else None
+
+
+def _tool_result_diagnostics(observation_row: dict[str, object]) -> dict[str, object]:
+    result_section = observation_row.get("result")
+    if not isinstance(result_section, dict):
+        return {
+            "snippet_count": 0,
+            "snippet_preview": None,
+            "source_type_distribution": {},
+        }
+    snippets_section = result_section.get("snippets")
+    if not isinstance(snippets_section, list):
+        return {
+            "snippet_count": 0,
+            "snippet_preview": None,
+            "source_type_distribution": {},
+        }
+
+    source_type_distribution: dict[str, int] = {}
+    snippet_preview: str | None = None
+    for snippet in snippets_section:
+        if not isinstance(snippet, dict):
+            continue
+        source_type_raw = snippet.get("source_type")
+        source_type = source_type_raw if isinstance(source_type_raw, str) else "unknown"
+        source_type_distribution[source_type] = source_type_distribution.get(source_type, 0) + 1
+        if snippet_preview is None:
+            quote_raw = snippet.get("sanitized_text") or snippet.get("quote")
+            if isinstance(quote_raw, str) and quote_raw.strip():
+                snippet_preview = quote_raw.strip()[:TOOL_ERROR_PREVIEW_LIMIT]
+    return {
+        "snippet_count": len(snippets_section),
+        "snippet_preview": snippet_preview,
+        "source_type_distribution": source_type_distribution,
+    }
+
+
 class ResearcherSubState(TypedDict, total=False):
     run_id: str
+    step_id: str | None
     research_topic: str
     competitor_id: str
     focus_dimensions: list[FocusDimension]
@@ -413,6 +455,7 @@ def _needs_compress(state: ResearcherSubState) -> bool:
 
 
 async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
+    step_id = _state_step_id(state)
     max_turns = int(state.get("max_turns", MAX_REACT_TURNS))
     if int(state.get("turn_count", 0)) >= max_turns:
         return {
@@ -460,28 +503,30 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         discovered_urls=discovered_urls,
     )
     pending_dimensions = list(state.get("pending_dimensions", []))
-    harness_result = await complete_structured(
-        model_slot="research",
-        system_prompt=RESEARCHER_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        output_model=ResearcherDecisionOutput,
-        parser=ResearcherDecisionOutput.parse_llm_content,
-        fallback_system_prompt=RESEARCHER_SYSTEM_PROMPT,
-        fallback_user_prompt=build_researcher_fallback_user_prompt(
-            competitor_id=state["competitor_id"],
-            pending_dimensions=pending_dimensions,
-            queried_dimensions=list(state.get("queried_dimensions", [])),
-            turn_count=int(state.get("turn_count", 0)),
-            max_turns=max_turns,
-            domain_hint=domain_hint,
-        ),
-        repair_user_prompt_builder=lambda errors: build_researcher_repair_user_prompt(
-            validation_errors=errors,
-            competitor_id=state["competitor_id"],
-            pending_dimensions=pending_dimensions,
-        ),
-        log_event="researcher.harness.finish",
-    )
+    log_context = bind_step(step_id) if step_id is not None else nullcontext()
+    with log_context:
+        harness_result = await complete_structured(
+            model_slot="research",
+            system_prompt=RESEARCHER_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            output_model=ResearcherDecisionOutput,
+            parser=ResearcherDecisionOutput.parse_llm_content,
+            fallback_system_prompt=RESEARCHER_SYSTEM_PROMPT,
+            fallback_user_prompt=build_researcher_fallback_user_prompt(
+                competitor_id=state["competitor_id"],
+                pending_dimensions=pending_dimensions,
+                queried_dimensions=list(state.get("queried_dimensions", [])),
+                turn_count=int(state.get("turn_count", 0)),
+                max_turns=max_turns,
+                domain_hint=domain_hint,
+            ),
+            repair_user_prompt_builder=lambda errors: build_researcher_repair_user_prompt(
+                validation_errors=errors,
+                competitor_id=state["competitor_id"],
+                pending_dimensions=pending_dimensions,
+            ),
+            log_event="researcher.harness.finish",
+        )
     llm_response = harness_result.llm_response
 
     llm_calls = list(state.get("llm_calls", []))
@@ -623,6 +668,7 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
 
     run_id_raw = state.get("run_id")
     run_id = run_id_raw if isinstance(run_id_raw, str) else None
+    step_id = _state_step_id(state)
     competitor_id_raw = state.get("competitor_id")
     competitor_id = competitor_id_raw if isinstance(competitor_id_raw, str) else None
     turn_index = int(state.get("turn_count", 0)) + 1
@@ -632,6 +678,7 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         await emit_run_event(
             run_id=run_id,
             event_type=RunEventType.TOOL_START,
+            step_id=step_id,
             payload={
                 "tool": action_raw,
                 "competitor_id": competitor_id,
@@ -644,7 +691,9 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     tool_started_at = time.monotonic()
     tool_exc: Exception | None = None
     try:
-        observation = await registry.invoke(channel_action, args=action_args)
+        log_context = bind_step(step_id) if step_id is not None else nullcontext()
+        with log_context:
+            observation = await registry.invoke(channel_action, args=action_args)
         observation_row = {
             "tool": action_raw,
             "args": observation.args,
@@ -666,25 +715,22 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         }
     latency_ms = int((time.monotonic() - tool_started_at) * 1000)
     log_fields = _tool_observation_log_fields(observation_row=observation_row, exc=tool_exc)
+    result_diagnostics = _tool_result_diagnostics(observation_row)
 
     if run_id is not None:
-        snippet_count = 0
-        if log_fields["success"]:
-            result_section = observation_row.get("result")
-            if isinstance(result_section, dict):
-                snippets_section = result_section.get("snippets")
-                if isinstance(snippets_section, list):
-                    snippet_count = len(snippets_section)
         await emit_run_event(
             run_id=run_id,
             event_type=RunEventType.TOOL_FINISH,
+            step_id=step_id,
             payload={
                 "tool": action_raw,
                 "competitor_id": competitor_id,
                 "dimension": dimension,
                 "turn": turn_index,
                 "success": log_fields["success"],
-                "snippet_count": snippet_count,
+                "snippet_count": result_diagnostics["snippet_count"],
+                "snippet_preview": result_diagnostics["snippet_preview"],
+                "source_type_distribution": result_diagnostics["source_type_distribution"],
                 "latency_ms": latency_ms,
                 "error_class": log_fields["error_class"],
                 "error_preview": log_fields["error_preview"],
@@ -745,16 +791,22 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     messages = list(state.get("messages", []))
     messages.append({"role": "tool", "content": str(observation_row)})
     next_turn_count = int(state.get("turn_count", 0)) + 1
-    log.info(
-        "researcher.tool_call",
-        tool=action_raw,
-        dimension=dimension,
-        competitor_id=state.get("competitor_id"),
-        turn_count=next_turn_count,
-        success=log_fields["success"],
-        error_class=log_fields["error_class"],
-        error_preview=log_fields["error_preview"],
-    )
+    log_context = bind_step(step_id) if step_id is not None else nullcontext()
+    with log_context:
+        log.info(
+            "researcher.tool_call",
+            tool=action_raw,
+            dimension=dimension,
+            competitor_id=state.get("competitor_id"),
+            turn_count=next_turn_count,
+            success=log_fields["success"],
+            snippet_count=result_diagnostics["snippet_count"],
+            snippet_preview=result_diagnostics["snippet_preview"],
+            source_type_distribution=result_diagnostics["source_type_distribution"],
+            latency_ms=latency_ms,
+            error_class=log_fields["error_class"],
+            error_preview=log_fields["error_preview"],
+        )
 
     return {
         **state,
@@ -771,6 +823,7 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
 
 
 async def compress(state: ResearcherSubState) -> ResearcherSubState:
+    step_id = _state_step_id(state)
     compressed_summary_raw = state.get("compressed_summary", "")
     prior_summary = compressed_summary_raw if isinstance(compressed_summary_raw, str) else ""
     user_prompt = build_compression_user_prompt(
@@ -780,23 +833,25 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
         compressed_summary=prior_summary,
     )
     observations_log = list(state.get("observations_log", []))
-    harness_result = await complete_structured(
-        model_slot="compression",
-        system_prompt=RESEARCHER_COMPRESSION_PROMPT,
-        user_prompt=user_prompt,
-        output_model=ResearcherCompressionOutput,
-        parser=ResearcherCompressionOutput.parse_llm_content,
-        fallback_system_prompt=RESEARCHER_COMPRESSION_PROMPT,
-        fallback_user_prompt=build_compression_fallback_user_prompt(
-            observations_log=observations_log,
-            evidence_drafts=list(state.get("evidence_drafts", [])),
-        ),
-        repair_user_prompt_builder=lambda errors: build_compression_repair_user_prompt(
-            validation_errors=errors,
-            observation_count=len(observations_log),
-        ),
-        log_event="researcher.compress.harness.finish",
-    )
+    log_context = bind_step(step_id) if step_id is not None else nullcontext()
+    with log_context:
+        harness_result = await complete_structured(
+            model_slot="compression",
+            system_prompt=RESEARCHER_COMPRESSION_PROMPT,
+            user_prompt=user_prompt,
+            output_model=ResearcherCompressionOutput,
+            parser=ResearcherCompressionOutput.parse_llm_content,
+            fallback_system_prompt=RESEARCHER_COMPRESSION_PROMPT,
+            fallback_user_prompt=build_compression_fallback_user_prompt(
+                observations_log=observations_log,
+                evidence_drafts=list(state.get("evidence_drafts", [])),
+            ),
+            repair_user_prompt_builder=lambda errors: build_compression_repair_user_prompt(
+                validation_errors=errors,
+                observation_count=len(observations_log),
+            ),
+            log_event="researcher.compress.harness.finish",
+        )
     llm_response = harness_result.llm_response
 
     llm_calls = list(state.get("llm_calls", []))
@@ -809,12 +864,14 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
     next_compression_count = int(state.get("compression_count", 0)) + 1
     pruned_observations = _archive_observations_log(list(state.get("observations_log", [])))
     pruned_briefs = list(state.get("observation_briefs", []))[-12:]
-    log.info(
-        "researcher.compress",
-        compression_count=next_compression_count,
-        observations_count=len(state.get("observations_log", [])),
-        summary_len=len(summary),
-    )
+    log_context = bind_step(step_id) if step_id is not None else nullcontext()
+    with log_context:
+        log.info(
+            "researcher.compress",
+            compression_count=next_compression_count,
+            observations_count=len(state.get("observations_log", [])),
+            summary_len=len(summary),
+        )
 
     return {
         **state,
@@ -833,22 +890,27 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
 
 
 async def finalize(state: ResearcherSubState) -> ResearcherSubState:
+    step_id = _state_step_id(state)
     if state.get("final_summary"):
         final_summary = state.get("final_summary")
-        log.info(
-            "researcher.finalize",
-            evidence_draft_count=len(state.get("evidence_drafts", [])),
-            final_summary_len=len(final_summary) if isinstance(final_summary, str) else 0,
-        )
+        log_context = bind_step(step_id) if step_id is not None else nullcontext()
+        with log_context:
+            log.info(
+                "researcher.finalize",
+                evidence_draft_count=len(state.get("evidence_drafts", [])),
+                final_summary_len=len(final_summary) if isinstance(final_summary, str) else 0,
+            )
         return state
 
     observations = list(state.get("observations_log", []))
     final_summary = f"finalized with {len(observations)} observations"
-    log.info(
-        "researcher.finalize",
-        evidence_draft_count=len(state.get("evidence_drafts", [])),
-        final_summary_len=len(final_summary),
-    )
+    log_context = bind_step(step_id) if step_id is not None else nullcontext()
+    with log_context:
+        log.info(
+            "researcher.finalize",
+            evidence_draft_count=len(state.get("evidence_drafts", [])),
+            final_summary_len=len(final_summary),
+        )
     return {
         **state,
         "final_summary": final_summary,

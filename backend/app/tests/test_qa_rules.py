@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 
 from models.evidence import EvidenceRecord
 from schemas.qa import Approval, Rejection
-from service.qa.engine import build_qa_outcome
+from service.llm.response import LLMResponse
+from service.qa.engine import (
+    _build_qa_fast_path_log_fields,
+    _build_qa_slow_path_log_fields,
+    build_qa_outcome,
+)
 from service.qa.rules import (
     RuleResult,
     rule_evidence_must_be_desensitized,
@@ -150,6 +155,87 @@ def test_engine_aggregation_rejects_when_blocking_failed() -> None:
     assert isinstance(result, Rejection)
     assert result.reject_to == "writer"
     assert "rule_report_must_have_markdown_content" in result.failed_rule_ids
+
+
+def test_build_qa_fast_path_log_fields_surfaces_rule_ids_and_promoted_counts() -> None:
+    rule_results = [
+        RuleResult(
+            rule_id="rule_writer_must_cite_evidence",
+            passed=False,
+            severity="blocking",
+            reject_to="writer",
+            message="missing evidence",
+        ),
+        RuleResult(
+            rule_id="rule_writer_no_fallback_mode",
+            passed=True,
+            severity="blocking",
+            reject_to="writer",
+            message="ok",
+        ),
+    ]
+
+    fields = _build_qa_fast_path_log_fields(
+        mode="applied",
+        rule_results=rule_results,
+        promoted_qa_rule_ids=["rule_pricing"],
+        promoted_rule_metadata={
+            "promoted_qa_enforced_count": 1,
+            "promoted_qa_parse_error_count": 0,
+            "promoted_qa_blocked_rule_ids": ["rule_promoted_rule_pricing"],
+        },
+    )
+
+    assert fields["failed_rule_ids"] == ["rule_writer_must_cite_evidence"]
+    assert fields["blocking_failed_rule_ids"] == ["rule_writer_must_cite_evidence"]
+    assert fields["promoted_qa_rule_ids"] == ["rule_pricing"]
+    assert fields["promoted_qa_blocked_rule_ids"] == ["rule_promoted_rule_pricing"]
+    assert fields["promoted_qa_enforced_count"] == 1
+    assert fields["promoted_qa_parse_error_count"] == 0
+
+
+def test_build_qa_slow_path_log_fields_surfaces_semantic_preview() -> None:
+    rule_results = [
+        RuleResult(
+            rule_id="rule_qa_semantic_audit",
+            passed=False,
+            severity="blocking",
+            reject_to="writer",
+            message="semantic issue",
+        )
+    ]
+    response = LLMResponse(
+        model_slot="qa",
+        provider="fake",
+        model_name="fake-qa",
+        prompt_preview="preview",
+        prompt_hash="hash",
+        content={},
+        prompt_tokens=1,
+        completion_tokens=1,
+        latency_ms=1,
+        error=None,
+        fallback_used=False,
+    )
+
+    fields = _build_qa_slow_path_log_fields(
+        mode="applied",
+        rule_results=rule_results,
+        semantic_output={
+            "semantic_audit_passed": False,
+            "finding": "x" * 350,
+            "reject_to": "writer",
+            "severity": "blocking",
+        },
+        semantic_response=response,
+        schema_error="finding is required",
+    )
+
+    assert fields["failed_rule_ids"] == ["rule_qa_semantic_audit"]
+    assert fields["semantic_finding_preview"] == "x" * 300
+    assert fields["semantic_reject_to"] == "writer"
+    assert fields["semantic_severity"] == "blocking"
+    assert fields["schema_error"] == "finding is required"
 
 
 def test_engine_aggregation_approves_when_all_rules_pass() -> None:

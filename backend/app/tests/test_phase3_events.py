@@ -247,6 +247,7 @@ async def test_tool_exec_emits_start_and_finish_on_success(
 
     state: ResearcherSubState = {
         "run_id": "run_phase3_tool",
+        "step_id": "step_phase3_tool",
         "competitor_id": "Notion",
         "turn_count": 0,
         "pending_action_args": {
@@ -272,20 +273,24 @@ async def test_tool_exec_emits_start_and_finish_on_success(
         RunEventType.TOOL_FINISH,
     ]
 
-    start_event_type, _, start_payload = captured[0]
+    start_event_type, start_step_id, start_payload = captured[0]
     assert start_event_type == RunEventType.TOOL_START
+    assert start_step_id == "step_phase3_tool"
     assert start_payload["tool"] == "search_web"
     assert start_payload["competitor_id"] == "Notion"
     assert start_payload["dimension"] == "pricing"
     assert start_payload["turn"] == 1
     assert start_payload["args_summary"] == {"query": "notion pricing", "max_results": 5}
 
-    finish_event_type, _, finish_payload = captured[1]
+    finish_event_type, finish_step_id, finish_payload = captured[1]
     assert finish_event_type == RunEventType.TOOL_FINISH
+    assert finish_step_id == "step_phase3_tool"
     assert finish_payload["tool"] == "search_web"
     assert finish_payload["competitor_id"] == "Notion"
     assert finish_payload["success"] is True
     assert finish_payload["snippet_count"] == 3
+    assert finish_payload["snippet_preview"] == "s0"
+    assert finish_payload["source_type_distribution"] == {"article": 3}
     assert finish_payload["error"] is None
     assert isinstance(finish_payload["latency_ms"], int)
     assert finish_payload["turn"] == 1
@@ -305,6 +310,7 @@ async def test_tool_exec_emits_finish_with_error_on_channel_failure(
 
     state: ResearcherSubState = {
         "run_id": "run_phase3_tool_err",
+        "step_id": "step_phase3_tool_err",
         "competitor_id": "Notion",
         "turn_count": 0,
         "pending_action_args": {
@@ -325,9 +331,11 @@ async def test_tool_exec_emits_finish_with_error_on_channel_failure(
         RunEventType.TOOL_START,
         RunEventType.TOOL_FINISH,
     ]
-    _, _, finish_payload = captured[1]
+    _, finish_step_id, finish_payload = captured[1]
+    assert finish_step_id == "step_phase3_tool_err"
     assert finish_payload["success"] is False
     assert finish_payload["snippet_count"] == 0
+    assert finish_payload["source_type_distribution"] == {}
     error_text = finish_payload["error"]
     assert isinstance(error_text, str)
     assert "network unavailable" in error_text

@@ -51,6 +51,7 @@ def _resolve_focus_dimensions(
 def _build_initial_substate(
     *,
     run_id: str,
+    step_id: str,
     request: ConductResearch,
     focus_dimensions: list[FocusDimension],
     domain_hint: str | None,
@@ -58,6 +59,7 @@ def _build_initial_substate(
 ) -> ResearcherSubState:
     return {
         "run_id": run_id,
+        "step_id": step_id,
         "research_topic": request.research_topic,
         "competitor_id": request.competitor_id,
         "focus_dimensions": list(focus_dimensions),
@@ -275,16 +277,6 @@ async def researcher_node(state: AgentState) -> AgentState:
     )
 
     focus_dimensions = _resolve_focus_dimensions(request=request)
-    subgraph = get_researcher_subgraph()
-    subgraph_input = _build_initial_substate(
-        run_id=run_id,
-        request=request,
-        focus_dimensions=focus_dimensions,
-        domain_hint=domain_hint,
-        reference_urls=reference_urls,
-    )
-    subgraph_output = await subgraph.ainvoke(subgraph_input)
-
     step_id = make_id("step_")
     await emit_run_event(
         run_id=run_id,
@@ -295,6 +287,17 @@ async def researcher_node(state: AgentState) -> AgentState:
             "competitor_id": request.competitor_id,
         },
     )
+    subgraph = get_researcher_subgraph()
+    subgraph_input = _build_initial_substate(
+        run_id=run_id,
+        step_id=step_id,
+        request=request,
+        focus_dimensions=focus_dimensions,
+        domain_hint=domain_hint,
+        reference_urls=reference_urls,
+    )
+    subgraph_output = await subgraph.ainvoke(subgraph_input)
+
     collected_at = datetime.now(timezone.utc)
     evidence_rows, evidence_ids = _build_evidence_rows(
         run_id=run_id,

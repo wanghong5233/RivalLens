@@ -267,6 +267,74 @@ def _build_promoted_rule_results(
     }
 
 
+def _build_qa_fast_path_log_fields(
+    *,
+    mode: str,
+    rule_results: list[RuleResult],
+    promoted_qa_rule_ids: list[str],
+    promoted_rule_metadata: dict[str, object],
+) -> dict[str, object]:
+    failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
+    blocking_failed_rule_ids = [
+        item.rule_id
+        for item in rule_results
+        if (not item.passed and item.severity == "blocking")
+    ]
+    return {
+        "mode": mode,
+        "rule_count": len(rule_results),
+        "failed_rule_count": len(failed_rule_ids),
+        "blocking_failed_rule_count": len(blocking_failed_rule_ids),
+        "failed_rule_ids": failed_rule_ids,
+        "blocking_failed_rule_ids": blocking_failed_rule_ids,
+        "promoted_qa_rule_ids": promoted_qa_rule_ids,
+        "promoted_qa_blocked_rule_ids": list(
+            promoted_rule_metadata.get("promoted_qa_blocked_rule_ids", [])
+        ),
+        "promoted_qa_enforced_count": promoted_rule_metadata.get(
+            "promoted_qa_enforced_count",
+            0,
+        ),
+        "promoted_qa_parse_error_count": promoted_rule_metadata.get(
+            "promoted_qa_parse_error_count",
+            0,
+        ),
+    }
+
+
+def _build_qa_slow_path_log_fields(
+    *,
+    mode: str,
+    rule_results: list[RuleResult],
+    semantic_output: dict[str, object] | None,
+    semantic_response: LLMResponse,
+    schema_error: str | None,
+) -> dict[str, object]:
+    failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
+    finding_raw = semantic_output.get("finding") if semantic_output is not None else None
+    reject_to_raw = semantic_output.get("reject_to") if semantic_output is not None else None
+    severity_raw = semantic_output.get("severity") if semantic_output is not None else None
+    semantic_audit_passed = (
+        bool(semantic_output.get("semantic_audit_passed"))
+        if semantic_output is not None
+        else False
+    )
+    return {
+        "mode": mode,
+        "semantic_audit_passed": semantic_audit_passed,
+        "fallback_used": semantic_response.fallback_used,
+        "has_error": semantic_response.error is not None,
+        "failed_rule_count": len(failed_rule_ids),
+        "failed_rule_ids": failed_rule_ids,
+        "semantic_finding_preview": (
+            finding_raw[:300] if isinstance(finding_raw, str) else None
+        ),
+        "semantic_reject_to": reject_to_raw if isinstance(reject_to_raw, str) else None,
+        "semantic_severity": severity_raw if isinstance(severity_raw, str) else None,
+        "schema_error": schema_error,
+    }
+
+
 async def evaluate_report(
     *,
     run_id: str,
@@ -288,18 +356,25 @@ async def evaluate_report(
         ).scalars().all()
 
     if report is None or report.run_id != run_id:
-        log.info(
-            "qa.fast_path",
-            mode="skipped_missing_report",
-            failed_rule_count=1,
-            blocking_failed_rule_count=1,
-        )
         missing_report = RuleResult(
             rule_id="rule_report_exists",
             passed=False,
             severity="blocking",
             reject_to="writer",
             message=f"QA cannot find report_id={report_id} in run_id={run_id}.",
+        )
+        log.info(
+            "qa.fast_path",
+            **_build_qa_fast_path_log_fields(
+                mode="skipped_missing_report",
+                rule_results=[missing_report],
+                promoted_qa_rule_ids=promoted_rule_ids,
+                promoted_rule_metadata={
+                    "promoted_qa_enforced_count": 0,
+                    "promoted_qa_parse_error_count": 0,
+                    "promoted_qa_blocked_rule_ids": [],
+                },
+            ),
         )
         return build_qa_outcome(
             target_step_id=target_step_id,
@@ -331,11 +406,11 @@ async def evaluate_report(
     failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
     log.info(
         "qa.fast_path",
-        mode="applied",
-        rule_count=len(rule_results),
-        failed_rule_count=len(failed_rule_ids),
-        blocking_failed_rule_count=sum(
-            1 for item in rule_results if (not item.passed and item.severity == "blocking")
+        **_build_qa_fast_path_log_fields(
+            mode="applied",
+            rule_results=rule_results,
+            promoted_qa_rule_ids=promoted_rule_ids,
+            promoted_rule_metadata=promoted_rule_metadata,
         ),
     )
     evidence_briefs = _build_evidence_briefs(evidence_items)
@@ -428,10 +503,12 @@ async def evaluate_report(
     }
     log.info(
         "qa.slow_path",
-        mode=semantic_mode,
-        semantic_audit_passed=semantic_audit_passed,
-        fallback_used=semantic_response.fallback_used,
-        has_error=semantic_response.error is not None,
-        failed_rule_count=len(failed_rule_ids),
+        **_build_qa_slow_path_log_fields(
+            mode=semantic_mode,
+            rule_results=rule_results,
+            semantic_output=semantic_output,
+            semantic_response=semantic_response,
+            schema_error=harness_result.schema_error,
+        ),
     )
     return outcome, semantic_response, semantic_metadata

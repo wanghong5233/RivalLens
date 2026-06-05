@@ -25,6 +25,24 @@ from utils.log_node import log_node
 from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.discovery")
+_DISCOVERY_SNIPPET_SAMPLE_LIMIT = 3
+_DISCOVERY_SNIPPET_PREVIEW_LIMIT = 220
+
+
+def _build_snippet_sample(*, snippet: object, query: str) -> dict[str, object] | None:
+    quote = getattr(snippet, "sanitized_text", None) or getattr(snippet, "quote", None)
+    if not isinstance(quote, str) or not quote.strip():
+        return None
+    source_title = getattr(snippet, "source_title", None)
+    source_url = getattr(snippet, "source_url", None)
+    source_type = getattr(snippet, "source_type", None)
+    return {
+        "source_title": source_title if isinstance(source_title, str) else None,
+        "source_url": source_url if isinstance(source_url, str) else None,
+        "source_type": source_type if isinstance(source_type, str) else None,
+        "quote_preview": quote.strip()[:_DISCOVERY_SNIPPET_PREVIEW_LIMIT],
+        "query": query,
+    }
 
 
 @log_node("discovery")
@@ -55,6 +73,7 @@ async def discovery_node(state: AgentState) -> AgentState:
 
     registry = get_channel_registry()
     all_snippets: list[str] = []
+    snippet_samples: list[dict[str, object]] = []
 
     for query in search_queries[:5]:
         await emit_run_event(
@@ -80,6 +99,10 @@ async def discovery_node(state: AgentState) -> AgentState:
                 if text:
                     all_snippets.append(text[:500])
                     snippets_added += 1
+                    if len(snippet_samples) < _DISCOVERY_SNIPPET_SAMPLE_LIMIT:
+                        sample = _build_snippet_sample(snippet=snippet, query=query)
+                        if sample is not None:
+                            snippet_samples.append(sample)
         except ChannelError as exc:
             # Channel boundary contract: every recoverable failure inside the
             # search channel (rate-limit, timeout, auth, no-snippet) is
@@ -111,6 +134,7 @@ async def discovery_node(state: AgentState) -> AgentState:
 
     discovered: list[str] = []
     extract_error: str | None = None
+    extract_outcome: str | None = None
     snippet_count = len(all_snippets)
     if all_snippets:
         combined_results = "\n---\n".join(all_snippets[:20])
@@ -138,6 +162,7 @@ async def discovery_node(state: AgentState) -> AgentState:
                 ),
                 log_event="discovery.harness.finish",
             )
+            extract_outcome = harness_result.outcome
             if harness_result.value is not None:
                 discovered = list(harness_result.value.competitors)
             elif harness_result.llm_response.error is not None:
@@ -155,8 +180,11 @@ async def discovery_node(state: AgentState) -> AgentState:
         log.info(
             "discovery.complete",
             discovered_count=len(discovered),
+            discovered_competitors=discovered,
             snippet_count=snippet_count,
+            snippet_samples=snippet_samples,
             queries=search_queries,
+            extract_outcome=extract_outcome,
             extract_error=extract_error,
         )
 
@@ -169,6 +197,8 @@ async def discovery_node(state: AgentState) -> AgentState:
                 **(step_record.payload or {}),
                 "discovered_competitors": discovered,
                 "snippet_count": snippet_count,
+                "snippet_samples": snippet_samples,
+                "extract_outcome": extract_outcome,
                 "extract_error": extract_error,
             }
             await session.commit()
