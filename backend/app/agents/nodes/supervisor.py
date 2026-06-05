@@ -6,7 +6,11 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
-from core.defaults import DEFAULT_FOCUS_DIMENSIONS
+from core.defaults import (
+    DEFAULT_FOCUS_DIMENSIONS,
+    MAX_RESEARCH_COMPETITORS,
+    MAX_WRITE_SECTIONS,
+)
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.run import Run
@@ -107,7 +111,7 @@ def _derive_focus_dimensions(*, user_query: str, competitors: list[str]) -> list
 
 def _derive_write_sections(*, focus_dimensions: list[str]) -> list[str]:
     sections = _stable_unique([*focus_dimensions, "differentiation"])
-    return sections[:8]
+    return sections[:MAX_WRITE_SECTIONS]
 
 
 def _now_iso() -> str:
@@ -188,7 +192,7 @@ def _fallback_decision(
                 max_iterations=6,
                 fallback_to_offline=True,
             )
-            for competitor_id in pending_competitors[:8]
+            for competitor_id in pending_competitors[:MAX_RESEARCH_COMPETITORS]
         ]
         args = ConductResearchBatch(
             topics=topics,
@@ -415,7 +419,7 @@ def _decision_from_qa_feedback(
                 max_iterations=3,
                 fallback_to_offline=True,
             )
-            for competitor_id in competitors[:8]
+            for competitor_id in competitors[:MAX_RESEARCH_COMPETITORS]
         ]
         if not topics:
             return None

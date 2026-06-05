@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from core.defaults import MAX_RESEARCH_COMPETITORS
 from schemas.contracts import (
     validate_dimension,
     validate_section_id,
@@ -47,7 +48,7 @@ class ConductResearchBatch(BaseModel):
     @field_validator("topics")
     @classmethod
     def _cap_topics(cls, value: list[ConductResearch]) -> list[ConductResearch]:
-        return value[:8]
+        return value[:MAX_RESEARCH_COMPETITORS]
 
 
 class Analyze(BaseModel):

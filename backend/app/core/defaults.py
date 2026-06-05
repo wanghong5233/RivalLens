@@ -8,3 +8,10 @@ from __future__ import annotations
 
 # Default focus dimensions used when intake / LLM does not specify any.
 DEFAULT_FOCUS_DIMENSIONS: tuple[str, ...] = ("feature", "pricing", "user_feedback")
+
+# Entity caps. Values are kept identical to the pre-S1 scattered literals so
+# this consolidation is behavior-preserving.
+MAX_RESEARCH_COMPETITORS: int = 8
+MAX_DISCOVERY_COMPETITORS: int = 10
+MAX_TOTAL_PLAN_TASKS: int = 12
+MAX_WRITE_SECTIONS: int = 8

@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from agents.nodes.planner import reconcile_plan_tree_after_discovery
+from core.defaults import MAX_DISCOVERY_COMPETITORS, MAX_RESEARCH_COMPETITORS
 from schemas.plan import PlanTask, PlanTree
+from utils.logger import configure_logging
 
 
 def test_reconcile_plan_tree_inserts_research_tasks_after_discover() -> None:
@@ -49,4 +55,38 @@ def test_reconcile_plan_tree_skips_duplicate_competitors() -> None:
     ]
     assert research_competitors == ["Notion", "Cursor"]
     assert reconciled.version == 4
+
+
+def test_reconcile_plan_tree_logs_discovery_cap(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+    plan = PlanTree(
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    competitors = [f"Competitor {index}" for index in range(MAX_DISCOVERY_COMPETITORS)]
+
+    reconciled = reconcile_plan_tree_after_discovery(
+        plan_tree=plan,
+        discovered_competitors=competitors,
+    )
+
+    research_competitors = [
+        task.competitor_id for task in reconciled.tasks if task.stage == "research"
+    ]
+    assert research_competitors == competitors[:MAX_RESEARCH_COMPETITORS]
+    logged = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if "planner.reconcile.discovery_capped" in line
+    ]
+    assert logged
+    assert logged[-1]["cap"] == MAX_RESEARCH_COMPETITORS
+    assert logged[-1]["kept_count"] == MAX_RESEARCH_COMPETITORS
+    assert logged[-1]["discovered_count"] == MAX_DISCOVERY_COMPETITORS
+    assert logged[-1]["dropped_competitors"] == competitors[MAX_RESEARCH_COMPETITORS:]
 

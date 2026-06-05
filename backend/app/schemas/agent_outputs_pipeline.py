@@ -4,7 +4,12 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from core.defaults import DEFAULT_FOCUS_DIMENSIONS
+from core.defaults import (
+    DEFAULT_FOCUS_DIMENSIONS,
+    MAX_DISCOVERY_COMPETITORS,
+    MAX_RESEARCH_COMPETITORS,
+    MAX_TOTAL_PLAN_TASKS,
+)
 from schemas.contracts import validate_dimension
 from schemas.intake import IntakeClarifyRequest, RunIntakeDraft
 from schemas.plan import PlanTask, PlanTaskStage
@@ -54,8 +59,6 @@ INTAKE_PATCHABLE_FIELDS: frozenset[str] = frozenset(
     }
 )
 PLANNER_VALID_STAGES: frozenset[str] = frozenset({"discover", "research", "analyze", "write"})
-PLANNER_MAX_RESEARCH_TASKS = 8
-PLANNER_MAX_TOTAL_TASKS = 12
 SUPERVISOR_VALID_TOOLS: frozenset[str] = frozenset(
     {
         "DiscoverCompetitors",
@@ -67,7 +70,6 @@ SUPERVISOR_VALID_TOOLS: frozenset[str] = frozenset(
     }
 )
 DISCOVERY_MIN_COMPETITORS = 1
-DISCOVERY_MAX_COMPETITORS = 10
 
 
 class IntakeClarifyOutput(BaseModel):
@@ -179,7 +181,7 @@ class PlannerOutput(BaseModel):
             if stage_raw == "research":
                 if competitor_id is None:
                     continue
-                if research_count >= PLANNER_MAX_RESEARCH_TASKS:
+                if research_count >= MAX_RESEARCH_COMPETITORS:
                     continue
                 research_count += 1
             focus_raw = item.get("focus_dimensions")
@@ -198,7 +200,7 @@ class PlannerOutput(BaseModel):
                     focus_dimensions=focus,
                 )
             )
-            if len(parsed_tasks) >= PLANNER_MAX_TOTAL_TASKS:
+            if len(parsed_tasks) >= MAX_TOTAL_PLAN_TASKS:
                 break
         if not parsed_tasks:
             raise ValueError("No valid planner tasks remain after validation")
@@ -275,7 +277,7 @@ class DiscoveryExtractOutput(BaseModel):
                 normalized.append(name)
         if len(normalized) < DISCOVERY_MIN_COMPETITORS:
             raise ValueError("competitors must contain at least one name")
-        return normalized[:DISCOVERY_MAX_COMPETITORS]
+        return normalized[:MAX_DISCOVERY_COMPETITORS]
 
     @classmethod
     def parse_llm_content(cls, content: dict[str, object]) -> DiscoveryExtractOutput:

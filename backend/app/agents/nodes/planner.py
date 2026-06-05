@@ -13,7 +13,11 @@ from agents.state_coercion import (
     coerce_pending_plan_tree,
     coerce_plan_tree,
 )
-from core.defaults import DEFAULT_FOCUS_DIMENSIONS
+from core.defaults import (
+    DEFAULT_FOCUS_DIMENSIONS,
+    MAX_RESEARCH_COMPETITORS,
+    MAX_TOTAL_PLAN_TASKS,
+)
 from db.engine import get_session_factory
 from models.llm_call import LLMCall
 from models.run import Run
@@ -36,8 +40,6 @@ from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.planner")
 
-_MAX_RESEARCH_TASKS = 8
-_MAX_TOTAL_TASKS = 12
 # Phase β: cap user-injected tasks. Backend defends; FE should also enforce so
 # the validation message reaches the user before a round-trip.
 _MAX_ADDITIONAL_TASKS = 5
@@ -77,7 +79,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
                 focus_dimensions=focus,
             )
         )
-    for competitor in competitors[:_MAX_RESEARCH_TASKS]:
+    for competitor in competitors[:MAX_RESEARCH_COMPETITORS]:
         tasks.append(
             PlanTask(
                 stage="research",
@@ -105,7 +107,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
             focus_dimensions=focus,
         )
     )
-    return tasks[:_MAX_TOTAL_TASKS]
+    return tasks[:MAX_TOTAL_PLAN_TASKS]
 
 
 def reconcile_plan_tree_after_discovery(
@@ -145,7 +147,15 @@ def reconcile_plan_tree_after_discovery(
             insert_at = index + 1
 
     new_research_tasks: list[PlanTask] = []
-    for competitor in discovered_competitors[:_MAX_RESEARCH_TASKS]:
+    if len(discovered_competitors) > MAX_RESEARCH_COMPETITORS:
+        log.info(
+            "planner.reconcile.discovery_capped",
+            cap=MAX_RESEARCH_COMPETITORS,
+            kept_count=MAX_RESEARCH_COMPETITORS,
+            discovered_count=len(discovered_competitors),
+            dropped_competitors=list(discovered_competitors[MAX_RESEARCH_COMPETITORS:]),
+        )
+    for competitor in discovered_competitors[:MAX_RESEARCH_COMPETITORS]:
         if competitor in existing_research:
             continue
         new_research_tasks.append(
