@@ -15,6 +15,9 @@ from agents.state_coercion import (
 )
 from core.defaults import (
     DEFAULT_FOCUS_DIMENSIONS,
+    MAX_ADDITIONAL_PLAN_TASKS,
+    PLAN_TASK_DESCRIPTION_MAX_LEN,
+    PLAN_TASK_TITLE_MAX_LEN,
     MAX_RESEARCH_COMPETITORS,
     MAX_TOTAL_PLAN_TASKS,
 )
@@ -40,9 +43,6 @@ from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.planner")
 
-# Phase β: cap user-injected tasks. Backend defends; FE should also enforce so
-# the validation message reaches the user before a round-trip.
-_MAX_ADDITIONAL_TASKS = 5
 # Phase β: user injections never include "discover" — that stage is the
 # discovery node's exclusive output. Allowing it would let two discoveries
 # compete and would also bypass `_derive_focus_dimensions`.
@@ -83,7 +83,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
         tasks.append(
             PlanTask(
                 stage="research",
-                title=f"调研 {competitor}"[:60],
+                title=f"调研 {competitor}"[:PLAN_TASK_TITLE_MAX_LEN],
                 description=f"按维度收集 {competitor} 的事实证据。",
                 competitor_id=competitor,
                 focus_dimensions=focus,
@@ -161,7 +161,7 @@ def reconcile_plan_tree_after_discovery(
         new_research_tasks.append(
             PlanTask(
                 stage="research",
-                title=f"调研 {competitor}"[:60],
+                title=f"调研 {competitor}"[:PLAN_TASK_TITLE_MAX_LEN],
                 description=f"按维度收集 {competitor} 的事实证据。",
                 competitor_id=competitor,
                 focus_dimensions=focus,
@@ -229,7 +229,7 @@ def _normalize_user_tasks(additional_tasks: list[PlanTask]) -> list[PlanTask]:
     - `enabled` is forced True (a user-added task that is born disabled is
       contradictory; if they change their mind they can omit it instead).
 
-    Caller enforces the count cap (`_MAX_ADDITIONAL_TASKS`).
+    Caller enforces the count cap (`MAX_ADDITIONAL_PLAN_TASKS`).
     """
     normalized: list[PlanTask] = []
     for index, task in enumerate(additional_tasks):
@@ -251,8 +251,8 @@ def _normalize_user_tasks(additional_tasks: list[PlanTask]) -> list[PlanTask]:
             PlanTask(
                 task_id=make_id("ptask_"),
                 stage=task.stage,
-                title=title_trimmed[:60],
-                description=task.description.strip()[:500],
+                title=title_trimmed[:PLAN_TASK_TITLE_MAX_LEN],
+                description=task.description.strip()[:PLAN_TASK_DESCRIPTION_MAX_LEN],
                 competitor_id=competitor_id if task.stage == "research" else None,
                 focus_dimensions=list(task.focus_dimensions),
                 source="user",
@@ -409,10 +409,10 @@ async def planner_wait_node(state: AgentState) -> AgentState:
             f"planner_wait resume value failed validation: {exc}"
         ) from exc
 
-    if len(confirm.additional_tasks) > _MAX_ADDITIONAL_TASKS:
+    if len(confirm.additional_tasks) > MAX_ADDITIONAL_PLAN_TASKS:
         raise RuntimeError(
             f"additional_tasks count ({len(confirm.additional_tasks)}) "
-            f"exceeds limit ({_MAX_ADDITIONAL_TASKS})"
+            f"exceeds limit ({MAX_ADDITIONAL_PLAN_TASKS})"
         )
     try:
         user_tasks = _normalize_user_tasks(confirm.additional_tasks)

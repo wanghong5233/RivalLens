@@ -4,7 +4,12 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from core.defaults import MAX_RESEARCH_COMPETITORS
+from core.defaults import (
+    DEFAULT_DISCOVER_MAX_RESULTS,
+    MAX_DISCOVERY_SEARCH_QUERIES,
+    MAX_REACT_TURNS,
+    MAX_RESEARCH_COMPETITORS,
+)
 from schemas.contracts import (
     validate_dimension,
     validate_section_id,
@@ -18,16 +23,16 @@ FocusDimension = str
 
 class DiscoverCompetitors(BaseModel):
     """Search the web to discover competitors in a given track/domain."""
-    search_queries: list[str] = Field(min_length=1, max_length=5)
+    search_queries: list[str] = Field(min_length=1, max_length=MAX_DISCOVERY_SEARCH_QUERIES)
     domain_context: str
-    max_results: int = Field(default=8, ge=1, le=15)
+    max_results: int = Field(default=DEFAULT_DISCOVER_MAX_RESULTS, ge=1, le=15)
 
 
 class ConductResearch(BaseModel):
     research_topic: str
     competitor_id: str
     focus_dimensions: list[FocusDimension] = Field(default_factory=list)
-    max_iterations: int = 6
+    max_iterations: int = MAX_REACT_TURNS
     fallback_to_offline: bool = True
 
     @field_validator("focus_dimensions")

@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 from core.defaults import (
     DEFAULT_FOCUS_DIMENSIONS,
     MAX_DISCOVERY_COMPETITORS,
+    MAX_FOCUS_DIMENSIONS,
+    PLAN_TASK_TITLE_MAX_LEN,
     MAX_RESEARCH_COMPETITORS,
     MAX_TOTAL_PLAN_TASKS,
 )
@@ -158,7 +160,10 @@ class PlannerOutput(BaseModel):
         tasks_raw = content.get("tasks")
         if not isinstance(tasks_raw, list) or not tasks_raw:
             raise ValueError("tasks must be a non-empty list")
-        default_focus = list(draft.focus_dimensions)[:5] or list(DEFAULT_FOCUS_DIMENSIONS)
+        default_focus = (
+            list(draft.focus_dimensions)[:MAX_FOCUS_DIMENSIONS]
+            or list(DEFAULT_FOCUS_DIMENSIONS)
+        )
         parsed_tasks: list[PlannerTaskDraft] = []
         research_count = 0
         for item in tasks_raw:
@@ -186,7 +191,11 @@ class PlannerOutput(BaseModel):
                 research_count += 1
             focus_raw = item.get("focus_dimensions")
             if isinstance(focus_raw, list):
-                focus = [str(v).strip() for v in focus_raw if isinstance(v, str) and v.strip()][:5]
+                focus = [
+                    str(v).strip()
+                    for v in focus_raw
+                    if isinstance(v, str) and v.strip()
+                ][:MAX_FOCUS_DIMENSIONS]
             else:
                 focus = list(default_focus)
             if not focus:
@@ -194,7 +203,7 @@ class PlannerOutput(BaseModel):
             parsed_tasks.append(
                 PlannerTaskDraft(
                     stage=cast(PlanTaskStage, stage_raw),
-                    title=title_raw.strip()[:60],
+                    title=title_raw.strip()[:PLAN_TASK_TITLE_MAX_LEN],
                     description=description,
                     competitor_id=competitor_id,
                     focus_dimensions=focus,

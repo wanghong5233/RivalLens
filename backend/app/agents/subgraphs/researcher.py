@@ -10,6 +10,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, StateGraph
 
 from agents.tools import get_channel_registry
+from core.defaults import MAX_REACT_TURNS
 from schemas.contracts import validate_dimension, validate_source_type
 from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
@@ -32,7 +33,6 @@ from service.llm.response import LLMResponse
 from service.skill_store import get_skill_store
 from utils.logger import bind_step, get_logger
 
-MAX_REACT_TURNS = 6
 COMPRESS_AFTER_TURNS = 4
 COMPRESS_AFTER_CHARS = 2400
 OBSERVATIONS_FULL_RETAIN = 2

@@ -8,7 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agents.state import AgentState
 from core.defaults import (
     DEFAULT_FOCUS_DIMENSIONS,
+    DEFAULT_DISCOVER_MAX_RESULTS,
+    MAX_FOCUS_DIMENSIONS,
+    MAX_QA_RERESEARCH_ITERATIONS,
+    MAX_REACT_TURNS,
     MAX_RESEARCH_COMPETITORS,
+    MAX_SUPERVISOR_ITERATIONS,
     MAX_WRITE_SECTIONS,
 )
 from db.engine import get_session_factory
@@ -41,7 +46,6 @@ from schemas.supervisor import (
 )
 from service.event_bus import RunEventType, emit_run_event
 
-MAX_SUPERVISOR_ITERATIONS = 10
 DIMENSION_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pricing", ("pricing", "price", "cost", "套餐", "定价", "收费")),
     ("user_feedback", ("review", "feedback", "rating", "评价", "口碑", "用户声音")),
@@ -106,7 +110,7 @@ def _derive_focus_dimensions(*, user_query: str, competitors: list[str]) -> list
         derived.append("positioning")
     if len(derived) < 3:
         derived.extend(DEFAULT_FOCUS_DIMENSIONS)
-    return _stable_unique(derived)[:5]
+    return _stable_unique(derived)[:MAX_FOCUS_DIMENSIONS]
 
 
 def _derive_write_sections(*, focus_dimensions: list[str]) -> list[str]:
@@ -163,7 +167,7 @@ def _fallback_decision(
         args = DiscoverCompetitors(
             search_queries=[user_query, f"{user_query} competitors alternatives"],
             domain_context=user_query,
-            max_results=8,
+            max_results=DEFAULT_DISCOVER_MAX_RESULTS,
         ).model_dump()
         return SupervisorDecision(
             id=make_id("decision_"),
@@ -189,7 +193,7 @@ def _fallback_decision(
                 research_topic=f"{competitor_id} vs user_query={user_query}",
                 competitor_id=competitor_id,
                 focus_dimensions=fallback_dimensions,
-                max_iterations=6,
+                max_iterations=MAX_REACT_TURNS,
                 fallback_to_offline=True,
             )
             for competitor_id in pending_competitors[:MAX_RESEARCH_COMPETITORS]
@@ -222,7 +226,7 @@ def _fallback_decision(
             research_topic=f"{competitor_id} vs user_query={user_query}",
             competitor_id=competitor_id,
             focus_dimensions=fallback_dimensions,
-            max_iterations=6,
+            max_iterations=MAX_REACT_TURNS,
             fallback_to_offline=True,
         ).model_dump()
         decision = SupervisorDecision(
@@ -416,7 +420,7 @@ def _decision_from_qa_feedback(
                 ),
                 competitor_id=competitor_id,
                 focus_dimensions=fallback_dimensions,
-                max_iterations=3,
+                max_iterations=MAX_QA_RERESEARCH_ITERATIONS,
                 fallback_to_offline=True,
             )
             for competitor_id in competitors[:MAX_RESEARCH_COMPETITORS]

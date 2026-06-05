@@ -9,6 +9,12 @@ from agents.nodes.planner import reconcile_plan_tree_after_discovery
 from agents.state import AgentState
 from agents.state_coercion import coerce_plan_tree
 from agents.tools import get_channel_registry
+from core.defaults import (
+    DEFAULT_DISCOVER_MAX_RESULTS,
+    DISCOVERY_SEARCH_MAX_RESULTS_CAP,
+    DISCOVERY_SNIPPETS_TO_EXTRACT,
+    MAX_DISCOVERY_SEARCH_QUERIES,
+)
 from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
@@ -123,7 +129,7 @@ async def discovery_node(state: AgentState) -> AgentState:
 
     search_queries: list[str] = pending_tool_args.get("search_queries", [user_query])
     domain_context: str = pending_tool_args.get("domain_context", user_query)
-    max_results: int = pending_tool_args.get("max_results", 8)
+    max_results: int = pending_tool_args.get("max_results", DEFAULT_DISCOVER_MAX_RESULTS)
 
     session_factory = state.get("session_factory") or get_session_factory()
 
@@ -144,7 +150,7 @@ async def discovery_node(state: AgentState) -> AgentState:
     all_snippets: list[str] = []
     snippet_samples: list[dict[str, object]] = []
 
-    for query in search_queries[:5]:
+    for query in search_queries[:MAX_DISCOVERY_SEARCH_QUERIES]:
         await emit_run_event(
             run_id=run_id,
             event_type=RunEventType.TOOL_START,
@@ -153,7 +159,10 @@ async def discovery_node(state: AgentState) -> AgentState:
                 "tool": "search_web",
                 "competitor_id": None,
                 "dimension": None,
-                "args_summary": {"query": query, "max_results": min(max_results, 10)},
+                "args_summary": {
+                    "query": query,
+                    "max_results": min(max_results, DISCOVERY_SEARCH_MAX_RESULTS_CAP),
+                },
             },
         )
         tool_started_at = time.monotonic()
@@ -161,7 +170,11 @@ async def discovery_node(state: AgentState) -> AgentState:
         error_text: str | None = None
         try:
             observation = await registry.invoke(
-                "search_web", args={"query": query, "max_results": min(max_results, 10)}
+                "search_web",
+                args={
+                    "query": query,
+                    "max_results": min(max_results, DISCOVERY_SEARCH_MAX_RESULTS_CAP),
+                },
             )
             for snippet in observation.result.snippets:
                 text = snippet.sanitized_text or snippet.quote
@@ -208,7 +221,7 @@ async def discovery_node(state: AgentState) -> AgentState:
     extract_outcome: str | None = None
     snippet_count = len(all_snippets)
     if all_snippets:
-        combined_results = "\n---\n".join(all_snippets[:20])
+        combined_results = "\n---\n".join(all_snippets[:DISCOVERY_SNIPPETS_TO_EXTRACT])
         extract_prompt = build_discovery_extract_user_prompt(
             search_results=combined_results,
             domain_context=domain_context,
