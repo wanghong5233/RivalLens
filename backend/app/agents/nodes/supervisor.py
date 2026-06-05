@@ -63,6 +63,8 @@ TriggerSource = Literal[
     "qa_rejection",
     "iteration_advance",
 ]
+FocusDimensionSource = Literal["upstream_task", "intake", "hints", "default"]
+PlanTaskStage = Literal["discover", "research", "analyze", "write"]
 
 
 def _resolve_triggered_by(
@@ -97,20 +99,164 @@ def _stable_unique(values: list[str]) -> list[str]:
     return ordered
 
 
-def _derive_focus_dimensions(*, user_query: str, competitors: list[str]) -> list[str]:
+def _get_object_field(item: object, field_name: str) -> object:
+    if isinstance(item, dict):
+        return item.get(field_name)
+    return getattr(item, field_name, None)
+
+
+def _normalize_focus_dimensions(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    dimensions = [
+        item.strip()
+        for item in raw
+        if isinstance(item, str) and item.strip()
+    ]
+    return _stable_unique(dimensions)[:MAX_FOCUS_DIMENSIONS]
+
+
+def _derive_hint_focus_dimensions(*, user_query: str, competitors: list[str]) -> list[str]:
     normalized_query = user_query.lower()
     derived: list[str] = []
     for dimension, hints in DIMENSION_HINTS:
         if any(hint in normalized_query for hint in hints):
             derived.append(dimension)
 
-    if not derived:
-        derived.extend(DEFAULT_FOCUS_DIMENSIONS)
     if len(competitors) >= 3 and "positioning" not in derived:
         derived.append("positioning")
+    if not derived:
+        return []
     if len(derived) < 3:
         derived.extend(DEFAULT_FOCUS_DIMENSIONS)
     return _stable_unique(derived)[:MAX_FOCUS_DIMENSIONS]
+
+
+def _derive_focus_dimensions(*, user_query: str, competitors: list[str]) -> list[str]:
+    hint_dimensions = _derive_hint_focus_dimensions(
+        user_query=user_query,
+        competitors=competitors,
+    )
+    if hint_dimensions:
+        return hint_dimensions
+    return list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS]
+
+
+def _current_plan_stage(
+    *,
+    competitors: list[str],
+    researched_competitors: list[str],
+    analysis_done: bool,
+    report_draft_done: bool,
+    qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
+) -> PlanTaskStage:
+    if qa_reject_to == "researcher":
+        return "research"
+    if qa_reject_to == "analyst":
+        return "analyze"
+    if qa_reject_to == "writer":
+        return "write"
+    if not competitors:
+        return "discover"
+    pending_competitors = [c for c in competitors if c not in researched_competitors]
+    if pending_competitors:
+        return "research"
+    if not analysis_done:
+        return "analyze"
+    if not report_draft_done:
+        return "write"
+    return "write"
+
+
+def _plan_task_focus_dimensions(
+    *,
+    plan_tree: object,
+    stage: PlanTaskStage,
+    target_competitors: list[str],
+) -> list[str]:
+    tasks_raw = _get_object_field(plan_tree, "tasks")
+    if not isinstance(tasks_raw, list):
+        return []
+
+    target_competitor_ids = set(target_competitors)
+    matched: list[str] = []
+    stage_fallback: list[str] = []
+    for task in tasks_raw:
+        if _get_object_field(task, "enabled") is False:
+            continue
+        if _get_object_field(task, "stage") != stage:
+            continue
+        dimensions = _normalize_focus_dimensions(
+            _get_object_field(task, "focus_dimensions")
+        )
+        if not dimensions:
+            continue
+        competitor_id_raw = _get_object_field(task, "competitor_id")
+        competitor_id = (
+            competitor_id_raw.strip()
+            if isinstance(competitor_id_raw, str)
+            else ""
+        )
+        if stage == "research" and target_competitor_ids:
+            if competitor_id in target_competitor_ids:
+                matched.extend(dimensions)
+            else:
+                stage_fallback.extend(dimensions)
+        else:
+            matched.extend(dimensions)
+
+    return _stable_unique(matched or stage_fallback)[:MAX_FOCUS_DIMENSIONS]
+
+
+def _intake_focus_dimensions(intake_draft: object) -> list[str]:
+    return _normalize_focus_dimensions(
+        _get_object_field(intake_draft, "focus_dimensions")
+    )
+
+
+def _resolve_fallback_dimensions(
+    *,
+    plan_tree: object,
+    intake_draft: object,
+    user_query: str,
+    competitors: list[str],
+    researched_competitors: list[str],
+    analysis_done: bool,
+    report_draft_done: bool,
+    qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None = None,
+) -> tuple[list[str], FocusDimensionSource]:
+    stage = _current_plan_stage(
+        competitors=competitors,
+        researched_competitors=researched_competitors,
+        analysis_done=analysis_done,
+        report_draft_done=report_draft_done,
+        qa_reject_to=qa_reject_to,
+    )
+    pending_competitors = [c for c in competitors if c not in researched_competitors]
+    target_competitors = pending_competitors if stage == "research" else []
+    if qa_reject_to == "researcher":
+        target_competitors = competitors
+
+    plan_dimensions = _plan_task_focus_dimensions(
+        plan_tree=plan_tree,
+        stage=stage,
+        target_competitors=target_competitors,
+    )
+    if plan_dimensions:
+        return plan_dimensions, "upstream_task"
+
+    intake_dimensions = _intake_focus_dimensions(intake_draft)
+    if intake_dimensions:
+        return intake_dimensions, "intake"
+
+    hint_dimensions = _derive_hint_focus_dimensions(
+        user_query=user_query,
+        competitors=competitors,
+    )
+    if hint_dimensions:
+        return hint_dimensions, "hints"
+
+    return list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS], "default"
 
 
 def _derive_write_sections(*, focus_dimensions: list[str]) -> list[str]:
@@ -160,6 +306,8 @@ def _fallback_decision(
     report_draft_done: bool,
     triggered_by: TriggerSource,
     user_query: str,
+    fallback_dimensions: list[str],
+    fallback_sections: list[str],
 ) -> SupervisorDecision:
     now = _now_iso()
 
@@ -183,8 +331,6 @@ def _fallback_decision(
         )
 
     pending_competitors = [c for c in competitors if c not in researched_competitors]
-    fallback_dimensions = _derive_focus_dimensions(user_query=user_query, competitors=competitors)
-    fallback_sections = _derive_write_sections(focus_dimensions=fallback_dimensions)
     now = _now_iso()
 
     if len(pending_competitors) >= 2:
@@ -783,13 +929,20 @@ async def supervisor_node(state: AgentState) -> AgentState:
         last_completed_node=last_completed_node,
         qa_outcome=qa_outcome,
     )
-    fallback_dimensions = _derive_focus_dimensions(
+    fallback_dimensions, dimension_source = _resolve_fallback_dimensions(
+        plan_tree=state.get("plan_tree"),
+        intake_draft=state.get("intake_draft"),
         user_query=user_query,
         competitors=competitors,
+        researched_competitors=researched_competitors,
+        analysis_done=analysis_done,
+        report_draft_done=report_draft_done,
+        qa_reject_to=qa_reject_to if qa_outcome in {"rejected", "force_degraded"} else None,
     )
     fallback_sections = _derive_write_sections(
         focus_dimensions=fallback_dimensions,
     )
+    decision_dimension_source: FocusDimensionSource | None = None
 
     # Pre-declared so the mark-consumed call after persist is unconditional;
     # only the LLM branch overwrites it (qa-driven + max-iter branches don't
@@ -811,6 +964,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
     )
     if qa_driven_decision is not None:
         decision, llm_response, forced_degraded_by_qa = qa_driven_decision
+        if decision.chosen_tool in {"ConductResearch", "ConductResearchBatch", "Analyze", "Write"}:
+            decision_dimension_source = dimension_source
     elif iteration > MAX_SUPERVISOR_ITERATIONS:
         forced_now = _now_iso()
         decision = SupervisorDecision(
@@ -899,7 +1054,10 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 report_draft_done=report_draft_done,
                 triggered_by=triggered_by,
                 user_query=user_query,
+                fallback_dimensions=fallback_dimensions,
+                fallback_sections=fallback_sections,
             )
+            decision_dimension_source = dimension_source
 
     persisted_step_id = await _persist_iteration(
         session_factory=session_factory,
@@ -929,6 +1087,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             outcome=decision.outcome,
             reasoning_summary_len=len(decision.reasoning_summary),
             tool_arg_keys=sorted(decision.tool_args.keys()),
+            dimension_source=decision_dimension_source,
         )
     plan_task_ids = _match_plan_task_ids(
         plan_tree=state.get("plan_tree"),
@@ -945,6 +1104,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             "outcome": decision.outcome or "unknown",
             "plan_task_ids": plan_task_ids,
             "consumed_follow_up_ids": consumed_follow_up_ids,
+            "dimension_source": decision_dimension_source,
         },
     )
     decisions.append(decision)
