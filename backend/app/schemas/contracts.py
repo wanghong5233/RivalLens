@@ -48,6 +48,22 @@ def validate_dimension(value: str) -> str:
     return _validate_contract_token(value=value, field_name="dimension")
 
 
+def normalize_dimension_or_none(
+    raw: object,
+    *,
+    allowed: list[str] | set[str],
+) -> tuple[str | None, str | None]:
+    if not isinstance(raw, str):
+        return None, "missing"
+    try:
+        normalized = validate_dimension(raw)
+    except ValueError:
+        return None, "invalid"
+    if allowed and normalized not in set(allowed):
+        return None, "out_of_focus"
+    return normalized, None
+
+
 def validate_section_id(value: str) -> str:
     return _validate_contract_token(value=value, field_name="section_id")
 

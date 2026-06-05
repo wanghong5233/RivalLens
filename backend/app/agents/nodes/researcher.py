@@ -12,13 +12,16 @@ from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.step import Step
-from schemas.contracts import validate_dimension, validate_source_type
+from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_source_type
 from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
 from service.event_bus import RunEventType, emit_run_event
 from service.desensitize import normalize_text_for_storage
 from service.llm.records import build_llm_call_record_from_mapping
 from utils.log_node import log_node
+from utils.logger import get_logger
+
+log = get_logger("agents.researcher")
 
 
 def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
@@ -93,11 +96,17 @@ def _build_evidence_rows(
     evidence_drafts: list[dict[str, object]],
     observations_log: list[dict[str, object]],
     default_competitor_id: str,
-) -> tuple[list[EvidenceRecord], list[str]]:
-    allowed_dimensions = set(focus_dimensions)
+) -> tuple[list[EvidenceRecord], list[str], dict[str, object]]:
+    dropped_reasons: dict[str, int] = {}
+
+    def record_drop(reason: str | None) -> None:
+        if reason is None:
+            return
+        dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
+
     effective_drafts = list(evidence_drafts)
     if True:
-        seen_keys: set[tuple[str, str, str, str]] = set()
+        seen_keys: set[tuple[str, str | None, str, str]] = set()
         for observation in observations_log:
             if not isinstance(observation, dict):
                 continue
@@ -113,7 +122,7 @@ def _build_evidence_rows(
             fallback_dimension = (
                 fallback_dimension_raw
                 if isinstance(fallback_dimension_raw, str) and fallback_dimension_raw.strip()
-                else "feature"
+                else None
             )
             fallback_competitor_raw = args.get("competitor_id")
             fallback_competitor = (
@@ -136,15 +145,10 @@ def _build_evidence_rows(
                         dimension_raw = dimension_candidate_raw
                     else:
                         dimension_raw = fallback_dimension
-                try:
-                    normalized_dimension = validate_dimension(dimension_raw)
-                except ValueError:
-                    normalized_dimension = "feature"
-                if normalized_dimension not in allowed_dimensions:
-                    if focus_dimensions:
-                        normalized_dimension = focus_dimensions[0]
-                    else:
-                        continue
+                normalized_dimension, drop_reason = normalize_dimension_or_none(
+                    dimension_raw,
+                    allowed=focus_dimensions,
+                )
                 competitor_id_raw = snippet_raw.get("competitor_id")
                 if not isinstance(competitor_id_raw, str):
                     competitor_candidate_raw = metadata.get("competitor_id")
@@ -173,7 +177,10 @@ def _build_evidence_rows(
                         "source_url": snippet_raw.get("source_url"),
                         "source_title": snippet_raw.get("source_title"),
                         "desensitized": snippet_raw.get("desensitized", True),
-                        "metadata": metadata,
+                        "metadata": {
+                            **metadata,
+                            "dimension_drop_reason": drop_reason,
+                        },
                     }
                 )
 
@@ -190,14 +197,17 @@ def _build_evidence_rows(
         source_url_raw = draft.get("source_url")
         source_title_raw = draft.get("source_title")
         metadata_raw = draft.get("metadata", {})
-        if not isinstance(dimension_raw, str) or not isinstance(competitor_id_raw, str) or not isinstance(quote_raw, str):
+        if not isinstance(competitor_id_raw, str) or not isinstance(quote_raw, str):
             continue
-        normalized_dimension = validate_dimension(dimension_raw)
-        if normalized_dimension not in allowed_dimensions:
-            if focus_dimensions:
-                normalized_dimension = focus_dimensions[0]
-            else:
-                continue
+        normalized_dimension, drop_reason = normalize_dimension_or_none(
+            dimension_raw,
+            allowed=focus_dimensions,
+        )
+        metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+        upstream_drop_reason = metadata.get("dimension_drop_reason")
+        if isinstance(upstream_drop_reason, str) and upstream_drop_reason:
+            drop_reason = upstream_drop_reason
+        record_drop(drop_reason)
         if isinstance(source_type_raw, str):
             try:
                 normalized_source_type = validate_source_type(source_type_raw)
@@ -214,7 +224,10 @@ def _build_evidence_rows(
             source_url = normalize_text_for_storage(source_url)
         if source_title is not None:
             source_title = normalize_text_for_storage(source_title)
-        metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+        metadata = {
+            **metadata,
+            "dimension_drop_reason": drop_reason,
+        }
         evidence_id = make_id("ev_")
         evidence_ids.append(evidence_id)
         evidence_rows.append(
@@ -238,7 +251,14 @@ def _build_evidence_rows(
         )
     if not evidence_rows:
         raise RuntimeError("Researcher subgraph finalized without any evidence drafts.")
-    return evidence_rows, evidence_ids
+    return (
+        evidence_rows,
+        evidence_ids,
+        {
+            "count": sum(dropped_reasons.values()),
+            "reasons": dropped_reasons,
+        },
+    )
 
 
 def _build_llm_call_rows(
@@ -299,7 +319,7 @@ async def researcher_node(state: AgentState) -> AgentState:
     subgraph_output = await subgraph.ainvoke(subgraph_input)
 
     collected_at = datetime.now(timezone.utc)
-    evidence_rows, evidence_ids = _build_evidence_rows(
+    evidence_rows, evidence_ids, dropped_dimensions = _build_evidence_rows(
         run_id=run_id,
         step_id=step_id,
         collected_at=collected_at,
@@ -322,7 +342,14 @@ async def researcher_node(state: AgentState) -> AgentState:
         "compression_count": int(subgraph_output.get("compression_count", 0)),
         "queried_dimensions": list(subgraph_output.get("queried_dimensions", [])),
         "final_summary": str(subgraph_output.get("final_summary", "")),
+        "dropped_dimensions": dropped_dimensions,
     }
+    log.info(
+        "researcher.dimension_drops",
+        run_id=run_id,
+        step_id=step_id,
+        dropped_dimensions=dropped_dimensions,
+    )
 
     async with session_factory() as session:
         step = Step(

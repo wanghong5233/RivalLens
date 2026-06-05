@@ -91,6 +91,50 @@ def test_analyst_fallback_marks_uncovered_dimensions() -> None:
     assert analyst.risk_flags == ["analyst_fallback_mode", "uncovered_dimension:feature"]
 
 
+def test_analyst_output_slugifies_dimension_before_allowed_membership() -> None:
+    output = AnalystOutput.parse_llm_content(
+        {
+            "summary": "Summary with enough analyst context.",
+            "insights": [
+                {
+                    "dimension": "User Feedback",
+                    "finding": "Users report onboarding friction.",
+                    "evidence_ids": ["ev_001"],
+                    "confidence": "medium",
+                }
+            ],
+        },
+        allowed_evidence_ids={"ev_001"},
+        allowed_dimensions={"user_feedback"},
+    )
+
+    assert output.insights[0].dimension == "user_feedback"
+
+
+def test_analyst_output_skips_out_of_focus_insight_and_audits_reason() -> None:
+    dropped: dict[str, int] = {}
+
+    with pytest.raises(ValidationError):
+        AnalystOutput.parse_llm_content(
+            {
+                "summary": "Summary with enough analyst context.",
+                "insights": [
+                    {
+                        "dimension": "User Feedback",
+                        "finding": "Users report onboarding friction.",
+                        "evidence_ids": ["ev_001"],
+                        "confidence": "medium",
+                    }
+                ],
+            },
+            allowed_evidence_ids={"ev_001"},
+            allowed_dimensions={"pricing"},
+            dropped_dimensions=dropped,
+        )
+
+    assert dropped == {"out_of_focus": 1}
+
+
 def test_writer_report_output_marks_uncovered_target_sections() -> None:
     context = WriterExecutionContext(
         template_id="battlecard_default",

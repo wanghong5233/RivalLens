@@ -13,6 +13,7 @@ from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.step import Step
 from schemas.agent_outputs import AnalystOutput
+from schemas.contracts import normalize_dimension_or_none
 from schemas.ids import make_id
 from schemas.supervisor import Analyze
 from service.event_bus import RunEventType, emit_run_event
@@ -48,16 +49,18 @@ def _build_evidence_briefs(
     *,
     evidence_rows: list[EvidenceRecord],
     focus_dimensions: list[str],
-) -> list[dict[str, str]]:
-    allowed_dimensions = set(focus_dimensions)
-    filter_by_dimensions = bool(allowed_dimensions)
-    briefs: list[dict[str, str]] = []
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    dropped_reasons: dict[str, int] = {}
+    briefs: list[dict[str, object]] = []
     for row in evidence_rows:
         span = row.span if isinstance(row.span, dict) else {}
         dimension_raw = span.get("dimension")
-        dimension = dimension_raw if isinstance(dimension_raw, str) else "unknown"
-        if filter_by_dimensions and dimension not in allowed_dimensions:
-            continue
+        dimension, drop_reason = normalize_dimension_or_none(
+            dimension_raw,
+            allowed=focus_dimensions,
+        )
+        if drop_reason is not None:
+            dropped_reasons[drop_reason] = dropped_reasons.get(drop_reason, 0) + 1
         competitor_raw = span.get("competitor_id")
         competitor_id = competitor_raw if isinstance(competitor_raw, str) else "unknown"
         briefs.append(
@@ -70,7 +73,13 @@ def _build_evidence_briefs(
                 "source_url": row.source_url or "",
             }
         )
-    return briefs
+    return (
+        briefs,
+        {
+            "count": sum(dropped_reasons.values()),
+            "reasons": dropped_reasons,
+        },
+    )
 
 
 @log_node("analyst")
@@ -104,32 +113,16 @@ async def analyst_node(state: AgentState) -> AgentState:
             )
         ).scalars().all()
 
-    evidence_briefs = _build_evidence_briefs(
+    evidence_briefs, dropped_dimensions = _build_evidence_briefs(
         evidence_rows=evidence_rows,
         focus_dimensions=focus_dimensions,
     )
-    if not evidence_briefs and evidence_rows:
-        # If requested dimensions do not align with collected span labels, keep evidence instead of
-        # dropping to an empty analyst context, otherwise QA tends to reject in loops.
-        evidence_briefs = _build_evidence_briefs(
-            evidence_rows=evidence_rows,
-            focus_dimensions=[],
-        )
-        inferred_dimensions = sorted(
-            {
-                item["dimension"]
-                for item in evidence_briefs
-                if isinstance(item.get("dimension"), str) and item["dimension"] != "unknown"
-            }
-        )
-        if inferred_dimensions:
-            focus_dimensions = inferred_dimensions
     if not focus_dimensions:
         focus_dimensions = sorted(
             {
                 item["dimension"]
                 for item in evidence_briefs
-                if isinstance(item.get("dimension"), str) and item["dimension"] != "unknown"
+                if isinstance(item.get("dimension"), str) and item["dimension"]
             }
         )
         if not focus_dimensions:
@@ -137,6 +130,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             focus_dimensions = ["general", "feature", "pricing"]
     allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
     allowed_dimensions = set(focus_dimensions)
+    dropped_insight_dimensions: dict[str, int] = {}
     user_prompt = build_analyst_user_prompt(
         user_query=user_query,
         competitors=competitors,
@@ -157,6 +151,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             content,
             allowed_evidence_ids=allowed_evidence_ids,
             allowed_dimensions=allowed_dimensions,
+            dropped_dimensions=dropped_insight_dimensions,
         ),
         fallback_system_prompt=ANALYST_SYSTEM_PROMPT,
         fallback_user_prompt=fallback_prompt,
@@ -207,12 +202,27 @@ async def analyst_node(state: AgentState) -> AgentState:
             "insight_count": len(
                 analysis_result["insights"] if isinstance(analysis_result["insights"], list) else []
             ),
+            "dropped_dimensions": dropped_dimensions,
+            "dropped_insight_dimensions": {
+                "count": sum(dropped_insight_dimensions.values()),
+                "reasons": dict(dropped_insight_dimensions),
+            },
             "fallback_reason": fallback_reason,
             "llm_provider": llm_response.provider,
             "llm_prompt_preview": llm_response.prompt_preview,
             "llm_fallback_used": llm_response.fallback_used,
             "llm_fallback_reason": llm_response.fallback_reason,
         }
+        log.info(
+            "analyst.dimension_drops",
+            run_id=run_id,
+            step_id=step_id,
+            dropped_dimensions=dropped_dimensions,
+            dropped_insight_dimensions={
+                "count": sum(dropped_insight_dimensions.values()),
+                "reasons": dict(dropped_insight_dimensions),
+            },
+        )
         step = Step(
             step_id=step_id,
             run_id=run_id,

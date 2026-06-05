@@ -5,7 +5,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
-from schemas.contracts import validate_dimension, validate_section_id, validate_template_id
+from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_section_id, validate_template_id
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 DEFAULT_WRITER_SECTIONS: tuple[str, ...] = DEFAULT_FOCUS_DIMENSIONS
@@ -104,6 +104,7 @@ class AnalystOutput(BaseModel):
         *,
         allowed_evidence_ids: set[str],
         allowed_dimensions: set[str],
+        dropped_dimensions: dict[str, int] | None = None,
     ) -> AnalystOutput:
         insights_raw = content.get("insights")
         filtered_insights: list[dict[str, object]] = []
@@ -114,9 +115,14 @@ class AnalystOutput(BaseModel):
                 dimension_raw = item.get("dimension")
                 finding_raw = item.get("finding")
                 evidence_ids_raw = item.get("evidence_ids")
+                dimension, drop_reason = normalize_dimension_or_none(
+                    dimension_raw,
+                    allowed=allowed_dimensions,
+                )
+                if drop_reason is not None and dropped_dimensions is not None:
+                    dropped_dimensions[drop_reason] = dropped_dimensions.get(drop_reason, 0) + 1
                 if (
-                    not isinstance(dimension_raw, str)
-                    or (allowed_dimensions and dimension_raw not in allowed_dimensions)
+                    dimension is None
                     or not isinstance(finding_raw, str)
                     or not finding_raw.strip()
                     or not isinstance(evidence_ids_raw, list)
@@ -131,7 +137,7 @@ class AnalystOutput(BaseModel):
                     continue
                 filtered_insights.append(
                     {
-                        "dimension": dimension_raw,
+                        "dimension": dimension,
                         "finding": finding_raw.strip(),
                         "evidence_ids": evidence_ids,
                         "confidence": item.get("confidence", "medium"),
@@ -167,13 +173,13 @@ class AnalystOutput(BaseModel):
         cls,
         *,
         focus_dimensions: list[str],
-        evidence_briefs: list[dict[str, str]],
+        evidence_briefs: list[dict[str, object]],
     ) -> AnalystOutput:
         covered_dimensions = stable_unique(
             [
                 item["dimension"]
                 for item in evidence_briefs
-                if isinstance(item.get("dimension"), str)
+                if isinstance(item.get("dimension"), str) and item["dimension"]
             ]
         )
         uncovered_dimensions = [
@@ -188,19 +194,31 @@ class AnalystOutput(BaseModel):
             ]
         )
         if evidence_briefs:
-            first = evidence_briefs[0]
+            first = next(
+                (
+                    item
+                    for item in evidence_briefs
+                    if isinstance(item.get("dimension"), str) and item["dimension"]
+                ),
+                evidence_briefs[0],
+            )
             summary = (
                 f"Fallback analysis generated from {len(evidence_briefs)} evidence snippets "
                 f"across {len(focus_dimensions)} dimensions."
             )
-            dimension = first["dimension"]
+            dimension_raw = first.get("dimension")
+            dimension = dimension_raw if isinstance(dimension_raw, str) and dimension_raw else "general"
+            competitor_raw = first.get("competitor_id")
+            competitor_id = competitor_raw if isinstance(competitor_raw, str) else "unknown"
+            evidence_id_raw = first.get("evidence_id")
+            evidence_id = evidence_id_raw if isinstance(evidence_id_raw, str) else "ev_missing"
             insight = AnalystInsight(
                 dimension=dimension,
                 finding=(
-                    f"Preliminary signal from {first['competitor_id']} on {dimension} "
+                    f"Preliminary signal from {competitor_id} on {dimension} "
                     "requires deeper analyst iteration."
                 ),
-                evidence_ids=[first["evidence_id"]],
+                evidence_ids=[evidence_id],
                 confidence="low",
             )
         else:

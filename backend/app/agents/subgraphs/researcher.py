@@ -11,7 +11,7 @@ from langgraph.graph import END, StateGraph
 
 from agents.tools import get_channel_registry
 from core.defaults import MAX_REACT_TURNS
-from schemas.contracts import validate_dimension, validate_source_type
+from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_source_type
 from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError
@@ -561,6 +561,7 @@ def _append_evidence_drafts(
     *,
     evidence_drafts: list[dict[str, object]],
     observation: dict[str, object],
+    focus_dimensions: list[FocusDimension],
 ) -> list[dict[str, object]]:
     observation_metadata_raw = observation.get("metadata", {})
     observation_metadata = (
@@ -570,8 +571,11 @@ def _append_evidence_drafts(
     snippets = snippets_raw if isinstance(snippets_raw, list) else []
     dimension_raw = observation.get("dimension") or observation_metadata.get("dimension")
     competitor_id_raw = observation.get("competitor_id") or observation_metadata.get("competitor_id")
-    dimension = dimension_raw if isinstance(dimension_raw, str) else "unknown"
     competitor_id = competitor_id_raw if isinstance(competitor_id_raw, str) else "unknown"
+    dimension, dimension_drop_reason = normalize_dimension_or_none(
+        dimension_raw,
+        allowed=focus_dimensions,
+    )
 
     for snippet in snippets:
         if not isinstance(snippet, dict):
@@ -602,14 +606,19 @@ def _append_evidence_drafts(
             metadata = {}
         snippet_dimension_raw = metadata.get("dimension")
         snippet_competitor_raw = metadata.get("competitor_id")
-        snippet_dimension = (
-            snippet_dimension_raw if isinstance(snippet_dimension_raw, str) else dimension
+        snippet_dimension, snippet_dimension_drop_reason = normalize_dimension_or_none(
+            snippet_dimension_raw if isinstance(snippet_dimension_raw, str) else dimension_raw,
+            allowed=focus_dimensions,
         )
         snippet_competitor = (
             snippet_competitor_raw
             if isinstance(snippet_competitor_raw, str)
             else competitor_id
         )
+        metadata = {
+            **metadata,
+            "dimension_drop_reason": snippet_dimension_drop_reason or dimension_drop_reason,
+        }
         evidence_drafts.append(
             {
                 "dimension": snippet_dimension,
@@ -764,6 +773,7 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     evidence_drafts = _append_evidence_drafts(
         evidence_drafts=list(state.get("evidence_drafts", [])),
         observation=result_payload,
+        focus_dimensions=list(state.get("focus_dimensions", [])),
     )
 
     if dimension is not None:
