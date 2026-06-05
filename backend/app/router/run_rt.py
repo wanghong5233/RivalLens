@@ -104,7 +104,7 @@ RESET_STAGE_DECISION_TOOLS: dict[ResetToStage, tuple[str, ...]] = {
 
 
 class RunCreateRequest(BaseModel):
-    user_query: str = "skeleton"
+    user_query: str = Field(min_length=1)
     competitors: list[str] = Field(default_factory=list)
     domain_hint: str | None = None
     reference_urls: list[str] | None = None

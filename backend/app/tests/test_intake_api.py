@@ -246,6 +246,15 @@ def test_intake_reply_rejects_when_not_paused(test_client: TestClient) -> None:
     assert body["error_code"] == "RUN_NOT_RESUMABLE"
 
 
+def test_legacy_run_create_requires_user_query(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/runs",
+        json={"competitors": ["comp_a", "comp_b"]},
+    )
+
+    assert response.status_code == 422
+
+
 def test_intake_reply_empty_payload_returns_422(test_client: TestClient) -> None:
     create = test_client.post(
         "/api/runs/intake",

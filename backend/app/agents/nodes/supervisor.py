@@ -284,7 +284,7 @@ def _fallback_decision(
 
     args = Finalize(
         completion_reason="all_dimensions_covered",
-        notes="All planned skeleton phases are completed.",
+        notes="All planned phases completed.",
     ).model_dump()
     decision = SupervisorDecision(
         id=make_id("decision_"),
@@ -767,7 +767,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
 
     run_id = state.get("run_id", make_id("run_"))
     decisions = list(state.get("decisions", []))
-    user_query = state.get("user_query", "skeleton")
+    user_query_raw = state.get("user_query", "")
+    user_query = user_query_raw if isinstance(user_query_raw, str) else ""
     competitors = list(state.get("competitors", []))
     researched_competitors = list(state.get("researched_competitors", []))
     analysis_done = bool(state.get("analysis_done", False))
