@@ -19,6 +19,7 @@ from service.skill_promotion.writers import (
     PromotionWriteError,
     write_skill_markdown,
 )
+from service.skill_store import get_skill_store
 
 
 def _entry_meta(
@@ -191,6 +192,7 @@ def promote_approved_candidate(
                     "entry_id": skill_id,
                 }
             )
+            get_skill_store().invalidate()
             return artifacts
 
         if record.candidate_type == "prompt_template":
@@ -212,6 +214,7 @@ def promote_approved_candidate(
                     "entry_id": skill_id,
                 }
             )
+            get_skill_store().invalidate()
             return artifacts
 
         if record.candidate_type == "source_routing":
@@ -233,6 +236,7 @@ def promote_approved_candidate(
                     "entry_id": skill_id,
                 }
             )
+            get_skill_store().invalidate()
             return artifacts
 
         raise PromotionWriteError(

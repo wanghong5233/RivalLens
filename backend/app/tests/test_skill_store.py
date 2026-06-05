@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
+from models.skill_candidate import SkillCandidateRecord
 from service.skill_store import SkillStore
+import service.skill_promotion as skill_promotion
 
 
 def _write_skill(
@@ -97,3 +103,71 @@ def test_skill_store_rescans_only_when_mtime_changes(tmp_path: Path) -> None:
     store.invalidate()
     store.scan()
     assert len(store.get_skill_names()) == first_count + 1
+
+
+def test_skill_store_detects_new_skill_when_directory_mtime_is_unchanged(tmp_path: Path) -> None:
+    store = SkillStore(tmp_path)
+    assert store.scan() == {}
+    original_mtime = tmp_path.stat().st_mtime
+
+    skill_path = _write_skill(
+        base_dir=tmp_path,
+        applies_to="qa_rule",
+        skill_name="rule_same_tick",
+        body_markdown="## Rule\n\n```yaml\nid: rule_same_tick\n```",
+    )
+    for path in [
+        skill_path,
+        skill_path.parent,
+        skill_path.parent.parent,
+        tmp_path,
+    ]:
+        os.utime(path, (original_mtime, original_mtime))
+
+    assert store.get_skill_names() == ["rule_same_tick"]
+
+
+class _SpySkillStore(SkillStore):
+    def __init__(self, skills_dir: Path) -> None:
+        super().__init__(skills_dir)
+        self.invalidate_count = 0
+
+    def invalidate(self) -> None:
+        self.invalidate_count += 1
+        super().invalidate()
+
+
+def test_promote_approved_candidate_invalidates_skill_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _SpySkillStore(tmp_path)
+    store.scan()
+    monkeypatch.setattr(skill_promotion, "get_skill_store", lambda: store)
+    record = SkillCandidateRecord(
+        id="skill_candidate_cache_test",
+        candidate_type="qa_rule",
+        applies_to="qa_rule",
+        tags=["pricing", "quality"],
+        payload={
+            "rule_yaml": "id: rule_promoted_cache_test\nselector: report\nchecks: []",
+            "triggered_failures_count": 1,
+            "similar_existing_rules": [],
+        },
+        rationale="cache invalidation regression",
+        supporting_run_ids=["run_cache_test"],
+        confidence="medium",
+        status="staging",
+    )
+
+    artifacts = skill_promotion.promote_approved_candidate(
+        record=record,
+        skills_root=tmp_path,
+        reviewed_by="owner_wh",
+        reviewed_at=datetime.now(timezone.utc),
+    )
+
+    assert store.invalidate_count == 1
+    entry_id = str(artifacts[0]["entry_id"])
+    assert entry_id
+    assert store.get_metadata(entry_id) is not None
