@@ -172,6 +172,31 @@ def test_discovery_extract_output_dedupes_competitors() -> None:
     assert output.competitors == ["Cursor", "Windsurf"]
 
 
+def test_discovery_extract_output_parses_grounded_candidates() -> None:
+    output = DiscoveryExtractOutput.parse_llm_content(
+        {
+            "candidates": [
+                {
+                    "name": "Cursor",
+                    "is_competitor": True,
+                    "relevance_reason": "AI coding product in the target market.",
+                    "evidence_quote": "Cursor is an AI code editor.",
+                },
+                {
+                    "name": "TechCrunch",
+                    "is_competitor": False,
+                    "relevance_reason": "Publisher, not a product competitor.",
+                    "evidence_quote": "TechCrunch reported on AI coding tools.",
+                },
+            ]
+        }
+    )
+
+    assert output.competitors == ["Cursor"]
+    assert output.candidates[0].evidence_quote == "Cursor is an AI code editor."
+    assert output.candidates[1].is_competitor is False
+
+
 def test_researcher_decision_to_action_tuple_search_web() -> None:
     decision = ResearcherDecisionOutput.parse_llm_content(
         {

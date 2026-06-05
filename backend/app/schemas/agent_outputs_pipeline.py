@@ -69,7 +69,7 @@ SUPERVISOR_VALID_TOOLS: frozenset[str] = frozenset(
         "Finalize",
     }
 )
-DISCOVERY_MIN_COMPETITORS = 1
+DISCOVERY_MIN_COMPETITORS = 0
 
 
 class IntakeClarifyOutput(BaseModel):
@@ -264,8 +264,23 @@ class SupervisorToolCallOutput(BaseModel):
         )
 
 
+class DiscoveryCompetitorCandidate(BaseModel):
+    name: str = Field(min_length=1)
+    is_competitor: bool = True
+    relevance_reason: str = ""
+    evidence_quote: str = ""
+
+    @field_validator("name", "relevance_reason", "evidence_quote", mode="before")
+    @classmethod
+    def _normalize_text(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+
 class DiscoveryExtractOutput(BaseModel):
-    competitors: list[str] = Field(min_length=DISCOVERY_MIN_COMPETITORS)
+    competitors: list[str] = Field(default_factory=list)
+    candidates: list[DiscoveryCompetitorCandidate] = Field(default_factory=list)
 
     @field_validator("competitors")
     @classmethod
@@ -275,17 +290,53 @@ class DiscoveryExtractOutput(BaseModel):
             name = value.strip() if isinstance(value, str) else str(value).strip()
             if name and name not in normalized:
                 normalized.append(name)
-        if len(normalized) < DISCOVERY_MIN_COMPETITORS:
-            raise ValueError("competitors must contain at least one name")
         return normalized[:MAX_DISCOVERY_COMPETITORS]
+
+    @model_validator(mode="after")
+    def _sync_competitors_from_candidates(self) -> Self:
+        candidate_names = [
+            candidate.name
+            for candidate in self.candidates
+            if candidate.name and candidate.is_competitor
+        ]
+        if candidate_names:
+            self.competitors = stable_unique(candidate_names)[:MAX_DISCOVERY_COMPETITORS]
+        return self
 
     @classmethod
     def parse_llm_content(cls, content: dict[str, object]) -> DiscoveryExtractOutput:
         competitors_raw = content.get("competitors")
-        if not isinstance(competitors_raw, list):
-            raise ValueError("competitors must be a list")
-        names = [str(item) for item in competitors_raw if item]
-        return cls.model_validate({"competitors": names})
+        candidates_raw = content.get("candidates")
+        source_rows = candidates_raw if isinstance(candidates_raw, list) else competitors_raw
+        if not isinstance(source_rows, list):
+            raise ValueError("competitors or candidates must be a list")
+
+        names: list[str] = []
+        candidates: list[dict[str, object]] = []
+        for item in source_rows:
+            if isinstance(item, dict):
+                name_raw = item.get("name") or item.get("competitor") or item.get("product_name")
+                if not isinstance(name_raw, str) or not name_raw.strip():
+                    continue
+                candidate = {
+                    "name": name_raw,
+                    "is_competitor": item.get("is_competitor", True),
+                    "relevance_reason": item.get("relevance_reason", ""),
+                    "evidence_quote": item.get("evidence_quote", ""),
+                }
+                candidates.append(candidate)
+                continue
+            if item:
+                names.append(str(item))
+                candidates.append(
+                    {
+                        "name": str(item),
+                        "is_competitor": True,
+                        "relevance_reason": "",
+                        "evidence_quote": "",
+                    }
+                )
+        return cls.model_validate({"competitors": names, "candidates": candidates})
 
 
 class ResearcherDecisionOutput(BaseModel):

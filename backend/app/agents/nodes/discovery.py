@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import time
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 from agents.nodes.planner import reconcile_plan_tree_after_discovery
@@ -27,6 +29,73 @@ from utils.logger import bind_step, get_logger
 log = get_logger("agents.discovery")
 _DISCOVERY_SNIPPET_SAMPLE_LIMIT = 3
 _DISCOVERY_SNIPPET_PREVIEW_LIMIT = 220
+_DISCOVERY_EVIDENCE_PREVIEW_LIMIT = 220
+
+
+def _normalize_alias_key(value: str) -> str:
+    lowered = value.casefold()
+    without_punctuation = re.sub(r"[^\w\s]", " ", lowered, flags=re.UNICODE)
+    return " ".join(without_punctuation.split())
+
+
+def _normalize_grounding_text(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _quote_is_grounded(*, evidence_quote: str, snippets: Sequence[str]) -> bool:
+    normalized_quote = _normalize_grounding_text(evidence_quote)
+    if not normalized_quote:
+        return False
+    return any(normalized_quote in _normalize_grounding_text(snippet) for snippet in snippets)
+
+
+def _filter_discovery_candidates(
+    *,
+    candidates: Sequence[object],
+    snippets: Sequence[str],
+) -> tuple[list[str], list[dict[str, object]], list[dict[str, object]]]:
+    discovered: list[str] = []
+    filtered_out: list[dict[str, object]] = []
+    relevance: list[dict[str, object]] = []
+    seen_aliases: set[str] = set()
+
+    for candidate in candidates:
+        name = str(getattr(candidate, "name", "") or "").strip()
+        is_competitor = bool(getattr(candidate, "is_competitor", False))
+        relevance_reason = str(getattr(candidate, "relevance_reason", "") or "").strip()
+        evidence_quote = str(getattr(candidate, "evidence_quote", "") or "").strip()
+        alias_key = _normalize_alias_key(name)
+
+        if not name:
+            filtered_out.append({"name": "", "reason": "blank_name"})
+            continue
+        if not is_competitor:
+            filtered_out.append({"name": name, "reason": "not_competitor"})
+            continue
+        if not evidence_quote:
+            filtered_out.append({"name": name, "reason": "missing_evidence_quote"})
+            continue
+        if not _quote_is_grounded(evidence_quote=evidence_quote, snippets=snippets):
+            filtered_out.append({"name": name, "reason": "grounding_miss"})
+            continue
+        if not alias_key:
+            filtered_out.append({"name": name, "reason": "blank_alias_key"})
+            continue
+        if alias_key in seen_aliases:
+            filtered_out.append({"name": name, "reason": "duplicate_alias"})
+            continue
+
+        seen_aliases.add(alias_key)
+        discovered.append(name)
+        relevance.append(
+            {
+                "name": name,
+                "relevance_reason": relevance_reason,
+                "evidence_quote_preview": evidence_quote[:_DISCOVERY_EVIDENCE_PREVIEW_LIMIT],
+            }
+        )
+
+    return discovered, filtered_out, relevance
 
 
 def _build_snippet_sample(*, snippet: object, query: str) -> dict[str, object] | None:
@@ -133,6 +202,8 @@ async def discovery_node(state: AgentState) -> AgentState:
         )
 
     discovered: list[str] = []
+    filtered_out_competitors: list[dict[str, object]] = []
+    relevance: list[dict[str, object]] = []
     extract_error: str | None = None
     extract_outcome: str | None = None
     snippet_count = len(all_snippets)
@@ -164,7 +235,10 @@ async def discovery_node(state: AgentState) -> AgentState:
             )
             extract_outcome = harness_result.outcome
             if harness_result.value is not None:
-                discovered = list(harness_result.value.competitors)
+                discovered, filtered_out_competitors, relevance = _filter_discovery_candidates(
+                    candidates=harness_result.value.candidates,
+                    snippets=all_snippets,
+                )
             elif harness_result.llm_response.error is not None:
                 extract_error = harness_result.llm_response.error[:300]
         except (KeyError, ValueError) as exc:
@@ -183,6 +257,8 @@ async def discovery_node(state: AgentState) -> AgentState:
             discovered_competitors=discovered,
             snippet_count=snippet_count,
             snippet_samples=snippet_samples,
+            filtered_out_competitors=filtered_out_competitors,
+            relevance=relevance,
             queries=search_queries,
             extract_outcome=extract_outcome,
             extract_error=extract_error,
@@ -198,6 +274,8 @@ async def discovery_node(state: AgentState) -> AgentState:
                 "discovered_competitors": discovered,
                 "snippet_count": snippet_count,
                 "snippet_samples": snippet_samples,
+                "filtered_out_competitors": filtered_out_competitors,
+                "relevance": relevance,
                 "extract_outcome": extract_outcome,
                 "extract_error": extract_error,
             }

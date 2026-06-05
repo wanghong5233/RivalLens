@@ -1034,7 +1034,8 @@ def build_supervisor_repair_user_prompt(
 
 
 DISCOVERY_EXTRACT_SYSTEM_PROMPT = (
-    "You extract competitor names from search results. Return valid JSON only."
+    "You extract grounded competitor candidates from search results. Return valid JSON only. "
+    "Use only names and evidence that appear in the provided search_results. Do not invent competitors."
 )
 
 
@@ -1046,11 +1047,18 @@ def build_discovery_extract_user_prompt(
 ) -> str:
     return (
         "You are a competitive intelligence analyst.\n"
-        "Given the following search results about a market/track, extract a list of competitor product names.\n\n"
+        "Given the following search results about a market/track, extract competitor candidates.\n\n"
         "Rules:\n"
-        '- Return ONLY a JSON object: {"competitors": ["Name1", "Name2", ...]}\n'
+        "- Return ONLY a JSON object with this schema:\n"
+        '  {"candidates":[{"name":"Product","is_competitor":true,'
+        '"relevance_reason":"Why it competes in this market",'
+        '"evidence_quote":"Exact short quote copied from search_results"}]}\n'
+        "- Include only products or companies mentioned in search_results.\n"
+        "- Set is_competitor=false when a mentioned entity is adjacent, media-only, or not a direct competitor.\n"
+        "- evidence_quote must be an exact short substring copied from search_results.\n"
+        "- If no search-grounded competitor exists, return {\"candidates\":[]}.\n"
         "- Each name should be the commonly known product name.\n"
-        "- Deduplicate and return between 3 and 10 competitors.\n\n"
+        "- Deduplicate and return at most 10 candidates.\n\n"
         f"Search results:\n{search_results}\n\n"
         f"Domain context: {domain_context}\n"
         f"User query: {user_query}"
@@ -1066,7 +1074,8 @@ def build_discovery_extract_fallback_user_prompt(
         "Fallback competitor extraction request:\n"
         f"- domain_context: {domain_context}\n"
         f"- user_query: {user_query}\n\n"
-        'Return minimal valid JSON: {"competitors": ["Name1", "Name2", "Name3"]}.'
+        "No trustworthy search-grounded candidates are available in this fallback path.\n"
+        'Return minimal valid JSON: {"candidates":[]}.'
     )
 
 
@@ -1080,7 +1089,10 @@ def build_discovery_extract_repair_user_prompt(
         f"- validation_errors: {_json(list(validation_errors))}\n"
         f"- domain_context: {domain_context}\n\n"
         "Rules:\n"
-        "- competitors must be a non-empty list of unique product names.\n"
+        "- Return ONLY a JSON object with a candidates list.\n"
+        "- Each candidate must include name, is_competitor, relevance_reason, and evidence_quote.\n"
+        "- evidence_quote must be copied from the provided search results; if unavailable, return an empty candidates list.\n"
+        "- Do not invent competitor names or quotes.\n"
         "- Return JSON object only."
     )
 
