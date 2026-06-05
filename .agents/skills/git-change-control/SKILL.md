@@ -23,13 +23,11 @@ description: Git workflow and dirty-worktree control. Use before staging, commit
 
 - Commit one coherent change at a time.
 - Keep walking skeleton commits separate from later business integration commits.
-- Use the target repository's commit style.
-- For RavenWeb/LobeHub, follow gitmoji-style commit messages when making formal commits.
+- Use the target repository's commit style; infer it from recent `git log` or the repo's `AGENTS.md`.
 
 ## Branches and PRs
 
-- Confirm branch strategy from the target repo before opening PRs.
-- For RavenWeb/LobeHub-style work, `canary` is the development target and `main` is release.
+- Confirm branch strategy from the target repo before opening PRs; check `AGENTS.md` or existing branches for the development-vs-release target.
 - Do not PR directly to a protected/release branch unless explicitly asked.
 - PR descriptions should state what changed, why, how it was tested, and any skipped verification.
 

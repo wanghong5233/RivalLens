@@ -129,6 +129,6 @@ description: Write or refactor known-issues/backlog tracker (problem-first, evid
 - 设计依据与业界对照：`references/design-rationale.md`
 - 反例 → 正例完整对照：`references/examples.md`
 - 单次事件复盘：git commit / `docs/private/`
-- 收敛后不变量：`writing-pitfall-archive`
-- 跨项目沉淀：`writing-engineering-playbook`
+- 收敛后不变量：`writing-problem-records`（Pitfall 模式）
+- 跨项目沉淀：`writing-tech-article`（playbook 变体）
 - 长期决策：`writing-architecture-docs`

@@ -131,6 +131,6 @@ description: Write or refactor a pitfall archive (recurring failures → invaria
 
 - 设计依据与业界对照：`references/design-rationale.md`
 - 反例 → 正例完整对照：`references/examples.md`
-- 跨项目工程经验（上抽象层）：`writing-engineering-playbook`
+- 跨项目工程经验（上抽象层）：`writing-tech-article`（playbook 变体）
 - 项目对外名片：`writing-readme`
 - 项目架构文档：`writing-architecture-docs`

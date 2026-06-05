@@ -1,15 +1,15 @@
 ---
 name: writing-architecture-docs
-description: Write or refactor architecture/design/ADR docs (current-state + first-principles form). Use when editing `docs/*设计*`/`*架构*`/`*ADR*`/`*RFC*`, or user asks write/修改 architecture/设计/ADR docs, or complains doc is 啰嗦/口水/AI味/AI痕迹/对话记录/辩证过程. Do NOT use for README or pitfall.
+description: Write or refactor architecture/design/ADR docs (current-state + first-principles form). Use when editing `docs/*设计*`/`*架构*`/`*ADR*`/`*RFC*`, or user asks write/修改 architecture/设计/ADR docs, or complains doc is 啰嗦/口水/AI味/AI痕迹/对话记录/辩证过程. Do NOT use for README (writing-readme) or problem records (writing-problem-records). Tone: writing-deslop.
 ---
 
 # Writing Architecture Docs
 
 ## 一句话准则
 
-**架构文档只回答两个问题：`当前实现是什么` 与 `为什么是这个形态`。其他都属污染。**
+**架构文档只回答两个问题：`当前实现是什么` 与 `为什么是这个形态`。其他都属污染。** 去 AI 味通用规则见 `writing-deslop`；本 skill 管架构文档结构。
 
-## 硬性禁止（命中即删）
+## 架构专属禁止（通用 AI 味禁令见 writing-deslop）
 
 | 反模式 | 判断特征 | 归宿 |
 |---|---|---|
@@ -17,10 +17,7 @@ description: Write or refactor architecture/design/ADR docs (current-state + fir
 | 辩证过程 / 四轮反应 / 讨论记录 | "第一反应→反驳→第二反应"序列 | `agent-transcripts/` |
 | 外部证据 / 产品对比 / 调研表 | 列举 ChatGPT / Claude / Letta 等做法 | 删，至多一句泛指 |
 | 已删除/不再维护工件清单 | 列出被移除的文件、env、字段 | git log / CHANGELOG |
-| 运维现象 | "启动失败 / wheel 冲突 / ABI 问题 / Windows-WSL 下 xxx" | issue tracker / pitfall |
-| 过程时态 | "之前草案……落地阶段……这次决定……" | 改现在时 |
-| 对话/汇报语气 | "这里我思考 / 可见 / 迫使我们 / 就 / 说白了 / 其实" | 直接删 |
-| 散文堆叠 | 连续 3 段超 5 行 | 改表格 / mermaid / 签名代码块 |
+| 运维现象 | "启动失败 / wheel 冲突 / ABI 问题 / Windows-WSL 下 xxx" | issue tracker / `writing-problem-records` |
 
 ## 必要章节
 
@@ -56,35 +53,24 @@ description: Write or refactor architecture/design/ADR docs (current-state + fir
 
 **触发判断以运行时指标为准，不在无数据时提前决策。**
 
-## 写作微观规范
+## 架构专属微观规范（通用形态规则见 writing-deslop）
 
-- 中文正文 + 英文代码/标识符
-- 现在时陈述：❌"我们决定采用 X" → ✅"采用 X"
-- 禁用口语连接词：就 / 其实 / 说白了 / 可见 / 显然
-- 无感叹号、无 emoji
-- 禁止 AI 模板句："这不是 X，而是 Y" / "值得注意的是" / "从某种意义上" / "显著提升"
 - 标题写对象或契约，不写口号：✅`运行时状态机`，❌`为什么这是正确架构`
 - `第一性原理` 必须落成维度表；否则改名为 `设计约束`
-- 表格 > 列表 > 段落；段落不超过 3 行
 - 章节引用用 `§X.Y` 或 `[附录 B](#...)`，不写"上文提到过"
 
-## 自检（提交前必过）
-
-对每一行自问：
+## 架构专属自检（先过 writing-deslop 通用自检）
 
 - [ ] 描述的是"当前架构"还是"过程/对话/运维"？后者→删
-- [ ] 能用表格/图/签名代替吗？能就替
-- [ ] 删掉这行读者会漏什么架构事实？漏不掉→删
 - [ ] "为什么"是否走了第一性原理维度表？口水论证→改表
-- [ ] 标题是否像工程索引，而不是 AI 摘要标题？不是→改
-- [ ] 是否有无证据形容词（"稳定 / 高效 / 优雅"）？→ 改成指标或删
-- [ ] 出现被禁止章节了吗？命中→删
+- [ ] 出现架构专属禁止章节了吗？命中→删
 
 ## 链路
 
+- 去 AI 味通用核：`writing-deslop`
 - 工程约束基线：`.cursor/rules/core-principles.mdc`
 - 配置治理基线：`.cursor/rules/configuration-management.mdc`
 - 项目架构 rule（如已建立）：`.cursor/rules/<project>-architecture.mdc`
 - README 撰写：`writing-readme`
-- 部署 / 坑点档案撰写：`writing-pitfall-archive`
-- 跨项目工程经验：`writing-engineering-playbook`
+- 坑点 / backlog：`writing-problem-records`
+- 跨项目工程经验：`writing-tech-article`

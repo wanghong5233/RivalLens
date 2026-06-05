@@ -24,7 +24,7 @@ description: Environment variable, secret, token, local URL, and config safety g
 ## Naming
 
 - Use project-specific prefixes for cross-service temporary integrations.
-- For temporary dcccloud integrations, prefer names that include `DEV` or another explicit scope marker.
+- For temporary cross-service integrations, prefer names that include `DEV` or another explicit scope marker.
 - Keep env names stable and descriptive: `<SERVICE>_<SCOPE>_<SETTING>`.
 
 ## Server vs Client Exposure

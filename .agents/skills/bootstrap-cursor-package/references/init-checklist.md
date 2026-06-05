@@ -19,7 +19,7 @@
 
 | 类型 | 推荐组合 |
 |---|---|
-| 后端服务（无 LLM） | writing-skill + writing-readme + writing-tech-article + writing-pitfall-archive + writing-issue-backlog |
+| 后端服务（无 LLM） | writing-skill + writing-deslop + writing-readme + writing-tech-article + writing-problem-records |
 | LLM / Agent 应用 | 上一行 + agent-debugging + llm-observability-and-evals + tool-and-mcp-design + llm-cost-optimizer |
 | 纯文档 / 知识库 | writing-skill + writing-tech-article + writing-readme + writing-architecture-docs |
 | MCP / 工具开发 | writing-skill + tool-and-mcp-design + agent-debugging + llm-observability-and-evals |

@@ -7,13 +7,9 @@ description: Pull request and branch workflow. Use when the user asks to create 
 
 ## Branch Strategy
 
-For RavenWeb/LobeHub-style work:
-
-- `canary` is the development target.
-- `main` is the release branch.
-- Do not PR directly to `main` unless the task is explicitly release/hotfix.
-
-For other repositories, inspect local branch conventions before assuming this strategy.
+- Inspect the target repo's branch convention before opening a PR; check `AGENTS.md` or existing branches.
+- Identify the development target vs the release branch (they often differ).
+- Do not PR directly to a protected/release branch unless the task is explicitly release/hotfix.
 
 ## Before PR
 
@@ -33,9 +29,9 @@ git diff --stat
 ## Commit and PR Content
 
 - Keep commits coherent and scoped.
-- Use the target repo's commit style; RavenWeb commonly uses gitmoji-style messages.
+- Use the target repo's commit style; infer it from recent `git log` or `AGENTS.md`.
 - PR body should explain what changed, why, how it was tested, and remaining risks.
-- Use English for RavenWeb PR content unless the team asks otherwise.
+- Match the repo's existing PR language convention.
 
 ## Duplicate PRs
 

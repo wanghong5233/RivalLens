@@ -26,23 +26,22 @@ description: Pre-merge review checklist. Use before finalizing changes, reviewin
 
 ## i18n and Copy
 
-- User-facing strings use i18n in RavenWeb.
+- User-facing strings use i18n when the project already uses it.
 - Error messages say what happened and what the user can do next.
-- Copy uses established terms: Workspace, Agent, Group, Context, Memory, Integration, Skill, Provider.
+- Copy reuses the project's established product terms instead of inventing synonyms.
 
-## SPA and UI
+## UI
 
-- Desktop router pair stayed synchronized.
-- Route files remain thin.
-- New UI reuses `@lobehub/ui` / base-ui where appropriate.
-- Styling avoids hardcoded colors when token/css var equivalents exist.
+- Route files remain thin; logic lives in feature modules.
+- New UI reuses the project's design-system components where appropriate.
+- Styling avoids hardcoded colors when token / CSS-var equivalents exist.
 
 ## Data and DB
 
-- Components do not call `lambdaClient` directly for product data flows.
+- Components do not call the data/RPC client directly for product data flows.
 - External calls are behind services.
 - Migrations are generated and idempotent.
-- Drizzle queries use explicit `select()` builder unless local code requires otherwise.
+- Queries use the project's established query-builder pattern.
 
 ## Git
 

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Debug Logging"
-  short_description: "Use scoped debug namespaces and avoid logging sensitive data."
-  default_prompt: "Use the root debug rules before adding logs."

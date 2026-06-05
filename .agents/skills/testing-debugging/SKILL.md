@@ -1,6 +1,6 @@
 ---
 name: testing-debugging
-description: Testing and debugging practices. Use when adding tests, fixing failing tests, choosing verification commands, adding debug logs, diagnosing API/service failures, or deciding when to stop after repeated failed attempts.
+description: Testing and debugging practices, incl. Vitest mocks and the `debug` package. Use when adding/fixing tests, choosing test or verification commands, mocking boundaries, adding debug logs or log namespaces, diagnosing API/service failures, or deciding when to stop after repeated failed attempts.
 ---
 
 # Testing and Debugging
@@ -20,6 +20,25 @@ description: Testing and debugging practices. Use when adding tests, fixing fail
 - Avoid broad module mocks when a targeted spy or fixture is enough.
 - Keep test data minimal and readable.
 - Update or delete brittle white-box tests when they only duplicate implementation wiring.
+- Delete tests that only assert internal param forwarding when a higher-level behavior test already covers the outcome.
+
+## JavaScript/TypeScript Tests (Vitest)
+
+- Prefer targeted runs over the full suite (full runs are slow); use the repo's package runner from `AGENTS.md`:
+
+```bash
+npx vitest run --silent='passed-only' <file>
+```
+
+- Prefer `vi.spyOn` over broad `vi.mock`.
+- Reset mocks between cases:
+
+```ts
+import { afterEach, beforeEach, vi } from 'vitest';
+
+beforeEach(() => vi.clearAllMocks());
+afterEach(() => vi.restoreAllMocks());
+```
 
 ## Debugging Flow
 
@@ -33,8 +52,22 @@ description: Testing and debugging practices. Use when adding tests, fixing fail
 
 - Never log secrets, full tokens, credentials, API keys, cookies, or full Authorization headers.
 - Log stable context: provider name, endpoint name, status code, feature flag, request id, or sanitized error.
-- Avoid leaving noisy `console.log` / `print` statements in committed code.
+- Avoid leaving noisy `console.log` / `print` / `console.debug` statements in committed code.
+- `console.error` in a catch block is acceptable when it matches local style.
 - Use the project's established debug logger when it has one.
+
+## Debug Package Namespaces
+
+When using the `debug` package, follow the project's namespace convention. A common shape is `<app>-<layer>:<module>` (e.g. `<app>-server:<module>` / `<app>-client:<module>`) so logs filter by layer.
+
+```ts
+import debug from 'debug';
+
+const log = debug('myapp-server:health');
+log('health status: %d', status);
+```
+
+Use `%O` for objects, `%s` for strings, `%d` for numbers.
 
 ## Integration Checks
 
@@ -45,6 +78,6 @@ For service-to-service work:
 - Verify auth requirements before assuming demo mode or dev mode bypasses them.
 - Capture the smallest response needed to prove the link works.
 
-## RavenWeb Note
+## Project Commands
 
-When testing RavenWeb, read `RavenWeb/.agents/skills/testing/SKILL.md` for exact commands and warnings. In that project, avoid full `bun run test` unless explicitly needed.
+Read the target repo's `AGENTS.md` for the canonical test command, and prefer targeted runs over full-suite commands unless the change is broad.

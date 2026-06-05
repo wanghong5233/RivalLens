@@ -99,7 +99,7 @@ description: Write or refactor cross-project engineering playbook (Agent/LLM + b
 
 - 设计依据：`references/design-rationale.md`
 - 反例 → 正例：`references/examples.md`
-- 项目内坑点档案：`writing-pitfall-archive`
+- 项目内坑点档案：`writing-problem-records`
 - 项目架构文档：`writing-architecture-docs`
 - 项目对外名片：`writing-readme`
 - 当前 playbook 实例集（按项目实际位置）：`docs/private/engineering-playbook/`

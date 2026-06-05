@@ -1,13 +1,13 @@
 ---
 name: writing-readme
-description: Write or refactor public README per standard-readme spec + GitHub 10-second rule. Use when editing `README.md`/`README_EN.md`/subfolder README, or user asks 写/同步/修改/更新 README, or complains README has 口水话/啰嗦/AI味/AI痕迹/中英混写/不像专业 GitHub 项目. Do NOT use for `docs/*.md`.
+description: Write or refactor public README per standard-readme spec + GitHub 10-second rule. Use when editing `README.md`/`README_EN.md`/subfolder README, or user asks 写/同步/修改/更新 README, or complains README has 口水话/啰嗦/AI味/AI痕迹/中英混写/不像专业 GitHub 项目. Do NOT use for `docs/*.md`. Tone: writing-deslop.
 ---
 
 # Writing READMEs
 
 ## 一句话准则
 
-**README 是项目卡片，不是实现手册。访客用 10 秒决定是否继续看；超出 10 秒还没回答"这是什么 / 我为什么要关心 / 怎么试一下"就是失败。**
+**README 是项目卡片，不是实现手册。访客用 10 秒决定是否继续看；超出 10 秒还没回答"这是什么 / 我为什么要关心 / 怎么试一下"就是失败。** 去 AI 味通用规则见 `writing-deslop`；本 skill 管 README 结构。
 
 ## 角色边界（决定写什么 / 不写什么）
 
@@ -22,19 +22,16 @@ description: Write or refactor public README per standard-readme spec + GitHub 1
 
 **README 不承担**：部署细节、故障排查全集、内部 env 对齐表、SQL/Python 函数名、未发布的实验功能。
 
-## 硬性禁止（命中即删）
+## README 专属禁止（通用 AI 味禁令见 writing-deslop）
 
 | 反模式 | 判断特征 | 归宿 |
 |---|---|---|
-| 口水话 / 解释性铺垫 | "为了 / 这是因为 / 我们采用 / 值得一提的是" | 删 |
 | 内部业务字段 | 内部 env 前缀（如 `XX_RETRIEVE_PAGE_SIZE`）/ pydantic schema 名 / 数据库函数名 | `docs/` |
 | 未启用功能的辩解 | "生产默认不启用 / 仅开发期使用" 写进高层描述 | 删 |
-| 过程时态 | "曾经使用过 X / 后来切到 Y / 这次重构了 Z" | git log / CHANGELOG |
 | 内部链接 | 指向 `private/` 或未 tracked 路径 | 改指 `docs/` 或外部 URL |
 | 重复架构图 | 同一架构画 ASCII + mermaid + 文字 3 份 | 留一份（mermaid 优先） |
 | 失效 demo 链接 | demo 跳 404 或指已废弃子域 | 改新链接，**提交前必须人工点击** |
 | 工件清单 | "本次移除了 service-X / module-Y" | git log |
-| 自我夸赞形容词 | "强大的 / 优雅的 / 业界领先的 / 创新的" | 删 |
 
 设计依据见 `references/design-rationale.md`。
 
@@ -71,30 +68,23 @@ description: Write or refactor public README per standard-readme spec + GitHub 1
 
 判别原则见 `references/design-rationale.md`。
 
-## 写作微观规范
+## README 专属微观规范（通用形态规则见 writing-deslop）
 
-- 中文 README 用中文正文，技术名词 / 标识符保留英文（不翻译稳定的英文术语为意译中文）
-- 禁止在同一个 README 文件中混写中英文正文：中文放 `README.md`，英文放 `README_EN.md`，同文件只允许语言切换链接与少量不可翻译标识符（如命令、路径、代码符号）
-- 现在时陈述：❌"我们决定采用 X" → ✅"采用 X"
-- 段落 ≤ 3 行；超过改表格 / 列表 / mermaid
+- 中文 README 用中文正文，技术名词 / 标识符保留英文（不意译稳定英文术语）
+- 禁止同一 README 文件中英混写：中文放 `README.md`，英文放 `README_EN.md`，同文件只允许语言切换链接与不可翻译标识符
 - 链接必须可点：相对路径用 `./docs/xxx.md`；外链带 `https://`；**提交前批量点验**
-- Badges 来自 `shields.io`，颜色不超过 3 种
+- Badges 来自 `shields.io`，颜色 ≤ 3 种
 - mermaid 图节点数 ≤ 12；超过拆分图
 - 双语 README：`README.md`（中文）+ `README_EN.md`（英文）；**两份内容严格对齐**，同步更新
-- 标题使用朴素工程名词：`项目定位` / `适用场景` / `快速使用`，少用"一句话定位 / 核心理念 / 深入理解"
-- 不写宣言式对比：❌"这不是 X，而是 Y" → ✅"提供 X/Y/Z 文件，可复制到项目"
-- `第一性原理` / `工业级` / `生产级` 只在后文有具体约束、命令或指标支撑时保留，否则删
+- `第一性原理` / `工业级` / `生产级` 仅在后文有具体约束、命令或指标支撑时保留，否则删
 
-## 自检（提交前必过）
+## 自检（先过 writing-deslop 通用自检）
 
-### 通用
+### README 专属
 - [ ] 删掉这行，10 秒读者会漏什么核心事实？漏不掉 → 删
 - [ ] 业务字段名 / 内部 env 名 / 内部函数名出现在公开 README？→ 删
 - [ ] 相对路径都指向 git tracked 文件？（`docs/` ✅、`private/` ❌）
 - [ ] 外部链接今天还能打开？（demo / docs / 主页）
-- [ ] 形容词自夸（"强大 / 优雅 / 领先"）？→ 删
-- [ ] 出现 AI 模板句（"这不是 X，而是 Y" / "值得注意的是" / "赋能" / "打造"）？→ 改成可验证事实
-- [ ] 标题像口号还是像工程导航？像口号 → 改成用户会搜索的名词
 
 ### 根 README 专属
 - [ ] 中文版改了，英文版同步了吗？
@@ -109,9 +99,10 @@ description: Write or refactor public README per standard-readme spec + GitHub 1
 
 ## 链路
 
+- 去 AI 味通用核：`writing-deslop`
 - 设计依据与业界对照：`references/design-rationale.md`
 - 反例 → 正例完整对照：`references/examples.md`
 - 工程约束基线：`.cursor/rules/core-principles.mdc`
 - 架构文档撰写：`writing-architecture-docs`
-- 部署 / 坑点档案撰写：`writing-pitfall-archive`
-- 跨项目工程经验：`writing-engineering-playbook`
+- 坑点 / backlog：`writing-problem-records`
+- 跨项目工程经验：`writing-tech-article`

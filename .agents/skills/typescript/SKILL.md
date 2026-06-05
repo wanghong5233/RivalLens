@@ -23,7 +23,7 @@ import type { Foo } from 'pkg';
 import { bar } from 'pkg';
 ```
 
-- Do not use inline `import { type Foo }` in RavenWeb-style code.
+- Prefer separate `import type` statements over inline `import { type Foo }` when the repo's lint config requires it.
 - Keep type and value imports from the same package as separate statements when both exist.
 - Sort named specifiers alphabetically where practical.
 
@@ -40,7 +40,7 @@ import { bar } from 'pkg';
 - Use `console.error` in catch blocks when the project does not have a debug logger.
 - Do not silently swallow errors with empty `.catch(() => ...)`.
 
-## RavenWeb Notes
+## Boundaries
 
 - Use `unknown` for temporary external HTTP payloads.
 - Keep server-only code out of browser/client modules.

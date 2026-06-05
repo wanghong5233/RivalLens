@@ -1,4 +1,0 @@
-interface:
-  display_name: "Testing"
-  short_description: "Use targeted Vitest commands and behavior-focused tests."
-  default_prompt: "Use the root testing rules for this test task."

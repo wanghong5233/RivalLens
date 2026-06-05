@@ -8,9 +8,8 @@ description: React UI development guide. Use when creating or editing .tsx compo
 ## Component Choice
 
 - Prefer existing `src/components` and feature components first.
-- Prefer `@lobehub/ui/base-ui` primitives over antd equivalents for new RavenWeb UI.
-- Use `@lobehub/ui` higher-level components when base-ui has no match.
-- Implement custom UI only when local components do not fit.
+- Prefer the project's established UI library / design-system primitives over ad-hoc alternatives (check `AGENTS.md` or neighboring code for which library the repo uses).
+- Implement custom UI only when local components and the design system do not fit.
 
 ## Styling
 
@@ -21,15 +20,15 @@ description: React UI development guide. Use when creating or editing .tsx compo
 
 ## Layout and Navigation
 
-- Use `Flexbox` and `Center` from `@lobehub/ui` for common layout.
-- For SPA pages, use `Link` and `useNavigate` from `react-router-dom`, not `next/link`.
-- Keep route files thin; put real UI and logic under `src/features/<Domain>/`.
+- Use the design system's layout primitives for common layout instead of hand-rolled flex wrappers.
+- Use the router that the project already adopts; match SPA vs framework-router conventions in neighboring code.
+- Keep route files thin; put real UI and logic under a feature directory (for example `src/features/<Domain>/`).
 
 ## Data
 
-- Do not call `lambdaClient` directly in components.
-- Use service/store/SWR patterns for server data.
-- Avoid `useEffect` for ordinary data fetching when a store hook pattern exists.
+- Do not call the data/RPC client directly in components.
+- Use the project's service / store / data-hook patterns for server data.
+- Avoid `useEffect` for ordinary data fetching when a store or query hook pattern exists.
 
 ## User Text
 
@@ -39,5 +38,5 @@ description: React UI development guide. Use when creating or editing .tsx compo
 
 ## Modals
 
-- For new RavenWeb imperative modals, prefer `createModal`, `confirmModal`, `ModalHost`, and `useModalContext` from `@lobehub/ui/base-ui`.
-- Modal content uses hooks; modal factory options use `i18next.t` where hooks are unavailable.
+- For imperative modals, prefer the project's established modal factory/host pattern over bespoke one-off modals.
+- Modal content uses hooks; for modal factory options where hooks are unavailable, use the project's non-hook i18n accessor.

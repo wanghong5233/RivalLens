@@ -40,6 +40,15 @@ Single-repository monorepo. Top-level packages:
 - No wrapper classes that merely delegate (avoid Ghost Layers).
 - YAGNI: no features beyond what is explicitly requested.
 
+## Verification
+
+Canonical commands (skills delegate here for exact commands):
+
+- Backend tests run inside the dev container: `docker compose -f backend/docker-compose.dev.yml exec -T rivallens_api pytest <paths> -q`.
+- Prefer targeted pytest paths over the full suite unless the change is broad.
+- Frontend has no test runner yet; verify with `npm run type-check` (and `npm run build` for broad changes) in `frontend/`.
+- Commit style: follow the recent `git log` of this repo.
+
 ## Codex And Cursor Collaboration
 
 Cursor and Codex are separate execution contexts. Cursor Chat / Composer history is not automatically available to Codex CLI.
@@ -115,12 +124,11 @@ Skill usage should stay narrow and relevant. Use the smallest set that covers th
 
 **Writing & documentation:**
 
-- `writing-architecture-docs` — current-state + first-principles, no narrative / no AI filler
-- `writing-readme` — 10-second-scannable READMEs
-- `writing-tech-article` — high-density technical writing
-- `writing-pitfall-archive` — postmortem archive, prevent recurring failures
-- `writing-issue-backlog` — evidence-first issue records
-- `writing-engineering-playbook` — cross-project engineering intuition
+- `writing-deslop` — shared anti-slop tone core (去AI味); pairs with every format skill below
+- `writing-architecture-docs` — current-state + first-principles design/ADR docs
+- `writing-readme` — 10-second-scannable READMEs (standard-readme spec)
+- `writing-tech-article` — high-density tech blog + cross-project engineering playbook variant
+- `writing-problem-records` — active Known-Issues/Backlog + converged Pitfall Archive
 - `writing-skill` — meta: how to write a good SKILL.md
 
 **Project workflow:**
@@ -130,8 +138,7 @@ Skill usage should stay narrow and relevant. Use the smallest set that covers th
 - `git-change-control` — safe Git workflow
 - `pr` — branch and PR conventions
 - `review-checklist` — pre-merge review bias
-- `testing` / `testing-debugging` — verification
-- `debug` — debug logging
+- `testing-debugging` — verification, Vitest mocks, and debug logging
 
 **Tech-stack (frontend, will trigger only on .ts/.tsx):**
 
