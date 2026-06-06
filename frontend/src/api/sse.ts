@@ -472,6 +472,7 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     const invalidateRunReport = (): void => {
       void queryClient.invalidateQueries({ queryKey: ["run-report", runId] });
       void queryClient.invalidateQueries({ queryKey: ["run-conclusions", runId] });
+      void queryClient.invalidateQueries({ queryKey: ["run-comparisons", runId] });
     };
     const invalidateRunEvidence = (): void => {
       void queryClient.invalidateQueries({ queryKey: ["run-evidence", runId] });

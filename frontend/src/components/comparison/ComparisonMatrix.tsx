@@ -1,0 +1,118 @@
+import { FileText } from "lucide-react";
+
+import type { DimensionComparisonResponse } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
+export interface ComparisonMatrixProps {
+  comparisons: DimensionComparisonResponse[];
+  onEvidenceClick: (evidenceIds: string[]) => void;
+}
+
+const STANCE_VARIANT: Record<string, "success" | "warning" | "danger" | "secondary"> = {
+  leader: "success",
+  competitive: "warning",
+  laggard: "danger",
+  unknown: "secondary",
+};
+
+const STANCE_LABEL: Record<string, string> = {
+  leader: "领先",
+  competitive: "可竞争",
+  laggard: "落后",
+  unknown: "未知",
+};
+
+function formatDimension(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+export function ComparisonMatrix({
+  comparisons,
+  onEvidenceClick,
+}: ComparisonMatrixProps): JSX.Element | null {
+  if (comparisons.length === 0) {
+    return null;
+  }
+
+  const competitors = Array.from(
+    new Set(comparisons.flatMap((comparison) => comparison.cells.map((cell) => cell.competitor_id))),
+  ).sort();
+
+  if (competitors.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-white/[0.06] bg-surface">
+      <div className="border-b border-white/[0.04] px-4 py-3">
+        <h2 className="text-caption font-semibold text-foreground">跨竞品对比矩阵</h2>
+        <p className="mt-0.5 text-micro text-foreground-subtle">
+          {comparisons.length} 个维度 · {competitors.length} 个竞品
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full table-fixed border-collapse">
+          <thead>
+            <tr className="border-b border-white/[0.04] text-left text-micro uppercase text-foreground-subtle">
+              <th className="w-36 px-4 py-3 font-medium">维度</th>
+              {competitors.map((competitor) => (
+                <th key={competitor} className="min-w-56 px-4 py-3 font-medium">
+                  {competitor}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {comparisons.map((comparison) => {
+              const cellsByCompetitor = new Map(
+                comparison.cells.map((cell) => [cell.competitor_id, cell]),
+              );
+              return (
+                <tr key={comparison.dimension} className="border-b border-white/[0.04] last:border-b-0">
+                  <th className="align-top px-4 py-4 text-left text-caption font-medium capitalize text-foreground">
+                    {formatDimension(comparison.dimension)}
+                  </th>
+                  {competitors.map((competitor) => {
+                    const cell = cellsByCompetitor.get(competitor);
+                    if (cell === undefined) {
+                      return (
+                        <td key={competitor} className="px-4 py-4 align-top">
+                          <span className="text-micro text-foreground-subtle">-</span>
+                        </td>
+                      );
+                    }
+                    const variant = STANCE_VARIANT[cell.stance] ?? "secondary";
+                    const label = STANCE_LABEL[cell.stance] ?? cell.stance;
+                    return (
+                      <td key={cell.cell_id} className="px-4 py-4 align-top">
+                        <div className="space-y-2">
+                          <Badge variant={variant}>{label}</Badge>
+                          <p className="text-caption leading-6 text-foreground-muted">
+                            {cell.summary}
+                          </p>
+                          {cell.evidence_ids.length > 0 ? (
+                            <Button
+                              className={cn("h-7 gap-1.5 px-2 text-micro")}
+                              onClick={() => onEvidenceClick(cell.evidence_ids)}
+                              size="sm"
+                              variant="ghost"
+                            >
+                              <FileText className="h-3.5 w-3.5" />
+                              {cell.evidence_ids.length} 条证据
+                            </Button>
+                          ) : null}
+                        </div>
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}

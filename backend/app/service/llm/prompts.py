@@ -353,12 +353,28 @@ Output JSON schema:
       "confidence": "high" | "medium" | "low"
     }
   ],
+  "comparisons": [
+    {
+      "dimension": str,
+      "cells": [
+        {
+          "competitor_id": str,
+          "stance": "leader" | "competitive" | "laggard" | "unknown",
+          "summary": str,
+          "evidence_ids": list[str]
+        }
+      ]
+    }
+  ],
   "risk_flags": list[str],
   "recommended_sections": list[str]
 }
 
 Rules:
 - Every insight must reference existing evidence_ids from user prompt.
+- For comparisons, create one group per focus dimension when at least two competitors have evidence or can be marked unknown.
+- Each comparison cell must use a competitor_id from the user prompt; stance is qualitative, not numeric.
+- Use evidence_ids to ground each cell when available; if evidence is insufficient, set stance="unknown" and evidence_ids=[].
 - recommended_sections must use snake_case section ids that match insight dimension values.
 - Do not fabricate competitor facts.
 - Return JSON object only.
@@ -892,6 +908,7 @@ def build_analyst_user_prompt(
         f"- domain_hint: {domain_hint}\n"
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
         "Produce cross-competitor insights with explicit evidence_ids."
+        " Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids."
     )
 
 

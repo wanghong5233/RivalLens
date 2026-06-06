@@ -7,6 +7,7 @@ ID_PREFIXES: tuple[str, ...] = (
     "step_",
     "ev_",
     "concl_",
+    "cmp_",
     "comp_",
     "feat_",
     "price_",

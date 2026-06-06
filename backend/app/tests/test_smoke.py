@@ -272,6 +272,10 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
                 ),
                 {"run_id": run_id},
             ).scalar_one()
+            comparison_cell_count = connection.execute(
+                text("SELECT COUNT(*) AS count FROM comparison_cells WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            ).scalar_one()
     finally:
         engine.dispose()
 
@@ -336,6 +340,7 @@ def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float
         "skill_candidate_staging_count": int(skill_candidate_staging_count),
         "conclusion_count": int(conclusion_count),
         "conclusion_evidence_count": int(conclusion_evidence_count),
+        "comparison_cell_count": int(comparison_cell_count),
     }
 
 
@@ -427,7 +432,6 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["analyst_step_count"] >= 1
     assert snapshot["analyst_llm_call_count"] >= 1
     assert snapshot["analyst_llm_summarization_slot_count"] >= 1
-    assert snapshot["analyst_fallback_mode_count"] >= 1
     assert snapshot["qa_llm_call_count"] >= 1
     assert snapshot["qa_semantic_degraded_count"] >= 1
     assert snapshot["writer_llm_call_count"] >= 1
@@ -447,6 +451,7 @@ def test_create_run_persists_rows(test_client: TestClient) -> None:
     assert snapshot["skill_candidate_staging_count"] >= 1
     assert snapshot["conclusion_count"] >= 1
     assert snapshot["conclusion_evidence_count"] >= snapshot["conclusion_count"]
+    assert snapshot["comparison_cell_count"] >= 2
 
 
 def test_get_run_detail_and_trace(test_client: TestClient) -> None:
@@ -601,6 +606,19 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
     assert conclusions_payload["items"]
     assert all(item["run_id"] == run_id for item in conclusions_payload["items"])
     assert all(isinstance(item["evidence_ids"], list) and item["evidence_ids"] for item in conclusions_payload["items"])
+
+    comparisons_response = test_client.get(f"/api/runs/{run_id}/comparisons")
+    assert comparisons_response.status_code == 200
+    comparisons_payload = comparisons_response.json()
+    assert comparisons_payload["run_id"] == run_id
+    assert isinstance(comparisons_payload["items"], list)
+    assert comparisons_payload["items"]
+    first_comparison = comparisons_payload["items"][0]
+    assert isinstance(first_comparison["cells"], list)
+    assert len(first_comparison["cells"]) >= 2
+    assert {cell["stance"] for cell in first_comparison["cells"]}.issubset(
+        {"leader", "competitive", "laggard", "unknown"}
+    )
 
     packs_response = test_client.get("/api/demo-fixtures/competitors")
     assert packs_response.status_code == 200

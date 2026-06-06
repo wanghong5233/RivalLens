@@ -240,6 +240,30 @@ export interface RunConclusionsResponse {
   items: ConclusionItemResponse[];
 }
 
+export type ComparisonStance = "leader" | "competitive" | "laggard" | "unknown" | string;
+
+export interface ComparisonCellResponse {
+  cell_id: string;
+  run_id: string;
+  step_id: string;
+  dimension: string;
+  competitor_id: string;
+  stance: ComparisonStance;
+  summary: string;
+  evidence_ids: string[];
+  created_at: string;
+}
+
+export interface DimensionComparisonResponse {
+  dimension: string;
+  cells: ComparisonCellResponse[];
+}
+
+export interface RunComparisonsResponse {
+  run_id: string;
+  items: DimensionComparisonResponse[];
+}
+
 export interface WatchlistItemResponse {
   watch_id: string;
   competitor_id: string;

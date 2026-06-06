@@ -13,9 +13,10 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 
 import { queryClient } from "@/api/queryClient";
-import { useResetRun, useRunConclusions, useRunDetail, useRunMetrics, useRunReport, useRunTrace } from "@/api/hooks";
+import { useResetRun, useRunComparisons, useRunConclusions, useRunDetail, useRunMetrics, useRunReport, useRunTrace } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import { BattlecardGrid } from "@/components/battlecard";
+import { ComparisonMatrix } from "@/components/comparison/ComparisonMatrix";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -61,6 +62,10 @@ export function RunViewPage(): JSX.Element {
     enabled: isReportReady,
     refetchInterval: isRunActive ? 2_000 : false,
   });
+  const comparisonsQuery = useRunComparisons(runId, {
+    enabled: isReportReady,
+    refetchInterval: isRunActive ? 2_000 : false,
+  });
   const metricsQuery = useRunMetrics(runId, {
     enabled: isReportReady,
     refetchInterval: isRunActive ? 2_000 : false,
@@ -74,6 +79,7 @@ export function RunViewPage(): JSX.Element {
   const reportMarkdown = reportQuery.data?.content_markdown ?? "";
   const reportWithCitationLinks = useMemo(() => toCitationLinkMarkdown(reportMarkdown), [reportMarkdown]);
   const conclusions = conclusionsQuery.data?.items ?? [];
+  const comparisons = comparisonsQuery.data?.items ?? [];
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) return;
@@ -236,36 +242,39 @@ export function RunViewPage(): JSX.Element {
                 <p className="text-caption text-danger">报告读取失败：{reportQuery.error.message}</p>
               )}
               {isReportReady && !reportQuery.isLoading && !reportQuery.isError && (
-                <article className="prose prose-invert max-w-none rounded-lg border border-white/[0.06] bg-surface p-6 text-caption leading-7 prose-headings:text-foreground prose-p:text-foreground-muted prose-strong:text-foreground prose-a:text-primary">
-                  <ReactMarkdown
-                    components={{
-                      a: ({ href, children }) => {
-                        if (href?.startsWith("evidence://")) {
-                          const evidenceId = href.replace("evidence://", "");
-                          return (
-                            <button
-                              className="cursor-pointer rounded bg-primary/10 px-1.5 py-0.5 text-micro text-primary ring-1 ring-inset ring-primary/20 hover:bg-primary/20"
-                              onClick={() => openEvidenceDrawer([evidenceId])}
-                              type="button"
-                            >
-                              {children}
-                            </button>
-                          );
-                        }
-                        return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
-                      },
-                      h2: ({ children }) => {
-                        const text = Array.isArray(children)
-                          ? children.map((c) => (typeof c === "string" ? c : "")).join(" ").trim()
-                          : typeof children === "string" ? children.trim() : "";
-                        return <h2 id={toHeadingId(text)}>{children}</h2>;
-                      },
-                    }}
-                    remarkPlugins={[remarkGfm]}
-                  >
-                    {reportWithCitationLinks}
-                  </ReactMarkdown>
-                </article>
+                <>
+                  <ComparisonMatrix comparisons={comparisons} onEvidenceClick={openEvidenceDrawer} />
+                  <article className="prose prose-invert max-w-none rounded-lg border border-white/[0.06] bg-surface p-6 text-caption leading-7 prose-headings:text-foreground prose-p:text-foreground-muted prose-strong:text-foreground prose-a:text-primary">
+                    <ReactMarkdown
+                      components={{
+                        a: ({ href, children }) => {
+                          if (href?.startsWith("evidence://")) {
+                            const evidenceId = href.replace("evidence://", "");
+                            return (
+                              <button
+                                className="cursor-pointer rounded bg-primary/10 px-1.5 py-0.5 text-micro text-primary ring-1 ring-inset ring-primary/20 hover:bg-primary/20"
+                                onClick={() => openEvidenceDrawer([evidenceId])}
+                                type="button"
+                              >
+                                {children}
+                              </button>
+                            );
+                          }
+                          return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
+                        },
+                        h2: ({ children }) => {
+                          const text = Array.isArray(children)
+                            ? children.map((c) => (typeof c === "string" ? c : "")).join(" ").trim()
+                            : typeof children === "string" ? children.trim() : "";
+                          return <h2 id={toHeadingId(text)}>{children}</h2>;
+                        },
+                      }}
+                      remarkPlugins={[remarkGfm]}
+                    >
+                      {reportWithCitationLinks}
+                    </ReactMarkdown>
+                  </article>
+                </>
               )}
             </TabsContent>
 

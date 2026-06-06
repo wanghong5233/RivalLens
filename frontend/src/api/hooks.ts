@@ -17,6 +17,7 @@ import type {
   IntakeUserReply,
   PlanConfirmRequest,
   RunAcceptedResponse,
+  RunComparisonsResponse,
   RunCreateRequest,
   RunCreateResponse,
   RunDetailResponse,
@@ -97,6 +98,11 @@ async function fetchRunMetrics(runId: string): Promise<RunMetricsResponse> {
 
 async function fetchRunConclusions(runId: string): Promise<RunConclusionsResponse> {
   const { data } = await apiClient.get<RunConclusionsResponse>(`/api/runs/${runId}/conclusions`);
+  return data;
+}
+
+async function fetchRunComparisons(runId: string): Promise<RunComparisonsResponse> {
+  const { data } = await apiClient.get<RunComparisonsResponse>(`/api/runs/${runId}/comparisons`);
   return data;
 }
 
@@ -344,6 +350,18 @@ export function useRunConclusions(
   return useQuery({
     queryKey: ["run-conclusions", runId],
     queryFn: () => fetchRunConclusions(runId),
+    enabled: Boolean(runId) && (options.enabled ?? true),
+    refetchInterval: options.refetchInterval,
+  });
+}
+
+export function useRunComparisons(
+  runId: string,
+  options: QueryBehaviorOptions = {},
+): UseQueryResult<RunComparisonsResponse, Error> {
+  return useQuery({
+    queryKey: ["run-comparisons", runId],
+    queryFn: () => fetchRunComparisons(runId),
     enabled: Boolean(runId) && (options.enabled ?? true),
     refetchInterval: options.refetchInterval,
   });

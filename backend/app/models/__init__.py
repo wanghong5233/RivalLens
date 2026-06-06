@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from models.artifact import Artifact
+from models.comparison import ComparisonCellRecord
 from models.conclusion import ConclusionEvidenceLink, ConclusionRecord
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
@@ -14,6 +15,7 @@ from models.watchlist import WatchlistItem
 
 __all__ = [
     "Artifact",
+    "ComparisonCellRecord",
     "ConclusionEvidenceLink",
     "ConclusionRecord",
     "EvidenceRecord",

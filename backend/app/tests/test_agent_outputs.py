@@ -111,6 +111,112 @@ def test_analyst_output_slugifies_dimension_before_allowed_membership() -> None:
     assert output.insights[0].dimension == "user_feedback"
 
 
+def test_analyst_output_filters_structured_comparisons() -> None:
+    output = AnalystOutput.parse_llm_content(
+        {
+            "summary": "Summary with enough analyst context.",
+            "insights": [
+                {
+                    "dimension": "Feature",
+                    "finding": "Cursor and Windsurf differ on repository context.",
+                    "evidence_ids": ["ev_cursor"],
+                    "confidence": "medium",
+                }
+            ],
+            "comparisons": [
+                {
+                    "dimension": "Feature",
+                    "cells": [
+                        {
+                            "competitor_id": "Cursor ",
+                            "stance": "leader",
+                            "summary": "Cursor has stronger repo context.",
+                            "evidence_ids": ["ev_cursor", "ev_unknown"],
+                        },
+                        {
+                            "competitor_id": "Windsurf",
+                            "stance": "not_valid",
+                            "summary": "Windsurf is competitive but less grounded here.",
+                            "evidence_ids": ["ev_windsurf"],
+                        },
+                        {
+                            "competitor_id": "UnknownCompetitor",
+                            "stance": "leader",
+                            "summary": "Should be filtered.",
+                            "evidence_ids": ["ev_unknown"],
+                        },
+                    ],
+                },
+                {
+                    "dimension": "Pricing",
+                    "cells": [
+                        {
+                            "competitor_id": "Cursor",
+                            "stance": "leader",
+                            "summary": "Single-cell comparisons are not useful.",
+                            "evidence_ids": ["ev_cursor"],
+                        }
+                    ],
+                },
+            ],
+        },
+        allowed_evidence_ids={"ev_cursor", "ev_windsurf"},
+        allowed_dimensions={"feature", "pricing"},
+        competitors={"Cursor", "Windsurf"},
+    )
+
+    assert len(output.comparisons) == 1
+    comparison = output.comparisons[0]
+    assert comparison.dimension == "feature"
+    assert [cell.competitor_id for cell in comparison.cells] == ["Cursor", "Windsurf"]
+    assert comparison.cells[0].evidence_ids == ["ev_cursor"]
+    assert comparison.cells[1].stance == "unknown"
+
+
+def test_analyst_output_downgrades_qualified_comparison_without_evidence() -> None:
+    output = AnalystOutput.parse_llm_content(
+        {
+            "summary": "Summary with enough analyst context.",
+            "insights": [
+                {
+                    "dimension": "Feature",
+                    "finding": "Cursor and Windsurf differ on repository context.",
+                    "evidence_ids": ["ev_cursor"],
+                    "confidence": "medium",
+                }
+            ],
+            "comparisons": [
+                {
+                    "dimension": "Feature",
+                    "cells": [
+                        {
+                            "competitor_id": "Cursor",
+                            "stance": "leader",
+                            "summary": "Cursor supposedly leads, but the evidence was filtered.",
+                            "evidence_ids": ["ev_missing"],
+                        },
+                        {
+                            "competitor_id": "Windsurf",
+                            "stance": "competitive",
+                            "summary": "Windsurf has grounded competing evidence.",
+                            "evidence_ids": ["ev_windsurf"],
+                        },
+                    ],
+                }
+            ],
+        },
+        allowed_evidence_ids={"ev_cursor", "ev_windsurf"},
+        allowed_dimensions={"feature"},
+        competitors={"Cursor", "Windsurf"},
+    )
+
+    cells = output.comparisons[0].cells
+    assert cells[0].competitor_id == "Cursor"
+    assert cells[0].stance == "unknown"
+    assert cells[0].evidence_ids == []
+    assert cells[1].stance == "competitive"
+
+
 def test_analyst_output_skips_out_of_focus_insight_and_audits_reason() -> None:
     dropped: dict[str, int] = {}
 

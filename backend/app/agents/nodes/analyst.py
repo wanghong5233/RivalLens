@@ -14,6 +14,7 @@ from schemas.agent_outputs import AnalystOutput
 from schemas.contracts import normalize_dimension_or_none
 from schemas.ids import make_id
 from schemas.supervisor import Analyze
+from service.comparison import persist_comparisons_for_step
 from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import persist_conclusions_for_step
 from service.llm import (
@@ -142,6 +143,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             content,
             allowed_evidence_ids=allowed_evidence_ids,
             allowed_dimensions=allowed_dimensions,
+            competitors={item for item in competitors if isinstance(item, str) and item},
             dropped_dimensions=dropped_insight_dimensions,
         ),
         fallback_system_prompt=ANALYST_SYSTEM_PROMPT,
@@ -178,6 +180,11 @@ async def analyst_node(state: AgentState) -> AgentState:
     analysis_risk_flags = (
         [item for item in analysis_result["risk_flags"] if isinstance(item, str)]
         if isinstance(analysis_result.get("risk_flags"), list)
+        else []
+    )
+    analysis_comparisons = (
+        [item for item in analysis_result["comparisons"] if isinstance(item, dict)]
+        if isinstance(analysis_result.get("comparisons"), list)
         else []
     )
     evidence_lookup = {row.id: row for row in evidence_rows}
@@ -271,6 +278,37 @@ async def analyst_node(state: AgentState) -> AgentState:
             step.payload = {
                 **step.payload,
                 "conclusions_persist_error": conclusions_persist_error,
+            }
+        comparisons_persist_error: str | None = None
+        persisted_comparison_count = 0
+        try:
+            async with session.begin_nested():
+                comparison_records = await persist_comparisons_for_step(
+                    session=session,
+                    run_id=run_id,
+                    step_id=step_id,
+                    comparisons=analysis_comparisons,
+                    evidence_lookup=evidence_lookup,
+                    competitors=[item for item in competitors if isinstance(item, str)],
+                )
+                await session.flush()
+                persisted_comparison_count = len(comparison_records)
+        except (SQLAlchemyError, ValueError) as exc:
+            comparisons_persist_error = str(exc)[:2000]
+            log.info(
+                "analyst.comparisons.persist_fail",
+                run_id=run_id,
+                step_id=step_id,
+                error=comparisons_persist_error,
+            )
+        step.payload = {
+            **step.payload,
+            "comparison_count": persisted_comparison_count,
+        }
+        if comparisons_persist_error is not None:
+            step.payload = {
+                **step.payload,
+                "comparisons_persist_error": comparisons_persist_error,
             }
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)

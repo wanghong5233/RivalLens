@@ -424,6 +424,81 @@ class _FakeLLMClient:
             return self._build_response(model_slot="research", content=content)
         return self._build_response(model_slot="research", content={})
 
+    def _build_analyst_response(self, user_prompt: str) -> LLMResponse:
+        focus_dimensions = self._extract_json_list(user_prompt, "focus_dimensions")
+        competitors = self._extract_json_list(user_prompt, "competitors")
+        evidence_briefs_raw = self._extract_json_value(user_prompt, "evidence_briefs")
+        evidence_briefs = (
+            [item for item in evidence_briefs_raw if isinstance(item, dict)]
+            if isinstance(evidence_briefs_raw, list)
+            else []
+        )
+        if not focus_dimensions:
+            focus_dimensions = ["feature", "pricing", "user_feedback"]
+
+        insights: list[dict[str, object]] = []
+        comparisons: list[dict[str, object]] = []
+        for dimension in focus_dimensions:
+            dimension_evidence = [
+                item
+                for item in evidence_briefs
+                if item.get("dimension") == dimension and isinstance(item.get("evidence_id"), str)
+            ]
+            if dimension_evidence:
+                insights.append(
+                    {
+                        "dimension": dimension,
+                        "finding": f"{dimension} differs across competitors in deterministic analyst mode.",
+                        "evidence_ids": [dimension_evidence[0]["evidence_id"]],
+                        "confidence": "medium",
+                    }
+                )
+            cells: list[dict[str, object]] = []
+            for index, competitor_id in enumerate(competitors):
+                competitor_evidence = [
+                    item
+                    for item in dimension_evidence
+                    if item.get("competitor_id") == competitor_id
+                    and isinstance(item.get("evidence_id"), str)
+                ]
+                evidence_ids = [item["evidence_id"] for item in competitor_evidence[:2]]
+                cells.append(
+                    {
+                        "competitor_id": competitor_id,
+                        "stance": "leader" if index == 0 and evidence_ids else "competitive" if evidence_ids else "unknown",
+                        "summary": (
+                            f"{competitor_id} has grounded {dimension} evidence."
+                            if evidence_ids
+                            else f"{competitor_id} lacks grounded {dimension} evidence."
+                        ),
+                        "evidence_ids": evidence_ids,
+                    }
+                )
+            if len(cells) >= 2:
+                comparisons.append({"dimension": dimension, "cells": cells})
+
+        if not insights and evidence_briefs:
+            first = evidence_briefs[0]
+            evidence_id = first.get("evidence_id")
+            dimension = first.get("dimension") if isinstance(first.get("dimension"), str) else "general"
+            if isinstance(evidence_id, str):
+                insights.append(
+                    {
+                        "dimension": dimension,
+                        "finding": "Fallback deterministic analyst insight.",
+                        "evidence_ids": [evidence_id],
+                        "confidence": "low",
+                    }
+                )
+        content = {
+            "summary": "Deterministic analyst summary with structured comparisons.",
+            "insights": insights,
+            "comparisons": comparisons,
+            "risk_flags": [],
+            "recommended_sections": focus_dimensions,
+        }
+        return self._build_response(model_slot="summarization", content=content)
+
     def _build_writer_response(self, user_prompt: str) -> LLMResponse:
         template_id_match = re.search(r"- template_id: ([^\n]+)", user_prompt)
         template_id = (
@@ -755,6 +830,14 @@ class _FakeLLMClient:
             and "Research assignment" in user_prompt
         ):
             return self._build_researcher_response(user_prompt)
+        if (
+            model_slot == "summarization"
+            and isinstance(system_prompt, str)
+            and "RivalLens Analyst" in system_prompt
+            and isinstance(user_prompt, str)
+            and "Analysis context" in user_prompt
+        ):
+            return self._build_analyst_response(user_prompt)
         if (
             model_slot == "writer"
             and isinstance(system_prompt, str)

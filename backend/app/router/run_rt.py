@@ -36,6 +36,7 @@ from models.watchlist import WatchlistItem
 from schemas.ids import make_id
 from schemas.intake import IntakeClarifyRequest, IntakeUserReply, RunIntakeDraft, UserRole
 from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
+from service.comparison import load_comparisons_for_run
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot, load_run_metrics_snapshot
@@ -383,6 +384,28 @@ class ConclusionItemResponse(BaseModel):
 class RunConclusionsResponse(BaseModel):
     run_id: str
     items: list[ConclusionItemResponse]
+
+
+class ComparisonCellResponse(BaseModel):
+    cell_id: str
+    run_id: str
+    step_id: str
+    dimension: str
+    competitor_id: str
+    stance: str
+    summary: str
+    evidence_ids: list[str]
+    created_at: str
+
+
+class DimensionComparisonResponse(BaseModel):
+    dimension: str
+    cells: list[ComparisonCellResponse]
+
+
+class RunComparisonsResponse(BaseModel):
+    run_id: str
+    items: list[DimensionComparisonResponse]
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -2587,6 +2610,25 @@ async def get_run_conclusions(run_id: str) -> RunConclusionsResponse:
     return RunConclusionsResponse(
         run_id=run_id,
         items=[ConclusionItemResponse.model_validate(item) for item in items_raw],
+    )
+
+
+@router.get("/api/runs/{run_id}/comparisons", response_model=RunComparisonsResponse)
+async def get_run_comparisons(run_id: str) -> RunComparisonsResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        items_raw = await load_comparisons_for_run(session=session, run_id=run_id)
+
+    return RunComparisonsResponse(
+        run_id=run_id,
+        items=[DimensionComparisonResponse.model_validate(item) for item in items_raw],
     )
 
 

@@ -8,6 +8,7 @@ from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_section_id, validate_template_id
 
 ConfidenceLevel = Literal["high", "medium", "low"]
+ComparisonStance = Literal["leader", "competitive", "laggard", "unknown"]
 DEFAULT_WRITER_SECTIONS: tuple[str, ...] = DEFAULT_FOCUS_DIMENSIONS
 MIN_WRITER_SECTION_CHARS = 60
 
@@ -82,11 +83,42 @@ class AnalystInsight(BaseModel):
         return "medium"
 
 
+class ComparisonCell(BaseModel):
+    competitor_id: str = Field(min_length=1)
+    stance: ComparisonStance = "unknown"
+    summary: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("stance", mode="before")
+    @classmethod
+    def _normalize_stance(cls, value: object) -> ComparisonStance:
+        if isinstance(value, str) and value in {"leader", "competitive", "laggard", "unknown"}:
+            return value  # type: ignore[return-value]
+        return "unknown"
+
+    @model_validator(mode="after")
+    def _require_evidence_for_qualified_stance(self) -> Self:
+        if self.stance != "unknown" and not self.evidence_ids:
+            self.stance = "unknown"
+        return self
+
+
+class DimensionComparison(BaseModel):
+    dimension: str
+    cells: list[ComparisonCell] = Field(min_length=2)
+
+    @field_validator("dimension")
+    @classmethod
+    def _validate_dimension(cls, value: str) -> str:
+        return validate_dimension(value)
+
+
 class AnalystOutput(BaseModel):
     """Canonical analyst artifact consumed by writer and QA."""
 
     summary: str = Field(min_length=1)
     insights: list[AnalystInsight] = Field(min_length=1)
+    comparisons: list[DimensionComparison] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     recommended_sections: list[str] = Field(default_factory=list)
 
@@ -104,6 +136,7 @@ class AnalystOutput(BaseModel):
         *,
         allowed_evidence_ids: set[str],
         allowed_dimensions: set[str],
+        competitors: set[str] | None = None,
         dropped_dimensions: dict[str, int] | None = None,
     ) -> AnalystOutput:
         insights_raw = content.get("insights")
@@ -143,9 +176,70 @@ class AnalystOutput(BaseModel):
                         "confidence": item.get("confidence", "medium"),
                     }
                 )
+        comparisons_raw = content.get("comparisons")
+        filtered_comparisons: list[dict[str, object]] = []
+        allowed_competitors = {item.strip() for item in competitors or set() if item.strip()}
+        if isinstance(comparisons_raw, list):
+            for item in comparisons_raw:
+                if not isinstance(item, dict):
+                    continue
+                dimension, drop_reason = normalize_dimension_or_none(
+                    item.get("dimension"),
+                    allowed=allowed_dimensions,
+                )
+                if drop_reason is not None and dropped_dimensions is not None:
+                    dropped_dimensions[drop_reason] = dropped_dimensions.get(drop_reason, 0) + 1
+                cells_raw = item.get("cells")
+                if dimension is None or not isinstance(cells_raw, list):
+                    continue
+                filtered_cells: list[dict[str, object]] = []
+                seen_competitors: set[str] = set()
+                for cell in cells_raw:
+                    if not isinstance(cell, dict):
+                        continue
+                    competitor_raw = cell.get("competitor_id")
+                    summary_raw = cell.get("summary")
+                    evidence_ids_raw = cell.get("evidence_ids")
+                    if not isinstance(competitor_raw, str):
+                        continue
+                    competitor_id = competitor_raw.strip()
+                    if (
+                        not competitor_id
+                        or competitor_id in seen_competitors
+                        or (allowed_competitors and competitor_id not in allowed_competitors)
+                        or not isinstance(summary_raw, str)
+                        or not summary_raw.strip()
+                    ):
+                        continue
+                    evidence_ids = (
+                        [
+                            evidence_id
+                            for evidence_id in evidence_ids_raw
+                            if isinstance(evidence_id, str) and evidence_id in allowed_evidence_ids
+                        ]
+                        if isinstance(evidence_ids_raw, list)
+                        else []
+                    )
+                    seen_competitors.add(competitor_id)
+                    filtered_cells.append(
+                        {
+                            "competitor_id": competitor_id,
+                            "stance": cell.get("stance", "unknown"),
+                            "summary": summary_raw.strip(),
+                            "evidence_ids": stable_unique(evidence_ids),
+                        }
+                    )
+                if len(filtered_cells) >= 2:
+                    filtered_comparisons.append(
+                        {
+                            "dimension": dimension,
+                            "cells": filtered_cells,
+                        }
+                    )
         payload = {
             "summary": content.get("summary"),
             "insights": filtered_insights,
+            "comparisons": filtered_comparisons,
             "risk_flags": content.get("risk_flags") if isinstance(content.get("risk_flags"), list) else [],
             "recommended_sections": content.get("recommended_sections")
             if isinstance(content.get("recommended_sections"), list)
@@ -233,6 +327,7 @@ class AnalystOutput(BaseModel):
         return cls(
             summary=summary,
             insights=[insight],
+            comparisons=[],
             risk_flags=risk_flags,
             recommended_sections=covered_dimensions or focus_dimensions or [dimension],
         )
@@ -399,8 +494,11 @@ from schemas.agent_outputs_pipeline import (  # noqa: E402
 
 __all__ = [
     "AnalystOutput",
+    "ComparisonCell",
+    "ComparisonStance",
     "ConfidenceLevel",
     "DEFAULT_WRITER_SECTIONS",
+    "DimensionComparison",
     "DiscoveryExtractOutput",
     "ExtractStructuredOutput",
     "IntakeTurnOutput",
