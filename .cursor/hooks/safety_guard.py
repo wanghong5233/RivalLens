@@ -81,10 +81,15 @@ def _check_file(file_path: str) -> tuple[str, str]:
 
 
 def main() -> int:
+    # Read stdin as bytes and decode UTF-8 ourselves. Cursor sends UTF-8, but on
+    # Windows sys.stdin uses the locale codec (e.g. GBK) and raises
+    # UnicodeDecodeError on non-ASCII payloads (repo path contains CJK chars),
+    # which would crash the hook into a no-output, fail-closed block.
     try:
-        raw = sys.stdin.read()
+        raw_bytes = sys.stdin.buffer.read()
+        raw = raw_bytes.decode("utf-8", errors="replace")
         payload = json.loads(raw) if raw.strip() else {}
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, OSError):
         # Fail-open on malformed payload to avoid blocking legitimate ops on
         # corrupted IDE input. L2/L3 still cover real-secret leakage.
         _emit("allow")

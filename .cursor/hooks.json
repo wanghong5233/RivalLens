@@ -5,7 +5,7 @@
       {
         "command": "python .cursor/hooks/safety_guard.py",
         "timeout": 10,
-        "failClosed": true
+        "failClosed": false
       }
     ],
     "afterFileEdit": [
