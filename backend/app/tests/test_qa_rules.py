@@ -3,11 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from models.evidence import EvidenceRecord
+from models.run import Run
+from models.step import Step
 from schemas.qa import Approval, Rejection
 from service.llm.response import LLMResponse
 from service.qa.engine import (
+    _apply_numeric_claim_gate,
     _build_qa_fast_path_log_fields,
     _build_qa_slow_path_log_fields,
+    _target_sections_for_report,
     build_qa_outcome,
 )
 from service.qa.rules import (
@@ -179,6 +183,112 @@ def test_evaluate_fast_path_rules_applies_deep_only_gates() -> None:
     failed_deep_rule_ids = {item.rule_id for item in deep_results if not item.passed}
     assert "rule_deep_report_min_char_count" in failed_deep_rule_ids
     assert "rule_deep_report_covers_target_sections" in failed_deep_rule_ids
+
+
+def test_target_sections_prefers_writer_resolved_targets_over_plan_and_intake() -> None:
+    run = Run(
+        run_id="run_qa_targets",
+        user_query="qa targets",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_a"],
+        intake_draft={"focus_dimensions": ["phantom_6", "phantom_7", "phantom_8", "phantom_9"]},
+        plan_tree={
+            "tasks": [
+                {
+                    "stage": "research",
+                    "focus_dimensions": ["feature", "pricing", "security", "support"],
+                }
+            ]
+        },
+    )
+    writer_step = Step(
+        step_id="step_writer_targets",
+        run_id=run.run_id,
+        agent_name="writer",
+        status="completed",
+        retry_count=0,
+        payload={
+            "sections": [],
+            "target_sections": ["feature", "pricing", "security", "support", "implementation"],
+        },
+    )
+
+    assert _target_sections_for_report(run=run, writer_step=writer_step) == [
+        "feature",
+        "pricing",
+        "security",
+        "support",
+        "implementation",
+    ]
+
+
+def test_target_sections_falls_back_to_plan_and_intake_without_writer_targets() -> None:
+    run = Run(
+        run_id="run_qa_targets_fallback",
+        user_query="qa targets",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_a"],
+        intake_draft={"focus_dimensions": ["pricing"]},
+        plan_tree={
+            "tasks": [
+                {
+                    "stage": "research",
+                    "focus_dimensions": ["feature"],
+                }
+            ]
+        },
+    )
+    writer_step = Step(
+        step_id="step_writer_targets_fallback",
+        run_id=run.run_id,
+        agent_name="writer",
+        status="completed",
+        retry_count=0,
+        payload={"sections": ["security"]},
+    )
+
+    assert _target_sections_for_report(run=run, writer_step=writer_step) == [
+        "security",
+        "feature",
+        "pricing",
+    ]
+
+
+def test_numeric_claim_gate_blocks_first_round_and_warns_after_retry() -> None:
+    semantic_output = {
+        "semantic_audit_passed": True,
+        "reject_to": "writer",
+        "severity": "warning",
+        "finding": "Looks fine.",
+        "required_fields": [],
+        "unsupported_numeric_claims": [
+            {
+                "claim": "效率提升 28%",
+                "section_id": "efficiency",
+                "reason": "Evidence does not mention 28%.",
+            }
+        ],
+    }
+
+    first_round = _apply_numeric_claim_gate(
+        semantic_output=semantic_output,
+        qa_rejection_count=0,
+        has_blocking_failures_pre_semantic=False,
+    )
+    retry_round = _apply_numeric_claim_gate(
+        semantic_output=semantic_output,
+        qa_rejection_count=1,
+        has_blocking_failures_pre_semantic=False,
+    )
+
+    assert first_round["semantic_audit_passed"] is False
+    assert first_round["severity"] == "blocking"
+    assert first_round["reject_to"] == "writer"
+    assert "reports.content_json.sections[].evidence_refs" in first_round["required_fields"]
+    assert retry_round["semantic_audit_passed"] is True
+    assert retry_round["severity"] == "warning"
 
 
 def test_engine_aggregation_rejects_when_blocking_failed() -> None:

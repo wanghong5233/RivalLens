@@ -24,6 +24,7 @@ from service.llm import (
 )
 from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
+from service.qa.numeric_claims import extract_numeric_claim_candidates
 from service.qa.promoted_rules import evaluate_promoted_rule_yaml
 from service.qa.rules import RuleResult, evaluate_fast_path_rules
 from service.skill_store import get_skill_store
@@ -196,6 +197,10 @@ def _extend_sections_from_plan_tree(*, sections: list[str], plan_tree: dict[str,
 def _target_sections_for_report(*, run: Run | None, writer_step: Step | None) -> list[str]:
     sections: list[str] = []
     if writer_step is not None and isinstance(writer_step.payload, dict):
+        target_sections_raw = writer_step.payload.get("target_sections")
+        if isinstance(target_sections_raw, list):
+            _extend_sections_from_values(sections=sections, values=target_sections_raw)
+            return sections
         _extend_sections_from_values(sections=sections, values=writer_step.payload.get("sections"))
     if run is not None:
         _extend_sections_from_plan_tree(sections=sections, plan_tree=run.plan_tree)
@@ -267,6 +272,58 @@ def _semantic_rule_result(semantic_output: dict[str, object]) -> RuleResult:
         reject_to=reject_to,  # validated above
         message=finding,
     )
+
+
+def _unsupported_numeric_claims(semantic_output: dict[str, object]) -> list[dict[str, object]]:
+    items_raw = semantic_output.get("unsupported_numeric_claims")
+    if not isinstance(items_raw, list):
+        return []
+    return [item for item in items_raw if isinstance(item, dict)]
+
+
+def _apply_numeric_claim_gate(
+    *,
+    semantic_output: dict[str, object],
+    qa_rejection_count: int,
+    has_blocking_failures_pre_semantic: bool,
+) -> dict[str, object]:
+    unsupported_claims = _unsupported_numeric_claims(semantic_output)
+    if not unsupported_claims:
+        return semantic_output
+    if qa_rejection_count >= 1 and not has_blocking_failures_pre_semantic:
+        return {
+            **semantic_output,
+            "semantic_audit_passed": True,
+            "severity": "warning",
+            "reject_to": "writer",
+            "finding": (
+                "Unsupported numeric claims remained after retry; accepted with warning "
+                "metadata so the report can surface unverifiable numbers."
+            ),
+        }
+    required_fields_raw = semantic_output.get("required_fields")
+    existing_required_fields = (
+        [item for item in required_fields_raw if isinstance(item, str)]
+        if isinstance(required_fields_raw, list)
+        else []
+    )
+    return {
+        **semantic_output,
+        "semantic_audit_passed": False,
+        "severity": "blocking",
+        "reject_to": "writer",
+        "finding": (
+            "Report contains numeric claims that are not supported by cited evidence; "
+            "rewrite with supported numbers or downgrade them to qualitative statements."
+        ),
+        "required_fields": sorted(
+            {
+                *existing_required_fields,
+                "reports.content_json.sections[].content_markdown",
+                "reports.content_json.sections[].evidence_refs",
+            }
+        ),
+    }
 
 
 def _build_promoted_rule_results(
@@ -361,6 +418,9 @@ def _build_qa_slow_path_log_fields(
     finding_raw = semantic_output.get("finding") if semantic_output is not None else None
     reject_to_raw = semantic_output.get("reject_to") if semantic_output is not None else None
     severity_raw = semantic_output.get("severity") if semantic_output is not None else None
+    unsupported_numeric_claims = (
+        _unsupported_numeric_claims(semantic_output) if semantic_output is not None else []
+    )
     semantic_audit_passed = (
         bool(semantic_output.get("semantic_audit_passed"))
         if semantic_output is not None
@@ -378,6 +438,7 @@ def _build_qa_slow_path_log_fields(
         ),
         "semantic_reject_to": reject_to_raw if isinstance(reject_to_raw, str) else None,
         "semantic_severity": severity_raw if isinstance(severity_raw, str) else None,
+        "unsupported_numeric_claim_count": len(unsupported_numeric_claims),
         "schema_error": schema_error,
     }
 
@@ -467,6 +528,11 @@ async def evaluate_report(
         ),
     )
     evidence_briefs = _build_evidence_briefs(evidence_items)
+    numeric_claim_candidates = extract_numeric_claim_candidates(
+        report_json=report.content_json,
+        evidence_items=evidence_items,
+    )
+    numeric_claims_for_prompt = [item.to_prompt_dict() for item in numeric_claim_candidates]
     semantic_user_prompt = build_qa_semantic_user_prompt(
         report_markdown=report.content_markdown,
         report_json=report.content_json,
@@ -474,6 +540,7 @@ async def evaluate_report(
         evidence_briefs=evidence_briefs,
         report_depth=report_depth,
         target_sections=target_sections,
+        numeric_claims=numeric_claims_for_prompt,
     )
     semantic_fallback_prompt = build_qa_semantic_fallback_user_prompt(
         failed_rule_ids=failed_rule_ids,
@@ -503,6 +570,11 @@ async def evaluate_report(
     semantic_audit_passed = False
     if semantic_output is not None:
         semantic_mode = "applied"
+        semantic_output = _apply_numeric_claim_gate(
+            semantic_output=semantic_output,
+            qa_rejection_count=qa_rejection_count,
+            has_blocking_failures_pre_semantic=has_blocking_failures_pre_semantic,
+        )
         semantic_reject_to_raw = semantic_output.get("reject_to")
         semantic_audit_passed_raw = semantic_output.get("semantic_audit_passed")
         if (
@@ -553,6 +625,10 @@ async def evaluate_report(
         "qa_semantic_error": semantic_response.error,
         "qa_semantic_fallback_used": semantic_response.fallback_used,
         "qa_semantic_fallback_reason": semantic_response.fallback_reason,
+        "qa_numeric_claim_count": len(numeric_claims_for_prompt),
+        "qa_unsupported_numeric_claims": (
+            _unsupported_numeric_claims(semantic_output) if semantic_output is not None else []
+        ),
         "promoted_qa_rule_ids": promoted_rule_ids,
         **promoted_rule_metadata,
     }

@@ -347,6 +347,9 @@ class RunMetricsResponse(BaseModel):
     evidence_count_total: int
     evidence_count_by_competitor: dict[str, int]
     evidence_count_by_dimension: dict[str, int]
+    comparison_dimensions: list[str]
+    conclusion_sections: list[str]
+    report_section_ids: list[str]
     dimension_coverage_rate: float
     report_char_count: int
     report_section_count: int

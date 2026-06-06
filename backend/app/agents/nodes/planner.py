@@ -107,6 +107,20 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
     return tasks[:MAX_TOTAL_PLAN_TASKS]
 
 
+def _research_competitors_from_tasks(tasks: list[PlanTask]) -> list[str]:
+    competitors: list[str] = []
+    seen: set[str] = set()
+    for task in tasks:
+        if task.stage != "research" or task.competitor_id is None:
+            continue
+        competitor_id = task.competitor_id.strip()
+        if not competitor_id or competitor_id in seen:
+            continue
+        seen.add(competitor_id)
+        competitors.append(competitor_id)
+    return competitors
+
+
 def reconcile_plan_tree_after_discovery(
     *,
     plan_tree: PlanTree | dict[str, object],
@@ -144,14 +158,6 @@ def reconcile_plan_tree_after_discovery(
             insert_at = index + 1
 
     new_research_tasks: list[PlanTask] = []
-    if len(discovered_competitors) > MAX_RESEARCH_COMPETITORS:
-        log.info(
-            "planner.reconcile.discovery_capped",
-            cap=MAX_RESEARCH_COMPETITORS,
-            kept_count=MAX_RESEARCH_COMPETITORS,
-            discovered_count=len(discovered_competitors),
-            dropped_competitors=list(discovered_competitors[MAX_RESEARCH_COMPETITORS:]),
-        )
     for competitor in discovered_competitors[:MAX_RESEARCH_COMPETITORS]:
         if competitor in existing_research:
             continue
@@ -168,10 +174,44 @@ def reconcile_plan_tree_after_discovery(
         )
 
     if not new_research_tasks:
+        actual_competitors = _research_competitors_from_tasks(list(plan.tasks))
+        actual_competitor_set = set(actual_competitors)
+        log.info(
+            "planner.reconcile.research_competitor_set",
+            cap=MAX_RESEARCH_COMPETITORS,
+            discovered_count=len(discovered_competitors),
+            existing_research_count=len(existing_research),
+            new_research_count=0,
+            actual_research_count=len(actual_competitors),
+            actual_research_competitors=actual_competitors,
+            dropped_competitors=[
+                competitor
+                for competitor in discovered_competitors
+                if competitor not in actual_competitor_set
+            ],
+            capped=len(discovered_competitors) > MAX_RESEARCH_COMPETITORS,
+        )
         return plan
 
     tasks = list(plan.tasks)
     tasks[insert_at:insert_at] = new_research_tasks
+    actual_competitors = _research_competitors_from_tasks(tasks)
+    actual_competitor_set = set(actual_competitors)
+    log.info(
+        "planner.reconcile.research_competitor_set",
+        cap=MAX_RESEARCH_COMPETITORS,
+        discovered_count=len(discovered_competitors),
+        existing_research_count=len(existing_research),
+        new_research_count=len(new_research_tasks),
+        actual_research_count=len(actual_competitors),
+        actual_research_competitors=actual_competitors,
+        dropped_competitors=[
+            competitor
+            for competitor in discovered_competitors
+            if competitor not in actual_competitor_set
+        ],
+        capped=len(discovered_competitors) > MAX_RESEARCH_COMPETITORS,
+    )
     return plan.model_copy(update={"tasks": tasks, "version": plan.version + 1})
 
 

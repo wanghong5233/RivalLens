@@ -7,6 +7,8 @@ from statistics import median
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from models.comparison import ComparisonCellRecord
+from models.conclusion import ConclusionRecord
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.report import Report
@@ -23,6 +25,9 @@ class RunMetricsSnapshot:
     evidence_count_total: int
     evidence_count_by_competitor: dict[str, int]
     evidence_count_by_dimension: dict[str, int]
+    comparison_dimensions: list[str]
+    conclusion_sections: list[str]
+    report_section_ids: list[str]
     dimension_coverage_rate: float
     report_char_count: int
     report_section_count: int
@@ -136,6 +141,14 @@ def _section_ids_from_report(report: Report | None) -> set[str]:
     return section_ids
 
 
+def _dimensions_from_comparisons(rows: list[ComparisonCellRecord]) -> set[str]:
+    return {row.dimension for row in rows if isinstance(row.dimension, str) and row.dimension}
+
+
+def _sections_from_conclusions(rows: list[ConclusionRecord]) -> set[str]:
+    return {row.section for row in rows if isinstance(row.section, str) and row.section}
+
+
 def _section_count_from_report(report: Report | None) -> int:
     if report is None or not isinstance(report.content_json, dict):
         return 0
@@ -178,6 +191,8 @@ def build_run_metrics_snapshot(
     decision_rows: list[SupervisorDecisionRecord],
     candidate_rows: list[SkillCandidateRecord],
     report_rows: list[Report] | None = None,
+    comparison_rows: list[ComparisonCellRecord] | None = None,
+    conclusion_rows: list[ConclusionRecord] | None = None,
 ) -> RunMetricsSnapshot:
     run_competitors = [competitor for competitor in run.competitors if isinstance(competitor, str)]
     evidence_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in run_competitors}
@@ -205,20 +220,23 @@ def build_run_metrics_snapshot(
         1 for competitor in run_competitors if evidence_count_by_competitor.get(competitor, 0) > 0
     )
     coverage_rate = _safe_rate(covered_competitor_count, len(run_competitors))
-    actual_dimensions = {
+    evidence_dimensions = {
         dimension
         for dimension, count in evidence_count_by_dimension.items()
         if count > 0
     }
-    dimension_denominator = expected_dimensions or actual_dimensions
-    covered_dimension_count = (
-        sum(1 for dimension in expected_dimensions if evidence_count_by_dimension.get(dimension, 0) > 0)
-        if expected_dimensions
-        else len(actual_dimensions)
-    )
-    dimension_coverage_rate = _safe_rate(covered_dimension_count, len(dimension_denominator))
     latest_report = _latest_report(report_rows or [])
     report_section_ids = _section_ids_from_report(latest_report)
+    comparison_dimensions = _dimensions_from_comparisons(comparison_rows or [])
+    conclusion_sections = _sections_from_conclusions(conclusion_rows or [])
+    downstream_dimensions = comparison_dimensions | conclusion_sections | report_section_ids
+    dimension_denominator = expected_dimensions or downstream_dimensions or evidence_dimensions
+    covered_dimension_count = (
+        sum(1 for dimension in expected_dimensions if dimension in downstream_dimensions)
+        if expected_dimensions
+        else len(dimension_denominator)
+    )
+    dimension_coverage_rate = _safe_rate(covered_dimension_count, len(dimension_denominator))
     expected_report_sections = _latest_writer_target_sections(step_rows) or expected_dimensions
     report_section_coverage_rate = (
         _safe_rate(
@@ -270,6 +288,9 @@ def build_run_metrics_snapshot(
         evidence_count_total=len(evidence_rows),
         evidence_count_by_competitor=evidence_count_by_competitor,
         evidence_count_by_dimension=evidence_count_by_dimension,
+        comparison_dimensions=sorted(comparison_dimensions),
+        conclusion_sections=sorted(conclusion_sections),
+        report_section_ids=sorted(report_section_ids),
         dimension_coverage_rate=dimension_coverage_rate,
         report_char_count=len(latest_report.content_markdown.strip()) if latest_report is not None else 0,
         report_section_count=_section_count_from_report(latest_report),
@@ -335,6 +356,24 @@ async def load_run_metrics_snapshot(
             .order_by(Report.created_at.asc())
         )
     ).scalars().all()
+    comparison_rows = (
+        await session.execute(
+            select(ComparisonCellRecord)
+            .where(ComparisonCellRecord.run_id == run_id)
+            .order_by(
+                ComparisonCellRecord.dimension.asc(),
+                ComparisonCellRecord.competitor_id.asc(),
+                ComparisonCellRecord.created_at.asc(),
+            )
+        )
+    ).scalars().all()
+    conclusion_rows = (
+        await session.execute(
+            select(ConclusionRecord)
+            .where(ConclusionRecord.run_id == run_id)
+            .order_by(ConclusionRecord.created_at.asc(), ConclusionRecord.conclusion_id.asc())
+        )
+    ).scalars().all()
     candidate_rows = (await session.execute(select(SkillCandidateRecord))).scalars().all()
     candidate_rows = [
         row
@@ -350,4 +389,6 @@ async def load_run_metrics_snapshot(
         decision_rows=list(decision_rows),
         candidate_rows=list(candidate_rows),
         report_rows=list(report_rows),
+        comparison_rows=list(comparison_rows),
+        conclusion_rows=list(conclusion_rows),
     )

@@ -208,6 +208,15 @@ export interface RunMetricsResponse {
   coverage_rate: number;
   evidence_count_total: number;
   evidence_count_by_competitor: Record<string, number>;
+  evidence_count_by_dimension: Record<string, number>;
+  comparison_dimensions: string[];
+  conclusion_sections: string[];
+  report_section_ids: string[];
+  dimension_coverage_rate: number;
+  report_char_count: number;
+  report_section_count: number;
+  report_depth: "quick" | "deep";
+  report_section_coverage_rate: number;
   source_type_distribution: Record<string, number>;
   desensitization_coverage: number;
   qa_total_steps: number;
@@ -217,6 +226,8 @@ export interface RunMetricsResponse {
   llm_token_total: number;
   llm_call_count: number;
   llm_latency_p50_ms: number | null;
+  llm_provider_error_count: number;
+  llm_retry_total: number;
   manual_review_rate: number;
   manual_review_is_proxy: boolean;
   run_wall_clock_seconds: number | null;

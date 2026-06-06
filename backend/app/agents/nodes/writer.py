@@ -627,6 +627,7 @@ async def writer_node(state: AgentState) -> AgentState:
             payload={
                 **request.model_dump(),
                 "report_depth": report_depth,
+                "target_sections": target_sections,
                 "writer_mode": writer_mode,
                 "report_title": report_content.get("title"),
                 "section_count": section_count,

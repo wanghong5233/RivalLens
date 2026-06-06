@@ -8,6 +8,8 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
+from models.comparison import ComparisonCellRecord
+from models.conclusion import ConclusionRecord
 from core.config import settings
 from models.evidence import EvidenceRecord
 from models.report import Report
@@ -27,6 +29,9 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         evidence_count_total=3,
         evidence_count_by_competitor={"comp_cursor": 2},
         evidence_count_by_dimension={"pricing": 2},
+        comparison_dimensions=["pricing"],
+        conclusion_sections=[],
+        report_section_ids=[],
         dimension_coverage_rate=0.5,
         report_char_count=1234,
         report_section_count=2,
@@ -113,7 +118,7 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
             source_title="Cursor Pricing",
             quote="Cursor publishes pricing details.",
             sanitized_text="Cursor publishes pricing details.",
-            span={"dimension": "pricing", "competitor_id": "comp_cursor"},
+            span={"dimension": "pricing_page", "competitor_id": "comp_cursor"},
             collected_by="step_researcher",
             collected_at=collected_at,
             desensitized=True,
@@ -126,10 +131,32 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
             source_title="Cursor Security",
             quote="Cursor describes security controls.",
             sanitized_text="Cursor describes security controls.",
-            span={"dimension": "security", "competitor_id": "comp_cursor"},
+            span={"dimension": "security_docs", "competitor_id": "comp_cursor"},
             collected_by="step_researcher",
             collected_at=collected_at,
             desensitized=True,
+        ),
+    ]
+    comparison_rows = [
+        ComparisonCellRecord(
+            cell_id="cmp_pricing",
+            run_id=run.run_id,
+            step_id="step_analyst",
+            dimension="pricing",
+            competitor_id="comp_cursor",
+            stance="leader",
+            summary="Pricing is covered.",
+            evidence_ids=["ev_pricing"],
+        ),
+        ComparisonCellRecord(
+            cell_id="cmp_security",
+            run_id=run.run_id,
+            step_id="step_analyst",
+            dimension="security",
+            competitor_id="comp_cursor",
+            stance="competitive",
+            summary="Security is covered.",
+            evidence_ids=["ev_security"],
         ),
     ]
 
@@ -140,14 +167,110 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
         llm_rows=[],
         decision_rows=[],
         candidate_rows=[],
+        comparison_rows=comparison_rows,
     )
 
     assert snapshot.evidence_count_by_dimension == {
         "integrations": 0,
-        "pricing": 1,
-        "security": 1,
+        "pricing": 0,
+        "pricing_page": 1,
+        "security": 0,
+        "security_docs": 1,
     }
+    assert snapshot.comparison_dimensions == ["pricing", "security"]
     assert snapshot.dimension_coverage_rate == 2 / 3
+
+
+def test_build_run_metrics_snapshot_uses_downstream_focus_dimensions_for_coverage() -> None:
+    run = Run(
+        run_id="run_downstream_dimension_metrics",
+        user_query="dimension metrics",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_cursor"],
+        plan_tree={
+            "tasks": [
+                {
+                    "stage": "research",
+                    "focus_dimensions": ["scene_matching_degree", "pricing", "implementation"],
+                }
+            ]
+        },
+    )
+    collected_at = datetime.now(timezone.utc)
+    evidence_rows = [
+        EvidenceRecord(
+            id="ev_raw_taxonomy",
+            run_id=run.run_id,
+            source_type="docs",
+            source_url="https://example.com",
+            source_title="Raw Taxonomy",
+            quote="Raw collection dimension.",
+            sanitized_text="Raw collection dimension.",
+            span={"dimension": "feature", "competitor_id": "comp_cursor"},
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        )
+    ]
+    comparison_rows = [
+        ComparisonCellRecord(
+            cell_id="cmp_scene",
+            run_id=run.run_id,
+            step_id="step_analyst",
+            dimension="scene_matching_degree",
+            competitor_id="comp_cursor",
+            stance="leader",
+            summary="Scene matching covered.",
+            evidence_ids=["ev_raw_taxonomy"],
+        )
+    ]
+    conclusion_rows = [
+        ConclusionRecord(
+            conclusion_id="concl_pricing",
+            run_id=run.run_id,
+            step_id="step_analyst",
+            section="pricing",
+            claim="Pricing covered.",
+            confidence="medium",
+            competitor_ids=["comp_cursor"],
+            risk_flags=[],
+        )
+    ]
+    report = Report(
+        report_id="report_downstream",
+        run_id=run.run_id,
+        status="completed",
+        content_markdown="report",
+        content_json={
+            "sections": [
+                {"section_id": "implementation", "content_markdown": "Implementation covered."}
+            ]
+        },
+    )
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=evidence_rows,
+        step_rows=[],
+        llm_rows=[],
+        decision_rows=[],
+        candidate_rows=[],
+        report_rows=[report],
+        comparison_rows=comparison_rows,
+        conclusion_rows=conclusion_rows,
+    )
+
+    assert snapshot.evidence_count_by_dimension == {
+        "feature": 1,
+        "implementation": 0,
+        "pricing": 0,
+        "scene_matching_degree": 0,
+    }
+    assert snapshot.comparison_dimensions == ["scene_matching_degree"]
+    assert snapshot.conclusion_sections == ["pricing"]
+    assert snapshot.report_section_ids == ["implementation"]
+    assert snapshot.dimension_coverage_rate == 1.0
 
 
 def test_build_run_metrics_snapshot_reports_report_quality_fields() -> None:
@@ -256,7 +379,7 @@ def test_build_run_metrics_snapshot_uses_supervisor_dimensions_without_plan_tree
     )
 
     assert snapshot.evidence_count_by_dimension == {"pricing": 1, "security": 0}
-    assert snapshot.dimension_coverage_rate == 0.5
+    assert snapshot.dimension_coverage_rate == 0.0
 
 
 def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
@@ -283,6 +406,9 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert payload["evidence_count_total"] >= 1
     assert set(payload["evidence_count_by_competitor"].keys()) >= {"comp_cursor", "comp_windsurf"}
     assert isinstance(payload["evidence_count_by_dimension"], dict)
+    assert isinstance(payload["comparison_dimensions"], list)
+    assert isinstance(payload["conclusion_sections"], list)
+    assert isinstance(payload["report_section_ids"], list)
     assert 0.0 <= payload["dimension_coverage_rate"] <= 1.0
     assert payload["report_char_count"] >= 0
     assert payload["report_section_count"] >= 0
@@ -338,6 +464,9 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         assert payload["evidence_count_total"] == 0
         assert payload["evidence_count_by_competitor"] == {"comp_cursor": 0}
         assert payload["evidence_count_by_dimension"] == {}
+        assert payload["comparison_dimensions"] == []
+        assert payload["conclusion_sections"] == []
+        assert payload["report_section_ids"] == []
         assert payload["dimension_coverage_rate"] == 0.0
         assert payload["report_char_count"] == 0
         assert payload["report_section_count"] == 0

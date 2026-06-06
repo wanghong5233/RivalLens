@@ -7,7 +7,9 @@ from service.llm.prompts import (
     ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT,
     ANALYST_SYSTEM_PROMPT,
     EVIDENCE_BRIEF_PROMPT_LIMIT,
+    QA_SEMANTIC_SYSTEM_PROMPT,
     build_analyst_user_prompt,
+    build_qa_semantic_user_prompt,
     select_layered_evidence_briefs,
 )
 
@@ -109,3 +111,25 @@ def test_analyst_prompt_uses_larger_evidence_budget() -> None:
     selected = json.loads(match.group(1))
 
     assert len(selected) == ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT
+
+
+def test_qa_semantic_prompt_includes_numeric_claims_contract() -> None:
+    assert "unsupported_numeric_claims" in QA_SEMANTIC_SYSTEM_PROMPT
+    prompt = build_qa_semantic_user_prompt(
+        report_markdown="Report says efficiency improved 28%.",
+        report_json={"sections": []},
+        failed_rule_ids=[],
+        evidence_briefs=[],
+        numeric_claims=[
+            {
+                "section_id": "efficiency",
+                "claim": "Report says efficiency improved 28%.",
+                "numbers": ["28%"],
+                "evidence_ids": ["ev_001"],
+                "evidence_quotes": [{"evidence_id": "ev_001", "quote_preview": "No number."}],
+            }
+        ],
+    )
+
+    assert "- numeric_claims:" in prompt
+    assert "Report says efficiency improved 28%." in prompt

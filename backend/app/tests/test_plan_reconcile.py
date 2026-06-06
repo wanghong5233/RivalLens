@@ -57,7 +57,7 @@ def test_reconcile_plan_tree_skips_duplicate_competitors() -> None:
     assert reconciled.version == 4
 
 
-def test_reconcile_plan_tree_logs_discovery_cap(
+def test_reconcile_plan_tree_logs_authoritative_research_competitor_set(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     configure_logging()
@@ -79,14 +79,60 @@ def test_reconcile_plan_tree_logs_discovery_cap(
         task.competitor_id for task in reconciled.tasks if task.stage == "research"
     ]
     assert research_competitors == competitors[:MAX_RESEARCH_COMPETITORS]
+    logged_lines = capsys.readouterr().out.splitlines()
+    assert not any("planner.reconcile.discovery_capped" in line for line in logged_lines)
     logged = [
         json.loads(line)
-        for line in capsys.readouterr().out.splitlines()
-        if "planner.reconcile.discovery_capped" in line
+        for line in logged_lines
+        if "planner.reconcile.research_competitor_set" in line
     ]
     assert logged
     assert logged[-1]["cap"] == MAX_RESEARCH_COMPETITORS
-    assert logged[-1]["kept_count"] == MAX_RESEARCH_COMPETITORS
     assert logged[-1]["discovered_count"] == MAX_DISCOVERY_COMPETITORS
+    assert logged[-1]["existing_research_count"] == 0
+    assert logged[-1]["new_research_count"] == MAX_RESEARCH_COMPETITORS
+    assert logged[-1]["actual_research_count"] == MAX_RESEARCH_COMPETITORS
+    assert logged[-1]["actual_research_competitors"] == research_competitors
     assert logged[-1]["dropped_competitors"] == competitors[MAX_RESEARCH_COMPETITORS:]
+    assert logged[-1]["capped"] is True
+
+
+def test_reconcile_plan_tree_logs_actual_research_set_with_existing_tasks(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+    plan = PlanTree(
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(
+                stage="research",
+                title="调研 Existing 8",
+                description="research",
+                competitor_id="Competitor 8",
+            ),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    competitors = [f"Competitor {index}" for index in range(MAX_DISCOVERY_COMPETITORS)]
+
+    reconciled = reconcile_plan_tree_after_discovery(
+        plan_tree=plan,
+        discovered_competitors=competitors,
+    )
+
+    research_competitors = [
+        task.competitor_id for task in reconciled.tasks if task.stage == "research"
+    ]
+    logged = [
+        json.loads(line)
+        for line in capsys.readouterr().out.splitlines()
+        if "planner.reconcile.research_competitor_set" in line
+    ]
+    assert logged
+    assert logged[-1]["existing_research_count"] == 1
+    assert logged[-1]["new_research_count"] == MAX_RESEARCH_COMPETITORS
+    assert logged[-1]["actual_research_competitors"] == research_competitors
+    assert "Competitor 8" in logged[-1]["actual_research_competitors"]
+    assert "Competitor 8" not in logged[-1]["dropped_competitors"]
 

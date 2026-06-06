@@ -488,6 +488,12 @@ class ExtractStructuredOutput(BaseModel):
         return cls(quote=quote_raw.strip(), source_title=source_title)
 
 
+class UnsupportedNumericClaim(BaseModel):
+    claim: str = Field(min_length=1)
+    section_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
 class QASemanticOutput(BaseModel):
     semantic_audit_passed: bool
     reject_to: Literal["supervisor", "researcher", "analyst", "writer"]
@@ -495,6 +501,7 @@ class QASemanticOutput(BaseModel):
     finding: str = Field(min_length=1)
     required_fields: list[str] = Field(default_factory=list)
     dimension_results: dict[str, bool] = Field(default_factory=dict)
+    unsupported_numeric_claims: list[UnsupportedNumericClaim] = Field(default_factory=list)
 
     @field_validator("reject_to")
     @classmethod
@@ -509,6 +516,33 @@ class QASemanticOutput(BaseModel):
         dimension_results_raw = normalized.get("dimension_results")
         if not isinstance(dimension_results_raw, dict):
             normalized["dimension_results"] = {}
+        unsupported_raw = normalized.get("unsupported_numeric_claims")
+        if not isinstance(unsupported_raw, list):
+            normalized["unsupported_numeric_claims"] = []
+        else:
+            unsupported_items: list[dict[str, object]] = []
+            for item in unsupported_raw:
+                if not isinstance(item, dict):
+                    continue
+                claim = item.get("claim")
+                section_id = item.get("section_id")
+                reason = item.get("reason")
+                if (
+                    isinstance(claim, str)
+                    and claim.strip()
+                    and isinstance(section_id, str)
+                    and section_id.strip()
+                    and isinstance(reason, str)
+                    and reason.strip()
+                ):
+                    unsupported_items.append(
+                        {
+                            "claim": claim.strip(),
+                            "section_id": section_id.strip(),
+                            "reason": reason.strip(),
+                        }
+                    )
+            normalized["unsupported_numeric_claims"] = unsupported_items
         return cls.model_validate(normalized)
 
     def to_normalized_dict(self) -> dict[str, object]:
@@ -519,6 +553,9 @@ class QASemanticOutput(BaseModel):
             "severity": self.severity,
             "required_fields": list(self.required_fields),
             "dimension_results": dict(self.dimension_results),
+            "unsupported_numeric_claims": [
+                item.model_dump(mode="python") for item in self.unsupported_numeric_claims
+            ],
         }
 
 

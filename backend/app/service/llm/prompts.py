@@ -391,6 +391,7 @@ Output JSON schema:
   "severity": "blocking" | "warning",
   "finding": str,
   "required_fields": list[str],
+  "unsupported_numeric_claims": list[{"claim": str, "section_id": str, "reason": str}],
   "dimension_results": {
     "depth": bool,
     "citation_coverage": bool,
@@ -405,6 +406,8 @@ Rules:
 - citation_coverage: true only when important claims are tied to evidence_refs from the prompt.
 - faithfulness: true only when claims are supported by the provided evidence and do not invent sources.
 - instruction_following: true only when sections match requested target sections and report_depth.
+- For every numeric_claim in the prompt, decide whether cited evidence supports that exact number or a directly computable equivalent. If not supported, add it to unsupported_numeric_claims with a concise reason.
+- If unsupported_numeric_claims is non-empty, semantic_audit_passed should be false unless deterministic QA has already told you the report is being accepted with warnings.
 - If semantic_audit_passed is true, finding should still be concise.
 - If false, reject_to must be actionable and required_fields must be specific.
 - Semantic findings are advisory unless deterministic QA already produced blocking failures.
@@ -961,6 +964,7 @@ def build_qa_semantic_user_prompt(
     evidence_briefs: Sequence[dict[str, object]],
     report_depth: str = "quick",
     target_sections: Sequence[str] = (),
+    numeric_claims: Sequence[dict[str, object]] = (),
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
@@ -971,6 +975,7 @@ def build_qa_semantic_user_prompt(
         f"- report_json: {_json(report_json)}\n"
         f"- report_markdown: {truncate_for_prompt(report_markdown, max_chars=8000)}\n"
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
+        f"- numeric_claims: {_json(list(numeric_claims))}\n\n"
         "Judge depth, citation_coverage, faithfulness, and instruction_following separately. "
         f"reject_to must be one of {_json(list(QA_SEMANTIC_ALLOWED_REJECT_TO))}."
     )

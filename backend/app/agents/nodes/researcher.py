@@ -17,10 +17,13 @@ from schemas.supervisor import ConductResearch, FocusDimension
 from service.event_bus import RunEventType, emit_run_event
 from service.desensitize import normalize_text_for_storage
 from service.llm.records import build_llm_call_record_from_mapping
+from service.collector.source_quality import is_low_semantic_text, source_blocklist_reason
 from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.researcher")
+
+RESEARCHER_LOW_SEMANTIC_MIN_CHARS = 0
 
 
 def _resolve_focus_dimensions(
@@ -217,6 +220,48 @@ def _build_evidence_rows(
 
     evidence_rows: list[EvidenceRecord] = []
     evidence_ids: list[str] = []
+    quality_floor_candidates: list[dict[str, object]] = []
+
+    def append_evidence_row(candidate: dict[str, object]) -> None:
+        evidence_id = make_id("ev_")
+        evidence_ids.append(evidence_id)
+        metadata_raw = candidate.get("metadata")
+        metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+        evidence_rows.append(
+            EvidenceRecord(
+                id=evidence_id,
+                run_id=run_id,
+                source_type=str(candidate["source_type"]),
+                source_url=(
+                    candidate["source_url"] if isinstance(candidate.get("source_url"), str) else None
+                ),
+                source_title=(
+                    candidate["source_title"] if isinstance(candidate.get("source_title"), str) else None
+                ),
+                quote=str(candidate["quote"]),
+                sanitized_text=str(candidate["sanitized_text"]),
+                span={
+                    **metadata,
+                    "dimension": candidate.get("dimension"),
+                    "competitor_id": candidate["competitor_id"],
+                },
+                collected_by=step_id,
+                collected_at=collected_at,
+                desensitized=bool(candidate.get("desensitized", False)),
+            )
+        )
+
+    def source_quality_drop_reason(*, source_url: str | None, text: str) -> str | None:
+        if source_blocklist_reason(source_url) is not None:
+            return "source_blocklist"
+        low_semantic, _ = is_low_semantic_text(
+            text,
+            min_chars=RESEARCHER_LOW_SEMANTIC_MIN_CHARS,
+        )
+        if low_semantic:
+            return "low_semantic"
+        return None
+
     for draft in effective_drafts:
         if not isinstance(draft, dict):
             continue
@@ -259,26 +304,49 @@ def _build_evidence_rows(
             **metadata,
             "dimension_drop_reason": drop_reason,
         }
-        evidence_id = make_id("ev_")
-        evidence_ids.append(evidence_id)
-        evidence_rows.append(
-            EvidenceRecord(
-                id=evidence_id,
-                run_id=run_id,
-                source_type=normalized_source_type,
-                source_url=source_url,
-                source_title=source_title,
-                quote=quote_raw,
-                sanitized_text=sanitized_text,
-                span={
-                    **metadata,
-                    "dimension": normalized_dimension,
-                    "competitor_id": competitor_id_raw,
-                },
-                collected_by=step_id,
-                collected_at=collected_at,
-                desensitized=bool(draft.get("desensitized", False)),
+        candidate = {
+            "dimension": normalized_dimension,
+            "competitor_id": competitor_id_raw,
+            "quote": quote_raw,
+            "sanitized_text": sanitized_text,
+            "source_type": normalized_source_type,
+            "source_url": source_url,
+            "source_title": source_title,
+            "desensitized": bool(draft.get("desensitized", False)),
+            "metadata": metadata,
+        }
+        quality_drop_reason = source_quality_drop_reason(
+            source_url=source_url,
+            text=sanitized_text or quote_raw,
+        )
+        if quality_drop_reason is not None:
+            record_drop(quality_drop_reason)
+            quality_floor_candidates.append(
+                {
+                    **candidate,
+                    "metadata": {
+                        **metadata,
+                        "source_quality_drop_reason": quality_drop_reason,
+                    },
+                }
             )
+            continue
+        append_evidence_row(candidate)
+    if not evidence_rows and quality_floor_candidates:
+        floor_candidate = max(
+            quality_floor_candidates,
+            key=lambda item: len(str(item.get("sanitized_text") or item.get("quote") or "")),
+        )
+        floor_metadata_raw = floor_candidate.get("metadata")
+        floor_metadata = floor_metadata_raw if isinstance(floor_metadata_raw, dict) else {}
+        append_evidence_row(
+            {
+                **floor_candidate,
+                "metadata": {
+                    **floor_metadata,
+                    "source_quality_floor": True,
+                },
+            }
         )
     return (
         evidence_rows,

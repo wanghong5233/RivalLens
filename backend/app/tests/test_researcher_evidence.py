@@ -242,6 +242,109 @@ def test_build_evidence_rows_keeps_same_url_for_different_dimensions() -> None:
     assert dropped_dimensions == {"count": 0, "reasons": {}}
 
 
+def test_build_evidence_rows_applies_source_quality_gate() -> None:
+    rows, _, dropped_dimensions = _build_evidence_rows(
+        run_id="run_source_quality_test",
+        step_id="step_source_quality_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Welcome back. Continue with Google. Sign in to continue.",
+                "sanitized_text": "Welcome back. Continue with Google. Sign in to continue.",
+                "source_type": "article",
+                "source_url": "https://example.com/login",
+                "source_title": "Login",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "--- | --- | ---",
+                "sanitized_text": "--- | --- | ---",
+                "source_type": "article",
+                "source_url": "https://example.com/table",
+                "source_title": "Table",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "LinkedIn login wall content for a competitor page.",
+                "sanitized_text": "LinkedIn login wall content for a competitor page.",
+                "source_type": "article",
+                "source_url": "https://www.linkedin.com/login",
+                "source_title": "LinkedIn",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Cursor publishes paid team plan details and enterprise controls for buyers.",
+                "sanitized_text": "Cursor publishes paid team plan details and enterprise controls for buyers.",
+                "source_type": "pricing_page",
+                "source_url": "https://cursor.com/pricing",
+                "source_title": "Cursor Pricing",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 1
+    assert rows[0].source_url == "https://cursor.com/pricing"
+    assert dropped_dimensions["reasons"]["source_blocklist"] == 2
+    assert dropped_dimensions["reasons"]["low_semantic"] == 1
+
+
+def test_build_evidence_rows_restores_quality_floor_when_gate_filters_all_candidates() -> None:
+    rows, ids, dropped_dimensions = _build_evidence_rows(
+        run_id="run_source_quality_floor_test",
+        step_id="step_source_quality_floor_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Welcome back. Continue with Google. Sign in to continue.",
+                "sanitized_text": "Welcome back. Continue with Google. Sign in to continue.",
+                "source_type": "article",
+                "source_url": "https://example.com/login",
+                "source_title": "Login",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "--- | --- | ---",
+                "sanitized_text": "--- | --- | ---",
+                "source_type": "article",
+                "source_url": "https://example.com/table",
+                "source_title": "Table",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 1
+    assert len(ids) == 1
+    assert rows[0].span["source_quality_floor"] is True
+    assert rows[0].span["source_quality_drop_reason"] == "source_blocklist"
+    assert dropped_dimensions["reasons"] == {"source_blocklist": 1, "low_semantic": 1}
+
+
 @pytest.mark.asyncio
 async def test_researcher_node_degrades_zero_evidence_without_requeue(
     monkeypatch: pytest.MonkeyPatch,

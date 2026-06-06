@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from functools import lru_cache
-import re
 
 from tavily import TavilyClient
 from tavily.errors import (
@@ -20,6 +19,7 @@ from service.collector.errors import ChannelError, FetchTimeout, RateLimited
 from service.collector.http_client import get_collector_http_client
 from service.collector.rate_limiter import PerHostLimiter
 from service.collector.robots import RobotsGate
+from service.collector.source_quality import MIN_EXTRACTED_TEXT_CHARS, is_low_semantic_text
 from urllib.parse import urlsplit
 
 from agents.tools.parse_page import infer_source_type
@@ -32,21 +32,6 @@ _TAVILY_EXTRACT_ERRORS: tuple[type[Exception], ...] = (
     TavilyTimeoutError,
     TavilyUsageLimitExceededError,
 )
-_MIN_EXTRACTED_TEXT_CHARS = 160
-_NAVIGATION_WORDS = frozenset(
-    {
-        "home",
-        "login",
-        "copyright",
-        "all rights reserved",
-        "privacy policy",
-        "terms of service",
-        "table of contents",
-    }
-)
-_WORD_PATTERN = re.compile(r"[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff0-9_-]*")
-
-
 @lru_cache
 def _get_per_host_limiter() -> PerHostLimiter:
     return PerHostLimiter(qps=settings.COLLECTOR_PER_HOST_QPS)
@@ -98,16 +83,17 @@ def _extract_text_from_tavily_response(response: dict[str, object]) -> tuple[str
 
 def _validate_extracted_text(text: str) -> None:
     compact = " ".join(text.split())
-    if len(compact) < _MIN_EXTRACTED_TEXT_CHARS:
+    low_semantic, reason = is_low_semantic_text(text)
+    if not low_semantic:
+        return
+    if reason == "too_short":
         raise ChannelError(
             f"fetch_url extracted content too short: chars={len(compact)} "
-            f"min_chars={_MIN_EXTRACTED_TEXT_CHARS}"
+            f"min_chars={MIN_EXTRACTED_TEXT_CHARS}"
         )
-    lower = compact.lower()
-    navigation_hits = sum(1 for word in _NAVIGATION_WORDS if word in lower)
-    words = _WORD_PATTERN.findall(compact)
-    if navigation_hits >= 3 and len(words) < 80:
+    if reason == "navigation_boilerplate":
         raise ChannelError("fetch_url extracted content looks like navigation/footer boilerplate.")
+    raise ChannelError(f"fetch_url extracted content is low semantic quality: reason={reason}")
 
 
 class FetchUrlChannel(BaseChannel):

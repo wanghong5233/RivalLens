@@ -457,6 +457,18 @@ def test_qa_semantic_output_normalizes_dict() -> None:
             "severity": "blocking",
             "finding": "Missing pricing evidence",
             "required_fields": ["reports.content_json.sections"],
+            "unsupported_numeric_claims": [
+                {
+                    "claim": "效率提升 28%",
+                    "section_id": "efficiency",
+                    "reason": "Cited evidence does not mention 28%.",
+                },
+                {
+                    "claim": "",
+                    "section_id": "pricing",
+                    "reason": "invalid item is filtered",
+                },
+            ],
             "dimension_results": {
                 "depth": False,
                 "citation_coverage": False,
@@ -468,6 +480,13 @@ def test_qa_semantic_output_normalizes_dict() -> None:
     normalized = output.to_normalized_dict()
     assert normalized["reject_to"] == "writer"
     assert normalized["semantic_audit_passed"] is False
+    assert normalized["unsupported_numeric_claims"] == [
+        {
+            "claim": "效率提升 28%",
+            "section_id": "efficiency",
+            "reason": "Cited evidence does not mention 28%.",
+        }
+    ]
     assert normalized["dimension_results"] == {
         "depth": False,
         "citation_coverage": False,
