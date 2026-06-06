@@ -19,6 +19,7 @@ from utils.logger import get_logger
 
 LEGACY_SYSTEM_PROMPT = "legacy_supervisor_prompt"
 log = get_logger("service.llm.client")
+_EXHAUSTED_TIMEOUT_RATIO = 0.95
 
 
 def _format_error(error: LLMRequestError | LLMResponseFormatError) -> str:
@@ -67,6 +68,22 @@ def _resolve_max_tokens(model_slot: str) -> int | None:
     }
     max_tokens = slot_max_tokens.get(model_slot, 0)
     return max_tokens if max_tokens > 0 else None
+
+
+def _resolve_retry_wall_clock_budget_seconds(timeout_seconds: int) -> float:
+    return float(timeout_seconds) * settings.LLM_RETRY_WALL_CLOCK_BUDGET_FACTOR
+
+
+def _is_exhausted_timeout_failure(
+    *,
+    exc: LLMRequestError,
+    elapsed_ms: int,
+    timeout_seconds: int,
+) -> bool:
+    if exc.error_class not in {"timeout", "connection"}:
+        return False
+    exhausted_ms = timeout_seconds * 1000 * _EXHAUSTED_TIMEOUT_RATIO
+    return elapsed_ms >= exhausted_ms
 
 
 def _classify_llm_error(error: LLMRequestError | LLMResponseFormatError | str) -> str:
@@ -229,6 +246,8 @@ class LLMClient:
         elapsed_ms: int | None = None
         retry_count = starting_retry_count
         bucket = self._token_buckets.get(provider_name)
+        retry_started_at = perf_counter()
+        retry_budget_seconds = _resolve_retry_wall_clock_budget_seconds(timeout_seconds)
         estimated_tokens = estimate_tokens(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -252,6 +271,7 @@ class LLMClient:
                 request_error = exc
                 elapsed_ms = int((perf_counter() - started_at) * 1000)
                 can_retry = exc.retryable and attempt_index < self._max_retries
+                retry_stop_reason: str | None = None
                 sleep_seconds = (
                     _retry_sleep_seconds(
                         exc=exc,
@@ -262,6 +282,23 @@ class LLMClient:
                     if can_retry
                     else None
                 )
+                if can_retry:
+                    total_elapsed_seconds = perf_counter() - retry_started_at
+                    if _is_exhausted_timeout_failure(
+                        exc=exc,
+                        elapsed_ms=elapsed_ms,
+                        timeout_seconds=timeout_seconds,
+                    ):
+                        can_retry = False
+                        sleep_seconds = None
+                        retry_stop_reason = "exhausted_read_timeout"
+                    elif (
+                        total_elapsed_seconds + (sleep_seconds or 0.0) + timeout_seconds
+                        > retry_budget_seconds
+                    ):
+                        can_retry = False
+                        sleep_seconds = None
+                        retry_stop_reason = "wall_clock_budget_exceeded"
                 log.info(
                     "llm.call.retry",
                     model_slot=model_slot,
@@ -270,8 +307,11 @@ class LLMClient:
                     max_attempts=self._max_retries + 1,
                     latency_ms=elapsed_ms,
                     retryable=exc.retryable,
+                    will_retry=can_retry,
                     http_status=exc.http_status,
                     sleep_seconds=sleep_seconds,
+                    retry_stop_reason=retry_stop_reason,
+                    retry_budget_seconds=retry_budget_seconds,
                     error=_trim_for_log(_format_error(exc)),
                 )
                 if not can_retry:

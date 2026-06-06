@@ -372,6 +372,7 @@ Output JSON schema:
 
 Rules:
 - Every insight must reference existing evidence_ids from user prompt.
+- Produce at least one insight per focus dimension that has grounded evidence; keep findings cross-competitor when evidence allows.
 - For comparisons, create one group per focus dimension when at least two competitors have evidence or can be marked unknown.
 - Each comparison cell must use a competitor_id from the user prompt; stance is qualitative, not numeric.
 - Use evidence_ids to ground each cell when available; if evidence is insufficient, set stance="unknown" and evidence_ids=[].
@@ -434,6 +435,8 @@ Rules:
 - If template_id is provided in user prompt, keep it unchanged. If not provided, set template_id to "default".
 - Every section must include non-empty content_markdown.
 - Every section must cite evidence_refs using ids provided in user prompt.
+- In content_markdown, cite inline evidence only as [ev_xxx] using ids from allowed_evidence_ids.
+- Never emit bare ev_xxx ids, unknown evidence ids, or insight_x ids in content_markdown.
 - For report_depth=deep, write a materially deeper report: cover every target section, cite evidence in each section, and include concrete competitor comparisons.
 - Do not fabricate evidence ids or insight refs.
 - section_id must be snake_case and meaningful for the user query.
@@ -465,6 +468,7 @@ RESEARCH_PROMPT_CHAR_BUDGET = 8000
 COMPRESSION_PROMPT_CHAR_BUDGET = 12000
 OBSERVATION_BRIEF_QUOTE_LIMIT = 200
 EVIDENCE_BRIEF_PROMPT_LIMIT = 24
+ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT = 80
 
 
 def truncate_for_prompt(value: object, *, max_chars: int) -> str:
@@ -899,7 +903,10 @@ def build_analyst_user_prompt(
     evidence_briefs: Sequence[dict[str, object]],
     domain_hint: str | None = None,
 ) -> str:
-    selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
+    selected_evidence_briefs = select_layered_evidence_briefs(
+        evidence_briefs,
+        limit=ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT,
+    )
     return (
         "Analysis context:\n"
         f"- user_query: {user_query}\n"
@@ -907,8 +914,9 @@ def build_analyst_user_prompt(
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- domain_hint: {domain_hint}\n"
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
-        "Produce cross-competitor insights with explicit evidence_ids."
-        " Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids."
+        "Produce cross-competitor insights with explicit evidence_ids. "
+        "For each focus dimension that has grounded evidence in evidence_briefs, produce at least one insight. "
+        "Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids."
     )
 
 
@@ -1015,6 +1023,8 @@ def build_writer_user_prompt(
         f"- risk_flags: {_json(list(risk_flags))}\n\n"
         "Write a battlecard with grounded evidence refs. "
         "section_id must exactly match target_sections entries. "
+        "Inline citations in content_markdown must use [ev_xxx] only from allowed_evidence_ids; "
+        "never output bare ev_xxx or insight_x ids in markdown. "
         "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates."
     )
 

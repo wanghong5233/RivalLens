@@ -90,6 +90,45 @@ async def test_doubao_provider_wraps_connection_error(
 
 
 @pytest.mark.asyncio
+async def test_provider_redacts_deployment_model_id_in_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+
+    class DummyConnectionError(Exception):
+        pass
+
+    raw_model = "ep-sensitive-deployment-id"
+
+    async def fake_create(**_: object):
+        raise DummyConnectionError(f"connection failed for {raw_model}")
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "APIConnectionError", DummyConnectionError)
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = DoubaoProvider(
+        base_url="https://ark.example.com/v3",
+        api_key="fake-key",
+        default_model=raw_model,
+    )
+    with pytest.raises(LLMRequestError) as exc_info:
+        await provider.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+            model=raw_model,
+            timeout_seconds=10,
+        )
+
+    logged = capsys.readouterr().out
+    assert raw_model not in str(exc_info.value)
+    assert raw_model not in logged
+    assert "[REDACTED_MODEL_ID]" in str(exc_info.value)
+    assert "[REDACTED_MODEL_ID]" in logged
+
+
+@pytest.mark.asyncio
 async def test_provider_classifies_429_retry_after(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -452,7 +491,10 @@ async def test_openai_provider_complete_json_success(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_qwen_provider_complete_json_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_create(**_: object):
+    captured: dict[str, object] = {}
+
+    async def fake_create(**kwargs: object):
+        captured.update(kwargs)
         return _fake_response(
             model="qwen-plus",
             content='{"chosen_tool":"Write","tool_args":{"style":"concise"},"reasoning_summary":"write"}',
@@ -479,6 +521,9 @@ async def test_qwen_provider_complete_json_success(monkeypatch: pytest.MonkeyPat
     assert response.prompt_tokens == 18
     assert response.completion_tokens == 8
     assert response.content_raw.startswith('{"chosen_tool"')
+    # Thinking must be forced off so hybrid Qwen models stay usable on the
+    # non-streaming JSON path.
+    assert captured["extra_body"] == {"enable_thinking": False}
 
 
 def test_provider_default_model_properties(monkeypatch: pytest.MonkeyPatch) -> None:

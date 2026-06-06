@@ -5,25 +5,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.conclusion import ConclusionEvidenceLink, ConclusionRecord
 from schemas.ids import make_id
-from service.conclusion.mapper import insights_to_conclusions
+from service.conclusion.mapper import MappedConclusion, comparisons_to_conclusions, insights_to_conclusions
 
 
-async def persist_conclusions_for_step(
+def _add_conclusion_records(
     *,
     session: AsyncSession,
     run_id: str,
     step_id: str,
-    insights: list[dict[str, object]],
-    evidence_lookup: dict[str, object],
-    risk_flags: list[str],
+    mapped_items: list[MappedConclusion],
 ) -> list[ConclusionRecord]:
-    mapped_items = insights_to_conclusions(
-        run_id=run_id,
-        step_id=step_id,
-        insights=insights,
-        evidence_lookup=evidence_lookup,
-        risk_flags=risk_flags,
-    )
     records: list[ConclusionRecord] = []
     for mapped in mapped_items:
         record = ConclusionRecord(
@@ -47,6 +38,58 @@ async def persist_conclusions_for_step(
             )
         records.append(record)
     return records
+
+
+async def persist_conclusions_for_step(
+    *,
+    session: AsyncSession,
+    run_id: str,
+    step_id: str,
+    insights: list[dict[str, object]],
+    evidence_lookup: dict[str, object],
+    risk_flags: list[str],
+) -> list[ConclusionRecord]:
+    mapped_items = insights_to_conclusions(
+        run_id=run_id,
+        step_id=step_id,
+        insights=insights,
+        evidence_lookup=evidence_lookup,
+        risk_flags=risk_flags,
+    )
+    return _add_conclusion_records(
+        session=session,
+        run_id=run_id,
+        step_id=step_id,
+        mapped_items=mapped_items,
+    )
+
+
+async def persist_comparison_conclusions_for_step(
+    *,
+    session: AsyncSession,
+    run_id: str,
+    step_id: str,
+    comparisons: list[dict[str, object]],
+    evidence_lookup: dict[str, object],
+    competitors: list[str],
+    covered_sections: set[str],
+    risk_flags: list[str],
+) -> list[ConclusionRecord]:
+    mapped_items = comparisons_to_conclusions(
+        run_id=run_id,
+        step_id=step_id,
+        comparisons=comparisons,
+        evidence_lookup=evidence_lookup,
+        competitors=competitors,
+        covered_sections=covered_sections,
+        risk_flags=risk_flags,
+    )
+    return _add_conclusion_records(
+        session=session,
+        run_id=run_id,
+        step_id=step_id,
+        mapped_items=mapped_items,
+    )
 
 
 async def load_conclusions_for_run(

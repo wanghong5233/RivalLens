@@ -10,7 +10,11 @@ from schemas.agent_outputs import (
     WriterReportOutput,
     resolve_writer_target_sections,
 )
-from service.llm.prompts import build_writer_fallback_user_prompt, build_writer_user_prompt
+from service.llm.prompts import (
+    WRITER_SYSTEM_PROMPT,
+    build_writer_fallback_user_prompt,
+    build_writer_user_prompt,
+)
 
 
 def test_build_writer_prompts_include_required_context() -> None:
@@ -57,6 +61,10 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "- allowed_evidence_ids:" in user_prompt
     assert "- target_sections:" in user_prompt
     assert "- report_depth: quick" in user_prompt
+    assert "[ev_xxx]" in user_prompt
+    assert "never output bare ev_xxx or insight_x ids in markdown" in user_prompt
+    assert "[ev_xxx]" in WRITER_SYSTEM_PROMPT
+    assert "Never emit bare ev_xxx ids" in WRITER_SYSTEM_PROMPT
     assert "Fallback writer request" in fallback_prompt
     assert "- evidence_ids:" in fallback_prompt
 
@@ -159,10 +167,48 @@ def test_fallback_report_render_contains_evidence_citations() -> None:
         ],
         risk_flags=["pricing volatility"],
     )
-    markdown = _render_report_markdown(report_content)
+    markdown = _render_report_markdown(
+        report_content,
+        allowed_evidence_ids={"ev_001", "ev_002"},
+    )
 
     assert "[ev_001]" in markdown
     assert "## Feature" in markdown or "Feature" in markdown
+
+
+def test_report_markdown_sanitizes_internal_ids() -> None:
+    report_content = {
+        "title": "RivalLens Battlecard",
+        "executive_summary": "Summary cites ev_001 and drops ev_missing plus insight_9.",
+        "sections": [
+            {
+                "title": "Feature",
+                "content_markdown": (
+                    "Cursor leads on context ev_001 and already cites [ev_002]. "
+                    "Drop hallucinated ev_fake and internal insight_1."
+                ),
+                "evidence_refs": ["ev_001", "ev_fake"],
+                "insight_refs": ["insight_1"],
+            }
+        ],
+        "risk_callouts": ["Risk tied to ev_002 and not insight_2."],
+    }
+
+    markdown = _render_report_markdown(
+        report_content,
+        allowed_evidence_ids={"ev_001", "ev_002"},
+    )
+
+    assert "[ev_001]" in markdown
+    assert "[ev_002]" in markdown
+    assert "Evidence: [ev_001]" in markdown
+    assert "Evidence: [ev_001], [ev_fake]" not in markdown
+    assert "ev_fake" not in markdown
+    assert "ev_missing" not in markdown
+    assert "Insights:" not in markdown
+    assert "insight_" not in markdown
+    assert " ev_001" not in markdown
+    assert " ev_002" not in markdown
 
 
 def test_fallback_report_sections_follow_target_sections() -> None:

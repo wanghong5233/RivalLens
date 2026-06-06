@@ -1,3 +1,8 @@
+import { defaultUrlTransform } from "react-markdown";
+
+const CITATION_REGEX = /\[(ev_[a-zA-Z0-9_]+)\]/g;
+const EVIDENCE_URL_PREFIX = "evidence://";
+
 function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -17,6 +22,20 @@ function asStringList(value: unknown): string[] {
 
 function buildEvidenceLink(runId: string, evidenceId: string): string {
   return `/app/runs/${runId}/evidence?evidence_id=${encodeURIComponent(evidenceId)}`;
+}
+
+export function toCitationLinkMarkdown(markdown: string): string {
+  return markdown.replace(
+    CITATION_REGEX,
+    (_match, evidenceId: string) => `[${evidenceId}](${EVIDENCE_URL_PREFIX}${evidenceId})`,
+  );
+}
+
+export function transformEvidenceMarkdownUrl(url: string): string {
+  if (url.startsWith(EVIDENCE_URL_PREFIX)) {
+    return url;
+  }
+  return defaultUrlTransform(url);
 }
 
 function buildCompetitorLink(runId: string, competitorId: string): string {

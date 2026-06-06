@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import re
 from typing import Any, ClassVar, Protocol
 
 import httpx
@@ -18,6 +19,7 @@ log = get_logger("service.llm.providers")
 _json_mode_fallback_keys: set[str] = set()
 _JSON_MODE_FALLBACK_KEY_LIMIT = 512
 _json_mode_capability_cache: dict[tuple[str, str], bool] = {}
+_DEPLOYMENT_MODEL_ID_RE = re.compile(r"\bep-[A-Za-z0-9_-]+\b")
 
 
 def _json_mode_cache_key(*, provider: str, model: str) -> tuple[str, str]:
@@ -146,8 +148,20 @@ def _extract_usage_tokens(response: Any) -> tuple[int | None, int | None]:
     return prompt_tokens, completion_tokens
 
 
+def _redact_deployment_model_ids(value: str) -> str:
+    return _DEPLOYMENT_MODEL_ID_RE.sub("[REDACTED_MODEL_ID]", value)
+
+
+def _redact_model_id(model: str) -> str:
+    if _DEPLOYMENT_MODEL_ID_RE.fullmatch(model):
+        return "[REDACTED_MODEL_ID]"
+    return model
+
+
 def _request_error_message(provider_name: str, model: str, exc: Exception) -> str:
-    return f"{provider_name} request failed for model={model}: {exc}"
+    return _redact_deployment_model_ids(
+        f"{provider_name} request failed for model={_redact_model_id(model)}: {exc}"
+    )
 
 
 def _status_error_body_snippet(exc: APIStatusError, *, limit: int = 200) -> str | None:
@@ -155,7 +169,8 @@ def _status_error_body_snippet(exc: APIStatusError, *, limit: int = 200) -> str 
     if body is None:
         return None
     body_text = str(body)
-    return body_text[:limit] if body_text else None
+    redacted = _redact_deployment_model_ids(body_text)
+    return redacted[:limit] if redacted else None
 
 
 def _response_header(exc: Exception, name: str) -> str | None:
@@ -266,6 +281,7 @@ async def _create_completion(
     timeout_seconds: int,
     max_tokens: int | None,
     use_json_mode: bool,
+    extra_body: dict[str, Any] | None = None,
 ) -> Any:
     kwargs: dict[str, Any] = {
         "model": model,
@@ -284,6 +300,8 @@ async def _create_completion(
         kwargs["max_tokens"] = max_tokens
     if use_json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     return await client.chat.completions.create(**kwargs)
 
 
@@ -297,6 +315,9 @@ class _OpenAICompatibleProvider:
             api_key=api_key,
         )
 
+    def _request_extra_body(self) -> dict[str, Any] | None:
+        return None
+
     async def complete_json(
         self,
         *,
@@ -307,6 +328,7 @@ class _OpenAICompatibleProvider:
         max_tokens: int | None = None,
     ) -> ProviderRawResponse:
         use_json_mode = _resolve_json_mode(provider_name=self.name, model=model)
+        extra_body = self._request_extra_body()
         try:
             response = await _create_completion(
                 client=self._client,
@@ -316,6 +338,7 @@ class _OpenAICompatibleProvider:
                 timeout_seconds=timeout_seconds,
                 max_tokens=max_tokens,
                 use_json_mode=use_json_mode,
+                extra_body=extra_body,
             )
         except APIStatusError as exc:
             if use_json_mode and _should_retry_without_json_mode(exc):
@@ -324,7 +347,7 @@ class _OpenAICompatibleProvider:
                     provider=self.name,
                     model=model,
                     http_status=getattr(exc, "status_code", None),
-                    error_preview=str(exc)[:200],
+                    error_preview=_redact_deployment_model_ids(str(exc))[:200],
                 )
                 try:
                     response = await _create_completion(
@@ -335,6 +358,7 @@ class _OpenAICompatibleProvider:
                         timeout_seconds=timeout_seconds,
                         max_tokens=max_tokens,
                         use_json_mode=False,
+                        extra_body=extra_body,
                     )
                 except APIStatusError as fallback_exc:
                     error_class, retryable, http_status, retry_after_seconds = _classify_status_error(
@@ -343,7 +367,7 @@ class _OpenAICompatibleProvider:
                     log.warning(
                         "llm.provider.error",
                         provider=self.name,
-                        model=model,
+                        model=_redact_model_id(model),
                         error_class=error_class,
                         http_status=http_status,
                         retryable=retryable,
@@ -366,7 +390,7 @@ class _OpenAICompatibleProvider:
                     log.warning(
                         "llm.provider.error",
                         provider=self.name,
-                        model=model,
+                        model=_redact_model_id(model),
                         error_class=error_class,
                         http_status=http_status,
                         retryable=retryable,
@@ -387,12 +411,13 @@ class _OpenAICompatibleProvider:
                 log.warning(
                     "llm.provider.error",
                     provider=self.name,
-                    model=model,
+                    model=_redact_model_id(model),
                     error_class=error_class,
                     http_status=http_status,
                     retryable=retryable,
                     attempt=1,
-                    error_preview=_status_error_body_snippet(exc) or str(exc)[:200],
+                    error_preview=_status_error_body_snippet(exc)
+                    or _redact_deployment_model_ids(str(exc))[:200],
                 )
                 _raise_request_error(
                     provider_name=self.name,
@@ -408,7 +433,7 @@ class _OpenAICompatibleProvider:
             log.warning(
                 "llm.provider.error",
                 provider=self.name,
-                model=model,
+                model=_redact_model_id(model),
                 error_class=error_class,
                 http_status=http_status,
                 retryable=retryable,
@@ -448,6 +473,12 @@ class OpenAIProvider(_OpenAICompatibleProvider):
 
 class QwenProvider(_OpenAICompatibleProvider):
     name: ClassVar[str] = "qwen"
+
+    def _request_extra_body(self) -> dict[str, Any] | None:
+        # DashScope hybrid models (qwen3.x-plus/max) default thinking ON, which
+        # forces stream=true and rejects this non-streaming JSON call. Force it
+        # off so any Qwen catalog model stays usable on the structured path.
+        return {"enable_thinking": False}
 
 
 def _clean_optional_string(value: str | None) -> str | None:

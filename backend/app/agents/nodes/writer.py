@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
@@ -33,6 +34,10 @@ from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.writer")
+
+BARE_EVIDENCE_ID_PATTERN = re.compile(r"(?<!\[)\b(ev_[A-Za-z0-9_]+)\b(?!\])")
+BRACKETED_EVIDENCE_ID_PATTERN = re.compile(r"\[(ev_[A-Za-z0-9_]+)\]")
+INSIGHT_ID_PATTERN = re.compile(r"\binsight_[A-Za-z0-9_]+\b")
 
 
 def _is_valid_section_id(value: str) -> bool:
@@ -88,6 +93,32 @@ def _stable_unique(items: list[str]) -> list[str]:
         seen.add(item)
         ordered.append(item)
     return ordered
+
+
+def _sanitize_report_markdown_text(
+    value: str,
+    *,
+    allowed_evidence_ids: set[str],
+) -> str:
+    def replace_bracketed_evidence(match: re.Match[str]) -> str:
+        evidence_id = match.group(1)
+        if evidence_id in allowed_evidence_ids:
+            return f"[{evidence_id}]"
+        return ""
+
+    def replace_evidence_id(match: re.Match[str]) -> str:
+        evidence_id = match.group(1)
+        if evidence_id in allowed_evidence_ids:
+            return f"[{evidence_id}]"
+        return ""
+
+    sanitized = BRACKETED_EVIDENCE_ID_PATTERN.sub(replace_bracketed_evidence, value)
+    sanitized = BARE_EVIDENCE_ID_PATTERN.sub(replace_evidence_id, sanitized)
+    sanitized = INSIGHT_ID_PATTERN.sub("", sanitized)
+    sanitized = re.sub(r"[ \t]{2,}", " ", sanitized)
+    sanitized = re.sub(r" ?([,.;:，。；：])", r"\1", sanitized)
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+    return sanitized.strip()
 
 
 def _report_depth_from_state(state: AgentState) -> Literal["quick", "deep"]:
@@ -357,7 +388,11 @@ def _build_fallback_report(
     }
 
 
-def _render_report_markdown(report_content: dict[str, object]) -> str:
+def _render_report_markdown(
+    report_content: dict[str, object],
+    *,
+    allowed_evidence_ids: set[str],
+) -> str:
     title_raw = report_content.get("title")
     title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else "RivalLens Report"
     executive_summary_raw = report_content.get("executive_summary")
@@ -365,6 +400,10 @@ def _render_report_markdown(report_content: dict[str, object]) -> str:
         executive_summary_raw.strip()
         if isinstance(executive_summary_raw, str) and executive_summary_raw.strip()
         else "No executive summary."
+    )
+    executive_summary = _sanitize_report_markdown_text(
+        executive_summary,
+        allowed_evidence_ids=allowed_evidence_ids,
     )
     markdown_lines = [
         f"# {title}",
@@ -390,6 +429,10 @@ def _render_report_markdown(report_content: dict[str, object]) -> str:
                 if isinstance(section_body_raw, str) and section_body_raw.strip()
                 else "No content."
             )
+            section_body = _sanitize_report_markdown_text(
+                section_body,
+                allowed_evidence_ids=allowed_evidence_ids,
+            )
             markdown_lines.extend(
                 [
                     f"## {section_title}",
@@ -398,20 +441,17 @@ def _render_report_markdown(report_content: dict[str, object]) -> str:
             )
             evidence_refs_raw = section.get("evidence_refs")
             if isinstance(evidence_refs_raw, list):
-                evidence_refs = [item for item in evidence_refs_raw if isinstance(item, str)]
+                evidence_refs = [
+                    item
+                    for item in evidence_refs_raw
+                    if isinstance(item, str) and item in allowed_evidence_ids
+                ]
             else:
                 evidence_refs = []
             if evidence_refs:
                 markdown_lines.append(
                     "Evidence: " + ", ".join(f"[{evidence_id}]" for evidence_id in evidence_refs)
                 )
-            insight_refs_raw = section.get("insight_refs")
-            if isinstance(insight_refs_raw, list):
-                insight_refs = [item for item in insight_refs_raw if isinstance(item, str)]
-            else:
-                insight_refs = []
-            if insight_refs:
-                markdown_lines.append("Insights: " + ", ".join(insight_refs))
             markdown_lines.append("")
 
     risk_callouts_raw = report_content.get("risk_callouts")
@@ -422,7 +462,12 @@ def _render_report_markdown(report_content: dict[str, object]) -> str:
     if risk_callouts:
         markdown_lines.append("## Risk Callouts")
         for item in risk_callouts:
-            markdown_lines.append(f"- {item}")
+            sanitized_item = _sanitize_report_markdown_text(
+                item,
+                allowed_evidence_ids=allowed_evidence_ids,
+            )
+            if sanitized_item:
+                markdown_lines.append(f"- {sanitized_item}")
         markdown_lines.append("")
 
     return "\n".join(markdown_lines).strip() + "\n"
@@ -552,7 +597,10 @@ async def writer_node(state: AgentState) -> AgentState:
         else 0,
         llm_fallback_used=llm_response.fallback_used,
     )
-    markdown = _render_report_markdown(report_content)
+    markdown = _render_report_markdown(
+        report_content,
+        allowed_evidence_ids=allowed_evidence_ids,
+    )
     llm_call_error = llm_response.error or writer_schema_error
     section_count = (
         len(report_content["sections"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TypedDict
 
 from schemas.contracts import validate_section_id
+from service.comparison.mapper import MappedComparisonCell, comparisons_to_cells
 
 
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
@@ -50,6 +51,24 @@ def _extract_competitor_id(lookup_item: object) -> str | None:
 def _risk_flags_for_dimension(dimension: str, risk_flags: list[str]) -> list[str]:
     prefix = f"{dimension}_"
     return [item for item in risk_flags if item.startswith(prefix)]
+
+
+def _confidence_from_comparison_cells(cells: list[MappedComparisonCell]) -> str:
+    evidence_count = len(_stable_unique([evidence_id for cell in cells for evidence_id in cell["evidence_ids"]]))
+    grounded_competitor_count = len(_stable_unique([cell["competitor_id"] for cell in cells]))
+    if grounded_competitor_count >= 3 and evidence_count >= 4:
+        return "high"
+    if grounded_competitor_count >= 2 and evidence_count >= 2:
+        return "medium"
+    return "low"
+
+
+def _comparison_claim(*, dimension: str, cells: list[MappedComparisonCell]) -> str:
+    fragments = [
+        f'{cell["competitor_id"]} is {cell["stance"]}: {cell["summary"]}'
+        for cell in cells[:4]
+    ]
+    return f"{dimension} comparison: " + "; ".join(fragments)
 
 
 def insights_to_conclusions(
@@ -110,6 +129,59 @@ def insights_to_conclusions(
                 "evidence_ids": evidence_ids,
                 "competitor_ids": competitor_ids,
                 "risk_flags": _risk_flags_for_dimension(normalized_dimension, risk_flags),
+            }
+        )
+    return mapped
+
+
+def comparisons_to_conclusions(
+    *,
+    run_id: str,
+    step_id: str,
+    comparisons: list[dict[str, object]],
+    evidence_lookup: dict[str, object],
+    competitors: list[str],
+    covered_sections: set[str] | None = None,
+    risk_flags: list[str] | None = None,
+) -> list[MappedConclusion]:
+    covered = covered_sections or set()
+    risk_flag_rows = risk_flags or []
+    mapped_cells = comparisons_to_cells(
+        run_id=run_id,
+        step_id=step_id,
+        comparisons=comparisons,
+        evidence_lookup=evidence_lookup,
+        competitors=competitors,
+    )
+    cells_by_dimension: dict[str, list[MappedComparisonCell]] = {}
+    for cell in mapped_cells:
+        cells_by_dimension.setdefault(cell["dimension"], []).append(cell)
+
+    mapped: list[MappedConclusion] = []
+    for dimension, cells in cells_by_dimension.items():
+        if dimension in covered:
+            continue
+        grounded_cells = [
+            cell
+            for cell in cells
+            if cell["stance"] != "unknown" and cell["evidence_ids"]
+        ]
+        if not grounded_cells:
+            continue
+        evidence_ids = _stable_unique(
+            [evidence_id for cell in grounded_cells for evidence_id in cell["evidence_ids"]]
+        )
+        if not evidence_ids:
+            continue
+        competitor_ids = _stable_unique([cell["competitor_id"] for cell in grounded_cells])
+        mapped.append(
+            {
+                "section": dimension,
+                "claim": _comparison_claim(dimension=dimension, cells=grounded_cells),
+                "confidence": _confidence_from_comparison_cells(grounded_cells),
+                "evidence_ids": evidence_ids,
+                "competitor_ids": competitor_ids,
+                "risk_flags": _risk_flags_for_dimension(dimension, risk_flag_rows),
             }
         )
     return mapped

@@ -239,6 +239,72 @@ async def test_llm_client_retries_on_request_error(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_llm_client_does_not_retry_exhausted_timeout_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_research_slot(monkeypatch)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_RESEARCH", 10)
+    monkeypatch.setattr(settings, "LLM_RETRY_WALL_CLOCK_BUDGET_FACTOR", 2.0)
+    times = iter([0.0, 0.0, 9.6, 9.6])
+
+    def fake_perf_counter() -> float:
+        return next(times)
+
+    monkeypatch.setattr("service.llm.client.perf_counter", fake_perf_counter)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[],
+        request_errors=[
+            LLMRequestError("connection failed", retryable=True, error_class="connection"),
+            LLMRequestError("should not run", retryable=True, error_class="connection"),
+        ],
+    )
+    client = _make_client(provider, max_retries=2)
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert provider.call_count == 1
+    assert response.error is not None
+    assert response.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_llm_client_stops_retry_when_wall_clock_budget_would_be_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_research_slot(monkeypatch)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_RESEARCH", 10)
+    monkeypatch.setattr(settings, "LLM_RETRY_WALL_CLOCK_BUDGET_FACTOR", 1.1)
+    times = iter([0.0, 0.0, 2.0, 2.0])
+
+    def fake_perf_counter() -> float:
+        return next(times)
+
+    monkeypatch.setattr("service.llm.client.perf_counter", fake_perf_counter)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[],
+        request_errors=[
+            LLMRequestError("connection failed", retryable=True, error_class="connection"),
+            LLMRequestError("should not run", retryable=True, error_class="connection"),
+        ],
+    )
+    client = _make_client(provider, max_retries=2)
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert provider.call_count == 1
+    assert response.error is not None
+    assert response.retry_count == 0
+
+
+@pytest.mark.asyncio
 async def test_llm_client_does_not_retry_non_retryable_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_research_slot(monkeypatch)
     provider = _SequencedProvider(

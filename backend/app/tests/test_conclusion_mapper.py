@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from service.conclusion.mapper import insights_to_conclusions
+from service.conclusion.mapper import comparisons_to_conclusions, insights_to_conclusions
 
 
 class _EvidenceStub:
@@ -101,3 +101,113 @@ def test_insights_to_conclusions_accepts_dynamic_section_ids() -> None:
 
     assert len(result) == 1
     assert result[0]["section"] == "go_to_market"
+
+
+def test_comparisons_to_conclusions_backfills_grounded_dimensions() -> None:
+    result = comparisons_to_conclusions(
+        run_id="run_mapper_004",
+        step_id="step_mapper_004",
+        comparisons=[
+            {
+                "dimension": "pricing",
+                "cells": [
+                    {
+                        "competitor_id": "Cursor",
+                        "stance": "leader",
+                        "summary": "Cursor has stronger enterprise packaging.",
+                        "evidence_ids": ["ev_cursor_pricing"],
+                    },
+                    {
+                        "competitor_id": "Windsurf",
+                        "stance": "laggard",
+                        "summary": "Windsurf has less mature enterprise pricing evidence.",
+                        "evidence_ids": ["ev_windsurf_pricing"],
+                    },
+                ],
+            },
+            {
+                "dimension": "security",
+                "cells": [
+                    {
+                        "competitor_id": "Cursor",
+                        "stance": "competitive",
+                        "summary": "Cursor publishes security controls.",
+                        "evidence_ids": ["ev_cursor_security"],
+                    },
+                    {
+                        "competitor_id": "Windsurf",
+                        "stance": "unknown",
+                        "summary": "No grounded security evidence.",
+                        "evidence_ids": [],
+                    },
+                ],
+            },
+        ],
+        evidence_lookup={
+            "ev_cursor_pricing": _EvidenceStub("Cursor"),
+            "ev_windsurf_pricing": _EvidenceStub("Windsurf"),
+            "ev_cursor_security": _EvidenceStub("Cursor"),
+        },
+        competitors=["Cursor", "Windsurf"],
+        covered_sections=set(),
+        risk_flags=["pricing_uncertainty"],
+    )
+
+    assert [item["section"] for item in result] == ["pricing", "security"]
+    assert result[0]["evidence_ids"] == ["ev_cursor_pricing", "ev_windsurf_pricing"]
+    assert result[0]["competitor_ids"] == ["Cursor", "Windsurf"]
+    assert result[0]["risk_flags"] == ["pricing_uncertainty"]
+    assert "Cursor is leader" in result[0]["claim"]
+    assert result[1]["evidence_ids"] == ["ev_cursor_security"]
+
+
+def test_comparisons_to_conclusions_skips_unknown_or_covered_dimensions() -> None:
+    result = comparisons_to_conclusions(
+        run_id="run_mapper_005",
+        step_id="step_mapper_005",
+        comparisons=[
+            {
+                "dimension": "pricing",
+                "cells": [
+                    {
+                        "competitor_id": "Cursor",
+                        "stance": "leader",
+                        "summary": "Covered by an insight already.",
+                        "evidence_ids": ["ev_cursor_pricing"],
+                    },
+                    {
+                        "competitor_id": "Windsurf",
+                        "stance": "competitive",
+                        "summary": "Covered by an insight already.",
+                        "evidence_ids": ["ev_windsurf_pricing"],
+                    },
+                ],
+            },
+            {
+                "dimension": "security",
+                "cells": [
+                    {
+                        "competitor_id": "Cursor",
+                        "stance": "unknown",
+                        "summary": "No evidence.",
+                        "evidence_ids": [],
+                    },
+                    {
+                        "competitor_id": "Windsurf",
+                        "stance": "unknown",
+                        "summary": "No evidence.",
+                        "evidence_ids": [],
+                    },
+                ],
+            },
+        ],
+        evidence_lookup={
+            "ev_cursor_pricing": _EvidenceStub("Cursor"),
+            "ev_windsurf_pricing": _EvidenceStub("Windsurf"),
+        },
+        competitors=["Cursor", "Windsurf"],
+        covered_sections={"pricing"},
+        risk_flags=[],
+    )
+
+    assert result == []

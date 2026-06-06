@@ -16,7 +16,7 @@ from schemas.ids import make_id
 from schemas.supervisor import Analyze
 from service.comparison import persist_comparisons_for_step
 from service.event_bus import RunEventType, emit_run_event
-from service.conclusion import persist_conclusions_for_step
+from service.conclusion import persist_comparison_conclusions_for_step, persist_conclusions_for_step
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
     build_analyst_fallback_user_prompt,
@@ -250,6 +250,9 @@ async def analyst_node(state: AgentState) -> AgentState:
         )
         conclusions_persist_error: str | None = None
         persisted_conclusion_count = 0
+        persisted_insight_conclusion_count = 0
+        persisted_comparison_conclusion_count = 0
+        covered_conclusion_sections: set[str] = set()
         try:
             async with session.begin_nested():
                 conclusion_records = await persist_conclusions_for_step(
@@ -261,7 +264,8 @@ async def analyst_node(state: AgentState) -> AgentState:
                     risk_flags=analysis_risk_flags,
                 )
                 await session.flush()
-                persisted_conclusion_count = len(conclusion_records)
+                persisted_insight_conclusion_count = len(conclusion_records)
+                covered_conclusion_sections = {record.section for record in conclusion_records}
         except SQLAlchemyError as exc:
             conclusions_persist_error = str(exc)[:2000]
             log.info(
@@ -270,14 +274,47 @@ async def analyst_node(state: AgentState) -> AgentState:
                 step_id=step_id,
                 error=conclusions_persist_error,
             )
+        comparison_conclusions_persist_error: str | None = None
+        try:
+            async with session.begin_nested():
+                comparison_conclusion_records = await persist_comparison_conclusions_for_step(
+                    session=session,
+                    run_id=run_id,
+                    step_id=step_id,
+                    comparisons=analysis_comparisons,
+                    evidence_lookup=evidence_lookup,
+                    competitors=[item for item in competitors if isinstance(item, str)],
+                    covered_sections=covered_conclusion_sections,
+                    risk_flags=analysis_risk_flags,
+                )
+                await session.flush()
+                persisted_comparison_conclusion_count = len(comparison_conclusion_records)
+        except SQLAlchemyError as exc:
+            comparison_conclusions_persist_error = str(exc)[:2000]
+            log.info(
+                "analyst.comparison_conclusions.persist_fail",
+                run_id=run_id,
+                step_id=step_id,
+                error=comparison_conclusions_persist_error,
+            )
+        persisted_conclusion_count = (
+            persisted_insight_conclusion_count + persisted_comparison_conclusion_count
+        )
         step.payload = {
             **step.payload,
             "conclusions_persisted_count": persisted_conclusion_count,
+            "insight_conclusions_persisted_count": persisted_insight_conclusion_count,
+            "comparison_conclusions_backfilled_count": persisted_comparison_conclusion_count,
         }
         if conclusions_persist_error is not None:
             step.payload = {
                 **step.payload,
                 "conclusions_persist_error": conclusions_persist_error,
+            }
+        if comparison_conclusions_persist_error is not None:
+            step.payload = {
+                **step.payload,
+                "comparison_conclusions_persist_error": comparison_conclusions_persist_error,
             }
         comparisons_persist_error: str | None = None
         persisted_comparison_count = 0

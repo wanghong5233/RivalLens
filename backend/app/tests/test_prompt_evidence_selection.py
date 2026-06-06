@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from service.llm.prompts import select_layered_evidence_briefs
+import json
+import re
+
+from service.llm.prompts import (
+    ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT,
+    ANALYST_SYSTEM_PROMPT,
+    EVIDENCE_BRIEF_PROMPT_LIMIT,
+    build_analyst_user_prompt,
+    select_layered_evidence_briefs,
+)
 
 
 def test_select_layered_evidence_briefs_covers_competitor_dimension_groups() -> None:
@@ -57,3 +66,46 @@ def test_select_layered_evidence_briefs_fills_remaining_with_newest() -> None:
     selected = select_layered_evidence_briefs(evidence_briefs, limit=3)
 
     assert [item["evidence_id"] for item in selected] == ["ev_7", "ev_8", "ev_9"]
+
+
+def test_analyst_prompt_requires_per_dimension_insights() -> None:
+    assert "at least one insight per focus dimension" in ANALYST_SYSTEM_PROMPT
+
+    prompt = build_analyst_user_prompt(
+        user_query="compare AI coding tools",
+        competitors=["Cursor", "Windsurf"],
+        focus_dimensions=["pricing", "security"],
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_pricing",
+                "competitor_id": "Cursor",
+                "dimension": "pricing",
+            }
+        ],
+    )
+
+    assert "For each focus dimension that has grounded evidence" in prompt
+
+
+def test_analyst_prompt_uses_larger_evidence_budget() -> None:
+    assert ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT > EVIDENCE_BRIEF_PROMPT_LIMIT
+    evidence_briefs = [
+        {
+            "evidence_id": f"ev_{index}",
+            "competitor_id": f"competitor_{index}",
+            "dimension": f"dimension_{index}",
+        }
+        for index in range(ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT + 5)
+    ]
+
+    prompt = build_analyst_user_prompt(
+        user_query="compare many competitors",
+        competitors=["Cursor", "Windsurf"],
+        focus_dimensions=["pricing"],
+        evidence_briefs=evidence_briefs,
+    )
+    match = re.search(r"- evidence_briefs: (.+)\n\nProduce", prompt)
+    assert match is not None
+    selected = json.loads(match.group(1))
+
+    assert len(selected) == ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT

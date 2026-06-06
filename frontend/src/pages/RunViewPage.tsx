@@ -24,18 +24,13 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { toCitationLinkMarkdown, transformEvidenceMarkdownUrl } from "@/lib/evidenceLinks";
 import { formatDateTime, formatDuration, formatRunTitle } from "@/lib/format";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 
-const CITATION_REGEX = /\[(ev_[a-zA-Z0-9_]+)\]/g;
-
 function toHeadingId(value: string): string {
   return value.trim().toLowerCase().replace(/[^\w\u4e00-\u9fa5\s-]/g, "").replace(/\s+/g, "-");
-}
-
-function toCitationLinkMarkdown(markdown: string): string {
-  return markdown.replace(CITATION_REGEX, (_match, evidenceId: string) => `[${evidenceId}](evidence://${evidenceId})`);
 }
 
 export function RunViewPage(): JSX.Element {
@@ -270,6 +265,7 @@ export function RunViewPage(): JSX.Element {
                         },
                       }}
                       remarkPlugins={[remarkGfm]}
+                      urlTransform={transformEvidenceMarkdownUrl}
                     >
                       {reportWithCitationLinks}
                     </ReactMarkdown>
