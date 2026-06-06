@@ -6,14 +6,17 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from core.config import settings
 from db.engine import get_session_factory
 from models.evidence import EvidenceRecord
+from models.run import Run
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.ids import make_id
 from service.event_bus import RunEventType, emit_run_event
 from service.llm.records import build_llm_call_record
+from service.metrics import RunMetricsSnapshot, load_run_metrics_snapshot
 from service.skill_curator import generate_skill_candidates
 from utils.logger import bind_run, get_logger
 
@@ -142,6 +145,59 @@ def _normalize_domain_hint(domain_hint: str | None) -> str | None:
     return normalized or None
 
 
+def _snapshot_quality_payload(snapshot: RunMetricsSnapshot) -> dict[str, object]:
+    return {
+        "coverage_rate": snapshot.coverage_rate,
+        "dimension_coverage_rate": snapshot.dimension_coverage_rate,
+        "report_section_coverage_rate": snapshot.report_section_coverage_rate,
+        "qa_rejection_rate": snapshot.qa_rejection_rate,
+        "evidence_count_total": snapshot.evidence_count_total,
+        "report_depth": snapshot.report_depth,
+        "report_char_count": snapshot.report_char_count,
+        "report_section_count": snapshot.report_section_count,
+    }
+
+
+def _curator_skip_reason(
+    *,
+    run_status: str,
+    snapshot: RunMetricsSnapshot,
+) -> str | None:
+    if run_status == "degraded":
+        return "run_degraded"
+    if snapshot.coverage_rate < settings.CURATOR_MIN_COVERAGE_RATE:
+        return "coverage_rate_below_threshold"
+    if snapshot.dimension_coverage_rate < settings.CURATOR_MIN_DIMENSION_COVERAGE_RATE:
+        return "dimension_coverage_rate_below_threshold"
+    if snapshot.report_section_coverage_rate < settings.CURATOR_MIN_REPORT_SECTION_COVERAGE_RATE:
+        return "report_section_coverage_rate_below_threshold"
+    if snapshot.qa_rejection_rate > settings.CURATOR_MAX_QA_REJECTION_RATE:
+        return "qa_rejection_rate_above_threshold"
+    return None
+
+
+async def _load_curator_skip_decision(run_id: str) -> tuple[str | None, dict[str, object]]:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise RuntimeError(f"run_id={run_id} not found before skill curator task.")
+        snapshot = await load_run_metrics_snapshot(session=session, run_id=run_id)
+    reason = _curator_skip_reason(run_status=run.status, snapshot=snapshot)
+    payload = {
+        "run_status": run.status,
+        "reason": reason,
+        "thresholds": {
+            "min_coverage_rate": settings.CURATOR_MIN_COVERAGE_RATE,
+            "min_dimension_coverage_rate": settings.CURATOR_MIN_DIMENSION_COVERAGE_RATE,
+            "min_report_section_coverage_rate": settings.CURATOR_MIN_REPORT_SECTION_COVERAGE_RATE,
+            "max_qa_rejection_rate": settings.CURATOR_MAX_QA_REJECTION_RATE,
+        },
+        **_snapshot_quality_payload(snapshot),
+    }
+    return reason, payload
+
+
 async def run_skill_curator_for_run(*, run_id: str, domain_hint: str | None) -> None:
     normalized_domain_hint = _normalize_domain_hint(domain_hint)
     await emit_run_event(
@@ -151,8 +207,26 @@ async def run_skill_curator_for_run(*, run_id: str, domain_hint: str | None) -> 
     )
     with bind_run(run_id):
         log.info("skill_curator.task.start", domain_hint=normalized_domain_hint)
-        session_factory = get_session_factory()
         try:
+            skip_reason, skip_payload = await _load_curator_skip_decision(run_id)
+            if skip_reason is not None:
+                log.info(
+                    "skill_curator.task.skipped",
+                    **skip_payload,
+                )
+                await emit_run_event(
+                    run_id=run_id,
+                    event_type=RunEventType.CURATOR_SKIPPED,
+                    payload=skip_payload,
+                )
+                await emit_run_event(
+                    run_id=run_id,
+                    event_type=RunEventType.CURATOR_FINISH,
+                    payload={"status": "skipped", **skip_payload},
+                )
+                return
+
+            session_factory = get_session_factory()
             context = await _load_curator_context(run_id)
             generation_result = await generate_skill_candidates(
                 run_id=run_id,
@@ -226,6 +300,7 @@ async def run_skill_curator_for_run(*, run_id: str, domain_hint: str | None) -> 
                 "skill_curator.task.failed",
                 error=str(exc)[:500],
             )
+            session_factory = get_session_factory()
             async with session_factory() as session:
                 session.add(
                     _to_error_candidate(

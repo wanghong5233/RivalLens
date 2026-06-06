@@ -14,7 +14,13 @@ from schemas.ids import make_id
 def _insert_staging_candidate(*, run_id: str, candidate_id: str) -> None:
     payload_json = json.dumps(
         {
-            "rule_yaml": "id: rule_review_test\nselector: report\nchecks: []",
+            "rule_yaml": (
+                "id: rule_review_test\n"
+                "when:\n"
+                "  section_id_in: [pricing]\n"
+                "require:\n"
+                "  evidence_refs_count_gte: 1\n"
+            ),
             "triggered_failures_count": 1,
             "similar_existing_rules": [],
         },

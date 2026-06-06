@@ -607,7 +607,13 @@ class _FakeLLMClient:
                     {
                         "candidate_type": "qa_rule",
                         "payload": {
-                            "rule_yaml": "id: rule_pricing_requires_recent_source",
+                            "rule_yaml": (
+                                "id: rule_pricing_requires_recent_source\n"
+                                "when:\n"
+                                "  section_id_in: [pricing]\n"
+                                "require:\n"
+                                "  evidence_refs_count_gte: 1\n"
+                            ),
                             "triggered_failures_count": 1,
                             "similar_existing_rules": [],
                         },
@@ -667,7 +673,13 @@ class _FakeLLMClient:
                 {
                     "candidate_type": "qa_rule",
                     "payload": {
-                        "rule_yaml": "id: rule_pricing_requires_recent_source",
+                        "rule_yaml": (
+                            "id: rule_pricing_requires_recent_source\n"
+                            "when:\n"
+                            "  section_id_in: [pricing]\n"
+                            "require:\n"
+                            "  evidence_refs_count_gte: 1\n"
+                        ),
                         "triggered_failures_count": 1,
                         "similar_existing_rules": [],
                     },

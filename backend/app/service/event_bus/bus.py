@@ -25,6 +25,7 @@ class RunEventType(StrEnum):
     SUPERVISOR_DECISION = "supervisor.decision"
     QA_OUTCOME = "qa.outcome"
     CURATOR_START = "curator.start"
+    CURATOR_SKIPPED = "curator.skipped"
     CURATOR_FINISH = "curator.finish"
     RUN_FINISH = "run.finish"
     # --- Phase 1+ Agent-native intake + plan-then-execute + live run (emitters TBD) ---

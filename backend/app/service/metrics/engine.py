@@ -4,6 +4,9 @@ from collections import Counter
 from dataclasses import dataclass
 from statistics import median
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
 from models.report import Report
@@ -286,4 +289,65 @@ def build_run_metrics_snapshot(
         manual_review_rate=manual_review_rate,
         manual_review_is_proxy=True,
         run_wall_clock_seconds=run_wall_clock_seconds,
+    )
+
+
+async def load_run_metrics_snapshot(
+    *,
+    session: AsyncSession,
+    run_id: str,
+) -> RunMetricsSnapshot:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise RuntimeError(f"run_id={run_id} does not exist")
+
+    evidence_rows = (
+        await session.execute(
+            select(EvidenceRecord)
+            .where(EvidenceRecord.run_id == run_id)
+            .order_by(EvidenceRecord.created_at.asc())
+        )
+    ).scalars().all()
+    step_rows = (
+        await session.execute(
+            select(Step).where(Step.run_id == run_id).order_by(Step.created_at.asc())
+        )
+    ).scalars().all()
+    llm_rows = (
+        await session.execute(
+            select(LLMCall)
+            .join(Step, LLMCall.step_id == Step.step_id)
+            .where(Step.run_id == run_id)
+            .order_by(LLMCall.created_at.asc())
+        )
+    ).scalars().all()
+    decision_rows = (
+        await session.execute(
+            select(SupervisorDecisionRecord)
+            .where(SupervisorDecisionRecord.run_id == run_id)
+            .order_by(SupervisorDecisionRecord.created_at.asc())
+        )
+    ).scalars().all()
+    report_rows = (
+        await session.execute(
+            select(Report)
+            .where(Report.run_id == run_id)
+            .order_by(Report.created_at.asc())
+        )
+    ).scalars().all()
+    candidate_rows = (await session.execute(select(SkillCandidateRecord))).scalars().all()
+    candidate_rows = [
+        row
+        for row in candidate_rows
+        if run_id in (row.supporting_run_ids if isinstance(row.supporting_run_ids, list) else [])
+    ]
+
+    return build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=list(evidence_rows),
+        step_rows=list(step_rows),
+        llm_rows=list(llm_rows),
+        decision_rows=list(decision_rows),
+        candidate_rows=list(candidate_rows),
+        report_rows=list(report_rows),
     )

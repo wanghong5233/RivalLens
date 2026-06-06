@@ -18,8 +18,8 @@ todos:
     content: "E2E-S5 LLM 稳定性成熟化[已完成]:provider 错误分类+异常元数据、Retry-After/full-jitter 成熟重试、fallback retry、per-provider TPM token bucket、retry_count 持久化、provider_error/retry metrics、配置/env 成熟化。二级 plan `e2e_s5_llm_稳定性成熟化_e9f8be1f.plan.md`,docker 定向 42 passed;真实 run `run_287bcb0d6f80` completed,17 LLM calls/44465 tokens/llm_provider_error_count=0/llm_retry_total=0。"
     status: completed
   - id: E2E-S6
-    content: E2E-S6 自进化 curator:skill curator 从有质量缺陷的 run 生成低质量候选并扩散。依赖 S1-S5 全部质量修复,最后做避免学坏样本。二级 plan 文件待创建:`e2e_s6_curator_*.plan.md`。
-    status: pending
+    content: "E2E-S6 自进化 curator[已完成]:Gate-1 只从成功 run 学(run status + metrics 阈值,低质量/degraded skip,发 curator.skipped);Gate-2 入库前确定性校验 qa_rule DSL,坏 rule approve 返回 422 且不落盘。二级 plan `e2e_s6_curator_样本质量门槛_272ed3ff.plan.md`,docker 定向 25 passed;真实路径复用 `run_287bcb0d6f80` 手动触发 curator,候选 delta=3。"
+    status: completed
 isProject: false
 ---
 
@@ -69,7 +69,7 @@ isProject: false
 | E2E-S3 | `e2e_s3_evidence_quality_*.plan.md` | 抽取质量、维度、去重利用率、维度覆盖深度 | E2E-S3-1, E2E-S3-2, E2E-S3-3, E2E-S3-4 | 报告质量硬依赖根;内部有序 抽取→维度→去重→维度覆盖深度(S3-4 补刀) |
 | E2E-S4 | `e2e_s4_report_qa_gates_*.plan.md` | Report depth、QA gates、promoted rules | E2E-S4-1, E2E-S4-2 | 依赖 E2E-S3 证据质量结论 |
 | E2E-S5 | `e2e_s5_llm_稳定性成熟化_e9f8be1f.plan.md` | provider retry/限流、配置参数成熟度 | E2E-S5-1, E2E-S5-2 | 已完成;稳定复跑验证 S3/S4 |
-| E2E-S6 | `e2e_s6_curator_*.plan.md` | Skill curator 候选门槛 | E2E-S6-1 | 依赖 S1-S5 全部质量修复,最后做避免坏样本继续扩散 |
+| E2E-S6 | `e2e_s6_curator_样本质量门槛_272ed3ff.plan.md` | Skill curator 候选门槛 | E2E-S6-1 | 已完成;最后一层防止坏样本继续扩散 |
 
 > 编号原则:阶段号 = 依赖拓扑序,不是发现顺序。硬依赖链 `抽取(S3-1) → 维度(S3-2)/去重(S3-3) → 报告/QA(S4) → curator(S6)`;enabler(日志降噪 S1)最先,curator(S6)最后。独立项(状态/API S2、provider/config S5)按"是否污染下游 / 是否影响复跑验证"插入链中。前一版把后发现的日志/配置排成尾号 S5 是反模式(发现顺序≠依赖顺序),本版已纠正。
 
@@ -89,7 +89,7 @@ isProject: false
 | E2E-S4-2 | Bug | promoted QA rule DSL 与触发条件失效 | P1 | fixed | 已落地:section_id_in 中文友好触发、parse_error blocking 可观测、内置 QA rule 迁移为支持算子;定向 promoted/golden/smoke 覆盖 |
 | E2E-S5-1 | Bug | 429 TPM retry 语义不一致 + 无 TPM 退避 | P2 | fixed | 已落地:provider 分类元数据 + Retry-After/full-jitter retry + per-provider TPM token bucket;定向 42 passed,真实 run `run_287bcb0d6f80` 无 429/retry |
 | E2E-S5-2 | Improvement | 配置/参数成熟度不足 | P2 | fixed | 已落地:LLM retry/backoff/TPM/provider/base-url config 与 `.env.example`;retry_count/provider_error metrics 暴露 |
-| E2E-S6-1 | Improvement | skill curator 低质量样本扩散 | P2 | investigating | 在 E2E-S6 二级 plan 中定义候选生成门槛 |
+| E2E-S6-1 | Improvement | skill curator 低质量样本扩散 | P2 | fixed | 已落地:源头 run 质量门槛 + promote 前 qa_rule DSL 确定性校验;定向 25 passed,真实达标 run 仍生成候选 |
 
 ## 4. E2E-S1 可观测卫生(enabler)
 

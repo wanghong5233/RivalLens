@@ -20,6 +20,7 @@ from service.skill_promotion.writers import (
     write_skill_markdown,
 )
 from service.skill_store import get_skill_store
+from service.qa.promoted_rules import ParseError, parse_promoted_rule
 
 
 def _entry_meta(
@@ -44,6 +45,10 @@ def _as_dict(payload: object) -> dict[str, object]:
 
 _SEGMENT_PATTERN = re.compile(r"[^a-z0-9_\\-]+")
 _RULE_ID_PATTERN = re.compile(r"^\\s*id:\\s*(?P<rule_id>[a-z0-9_:-]+)\\s*$")
+
+
+class PromotionRuleValidationError(PromotionWriteError):
+    """Raised when a QA rule candidate cannot pass deterministic rule parsing."""
 
 
 def _normalize_skill_id(raw: str, *, fallback: str) -> str:
@@ -74,8 +79,16 @@ def _build_qa_rule_markdown(
 ) -> tuple[str, dict[str, object], str]:
     payload = QARuleCandidatePayload.model_validate(_as_dict(record.payload))
     rule_yaml = payload.rule_yaml
+    parsed_rule = parse_promoted_rule(
+        rule_yaml=rule_yaml,
+        fallback_rule_id=f"promoted_{record.id}",
+    )
+    if isinstance(parsed_rule, ParseError):
+        raise PromotionRuleValidationError(
+            f"Invalid promoted QA rule DSL for candidate_id={record.id}: {parsed_rule.detail}"
+        )
     skill_id = _normalize_skill_id(
-        _extract_rule_id(rule_yaml, fallback=f"promoted_{record.id}"),
+        parsed_rule.rule_id or _extract_rule_id(rule_yaml, fallback=f"promoted_{record.id}"),
         fallback=f"qa_rule_{record.id}",
     )
     frontmatter = {
@@ -248,4 +261,9 @@ def promote_approved_candidate(
         ) from exc
 
 
-__all__ = ["PromotedArtifact", "PromotionWriteError", "promote_approved_candidate"]
+__all__ = [
+    "PromotedArtifact",
+    "PromotionRuleValidationError",
+    "PromotionWriteError",
+    "promote_approved_candidate",
+]

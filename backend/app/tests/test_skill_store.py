@@ -150,7 +150,13 @@ def test_promote_approved_candidate_invalidates_skill_store(
         applies_to="qa_rule",
         tags=["pricing", "quality"],
         payload={
-            "rule_yaml": "id: rule_promoted_cache_test\nselector: report\nchecks: []",
+            "rule_yaml": (
+                "id: rule_promoted_cache_test\n"
+                "when:\n"
+                "  section_id_in: [pricing]\n"
+                "require:\n"
+                "  evidence_refs_count_gte: 1\n"
+            ),
             "triggered_failures_count": 1,
             "similar_existing_rules": [],
         },

@@ -11,6 +11,7 @@ from db.engine import get_session_factory
 from exceptions.base import APIException
 from models.skill_candidate import SkillCandidateRecord
 from service.skill_promotion import (
+    PromotionRuleValidationError,
     PromotionWriteError,
     promote_approved_candidate,
 )
@@ -169,6 +170,13 @@ async def approve_skill_candidate(
                 reviewed_by=payload.reviewed_by,
                 reviewed_at=reviewed_at,
             )
+        except PromotionRuleValidationError as exc:
+            await session.rollback()
+            raise APIException(
+                status_code=422,
+                error_code="SKILL_CANDIDATE_RULE_INVALID",
+                message=f"invalid promoted QA rule candidate: {exc}",
+            ) from exc
         except PromotionWriteError as exc:
             await session.rollback()
             raise APIException(

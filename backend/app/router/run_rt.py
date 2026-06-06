@@ -38,7 +38,7 @@ from schemas.intake import IntakeClarifyRequest, IntakeUserReply, RunIntakeDraft
 from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
-from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot
+from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot, load_run_metrics_snapshot
 from service.skill_curator.tasks import run_skill_curator_for_run
 from utils.logger import bind_run, format_exception_for_log, get_logger
 
@@ -2657,64 +2657,14 @@ async def get_run_metrics(run_id: str) -> RunMetricsResponse:
 
     session_factory = get_session_factory()
     async with session_factory() as session:
-        run = await session.get(Run, run_id)
-        if run is None:
+        try:
+            snapshot = await load_run_metrics_snapshot(session=session, run_id=run_id)
+        except RuntimeError as exc:
             raise APIException(
                 status_code=404,
                 error_code="RUN_NOT_FOUND",
                 message=f"run_id={run_id} does not exist",
-            )
-
-        evidence_rows = (
-            await session.execute(
-                select(EvidenceRecord)
-                .where(EvidenceRecord.run_id == run_id)
-                .order_by(EvidenceRecord.created_at.asc())
-            )
-        ).scalars().all()
-        step_rows = (
-            await session.execute(select(Step).where(Step.run_id == run_id).order_by(Step.created_at.asc()))
-        ).scalars().all()
-        llm_rows = (
-            await session.execute(
-                select(LLMCall)
-                .join(Step, LLMCall.step_id == Step.step_id)
-                .where(Step.run_id == run_id)
-                .order_by(LLMCall.created_at.asc())
-            )
-        ).scalars().all()
-        decision_rows = (
-            await session.execute(
-                select(SupervisorDecisionRecord)
-                .where(SupervisorDecisionRecord.run_id == run_id)
-                .order_by(SupervisorDecisionRecord.created_at.asc())
-            )
-        ).scalars().all()
-        report_rows = (
-            await session.execute(
-                select(Report)
-                .where(Report.run_id == run_id)
-                .order_by(Report.created_at.asc())
-            )
-        ).scalars().all()
-        candidate_rows = (
-            await session.execute(select(SkillCandidateRecord))
-        ).scalars().all()
-        candidate_rows = [
-            row
-            for row in candidate_rows
-            if run_id in (row.supporting_run_ids if isinstance(row.supporting_run_ids, list) else [])
-        ]
-
-    snapshot = build_run_metrics_snapshot(
-        run=run,
-        evidence_rows=evidence_rows,
-        step_rows=step_rows,
-        llm_rows=llm_rows,
-        decision_rows=decision_rows,
-        candidate_rows=candidate_rows,
-        report_rows=report_rows,
-    )
+            ) from exc
     return RunMetricsResponse(**asdict(snapshot))
 
 

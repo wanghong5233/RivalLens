@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     COLLECTOR_FETCH_TIMEOUT_S: int = 10
     COLLECTOR_ROBOTS_CACHE_TTL_S: int = 3600
     WRITER_READ_CONCLUSIONS_FROM_TABLE: bool = True
+    CURATOR_MIN_COVERAGE_RATE: float = 1.0
+    CURATOR_MIN_DIMENSION_COVERAGE_RATE: float = 0.5
+    CURATOR_MIN_REPORT_SECTION_COVERAGE_RATE: float = 1.0
+    CURATOR_MAX_QA_REJECTION_RATE: float = 0.5
 
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
     DEMO_FIXTURES_DIR: str | None = None
@@ -141,6 +145,17 @@ class Settings(BaseSettings):
             raise ValueError("COLLECTOR_ROBOTS_CACHE_TTL_S must be positive.")
         if not self.COLLECTOR_USER_AGENT.strip():
             raise ValueError("COLLECTOR_USER_AGENT cannot be empty.")
+        for name, value in (
+            ("CURATOR_MIN_COVERAGE_RATE", self.CURATOR_MIN_COVERAGE_RATE),
+            ("CURATOR_MIN_DIMENSION_COVERAGE_RATE", self.CURATOR_MIN_DIMENSION_COVERAGE_RATE),
+            (
+                "CURATOR_MIN_REPORT_SECTION_COVERAGE_RATE",
+                self.CURATOR_MIN_REPORT_SECTION_COVERAGE_RATE,
+            ),
+            ("CURATOR_MAX_QA_REJECTION_RATE", self.CURATOR_MAX_QA_REJECTION_RATE),
+        ):
+            if value < 0 or value > 1:
+                raise ValueError(f"{name} must be between 0 and 1.")
 
         return self
 

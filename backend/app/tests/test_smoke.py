@@ -1088,7 +1088,15 @@ def test_schema_models_instantiation() -> None:
         candidate_type="qa_rule",
         applies_to="qa_rule",
         tags=["ai_coding", "pricing"],
-        payload={"rule_yaml": "id: rule_x"},
+        payload={
+            "rule_yaml": (
+                "id: rule_x\n"
+                "when:\n"
+                "  section_id_in: [pricing]\n"
+                "require:\n"
+                "  evidence_refs_count_gte: 1\n"
+            )
+        },
         rationale="Recurring QA failure pattern",
         supporting_run_ids=["run_demo_001"],
         confidence="medium",
