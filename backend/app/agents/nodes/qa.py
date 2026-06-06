@@ -91,10 +91,20 @@ def _make_qa_payload(
 
 
 def _to_qa_reasons(rejection: Rejection) -> list[str]:
+    if rejection.remediation_hints:
+        return [
+            f"{rule_id}: {hint}"
+            for rule_id, hint in rejection.remediation_hints.items()
+            if hint
+        ]
     reasons = [item for item in rejection.semantic_findings if item]
     if reasons:
         return reasons
     return list(rejection.failed_rule_ids)
+
+
+def _to_qa_remediation_hints(rejection: Rejection) -> dict[str, str]:
+    return dict(rejection.remediation_hints)
 
 
 def _report_has_writer_fallback_mode(content_json: dict[str, object]) -> bool:
@@ -245,6 +255,7 @@ async def qa_node(state: AgentState) -> AgentState:
             "qa_reject_to": None,
             "qa_rejection_count": qa_rejection_count,
             "qa_reasons": [],
+            "qa_remediation_hints": {},
             "status": "running",
         }
 
@@ -286,6 +297,17 @@ async def qa_node(state: AgentState) -> AgentState:
         if approval_blocked_for_fallback
         else _to_qa_reasons(review_result)
     )
+    qa_remediation_hints = (
+        {}
+        if approval_blocked_for_fallback or not isinstance(review_result, Rejection)
+        else _to_qa_remediation_hints(review_result)
+    )
+    if approval_blocked_for_fallback:
+        qa_remediation_hints = {
+            "rule_writer_no_fallback_mode": (
+                "不得输出 writer_fallback_mode；需基于 analyst insights 与 evidence 完成 LLM 写作。"
+            )
+        }
     return {
         "last_completed_node": "writer",
         "pending_review_target_step_id": None,
@@ -293,5 +315,6 @@ async def qa_node(state: AgentState) -> AgentState:
         "qa_reject_to": event_reject_to,
         "qa_rejection_count": updated_rejection_count,
         "qa_reasons": qa_reasons,
+        "qa_remediation_hints": qa_remediation_hints,
         "status": "running",
     }

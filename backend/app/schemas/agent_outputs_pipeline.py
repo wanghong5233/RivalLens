@@ -40,6 +40,7 @@ ResearcherActionName = Literal[
     "search_web",
     "fetch_url",
     "extract_structured",
+    "parse_tables",
     "load_skill",
     "read_skill_file",
     "finalize",
@@ -440,6 +441,28 @@ class ResearcherDecisionOutput(BaseModel):
                     else competitor_id
                 )
                 return ("extract_structured", normalized)
+            return None
+        if action == "parse_tables":
+            html_raw = action_args.get("html")
+            text_raw = action_args.get("text")
+            if (
+                isinstance(html_raw, str) and html_raw.strip()
+            ) or (
+                isinstance(text_raw, str) and text_raw.strip()
+            ):
+                normalized: dict[str, object] = {}
+                if isinstance(html_raw, str) and html_raw.strip():
+                    normalized["html"] = html_raw.strip()
+                if isinstance(text_raw, str) and text_raw.strip():
+                    normalized["text"] = text_raw.strip()
+                for key in ("source_url", "source_title"):
+                    value = action_args.get(key)
+                    if isinstance(value, str):
+                        normalized[key] = value
+                dimension = _dimension_arg(fallback_to_pending=False)
+                if dimension is not None:
+                    normalized["dimension"] = dimension
+                return ("parse_tables", normalized)
             return None
         if action == "load_skill":
             skill_id_raw = action_args.get("skill_id")

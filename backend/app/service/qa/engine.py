@@ -25,6 +25,7 @@ from service.llm import (
 from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
 from service.qa.promoted_rules import evaluate_promoted_rule_yaml
+from service.qa.remediation import build_remediation_hints
 from service.qa.rules import RuleResult, evaluate_fast_path_rules
 from service.skill_store import get_skill_store
 from utils.logger import get_logger
@@ -110,6 +111,7 @@ def _build_rejection(
         reject_to=primary_rule.reject_to,
         failed_rule_ids=[item.rule_id for item in failed_rules],
         semantic_findings=[item.message for item in failed_rules],
+        remediation_hints=build_remediation_hints(failed_rules),
         required_fields=sorted(required_fields),
         retry_policy=RetryPolicy(
             max_retry=MAX_QA_REJECTIONS,

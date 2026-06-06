@@ -34,13 +34,17 @@ from service.skill_store import get_skill_store
 from utils.logger import bind_step, get_logger
 
 COMPRESS_AFTER_TURNS = 4
-COMPRESS_AFTER_CHARS = 2400
+COMPRESS_CONTEXT_TOKEN_BUDGET = 6000
+COMPRESS_AFTER_MESSAGE_COUNT = 8
 OBSERVATIONS_FULL_RETAIN = 2
 TOOL_ERROR_PREVIEW_LIMIT = 200
+_EVIDENCE_QUALITY_THRESHOLD = 0.5
+_MIN_HIGH_QUALITY_SNIPPETS = 1
 TOOL_ACTIONS = {
     "search_web",
     "fetch_url",
     "extract_structured",
+    "parse_tables",
     "load_skill",
     "read_skill_file",
 }
@@ -48,17 +52,20 @@ DIMENSIONAL_TOOL_ACTIONS = {
     "search_web",
     "fetch_url",
     "extract_structured",
+    "parse_tables",
 }
 # Follow-up tools elaborate on a page the latest search already surfaced; they
 # must inherit that search's dimension, never the next pending one.
 _FOLLOWUP_DIMENSIONAL_ACTIONS = {
     "fetch_url",
     "extract_structured",
+    "parse_tables",
 }
 ACTION_TO_CHANNEL = {
     "search_web": "search_web",
     "fetch_url": "fetch_url",
     "extract_structured": "extract_structured",
+    "parse_tables": "parse_tables",
     "load_skill": "load_skill",
     "read_skill_file": "read_skill_file",
 }
@@ -142,10 +149,15 @@ class ResearcherSubState(TypedDict, total=False):
     domain_hint: str | None
     reference_urls: list[str]
     discovered_urls: list[str]
+    preloaded_skill_instructions: str | None
 
 
 def _approx_chars(messages: list[dict[str, str]]) -> int:
     return sum(len(item.get("content", "")) for item in messages)
+
+
+def _approx_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
 
 
 def _classify_tool_error(exc: Exception) -> str:
@@ -325,11 +337,18 @@ def _effective_prompt_size(state: ResearcherSubState) -> int:
     compressed_summary = state.get("compressed_summary", "")
     messages = list(state.get("messages", []))
     evidence_refs = evidence_draft_refs_for_prompt(list(state.get("evidence_drafts", [])))
+    preloaded_skill = state.get("preloaded_skill_instructions", "")
     size = len(compressed_summary) if isinstance(compressed_summary, str) else 0
     size += _approx_chars(messages)
     size += len(json.dumps(briefs[-6:], ensure_ascii=False))
     size += len(json.dumps(evidence_refs[-8:], ensure_ascii=False))
+    if isinstance(preloaded_skill, str):
+        size += len(preloaded_skill)
     return size
+
+
+def _effective_prompt_tokens(state: ResearcherSubState) -> int:
+    return _approx_tokens(str(_effective_prompt_size(state)))
 
 
 def _guess_skill_id(domain_hint: str) -> str:
@@ -414,6 +433,52 @@ def _resolve_bootstrap_skill_id(domain_hint: str | None) -> str | None:
         if names:
             return names[0]
     return skill_names[0] if skill_names else None
+
+
+def resolve_preloaded_skill_instructions(domain_hint: str | None) -> str | None:
+    skill_id = _resolve_bootstrap_skill_id(domain_hint)
+    if skill_id is None:
+        return None
+    parsed = get_skill_store().load(skill_id)
+    if parsed is None:
+        return None
+    content = parsed.content.strip()
+    return content or None
+
+
+def _score_snippet(*, quote: str, source_type: str, competitor_id: str) -> float:
+    score = 0.0
+    if source_type in {"official_site", "docs", "pricing_page"}:
+        score += 0.4
+    if competitor_id and competitor_id.lower() in quote.lower():
+        score += 0.3
+    if len(quote) > 200:
+        score += 0.3
+    return score
+
+
+def _evidence_quality_sufficient(state: ResearcherSubState) -> bool:
+    drafts = list(state.get("evidence_drafts", []))
+    if not drafts:
+        return False
+    high_quality = 0
+    for draft in drafts:
+        if not isinstance(draft, dict):
+            continue
+        quote_raw = draft.get("quote") or draft.get("sanitized_text") or ""
+        source_type_raw = draft.get("source_type")
+        competitor_raw = draft.get("competitor_id")
+        if not isinstance(quote_raw, str):
+            continue
+        source_type = source_type_raw if isinstance(source_type_raw, str) else "article"
+        competitor_id = competitor_raw if isinstance(competitor_raw, str) else ""
+        if _score_snippet(
+            quote=quote_raw,
+            source_type=source_type,
+            competitor_id=competitor_id,
+        ) >= _EVIDENCE_QUALITY_THRESHOLD:
+            high_quality += 1
+    return high_quality >= _MIN_HIGH_QUALITY_SNIPPETS
 
 
 def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
@@ -517,11 +582,11 @@ def _needs_compress(state: ResearcherSubState) -> bool:
         return False
 
     messages = list(state.get("messages", []))
-    if len(messages) >= 8:
+    if len(messages) >= COMPRESS_AFTER_MESSAGE_COUNT:
         return True
-    if _effective_prompt_size(state) >= COMPRESS_AFTER_CHARS:
+    if _effective_prompt_tokens(state) >= COMPRESS_CONTEXT_TOKEN_BUDGET:
         return True
-    return _approx_chars(messages) >= COMPRESS_AFTER_CHARS
+    return _approx_tokens(str(_approx_chars(messages))) >= COMPRESS_CONTEXT_TOKEN_BUDGET
 
 
 async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
@@ -571,6 +636,7 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         domain_hint=domain_hint,
         reference_urls=reference_urls,
         discovered_urls=discovered_urls,
+        preloaded_skill_instructions=state.get("preloaded_skill_instructions"),
     )
     pending_dimensions = list(state.get("pending_dimensions", []))
     log_context = bind_step(step_id) if step_id is not None else nullcontext()
@@ -620,6 +686,7 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
     else:
         action, action_args = _fallback_action(state)
     coverage_guard_triggered = False
+    quality_guard_triggered = False
     if action == "finalize" and pending_dimensions and int(state.get("turn_count", 0)) < max_turns:
         guarded_action, guarded_action_args = _fallback_action(state)
         if guarded_action in TOOL_ACTIONS:
@@ -639,11 +706,33 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
                     max_turns=max_turns,
                 )
     if (
+        action == "finalize"
+        and not _evidence_quality_sufficient(state)
+        and int(state.get("turn_count", 0)) < max_turns
+    ):
+        guarded_action, guarded_action_args = _fallback_action(state)
+        if guarded_action in TOOL_ACTIONS:
+            quality_guard_triggered = True
+            action = guarded_action
+            action_args = guarded_action_args
+            log_context = bind_step(step_id) if step_id is not None else nullcontext()
+            with log_context:
+                log.info(
+                    "researcher.quality_guard",
+                    competitor_id=state["competitor_id"],
+                    action=guarded_action,
+                    evidence_draft_count=len(state.get("evidence_drafts", [])),
+                    turn_count=int(state.get("turn_count", 0)),
+                    max_turns=max_turns,
+                )
+    if (
         domain_hint is not None
         and int(state.get("turn_count", 0)) == 0
         and action != "load_skill"
         and not _has_tool_attempt(state, "load_skill")
         and not coverage_guard_triggered
+        and not quality_guard_triggered
+        and not state.get("preloaded_skill_instructions")
     ):
         bootstrap_skill_id = _resolve_bootstrap_skill_id(domain_hint)
         if bootstrap_skill_id is not None:

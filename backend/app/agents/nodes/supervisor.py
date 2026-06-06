@@ -922,6 +922,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
     qa_outcome = state.get("qa_outcome")
     qa_reject_to = state.get("qa_reject_to")
     qa_reasons = list(state.get("qa_reasons", []))
+    qa_remediation_hints = dict(state.get("qa_remediation_hints", {}))
     iteration = int(state.get("current_iteration", 0)) + 1
     last_completed_node = state.get("last_completed_node")
     triggered_by = _resolve_triggered_by(
@@ -1008,6 +1009,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             qa_outcome=qa_outcome,
             qa_reject_to=qa_reject_to,
             qa_reasons=qa_reasons,
+            qa_remediation_hints=qa_remediation_hints,
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
         )
@@ -1155,5 +1157,6 @@ async def supervisor_node(state: AgentState) -> AgentState:
         "qa_outcome": None,
         "qa_reject_to": None,
         "qa_reasons": [],
+        "qa_remediation_hints": {},
         "status": status,
     }

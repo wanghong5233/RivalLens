@@ -620,6 +620,7 @@ def _build_reset_state_values(*, reset_to: ResetToStage) -> dict[str, object]:
         "qa_reject_to": None,
         "qa_rejection_count": 0,
         "qa_reasons": [],
+        "qa_remediation_hints": {},
         "status": "running",
         "decisions": [],
     }
@@ -1278,6 +1279,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             "qa_rejection_count": 0,
             "pending_review_target_step_id": None,
             "qa_reasons": [],
+        "qa_remediation_hints": {},
             "intake_draft": direct_intake_draft,
             "status": "running",
         }
@@ -1789,6 +1791,7 @@ async def create_run_intake(
             "qa_rejection_count": 0,
             "pending_review_target_step_id": None,
             "qa_reasons": [],
+        "qa_remediation_hints": {},
             "status": "running",
             "phase": "intake",
             "intake_draft": initial_draft,

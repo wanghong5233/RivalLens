@@ -176,10 +176,10 @@ def test_source_type_mapping_rules() -> None:
     )
 
 
-def test_builtin_registry_no_longer_registers_parse_page() -> None:
+def test_builtin_registry_registers_parse_tables() -> None:
     registry = ChannelRegistry()
     _register_builtin_channels(registry)
-    assert "parse_page" not in registry.list_actions()
+    assert "parse_tables" in registry.list_actions()
     assert {"search_web", "fetch_url", "extract_structured"}.issubset(
         set(registry.list_actions())
     )

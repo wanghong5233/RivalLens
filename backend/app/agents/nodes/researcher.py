@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime, timezone
 
 from agents.state import AgentState
-from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph
+from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph, resolve_preloaded_skill_instructions
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from db.engine import get_session_factory
 from models.artifact import Artifact
@@ -51,6 +51,7 @@ def _build_initial_substate(
     focus_dimensions: list[FocusDimension],
     domain_hint: str | None,
     reference_urls: list[str],
+    preloaded_skill_instructions: str | None = None,
 ) -> ResearcherSubState:
     max_turns = max(request.max_iterations or MAX_REACT_TURNS, len(focus_dimensions))
     return {
@@ -77,6 +78,7 @@ def _build_initial_substate(
         "domain_hint": domain_hint,
         "reference_urls": reference_urls,
         "discovered_urls": [],
+        "preloaded_skill_instructions": preloaded_skill_instructions,
     }
 
 
@@ -344,6 +346,7 @@ async def researcher_node(state: AgentState) -> AgentState:
         focus_dimensions=focus_dimensions,
         domain_hint=domain_hint,
         reference_urls=reference_urls,
+        preloaded_skill_instructions=resolve_preloaded_skill_instructions(domain_hint),
     )
     subgraph_output = await subgraph.ainvoke(subgraph_input)
 

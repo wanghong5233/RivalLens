@@ -304,18 +304,27 @@ Allowed actions:
        "dimension": str | null,
        "competitor_id": str | null
      }
-4) load_skill
+4) parse_tables
+   - args schema:
+     {
+       "html": str | null,
+       "text": str | null,
+       "source_url": str | null,
+       "source_title": str | null,
+       "dimension": str | null
+     }
+5) load_skill
    - args schema:
      {
        "skill_id": str
      }
-5) read_skill_file
+6) read_skill_file
    - args schema:
      {
        "skill_id": str,
        "filename": str
      }
-6) finalize
+7) finalize
    - args schema:
      {
        "summary": str
@@ -323,7 +332,7 @@ Allowed actions:
 
 Output JSON schema:
 {
-  "action": "search_web" | "fetch_url" | "extract_structured" | "load_skill" | "read_skill_file" | "finalize",
+  "action": "search_web" | "fetch_url" | "extract_structured" | "parse_tables" | "load_skill" | "read_skill_file" | "finalize",
   "action_args": { ... valid for action ... },
   "reasoning_summary": "short and concrete rationale"
 }
@@ -332,7 +341,8 @@ Hard constraints:
 - Never fabricate evidence quotes, source_url, or source_title.
 - Evidence can only come from tool observations.
 - If enough dimensions are already covered, call finalize.
-- Prefer online collection first; use load_skill when domain-specific extraction guidance is needed.
+- Prefer online collection first; use parse_tables when fetched HTML contains pricing/feature matrices.
+- Preloaded skill instructions (when present in user prompt) already contain domain routing guidance; skip load_skill unless you need supporting files.
 - When action_args.dimension is present, it MUST be exactly one value from focus_dimensions. Do not invent compound dimensions.
 - Return JSON object only, no markdown.
 """
@@ -680,6 +690,7 @@ def build_supervisor_user_prompt(
     qa_outcome: str | None,
     qa_reject_to: str | None,
     qa_reasons: Sequence[str],
+    qa_remediation_hints: dict[str, str] | None = None,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
 ) -> str:
@@ -720,6 +731,7 @@ def build_supervisor_user_prompt(
         f"- qa_outcome: {qa_outcome}\n"
         f"- qa_reject_to: {qa_reject_to}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
+        f"- qa_remediation_hints: {_json(dict(qa_remediation_hints or {}))}\n"
         f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         f"{constraints}"
@@ -782,10 +794,16 @@ def build_researcher_user_prompt(
     domain_hint: str | None = None,
     reference_urls: Sequence[str] | None = None,
     discovered_urls: Sequence[str] | None = None,
+    preloaded_skill_instructions: str | None = None,
 ) -> str:
     reference_urls_row = list(reference_urls) if reference_urls is not None else []
     discovered_urls_row = list(discovered_urls) if discovered_urls is not None else []
     summary_block = compressed_summary.strip() if compressed_summary.strip() else "(none)"
+    skill_block = (
+        preloaded_skill_instructions.strip()
+        if isinstance(preloaded_skill_instructions, str) and preloaded_skill_instructions.strip()
+        else "(none)"
+    )
     briefs_payload = truncate_for_prompt(
         list(observation_briefs)[-6:],
         max_chars=RESEARCH_PROMPT_CHAR_BUDGET // 2,
@@ -803,11 +821,12 @@ def build_researcher_user_prompt(
         f"- reference_urls: {_json(reference_urls_row)}\n"
         f"- discovered_urls: {_json(discovered_urls_row)}\n"
         f"- compressed_summary: {summary_block}\n"
+        f"- preloaded_skill_instructions: {skill_block}\n"
         f"- observation_briefs: {briefs_payload}\n\n"
         "Action guidance:\n"
-        "1) Prefer search_web -> fetch_url -> extract_structured for online collection.\n"
+        "1) Prefer search_web -> fetch_url -> parse_tables (for HTML tables) -> extract_structured for online collection.\n"
         "2) Use fetch_url only with URLs from discovered_urls or reference_urls; pass the current research_topic as query when useful.\n"
-        "3) Use load_skill when domain_hint implies specialized schema or source routing.\n"
+        "3) Use load_skill only when preloaded_skill_instructions is (none) and domain_hint implies specialized routing.\n"
         "4) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
         "5) action_args.dimension must be one exact value from focus_dimensions; never create compound dimensions.\n"
         "6) If proposing future focus_dimensions in summaries or tool context, keep each concise snake_case <= 32 chars.\n"
@@ -1008,6 +1027,7 @@ def build_writer_user_prompt(
     domain_hint: str | None = None,
     qa_reasons: Sequence[str] = (),
     qa_reject_to: str | None = None,
+    qa_remediation_hints: dict[str, str] | None = None,
     analyst_comparisons: Sequence[dict[str, object]] = (),
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
@@ -1028,12 +1048,14 @@ def build_writer_user_prompt(
         f"- analyst_comparisons: {_json(list(analyst_comparisons)[:6])}\n"
         f"- risk_flags: {_json(list(risk_flags))}\n"
         f"- qa_reject_to: {qa_reject_to or 'none'}\n"
-        f"- qa_reasons: {_json(list(qa_reasons))}\n\n"
+        f"- qa_reasons: {_json(list(qa_reasons))}\n"
+        f"- qa_remediation_hints: {_json(dict(qa_remediation_hints or {}))}\n\n"
         "Write a battlecard with grounded evidence refs. "
         "section_id must exactly match target_sections entries. "
         "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates. "
         "Use analyst_comparisons stance (leader/competitive/laggard/unknown) to write precise positioning language per competitor per dimension. "
-        "If qa_reject_to is 'writer' and qa_reasons is non-empty, address each qa_reason explicitly in the relevant section."
+        "If qa_reject_to is 'writer' and qa_remediation_hints is non-empty, address each remediation hint in the relevant section. "
+        "For dimensions with insufficient evidence, write an explicit data-insufficient paragraph instead of omitting the section."
     )
 
 

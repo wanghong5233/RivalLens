@@ -498,6 +498,7 @@ async def writer_node(state: AgentState) -> AgentState:
             report_depth=report_depth,
             qa_reasons=list(state.get("qa_reasons", [])),
             qa_reject_to=state.get("qa_reject_to") or None,
+            qa_remediation_hints=dict(state.get("qa_remediation_hints", {})),
             analyst_comparisons=analyst_comparisons,
         ),
         output_model=WriterReportOutput,

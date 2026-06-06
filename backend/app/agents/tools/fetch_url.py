@@ -22,6 +22,7 @@ from service.collector.rate_limiter import PerHostLimiter
 from service.collector.robots import RobotsGate
 from urllib.parse import urlsplit
 
+from agents.tools.html_clean import post_clean_text
 from agents.tools.parse_page import infer_source_type
 
 _TAVILY_EXTRACT_ERRORS: tuple[type[Exception], ...] = (
@@ -139,6 +140,7 @@ class FetchUrlChannel(BaseChannel):
             raise ChannelError("TAVILY_API_KEY is required for fetch_url channel.")
         response = await _tavily_extract(url=url, query=query)
         extracted_text, extracted_url = _extract_text_from_tavily_response(response)
+        extracted_text = post_clean_text(extracted_text)
         _validate_extracted_text(extracted_text)
         source_url = extracted_url or url
         source_type = infer_source_type(

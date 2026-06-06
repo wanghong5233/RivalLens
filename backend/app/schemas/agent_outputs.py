@@ -287,46 +287,75 @@ class AnalystOutput(BaseModel):
                 *(f"uncovered_dimension:{dimension}" for dimension in uncovered_dimensions),
             ]
         )
+        insights: list[AnalystInsight] = []
         if evidence_briefs:
-            first = next(
-                (
-                    item
-                    for item in evidence_briefs
-                    if isinstance(item.get("dimension"), str) and item["dimension"]
-                ),
-                evidence_briefs[0],
-            )
+            grouped: dict[str, list[dict[str, object]]] = {}
+            for brief in evidence_briefs:
+                if not isinstance(brief, dict):
+                    continue
+                dimension_raw = brief.get("dimension")
+                dimension = (
+                    dimension_raw
+                    if isinstance(dimension_raw, str) and dimension_raw
+                    else "general"
+                )
+                grouped.setdefault(dimension, []).append(brief)
+            target_dims = focus_dimensions or list(grouped.keys()) or ["general"]
+            for dimension in target_dims:
+                dim_briefs = grouped.get(dimension, [])
+                for brief in dim_briefs[:2]:
+                    quote_raw = brief.get("quote") or brief.get("sanitized_text") or ""
+                    if not isinstance(quote_raw, str) or not quote_raw.strip():
+                        continue
+                    evidence_id_raw = brief.get("evidence_id")
+                    evidence_id = (
+                        evidence_id_raw if isinstance(evidence_id_raw, str) else "ev_missing"
+                    )
+                    competitor_raw = brief.get("competitor_id")
+                    competitor_id = (
+                        competitor_raw if isinstance(competitor_raw, str) else "unknown"
+                    )
+                    excerpt = quote_raw.strip()[:220]
+                    insights.append(
+                        AnalystInsight(
+                            dimension=dimension,
+                            finding=(
+                                f"Evidence excerpt from {competitor_id}: {excerpt}"
+                            ),
+                            evidence_ids=[evidence_id],
+                            confidence="low",
+                        )
+                    )
             summary = (
-                f"Fallback analysis generated from {len(evidence_briefs)} evidence snippets "
-                f"across {len(focus_dimensions)} dimensions."
-            )
-            dimension_raw = first.get("dimension")
-            dimension = dimension_raw if isinstance(dimension_raw, str) and dimension_raw else "general"
-            competitor_raw = first.get("competitor_id")
-            competitor_id = competitor_raw if isinstance(competitor_raw, str) else "unknown"
-            evidence_id_raw = first.get("evidence_id")
-            evidence_id = evidence_id_raw if isinstance(evidence_id_raw, str) else "ev_missing"
-            insight = AnalystInsight(
-                dimension=dimension,
-                finding=(
-                    f"Preliminary signal from {competitor_id} on {dimension} "
-                    "requires deeper analyst iteration."
-                ),
-                evidence_ids=[evidence_id],
-                confidence="low",
+                f"Fallback analysis aggregated {len(evidence_briefs)} evidence snippets "
+                f"into {len(insights)} dimension-scoped excerpts across "
+                f"{len(target_dims)} dimensions."
             )
         else:
             summary = "Fallback analysis generated without evidence; analyst should re-run after research recovers."
             dimension = focus_dimensions[0] if focus_dimensions else "general"
-            insight = AnalystInsight(
-                dimension=dimension,
-                finding="No evidence available for analyst pass.",
-                evidence_ids=["ev_missing"],
-                confidence="low",
+            insights.append(
+                AnalystInsight(
+                    dimension=dimension,
+                    finding="No evidence available for analyst pass.",
+                    evidence_ids=["ev_missing"],
+                    confidence="low",
+                )
             )
+        if not insights:
+            dimension = focus_dimensions[0] if focus_dimensions else "general"
+            insights.append(
+                AnalystInsight(
+                    dimension=dimension,
+                    finding="No usable evidence excerpts for analyst fallback.",
+                    evidence_ids=["ev_missing"],
+                    confidence="low",
+                )
+            )
+            summary = "Fallback analysis could not extract usable evidence excerpts."
         return cls(
             summary=summary,
-            insights=[insight],
+            insights=insights,
             comparisons=[],
             risk_flags=risk_flags,
             recommended_sections=covered_dimensions or focus_dimensions or [dimension],
@@ -433,11 +462,32 @@ class WriterReportOutput(BaseModel):
         if target_sections:
             present = {section.section_id for section in normalized_sections}
             missing = [section_id for section_id in target_sections if section_id not in present]
-            if missing:
+            fallback_evidence_id = next(iter(allowed_evidence_ids), None)
+            for section_id in missing:
+                if fallback_evidence_id is None:
+                    continue
+                normalized_sections.append(
+                    WriterSectionOutput(
+                        section_id=section_id,
+                        title=section_id.replace("_", " ").title(),
+                        content_markdown=(
+                            f"当前证据不足以支撑 {section_id} 维度的结论。"
+                            "已采集材料未覆盖该维度，以下引用仅供溯源，请勿过度推断。"
+                        ),
+                        evidence_refs=[fallback_evidence_id],
+                        insight_refs=[],
+                    )
+                )
+            still_missing = [
+                section_id for section_id in target_sections if section_id not in {
+                    section.section_id for section in normalized_sections
+                }
+            ]
+            if still_missing:
                 self.risk_callouts = stable_unique(
                     [
                         *self.risk_callouts,
-                        *(f"uncovered_section:{section_id}" for section_id in missing),
+                        *(f"uncovered_section:{section_id}" for section_id in still_missing),
                     ]
                 )
 
