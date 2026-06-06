@@ -109,6 +109,7 @@ class RunCreateRequest(BaseModel):
     domain_hint: str | None = None
     reference_urls: list[str] | None = None
     target_roles: list[str] = Field(default_factory=list)
+    report_depth: Literal["quick", "deep"] = "quick"
 
     @field_validator("domain_hint")
     @classmethod
@@ -278,6 +279,7 @@ class LLMCallTraceResponse(BaseModel):
     completion_tokens: int | None
     latency_ms: int | None
     error: str | None
+    retry_count: int
     fallback_used: bool | None
     fallback_reason: str | None
     created_at: str
@@ -345,6 +347,10 @@ class RunMetricsResponse(BaseModel):
     evidence_count_by_competitor: dict[str, int]
     evidence_count_by_dimension: dict[str, int]
     dimension_coverage_rate: float
+    report_char_count: int
+    report_section_count: int
+    report_depth: str
+    report_section_coverage_rate: float
     source_type_distribution: dict[str, int]
     desensitization_coverage: float
     qa_total_steps: int
@@ -354,6 +360,8 @@ class RunMetricsResponse(BaseModel):
     llm_token_total: int
     llm_call_count: int
     llm_latency_p50_ms: int | None
+    llm_provider_error_count: int
+    llm_retry_total: int
     manual_review_rate: float
     manual_review_is_proxy: bool
     run_wall_clock_seconds: int | None
@@ -769,6 +777,7 @@ def _to_llm_call_trace_response(llm_call: LLMCall) -> LLMCallTraceResponse:
         completion_tokens=llm_call.completion_tokens,
         latency_ms=llm_call.latency_ms,
         error=llm_call.error,
+        retry_count=llm_call.retry_count,
         fallback_used=llm_call.fallback_used,
         fallback_reason=llm_call.fallback_reason,
         created_at=llm_call.created_at.isoformat(),
@@ -853,6 +862,7 @@ def _build_trace_timeline(
                         "completion_tokens": llm_call.completion_tokens,
                         "latency_ms": llm_call.latency_ms,
                         "error": llm_call.error,
+                        "retry_count": llm_call.retry_count,
                         "fallback_used": llm_call.fallback_used,
                         "fallback_reason": llm_call.fallback_reason,
                     },
@@ -1129,6 +1139,13 @@ async def _log_run_summary(*, run_id: str, status: str) -> None:
                     .order_by(SupervisorDecisionRecord.created_at.asc())
                 )
             ).scalars().all()
+            report_rows = (
+                await session.execute(
+                    select(Report)
+                    .where(Report.run_id == run_id)
+                    .order_by(Report.created_at.asc())
+                )
+            ).scalars().all()
             candidate_rows = (
                 await session.execute(select(SkillCandidateRecord))
             ).scalars().all()
@@ -1146,6 +1163,7 @@ async def _log_run_summary(*, run_id: str, status: str) -> None:
             llm_rows=list(llm_rows),
             decision_rows=list(decision_rows),
             candidate_rows=list(candidate_rows),
+            report_rows=list(report_rows),
         )
         log.info(
             "api.run.summary",
@@ -1187,6 +1205,23 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
                 error_code="BACKGROUND_TASKS_NOT_INITIALIZED",
                 message="Background task registry is not initialized.",
             )
+        direct_user_role = (
+            payload.target_roles[0]
+            if payload.target_roles
+            and payload.target_roles[0] in {"pm", "founder", "sales", "investor"}
+            else None
+        )
+        direct_intake_draft = RunIntakeDraft(
+            user_query=payload.user_query,
+            user_role=direct_user_role,
+            analysis_intent=payload.user_query,
+            competitors_explicit=normalized_competitors,
+            competitors_discovery_mode=not normalized_competitors,
+            domain_hint=payload.domain_hint,
+            focus_dimensions=list(DEFAULT_FOCUS_DIMENSIONS),
+            report_depth=payload.report_depth,
+            reference_urls=normalized_reference_urls,
+        )
 
         async with session_factory() as session:
             session.add(
@@ -1198,6 +1233,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
                     status="running",
                     target_roles=payload.target_roles,
                     competitors=normalized_competitors,
+                    intake_draft=direct_intake_draft.model_dump(exclude={"is_complete"}),
                 )
             )
             await session.commit()
@@ -1219,6 +1255,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             "qa_rejection_count": 0,
             "pending_review_target_step_id": None,
             "qa_reasons": [],
+            "intake_draft": direct_intake_draft,
             "status": "running",
         }
         task = asyncio.create_task(
@@ -2653,6 +2690,13 @@ async def get_run_metrics(run_id: str) -> RunMetricsResponse:
                 .order_by(SupervisorDecisionRecord.created_at.asc())
             )
         ).scalars().all()
+        report_rows = (
+            await session.execute(
+                select(Report)
+                .where(Report.run_id == run_id)
+                .order_by(Report.created_at.asc())
+            )
+        ).scalars().all()
         candidate_rows = (
             await session.execute(select(SkillCandidateRecord))
         ).scalars().all()
@@ -2669,6 +2713,7 @@ async def get_run_metrics(run_id: str) -> RunMetricsResponse:
         llm_rows=llm_rows,
         decision_rows=decision_rows,
         candidate_rows=candidate_rows,
+        report_rows=report_rows,
     )
     return RunMetricsResponse(**asdict(snapshot))
 

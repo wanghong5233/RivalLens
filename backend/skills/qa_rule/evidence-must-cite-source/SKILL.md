@@ -15,10 +15,10 @@ dependencies: []
 ```yaml
 id: evidence_must_cite_source
 when:
-  section_title_contains: ["Feature", "Pricing", "User Feedback"]
+  section_id_in: ["feature", "pricing", "user_feedback"]
 require:
-  section_has_evidence_refs: true
-severity: warning
+  evidence_refs_count_gte: 1
+severity: blocking
 reject_to: writer
 message: "Each core section must reference at least one evidence id."
 ```

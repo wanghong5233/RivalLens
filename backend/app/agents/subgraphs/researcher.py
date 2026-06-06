@@ -49,6 +49,12 @@ DIMENSIONAL_TOOL_ACTIONS = {
     "fetch_url",
     "extract_structured",
 }
+# Follow-up tools elaborate on a page the latest search already surfaced; they
+# must inherit that search's dimension, never the next pending one.
+_FOLLOWUP_DIMENSIONAL_ACTIONS = {
+    "fetch_url",
+    "extract_structured",
+}
 ACTION_TO_CHANNEL = {
     "search_web": "search_web",
     "fetch_url": "fetch_url",
@@ -328,6 +334,7 @@ def _effective_action_dimension(
     *,
     state: ResearcherSubState,
     action_args: dict[str, object],
+    action: str,
 ) -> str | None:
     focus_dimensions = list(state.get("focus_dimensions", []))
     dimension_raw = action_args.get("dimension")
@@ -337,6 +344,8 @@ def _effective_action_dimension(
     )
     if normalized is not None:
         return normalized
+    if action in _FOLLOWUP_DIMENSIONAL_ACTIONS:
+        return _recent_search_dimension(state)
     pending_dimensions = list(state.get("pending_dimensions", []))
     if pending_dimensions:
         return pending_dimensions[0]
@@ -716,7 +725,9 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         }
     registry = get_channel_registry()
     dimension = (
-        _effective_action_dimension(state=state, action_args=action_args)
+        _effective_action_dimension(
+            state=state, action_args=action_args, action=action_raw
+        )
         if action_raw in DIMENSIONAL_TOOL_ACTIONS
         else None
     )

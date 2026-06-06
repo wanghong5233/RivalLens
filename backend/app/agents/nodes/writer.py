@@ -97,6 +97,15 @@ def _stable_unique(items: list[str]) -> list[str]:
     return ordered
 
 
+def _report_depth_from_state(state: AgentState) -> Literal["quick", "deep"]:
+    intake_draft = state.get("intake_draft")
+    if isinstance(intake_draft, dict):
+        depth_raw = intake_draft.get("report_depth")
+    else:
+        depth_raw = getattr(intake_draft, "report_depth", None)
+    return "deep" if depth_raw == "deep" else "quick"
+
+
 def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> AnalystOutput:
     insights: list[dict[str, object]] = []
     risk_flags: list[str] = []
@@ -468,6 +477,7 @@ async def writer_node(state: AgentState) -> AgentState:
         allowed_insight_ids=allowed_insight_ids,
     )
     target_sections = execution_context.target_sections
+    report_depth = _report_depth_from_state(state)
     analyst_summary = analyst_output.summary
     risk_flags = list(analyst_output.risk_flags)
     fallback_user_prompt = build_writer_fallback_user_prompt(
@@ -491,6 +501,7 @@ async def writer_node(state: AgentState) -> AgentState:
             analyst_insights=insight_briefs,
             risk_flags=risk_flags,
             recommended_sections=analyst_output.recommended_sections,
+            report_depth=report_depth,
         ),
         output_model=WriterReportOutput,
         parser=lambda content: WriterReportOutput.parse_llm_content(
@@ -574,6 +585,7 @@ async def writer_node(state: AgentState) -> AgentState:
             retry_count=0,
             payload={
                 **request.model_dump(),
+                "report_depth": report_depth,
                 "writer_mode": writer_mode,
                 "report_title": report_content.get("title"),
                 "section_count": section_count,

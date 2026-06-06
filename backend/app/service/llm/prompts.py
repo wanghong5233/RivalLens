@@ -365,7 +365,7 @@ Rules:
 """
 
 QA_SEMANTIC_SYSTEM_PROMPT = """You are RivalLens QA semantic auditor.
-You review report coherence and evidence consistency in STRICT JSON.
+You review report quality and evidence consistency in STRICT JSON.
 
 Output JSON schema:
 {
@@ -373,12 +373,24 @@ Output JSON schema:
   "reject_to": "supervisor" | "researcher" | "analyst" | "writer",
   "severity": "blocking" | "warning",
   "finding": str,
-  "required_fields": list[str]
+  "required_fields": list[str],
+  "dimension_results": {
+    "depth": bool,
+    "citation_coverage": bool,
+    "faithfulness": bool,
+    "instruction_following": bool
+  }
 }
 
 Rules:
+- Use deterministic judgment: same input should produce the same JSON.
+- depth: true only when a deep report gives concrete cross-competitor analysis, not thin summaries.
+- citation_coverage: true only when important claims are tied to evidence_refs from the prompt.
+- faithfulness: true only when claims are supported by the provided evidence and do not invent sources.
+- instruction_following: true only when sections match requested target sections and report_depth.
 - If semantic_audit_passed is true, finding should still be concise.
 - If false, reject_to must be actionable and required_fields must be specific.
+- Semantic findings are advisory unless deterministic QA already produced blocking failures.
 - Return JSON object only.
 """
 
@@ -406,6 +418,7 @@ Rules:
 - If template_id is provided in user prompt, keep it unchanged. If not provided, set template_id to "default".
 - Every section must include non-empty content_markdown.
 - Every section must cite evidence_refs using ids provided in user prompt.
+- For report_depth=deep, write a materially deeper report: cover every target section, cite evidence in each section, and include concrete competitor comparisons.
 - Do not fabricate evidence ids or insight refs.
 - section_id must be snake_case and meaningful for the user query.
 - Return JSON object only.
@@ -921,13 +934,19 @@ def build_qa_semantic_user_prompt(
     report_json: dict[str, object],
     failed_rule_ids: Sequence[str],
     evidence_briefs: Sequence[dict[str, object]],
+    report_depth: str = "quick",
+    target_sections: Sequence[str] = (),
 ) -> str:
+    selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
         "QA semantic audit context:\n"
+        f"- report_depth: {report_depth}\n"
+        f"- target_sections: {_json(list(target_sections))}\n"
         f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n"
         f"- report_json: {_json(report_json)}\n"
-        f"- report_markdown_preview: {_json(report_markdown[:600])}\n"
-        f"- evidence_briefs: {_json(list(evidence_briefs)[-20:])}\n\n"
+        f"- report_markdown: {truncate_for_prompt(report_markdown, max_chars=8000)}\n"
+        f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
+        "Judge depth, citation_coverage, faithfulness, and instruction_following separately. "
         f"reject_to must be one of {_json(list(QA_SEMANTIC_ALLOWED_REJECT_TO))}."
     )
 
@@ -958,12 +977,14 @@ def build_writer_user_prompt(
     analyst_insights: Sequence[dict[str, object]],
     risk_flags: Sequence[str],
     recommended_sections: Sequence[str],
+    report_depth: str = "quick",
     domain_hint: str | None = None,
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
         "Writer context:\n"
         f"- user_query: {user_query}\n"
+        f"- report_depth: {report_depth}\n"
         f"- template_id: {template_id}\n"
         f"- domain_hint: {domain_hint}\n"
         f"- target_sections: {_json(list(target_sections))}\n"
@@ -976,7 +997,8 @@ def build_writer_user_prompt(
         f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
         f"- risk_flags: {_json(list(risk_flags))}\n\n"
         "Write a battlecard with grounded evidence refs. "
-        "section_id must exactly match target_sections entries."
+        "section_id must exactly match target_sections entries. "
+        "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates."
     )
 
 

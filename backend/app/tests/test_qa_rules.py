@@ -12,7 +12,9 @@ from service.qa.engine import (
 )
 from service.qa.rules import (
     RuleResult,
+    evaluate_fast_path_rules,
     rule_evidence_must_be_desensitized,
+    rule_deep_report_min_char_count,
     rule_report_must_have_at_least_one_section,
     rule_report_must_have_markdown_content,
     rule_report_section_count_in_bounds,
@@ -134,6 +136,49 @@ def test_rule_writer_no_fallback_mode_pass_and_fail() -> None:
     assert rule_writer_no_fallback_mode({"risk_callouts": []}).passed is True
     assert rule_writer_no_fallback_mode({"risk_callouts": ["writer_fallback_mode"]}).passed is False
     assert rule_writer_no_fallback_mode({"risk_callouts": ["pricing volatility"]}).passed is True
+
+
+def test_deep_report_min_char_count_blocks_short_baseline() -> None:
+    result = rule_deep_report_min_char_count(content_markdown="x" * 2086)
+    assert result.passed is False
+    assert result.severity == "blocking"
+
+
+def test_evaluate_fast_path_rules_applies_deep_only_gates() -> None:
+    content_json = {
+        "template_id": "default",
+        "sections": [
+            {
+                "section_id": "pricing",
+                "title": "Pricing",
+                "content_markdown": "x" * 240,
+                "evidence_refs": ["ev_test_001"],
+            }
+        ],
+    }
+    evidence = _make_evidence(desensitized=True)
+
+    quick_results = evaluate_fast_path_rules(
+        content_markdown="x" * 500,
+        content_json=content_json,
+        evidence_items=[evidence],
+        allowed_evidence_ids={"ev_test_001"},
+        report_depth="quick",
+        target_sections=["pricing", "security"],
+    )
+    deep_results = evaluate_fast_path_rules(
+        content_markdown="x" * 500,
+        content_json=content_json,
+        evidence_items=[evidence],
+        allowed_evidence_ids={"ev_test_001"},
+        report_depth="deep",
+        target_sections=["pricing", "security"],
+    )
+
+    assert all(not item.rule_id.startswith("rule_deep_") for item in quick_results)
+    failed_deep_rule_ids = {item.rule_id for item in deep_results if not item.passed}
+    assert "rule_deep_report_min_char_count" in failed_deep_rule_ids
+    assert "rule_deep_report_covers_target_sections" in failed_deep_rule_ids
 
 
 def test_engine_aggregation_rejects_when_blocking_failed() -> None:

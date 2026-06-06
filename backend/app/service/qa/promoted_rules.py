@@ -21,6 +21,7 @@ class ParsedPromotedRule:
     severity: RuleSeverity
     reject_to: RuleRejectTarget
     message: str
+    section_id_in: list[str]
     section_title_contains: list[str]
     source_type_in: list[str]
     collected_within_days: int | None
@@ -41,6 +42,7 @@ class PromotedRuleEvaluation:
 
 
 class _RuleWhen(BaseModel):
+    section_id_in: list[str] = Field(default_factory=list)
     section_title_contains: list[str] = Field(default_factory=list)
 
 
@@ -146,6 +148,9 @@ def parse_promoted_rule(
             if isinstance(parsed.message, str) and parsed.message.strip()
             else f"Promoted QA rule '{parsed.id}' check failed."
         ),
+        section_id_in=list(parsed.when.section_id_in)
+        if parsed.when is not None
+        else [],
         section_title_contains=list(parsed.when.section_title_contains)
         if parsed.when is not None
         else [],
@@ -194,8 +199,16 @@ def evaluate_promoted_rule(
     now: datetime,
 ) -> RuleResult:
     sections = _iter_sections(content_json)
+    section_ids = set(parsed_rule.section_id_in)
     title_keywords = [item.casefold() for item in parsed_rule.section_title_contains]
-    if title_keywords:
+    if section_ids:
+        scoped_sections = [
+            section
+            for section in sections
+            if isinstance(section.get("section_id"), str)
+            and section.get("section_id") in section_ids
+        ]
+    elif title_keywords:
         scoped_sections = [
             section
             for section in sections
@@ -206,6 +219,18 @@ def evaluate_promoted_rule(
         ]
     else:
         scoped_sections = sections
+
+    if section_ids and not scoped_sections:
+        return RuleResult(
+            rule_id=parsed_rule.rule_id,
+            passed=True,
+            severity=parsed_rule.severity,
+            reject_to=parsed_rule.reject_to,
+            message=(
+                f"Promoted QA rule '{parsed_rule.rule_id}' not triggered "
+                f"because target section_id is missing (section_id_in={sorted(section_ids)})."
+            ),
+        )
 
     if title_keywords and not scoped_sections:
         return RuleResult(
@@ -302,8 +327,8 @@ def evaluate_promoted_rule_yaml(
         return PromotedRuleEvaluation(
             result=RuleResult(
                 rule_id=promoted_rule_id,
-                passed=True,
-                severity="warning",
+                passed=False,
+                severity="blocking",
                 reject_to="writer",
                 message=f"parse_error: {parsed_or_error.detail}",
             ),

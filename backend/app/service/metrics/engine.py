@@ -6,6 +6,7 @@ from statistics import median
 
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
+from models.report import Report
 from models.run import Run
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
@@ -20,6 +21,10 @@ class RunMetricsSnapshot:
     evidence_count_by_competitor: dict[str, int]
     evidence_count_by_dimension: dict[str, int]
     dimension_coverage_rate: float
+    report_char_count: int
+    report_section_count: int
+    report_depth: str
+    report_section_coverage_rate: float
     source_type_distribution: dict[str, int]
     desensitization_coverage: float
     qa_total_steps: int
@@ -29,6 +34,8 @@ class RunMetricsSnapshot:
     llm_token_total: int
     llm_call_count: int
     llm_latency_p50_ms: int | None
+    llm_provider_error_count: int
+    llm_retry_total: int
     manual_review_rate: float
     manual_review_is_proxy: bool
     run_wall_clock_seconds: int | None
@@ -96,6 +103,56 @@ def _expected_dimensions_from_decisions(
     return dimensions
 
 
+def _report_depth_from_run(run: Run) -> str:
+    if isinstance(run.intake_draft, dict):
+        depth_raw = run.intake_draft.get("report_depth")
+        if depth_raw in {"quick", "deep"}:
+            return str(depth_raw)
+    return "quick"
+
+
+def _latest_report(report_rows: list[Report]) -> Report | None:
+    if not report_rows:
+        return None
+    return max(report_rows, key=lambda row: row.created_at)
+
+
+def _section_ids_from_report(report: Report | None) -> set[str]:
+    if report is None or not isinstance(report.content_json, dict):
+        return set()
+    sections_raw = report.content_json.get("sections")
+    if not isinstance(sections_raw, list):
+        return set()
+    section_ids: set[str] = set()
+    for section_raw in sections_raw:
+        if not isinstance(section_raw, dict):
+            continue
+        section_id_raw = section_raw.get("section_id")
+        if isinstance(section_id_raw, str) and section_id_raw:
+            section_ids.add(section_id_raw)
+    return section_ids
+
+
+def _section_count_from_report(report: Report | None) -> int:
+    if report is None or not isinstance(report.content_json, dict):
+        return 0
+    sections_raw = report.content_json.get("sections")
+    return len(sections_raw) if isinstance(sections_raw, list) else 0
+
+
+def _latest_writer_target_sections(step_rows: list[Step]) -> set[str]:
+    writer_steps = [row for row in step_rows if row.agent_name == "writer"]
+    if not writer_steps:
+        return set()
+    latest_writer = max(writer_steps, key=lambda row: row.created_at)
+    if not isinstance(latest_writer.payload, dict):
+        return set()
+    sections_raw = latest_writer.payload.get("sections")
+    if not isinstance(sections_raw, list):
+        return set()
+    return {item for item in sections_raw if isinstance(item, str) and item}
+
+
 def _safe_rate(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
@@ -117,6 +174,7 @@ def build_run_metrics_snapshot(
     llm_rows: list[LLMCall],
     decision_rows: list[SupervisorDecisionRecord],
     candidate_rows: list[SkillCandidateRecord],
+    report_rows: list[Report] | None = None,
 ) -> RunMetricsSnapshot:
     run_competitors = [competitor for competitor in run.competitors if isinstance(competitor, str)]
     evidence_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in run_competitors}
@@ -156,6 +214,17 @@ def build_run_metrics_snapshot(
         else len(actual_dimensions)
     )
     dimension_coverage_rate = _safe_rate(covered_dimension_count, len(dimension_denominator))
+    latest_report = _latest_report(report_rows or [])
+    report_section_ids = _section_ids_from_report(latest_report)
+    expected_report_sections = _latest_writer_target_sections(step_rows) or expected_dimensions
+    report_section_coverage_rate = (
+        _safe_rate(
+            sum(1 for section_id in expected_report_sections if section_id in report_section_ids),
+            len(expected_report_sections),
+        )
+        if expected_report_sections
+        else 0.0
+    )
 
     desensitized_count = sum(1 for row in evidence_rows if row.desensitized)
     desensitization_coverage = _safe_rate(desensitized_count, len(evidence_rows))
@@ -172,6 +241,8 @@ def build_run_metrics_snapshot(
     llm_token_total = sum(
         (row.prompt_tokens or 0) + (row.completion_tokens or 0) for row in llm_rows
     )
+    llm_provider_error_count = sum(1 for row in llm_rows if row.error is not None)
+    llm_retry_total = sum(row.retry_count or 0 for row in llm_rows)
 
     supporting_candidates = []
     for candidate in candidate_rows:
@@ -197,6 +268,10 @@ def build_run_metrics_snapshot(
         evidence_count_by_competitor=evidence_count_by_competitor,
         evidence_count_by_dimension=evidence_count_by_dimension,
         dimension_coverage_rate=dimension_coverage_rate,
+        report_char_count=len(latest_report.content_markdown.strip()) if latest_report is not None else 0,
+        report_section_count=_section_count_from_report(latest_report),
+        report_depth=_report_depth_from_run(run),
+        report_section_coverage_rate=report_section_coverage_rate,
         source_type_distribution=source_type_distribution,
         desensitization_coverage=desensitization_coverage,
         qa_total_steps=len(qa_steps),
@@ -206,6 +281,8 @@ def build_run_metrics_snapshot(
         llm_token_total=llm_token_total,
         llm_call_count=len(llm_rows),
         llm_latency_p50_ms=_calc_latency_p50_ms(llm_rows),
+        llm_provider_error_count=llm_provider_error_count,
+        llm_retry_total=llm_retry_total,
         manual_review_rate=manual_review_rate,
         manual_review_is_proxy=True,
         run_wall_clock_seconds=run_wall_clock_seconds,

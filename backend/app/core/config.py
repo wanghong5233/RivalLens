@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: int = 30
     LLM_TIMEOUT_WRITER: int = 180
     LLM_MAX_RETRIES: int = 2
+    LLM_RETRY_BASE_SECONDS: float = 1.0
+    LLM_RETRY_CAP_SECONDS: float = 30.0
+    LLM_TPM_BUDGET: int = 0
     LLM_JSON_MODE_ENABLED: bool = True
     ORPHAN_RUN_SWEEP_GRACE_SECONDS: int = 300
     COLLECTOR_PER_HOST_QPS: int = 1
@@ -122,6 +125,12 @@ class Settings(BaseSettings):
             raise ValueError("ORPHAN_RUN_SWEEP_GRACE_SECONDS cannot be negative.")
         if self.LLM_MAX_RETRIES < 0:
             raise ValueError("LLM_MAX_RETRIES cannot be negative.")
+        if self.LLM_RETRY_BASE_SECONDS < 0:
+            raise ValueError("LLM_RETRY_BASE_SECONDS cannot be negative.")
+        if self.LLM_RETRY_CAP_SECONDS < 0:
+            raise ValueError("LLM_RETRY_CAP_SECONDS cannot be negative.")
+        if self.LLM_TPM_BUDGET < 0:
+            raise ValueError("LLM_TPM_BUDGET cannot be negative.")
         if self.LLM_GLOBAL_CONCURRENCY <= 0:
             raise ValueError("LLM_GLOBAL_CONCURRENCY must be positive.")
         if self.COLLECTOR_PER_HOST_QPS <= 0:

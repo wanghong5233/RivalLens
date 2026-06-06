@@ -32,6 +32,7 @@ def build_llm_call_record(
         completion_tokens=response.completion_tokens,
         latency_ms=response.latency_ms,
         error=_trim_error(llm_error),
+        retry_count=response.retry_count,
         fallback_used=response.fallback_used,
         fallback_reason=sanitize_trace_text(response.fallback_reason, limit=2000),
     )
@@ -57,6 +58,7 @@ def build_llm_call_record_from_mapping(
     error_raw = item.get("error")
     fallback_used_raw = item.get("fallback_used")
     fallback_reason_raw = item.get("fallback_reason")
+    retry_count_raw = item.get("retry_count")
     return LLMCall(
         step_id=step_id,
         model_slot=model_slot_raw,
@@ -73,6 +75,7 @@ def build_llm_call_record_from_mapping(
         else None,
         latency_ms=latency_ms_raw if isinstance(latency_ms_raw, int) else None,
         error=error_raw[:2000] if isinstance(error_raw, str) else None,
+        retry_count=retry_count_raw if isinstance(retry_count_raw, int) else 0,
         fallback_used=fallback_used_raw if isinstance(fallback_used_raw, bool) else None,
         fallback_reason=(
             sanitize_trace_text(fallback_reason_raw, limit=2000)

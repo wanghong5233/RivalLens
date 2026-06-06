@@ -12,11 +12,11 @@ todos:
     content: "E2E-S3 证据采集与质量[已完成]:fetch_url 改 Tavily Extract advanced+质量门(删 parse_page channel/action);dimension 沿 tool_exec/observation args 继承并约束 focus 枚举;EvidenceRecord 单路径去重(正文 hash key)+ analyst/writer 按竞品×维度分层选证;S3-4 补 researcher coverage guard、动态 turn 预算下限、focus 名 <=32 约束、dimension coverage metrics。二级 plan `e2e_s3_evidence_quality_29d03999.plan.md`,S3 总定向回归 78 passed;真实 run `run_4c34a4133121` 复验正文有效、每竞品 3 个维度、dimension drops 0、dimension_coverage_rate=0.75、focus 名无截断、报告引用 21 个唯一 evidence id。"
     status: completed
   - id: E2E-S4
-    content: E2E-S4 报告与 QA 质量门:deep 报告过短且无长度/覆盖门、promoted QA rule parse_error 与中文标题失配。依赖 S3 证据质量。二级 plan 文件待创建:`e2e_s4_report_qa_gates_*.plan.md`。
-    status: pending
+    content: "E2E-S4 报告与 QA 质量门[已完成]:deep report_depth 接入 writer/QA/direct run;确定性 deep blocking 结构门(总长/section 覆盖/每段长度/每段引用);QA semantic judge 维度化 rubric + 全文/分层 evidence;promoted DSL 支持 section_id_in、parse_error blocking、内置 rule 迁移;metrics 暴露 report_char_count/report_section_count/report_depth/report_section_coverage_rate。二级 plan `e2e_s4_report_qa_gates_5e63b2de.plan.md`,docker 定向 83 passed;真实 run `run_9ac27e44aea8` 先拒 2 次再通过,最终 deep 报告 6439 字/4 段/section coverage 1.0/parse_error=0。"
+    status: completed
   - id: E2E-S5
-    content: E2E-S5 provider 稳定性与配置成熟度:429 TPM(多 slot 同 endpoint + 亚秒级 backoff)retry 语义不一致、配置参数成熟度(报告长度门/研究轮次/超时/并发-TPM/retry backoff)。独立 infra,放 curator 前保证稳定复跑验证。二级 plan 文件待创建:`e2e_s5_provider_config_*.plan.md`。
-    status: pending
+    content: "E2E-S5 LLM 稳定性成熟化[已完成]:provider 错误分类+异常元数据、Retry-After/full-jitter 成熟重试、fallback retry、per-provider TPM token bucket、retry_count 持久化、provider_error/retry metrics、配置/env 成熟化。二级 plan `e2e_s5_llm_稳定性成熟化_e9f8be1f.plan.md`,docker 定向 42 passed;真实 run `run_287bcb0d6f80` completed,17 LLM calls/44465 tokens/llm_provider_error_count=0/llm_retry_total=0。"
+    status: completed
   - id: E2E-S6
     content: E2E-S6 自进化 curator:skill curator 从有质量缺陷的 run 生成低质量候选并扩散。依赖 S1-S5 全部质量修复,最后做避免学坏样本。二级 plan 文件待创建:`e2e_s6_curator_*.plan.md`。
     status: pending
@@ -68,7 +68,7 @@ isProject: false
 | E2E-S2 | `e2e_s2_state_api_contract_*.plan.md` | 状态污染、API 编码合同 | E2E-S2-1, E2E-S2-2 | 无硬依赖;competitors 膨胀污染下游 prompt,状态正确性在质量主线前修 |
 | E2E-S3 | `e2e_s3_evidence_quality_*.plan.md` | 抽取质量、维度、去重利用率、维度覆盖深度 | E2E-S3-1, E2E-S3-2, E2E-S3-3, E2E-S3-4 | 报告质量硬依赖根;内部有序 抽取→维度→去重→维度覆盖深度(S3-4 补刀) |
 | E2E-S4 | `e2e_s4_report_qa_gates_*.plan.md` | Report depth、QA gates、promoted rules | E2E-S4-1, E2E-S4-2 | 依赖 E2E-S3 证据质量结论 |
-| E2E-S5 | `e2e_s5_provider_config_*.plan.md` | provider retry/限流、配置参数成熟度 | E2E-S5-1, E2E-S5-2 | 独立 infra;放 S6 前保证稳定复跑以验证 S3/S4 |
+| E2E-S5 | `e2e_s5_llm_稳定性成熟化_e9f8be1f.plan.md` | provider retry/限流、配置参数成熟度 | E2E-S5-1, E2E-S5-2 | 已完成;稳定复跑验证 S3/S4 |
 | E2E-S6 | `e2e_s6_curator_*.plan.md` | Skill curator 候选门槛 | E2E-S6-1 | 依赖 S1-S5 全部质量修复,最后做避免坏样本继续扩散 |
 
 > 编号原则:阶段号 = 依赖拓扑序,不是发现顺序。硬依赖链 `抽取(S3-1) → 维度(S3-2)/去重(S3-3) → 报告/QA(S4) → curator(S6)`;enabler(日志降噪 S1)最先,curator(S6)最后。独立项(状态/API S2、provider/config S5)按"是否污染下游 / 是否影响复跑验证"插入链中。前一版把后发现的日志/配置排成尾号 S5 是反模式(发现顺序≠依赖顺序),本版已纠正。
@@ -84,11 +84,11 @@ isProject: false
 | E2E-S3-1 | Bug | fetch_url 抽取页脚/导航垃圾 | P1 | fixed | 已验(run_7e6cfe43a741):Tavily Extract advanced + 正文质量门, 真实 deep run 正文为含具体数字的真实产品/定价正文, 无页脚 |
 | E2E-S3-2 | Bug | Evidence 维度几乎全丢(94/95 null) | P1 | fixed | missing 已修;S3-4 后真实 run `run_4c34a4133121` 每竞品覆盖 3 个维度且 drops=0 |
 | E2E-S3-3 | Bug | Evidence URL 大量重复且利用率低 | P1 | fixed | 已验(run_7e6cfe43a741):单路径去重 + 正文 hash key + 分层选证, URL 15/15 去重、报告引用 15/15 全覆盖(原 86 unused 归零) |
-| E2E-S3-4 | Bug | 维度多样性塌缩 + supervisor focus 名 32 截断 + 无 dimension coverage 指标 | P2 | fixed | 已落地:coverage guard + 动态 turn 预算下限 + focus 名 <=32 prompt 约束 + metrics dimension coverage;真实 run `run_4c34a4133121` 验收通过 |
-| E2E-S4-1 | Improvement | deep 报告质量门缺失 | P1 | investigating | 在 E2E-S4 二级 plan 中定义 report quality rubric |
-| E2E-S4-2 | Bug | promoted QA rule DSL 与触发条件失效 | P1 | planned | 在 E2E-S4 二级 plan 中迁移/兼容 DSL 与中文触发 |
-| E2E-S5-1 | Bug | 429 TPM retry 语义不一致 + 无 TPM 退避 | P2 | root-caused | 多 slot 同 endpoint、Semaphore 限并发不限 TPM、backoff 亚秒级;修 retry 分类+退避 |
-| E2E-S5-2 | Improvement | 配置/参数成熟度不足 | P2 | investigating | 在 E2E-S5 二级 plan 中按表逐项定阈值(报告长度门/研究轮次/超时/并发/retry) |
+| E2E-S3-4 | Bug | 维度多样性塌缩 + supervisor focus 名 32 截断 + 无 dimension coverage 指标 | P2 | fixed | 已落地:coverage guard + 动态 turn 预算下限 + focus 名 <=32 prompt 约束 + metrics dimension coverage;真实 run `run_4c34a4133121` 验收通过。S4 review 暴露 follow-up(fetch_url/extract_structured)dimension 回退 pending[0]=下一维度的错标,supervisor 层(agent_outputs_pipeline fallback_to_pending=False)+ researcher 层(_effective_action_dimension follow-up 优先 _recent_search_dimension)均已补修,定向 58 passed |
+| E2E-S4-1 | Improvement | deep 报告质量门缺失 | P1 | fixed | 已落地:report_depth 接入 direct run/writer/QA,deep 结构门 blocking + semantic judge 维度化;真实 run `run_9ac27e44aea8` 先拒 2 次再生成 6439 字 deep 报告通过 |
+| E2E-S4-2 | Bug | promoted QA rule DSL 与触发条件失效 | P1 | fixed | 已落地:section_id_in 中文友好触发、parse_error blocking 可观测、内置 QA rule 迁移为支持算子;定向 promoted/golden/smoke 覆盖 |
+| E2E-S5-1 | Bug | 429 TPM retry 语义不一致 + 无 TPM 退避 | P2 | fixed | 已落地:provider 分类元数据 + Retry-After/full-jitter retry + per-provider TPM token bucket;定向 42 passed,真实 run `run_287bcb0d6f80` 无 429/retry |
+| E2E-S5-2 | Improvement | 配置/参数成熟度不足 | P2 | fixed | 已落地:LLM retry/backoff/TPM/provider/base-url config 与 `.env.example`;retry_count/provider_error metrics 暴露 |
 | E2E-S6-1 | Improvement | skill curator 低质量样本扩散 | P2 | investigating | 在 E2E-S6 二级 plan 中定义候选生成门槛 |
 
 ## 4. E2E-S1 可观测卫生(enabler)

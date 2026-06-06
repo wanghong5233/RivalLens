@@ -23,6 +23,13 @@ MAX_ADDITIONAL_PLAN_TASKS: int = 5
 MAX_FOCUS_DIMENSIONS: int = 5
 MAX_QA_RERESEARCH_ITERATIONS: int = 3
 
+# Deep report QA gates. These are deterministic quality floors; semantic QA
+# remains a judge for subjective depth/faithfulness checks.
+DEEP_REPORT_MIN_CHAR_COUNT: int = 3000
+DEEP_REPORT_MIN_SECTION_CHAR_COUNT: int = 220
+DEEP_REPORT_MIN_EVIDENCE_REFS_PER_SECTION: int = 1
+DEEP_REPORT_MIN_SECTION_COVERAGE_RATE: float = 1.0
+
 # Discovery capacity defaults and hard caps.
 MAX_DISCOVERY_SEARCH_QUERIES: int = 5
 DISCOVERY_SEARCH_MAX_RESULTS_CAP: int = 10

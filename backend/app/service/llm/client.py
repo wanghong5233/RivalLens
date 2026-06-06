@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import random
 import re
 from json import JSONDecodeError
 from time import perf_counter
@@ -10,7 +11,8 @@ from time import perf_counter
 from core.config import settings
 from service.llm.exceptions import LLMRequestError, LLMResponseFormatError
 from service.llm.providers import LLMProvider, build_providers
-from service.llm.response import LLMResponse
+from service.llm.rate_limiter import AsyncTokenBucket, estimate_tokens
+from service.llm.response import LLMResponse, ProviderRawResponse
 from service.llm.routing import resolve_slot
 from service.llm.trace import build_prompt_preview, build_prompt_trace_text, sanitize_trace_text
 from utils.logger import get_logger
@@ -51,7 +53,15 @@ def _resolve_timeout_seconds(model_slot: str) -> int:
 
 
 def _classify_llm_error(error: LLMRequestError | LLMResponseFormatError | str) -> str:
+    if isinstance(error, LLMRequestError) and error.error_class:
+        return error.error_class
     message = str(error).lower()
+    if isinstance(error, LLMRequestError) and error.http_status is not None:
+        if error.http_status == 429:
+            return "rate_limit"
+        if error.http_status >= 500:
+            return "http_5xx"
+        return "http_4xx"
     if "timed out" in message or "timeout" in message:
         return "timeout"
     if "connection" in message:
@@ -78,8 +88,22 @@ def _log_call_error(
         error_class=_classify_llm_error(error),
         attempt=attempt,
         retryable=retryable,
+        http_status=error.http_status if isinstance(error, LLMRequestError) else None,
         error=_trim_for_log(_format_error(error) if not isinstance(error, str) else error),
     )
+
+
+def _retry_sleep_seconds(
+    *,
+    exc: LLMRequestError,
+    attempt_index: int,
+    retry_base_seconds: float,
+    retry_cap_seconds: float,
+) -> float:
+    if exc.retry_after_seconds is not None:
+        return max(0.0, exc.retry_after_seconds)
+    upper_bound = min(retry_cap_seconds, retry_base_seconds * (2**attempt_index))
+    return random.uniform(0.0, max(0.0, upper_bound))
 
 
 def _log_finish(
@@ -151,11 +175,91 @@ class LLMClient:
         max_retries: int,
         timeout_seconds: int,
         global_concurrency: int,
+        retry_base_seconds: float | None = None,
+        retry_cap_seconds: float | None = None,
+        tpm_budget: int | None = None,
     ) -> None:
         self._providers = providers
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
         self._semaphore = asyncio.Semaphore(global_concurrency)
+        self._retry_base_seconds = (
+            settings.LLM_RETRY_BASE_SECONDS if retry_base_seconds is None else retry_base_seconds
+        )
+        self._retry_cap_seconds = (
+            settings.LLM_RETRY_CAP_SECONDS if retry_cap_seconds is None else retry_cap_seconds
+        )
+        resolved_tpm_budget = settings.LLM_TPM_BUDGET if tpm_budget is None else tpm_budget
+        self._token_buckets = {
+            provider_name: AsyncTokenBucket(tpm_budget=resolved_tpm_budget)
+            for provider_name in providers
+        }
+
+    async def _complete_raw_with_retries(
+        self,
+        *,
+        model_slot: str,
+        provider_name: str,
+        provider: LLMProvider,
+        system_prompt: str,
+        user_prompt: str,
+        model_name: str,
+        timeout_seconds: int,
+        starting_retry_count: int = 0,
+    ) -> tuple[ProviderRawResponse | None, int, int, LLMRequestError | None]:
+        request_error: LLMRequestError | None = None
+        elapsed_ms: int | None = None
+        retry_count = starting_retry_count
+        bucket = self._token_buckets.get(provider_name)
+        estimated_tokens = estimate_tokens(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+        for attempt_index in range(self._max_retries + 1):
+            started_at = perf_counter()
+            try:
+                if bucket is not None:
+                    await bucket.acquire(estimated_tokens)
+                async with self._semaphore:
+                    raw_response = await provider.complete_json(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        model=model_name,
+                        timeout_seconds=timeout_seconds,
+                    )
+                elapsed_ms = int((perf_counter() - started_at) * 1000)
+                return raw_response, elapsed_ms, retry_count, None
+            except LLMRequestError as exc:
+                request_error = exc
+                elapsed_ms = int((perf_counter() - started_at) * 1000)
+                can_retry = exc.retryable and attempt_index < self._max_retries
+                sleep_seconds = (
+                    _retry_sleep_seconds(
+                        exc=exc,
+                        attempt_index=attempt_index,
+                        retry_base_seconds=self._retry_base_seconds,
+                        retry_cap_seconds=self._retry_cap_seconds,
+                    )
+                    if can_retry
+                    else None
+                )
+                log.info(
+                    "llm.call.retry",
+                    model_slot=model_slot,
+                    provider=provider_name,
+                    attempt=attempt_index + 1,
+                    max_attempts=self._max_retries + 1,
+                    latency_ms=elapsed_ms,
+                    retryable=exc.retryable,
+                    http_status=exc.http_status,
+                    sleep_seconds=sleep_seconds,
+                    error=_trim_for_log(_format_error(exc)),
+                )
+                if not can_retry:
+                    break
+                retry_count += 1
+                await asyncio.sleep(sleep_seconds or 0.0)
+        return None, elapsed_ms or 0, retry_count, request_error
 
     async def complete_json(
         self,
@@ -243,34 +347,18 @@ class LLMClient:
 
         request_error: LLMRequestError | None = None
         elapsed_ms: int | None = None
-        for attempt_index in range(self._max_retries + 1):
-            started_at = perf_counter()
-            try:
-                async with self._semaphore:
-                    raw_response = await provider.complete_json(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        model=model_name,
-                        timeout_seconds=slot_timeout_seconds,
-                    )
-            except LLMRequestError as exc:
-                request_error = exc
-                elapsed_ms = int((perf_counter() - started_at) * 1000)
-                log.info(
-                    "llm.call.retry",
-                    model_slot=model_slot,
-                    provider=provider_name,
-                    attempt=attempt_index + 1,
-                    max_attempts=self._max_retries + 1,
-                    latency_ms=elapsed_ms,
-                    error=_trim_for_log(_format_error(exc)),
-                )
-                if attempt_index < self._max_retries:
-                    await asyncio.sleep(0.2 * (2**attempt_index))
-                    continue
-                break
-
-            elapsed_ms = int((perf_counter() - started_at) * 1000)
+        retry_count = 0
+        raw_response_raw, elapsed_ms, retry_count, request_error = await self._complete_raw_with_retries(
+            model_slot=model_slot,
+            provider_name=provider_name,
+            provider=provider,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_name=model_name,
+            timeout_seconds=slot_timeout_seconds,
+        )
+        if raw_response_raw is not None:
+            raw_response = raw_response_raw
             try:
                 content = _parse_json_object(raw_response.content_raw)
             except LLMResponseFormatError as exc:
@@ -278,7 +366,7 @@ class LLMClient:
                     model_slot=model_slot,
                     provider=provider_name,
                     error=exc,
-                    attempt=attempt_index + 1,
+                    attempt=retry_count + 1,
                     retryable=False,
                 )
                 response = LLMResponse(
@@ -294,6 +382,7 @@ class LLMClient:
                     error=_format_error(exc),
                     prompt_text=prompt_text,
                     response_raw=sanitize_trace_text(raw_response.content_raw),
+                    retry_count=retry_count,
                 )
                 _log_finish(
                     model_slot=model_slot,
@@ -323,6 +412,7 @@ class LLMClient:
                 error=None,
                 prompt_text=prompt_text,
                 response_raw=sanitize_trace_text(raw_response.content_raw),
+                retry_count=retry_count,
             )
             _log_finish(
                 model_slot=model_slot,
@@ -356,23 +446,23 @@ class LLMClient:
                 provider=provider_name,
                 reason=_trim_for_log(formatted_primary_error),
             )
-            started_at = perf_counter()
-            try:
-                async with self._semaphore:
-                    raw_response = await provider.complete_json(
-                        system_prompt=fallback_system_prompt,
-                        user_prompt=fallback_user_prompt,
-                        model=model_name,
-                        timeout_seconds=slot_timeout_seconds,
-                    )
-            except LLMRequestError as fallback_exc:
-                fallback_elapsed_ms = int((perf_counter() - started_at) * 1000)
+            fallback_raw_response, fallback_elapsed_ms, retry_count, fallback_exc = await self._complete_raw_with_retries(
+                model_slot=model_slot,
+                provider_name=provider_name,
+                provider=provider,
+                system_prompt=fallback_system_prompt,
+                user_prompt=fallback_user_prompt,
+                model_name=model_name,
+                timeout_seconds=slot_timeout_seconds,
+                starting_retry_count=retry_count,
+            )
+            if fallback_exc is not None:
                 _log_call_error(
                     model_slot=model_slot,
                     provider=provider_name,
                     error=fallback_exc,
                     attempt=self._max_retries + 2,
-                    retryable=False,
+                    retryable=fallback_exc.retryable,
                 )
                 response = LLMResponse(
                     model_slot=model_slot,
@@ -391,6 +481,7 @@ class LLMClient:
                     fallback_used=True,
                     fallback_reason=formatted_primary_error,
                     prompt_text=fallback_prompt_text,
+                    retry_count=retry_count,
                 )
                 _log_finish(
                     model_slot=model_slot,
@@ -407,7 +498,9 @@ class LLMClient:
                 )
                 return response
 
-            fallback_elapsed_ms = int((perf_counter() - started_at) * 1000)
+            if fallback_raw_response is None:
+                raise RuntimeError("LLM fallback retry loop reached unreachable state.")
+            raw_response = fallback_raw_response
             try:
                 content = _parse_json_object(raw_response.content_raw)
             except LLMResponseFormatError as exc:
@@ -433,6 +526,7 @@ class LLMClient:
                     fallback_reason=formatted_primary_error,
                     prompt_text=fallback_prompt_text,
                     response_raw=sanitize_trace_text(raw_response.content_raw),
+                    retry_count=retry_count,
                 )
                 _log_finish(
                     model_slot=model_slot,
@@ -464,6 +558,7 @@ class LLMClient:
                 fallback_reason=formatted_primary_error,
                 prompt_text=fallback_prompt_text,
                 response_raw=sanitize_trace_text(raw_response.content_raw),
+                retry_count=retry_count,
             )
             _log_finish(
                 model_slot=model_slot,
@@ -488,7 +583,7 @@ class LLMClient:
             provider=provider_name,
             error=request_error,
             attempt=self._max_retries + 1,
-            retryable=False,
+            retryable=request_error.retryable,
         )
         response = LLMResponse(
             model_slot=model_slot,
@@ -502,6 +597,7 @@ class LLMClient:
             latency_ms=elapsed_ms,
             error=_format_error(request_error),
             prompt_text=prompt_text,
+            retry_count=retry_count,
         )
         _log_finish(
             model_slot=model_slot,
@@ -530,6 +626,9 @@ def get_llm_client() -> LLMClient:
             max_retries=settings.LLM_MAX_RETRIES,
             timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
             global_concurrency=settings.LLM_GLOBAL_CONCURRENCY,
+            retry_base_seconds=settings.LLM_RETRY_BASE_SECONDS,
+            retry_cap_seconds=settings.LLM_RETRY_CAP_SECONDS,
+            tpm_budget=settings.LLM_TPM_BUDGET,
         )
     return _module_llm_client
 

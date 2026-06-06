@@ -15,10 +15,11 @@ dependencies: []
 ```yaml
 id: pricing_must_have_tier
 when:
-  section_title_contains: ["Pricing"]
+  section_id_in: ["pricing"]
 require:
+  evidence_refs_count_gte: 1
   section_content_min_chars: 80
-severity: warning
+severity: blocking
 reject_to: writer
 message: "Pricing section should include concrete tier details or plan-level evidence."
 ```

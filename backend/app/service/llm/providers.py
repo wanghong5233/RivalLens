@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar, Protocol
 
 import structlog
@@ -154,6 +156,81 @@ def _status_error_body_snippet(exc: APIStatusError, *, limit: int = 200) -> str 
     return body_text[:limit] if body_text else None
 
 
+def _response_header(exc: Exception, name: str) -> str | None:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get(name)
+    return str(value) if value is not None else None
+
+
+def _parse_retry_after_seconds(exc: Exception) -> float | None:
+    retry_after_ms = _response_header(exc, "retry-after-ms")
+    if retry_after_ms is not None:
+        try:
+            parsed_ms = float(retry_after_ms)
+        except ValueError:
+            parsed_ms = -1.0
+        if parsed_ms >= 0:
+            return parsed_ms / 1000.0
+
+    retry_after = _response_header(exc, "retry-after")
+    if retry_after is None:
+        return None
+    try:
+        parsed_seconds = float(retry_after)
+    except ValueError:
+        parsed_seconds = -1.0
+    if parsed_seconds >= 0:
+        return parsed_seconds
+
+    try:
+        retry_at = parsedate_to_datetime(retry_after)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+
+
+def _classify_status_error(exc: APIStatusError) -> tuple[str, bool, int | None, float | None]:
+    status_code_raw = getattr(exc, "status_code", None)
+    status_code = status_code_raw if isinstance(status_code_raw, int) else None
+    if status_code == 429:
+        return "rate_limit", True, status_code, _parse_retry_after_seconds(exc)
+    if status_code is not None and status_code >= 500:
+        return "http_5xx", True, status_code, None
+    return "http_4xx", False, status_code, None
+
+
+def _classify_transport_error(exc: Exception) -> tuple[str, bool, int | None, float | None]:
+    if isinstance(exc, RateLimitError):
+        return "rate_limit", True, 429, _parse_retry_after_seconds(exc)
+    if isinstance(exc, APITimeoutError):
+        return "timeout", True, None, None
+    return "connection", True, None, None
+
+
+def _raise_request_error(
+    *,
+    provider_name: str,
+    model: str,
+    exc: Exception,
+    error_class: str,
+    retryable: bool,
+    http_status: int | None,
+    retry_after_seconds: float | None,
+) -> None:
+    raise LLMRequestError(
+        _request_error_message(provider_name, model, exc),
+        retryable=retryable,
+        http_status=http_status,
+        retry_after_seconds=retry_after_seconds,
+        error_class=error_class,
+    ) from exc
+
+
 def _should_retry_without_json_mode(exc: APIStatusError) -> bool:
     status_code = getattr(exc, "status_code", None)
     if status_code not in {400, 422}:
@@ -246,49 +323,94 @@ class _OpenAICompatibleProvider:
                         timeout_seconds=timeout_seconds,
                         use_json_mode=False,
                     )
-                except (APIConnectionError, APITimeoutError, APIStatusError, RateLimitError) as fallback_exc:
+                except APIStatusError as fallback_exc:
+                    error_class, retryable, http_status, retry_after_seconds = _classify_status_error(
+                        fallback_exc
+                    )
                     log.warning(
                         "llm.provider.error",
                         provider=self.name,
                         model=model,
-                        error_class="http_4xx" if isinstance(fallback_exc, APIStatusError) else "connection",
-                        http_status=(
-                            getattr(fallback_exc, "status_code", None)
-                            if isinstance(fallback_exc, APIStatusError)
-                            else None
-                        ),
-                        retryable=False,
+                        error_class=error_class,
+                        http_status=http_status,
+                        retryable=retryable,
                         attempt=2,
                         error_preview=_request_error_message(self.name, model, fallback_exc)[:200],
                     )
-                    raise LLMRequestError(
-                        _request_error_message(self.name, model, fallback_exc)
-                    ) from fallback_exc
+                    _raise_request_error(
+                        provider_name=self.name,
+                        model=model,
+                        exc=fallback_exc,
+                        error_class=error_class,
+                        retryable=retryable,
+                        http_status=http_status,
+                        retry_after_seconds=retry_after_seconds,
+                    )
+                except (APIConnectionError, APITimeoutError, RateLimitError) as fallback_exc:
+                    error_class, retryable, http_status, retry_after_seconds = _classify_transport_error(
+                        fallback_exc
+                    )
+                    log.warning(
+                        "llm.provider.error",
+                        provider=self.name,
+                        model=model,
+                        error_class=error_class,
+                        http_status=http_status,
+                        retryable=retryable,
+                        attempt=2,
+                        error_preview=_request_error_message(self.name, model, fallback_exc)[:200],
+                    )
+                    _raise_request_error(
+                        provider_name=self.name,
+                        model=model,
+                        exc=fallback_exc,
+                        error_class=error_class,
+                        retryable=retryable,
+                        http_status=http_status,
+                        retry_after_seconds=retry_after_seconds,
+                    )
             else:
+                error_class, retryable, http_status, retry_after_seconds = _classify_status_error(exc)
                 log.warning(
                     "llm.provider.error",
                     provider=self.name,
                     model=model,
-                    error_class="http_4xx",
-                    http_status=getattr(exc, "status_code", None),
-                    retryable=False,
+                    error_class=error_class,
+                    http_status=http_status,
+                    retryable=retryable,
                     attempt=1,
                     error_preview=_status_error_body_snippet(exc) or str(exc)[:200],
                 )
-                raise LLMRequestError(_request_error_message(self.name, model, exc)) from exc
+                _raise_request_error(
+                    provider_name=self.name,
+                    model=model,
+                    exc=exc,
+                    error_class=error_class,
+                    retryable=retryable,
+                    http_status=http_status,
+                    retry_after_seconds=retry_after_seconds,
+                )
         except (APIConnectionError, APITimeoutError, RateLimitError) as exc:
-            error_class = "timeout" if isinstance(exc, APITimeoutError) else "connection"
+            error_class, retryable, http_status, retry_after_seconds = _classify_transport_error(exc)
             log.warning(
                 "llm.provider.error",
                 provider=self.name,
                 model=model,
                 error_class=error_class,
-                http_status=None,
-                retryable=False,
+                http_status=http_status,
+                retryable=retryable,
                 attempt=1,
                 error_preview=_request_error_message(self.name, model, exc)[:200],
             )
-            raise LLMRequestError(_request_error_message(self.name, model, exc)) from exc
+            _raise_request_error(
+                provider_name=self.name,
+                model=model,
+                exc=exc,
+                error_class=error_class,
+                retryable=retryable,
+                http_status=http_status,
+                retry_after_seconds=retry_after_seconds,
+            )
 
         content_raw = _extract_message_content(response)
         prompt_tokens, completion_tokens = _extract_usage_tokens(response)

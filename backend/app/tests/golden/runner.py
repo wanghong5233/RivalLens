@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
-import shutil
 import tempfile
 import time
 
@@ -41,6 +40,7 @@ class GoldenCaseInput(BaseModel):
     domain_hint: str | None = None
     reference_urls: list[str] = Field(default_factory=list)
     target_roles: list[str] = Field(default_factory=lambda: ["pm"])
+    report_depth: str = "quick"
 
 
 class GoldenCase(BaseModel):
@@ -165,10 +165,6 @@ def _last_qa_reject_to(payloads: list[dict[str, object]]) -> str | None:
     return None
 
 
-def _skills_root() -> Path:
-    return Path(__file__).resolve().parents[3] / "skills"
-
-
 def _write_promoted_rules_for_case(
     *,
     skills_root: Path,
@@ -205,10 +201,11 @@ def _run_metrics_snapshot(*, run_id: str, client: TestClient) -> dict[str, objec
 
 
 def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
-    skills_root = _skills_root()
     invoked_actions: list[str] = []
     registry = get_channel_registry()
     original_invoke = registry.invoke
+    skill_store = get_skill_store()
+    original_skills_dir = skill_store.skills_dir
 
     async def _tracking_invoke(action: str, *, args: dict[str, object]):
         invoked_actions.append(action)
@@ -216,17 +213,15 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
 
     registry.invoke = _tracking_invoke
     with tempfile.TemporaryDirectory(prefix="golden_case_skills_") as tmp_dir:
-        backup_root = Path(tmp_dir) / "skills_backup"
-        had_skills_root = skills_root.exists()
-        if had_skills_root:
-            shutil.copytree(skills_root, backup_root)
-            shutil.rmtree(skills_root)
+        skills_root = Path(tmp_dir) / "skills"
         skills_root.mkdir(parents=True, exist_ok=True)
         _write_promoted_rules_for_case(
             skills_root=skills_root,
             promoted_qa_rules=case.setup.promoted_qa_rules,
         )
-        get_skill_store().scan()
+        skill_store.skills_dir = skills_root
+        skill_store.invalidate()
+        skill_store.scan()
         try:
             response = client.post(
                 "/api/runs",
@@ -236,14 +231,14 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
                     "domain_hint": case.input.domain_hint,
                     "reference_urls": list(case.input.reference_urls),
                     "target_roles": case.input.target_roles,
+                    "report_depth": case.input.report_depth,
                 },
             )
         finally:
             registry.invoke = original_invoke
-        shutil.rmtree(skills_root)
-        if had_skills_root:
-            shutil.copytree(backup_root, skills_root)
-        get_skill_store().scan()
+            skill_store.skills_dir = original_skills_dir
+            skill_store.invalidate()
+            skill_store.scan()
     if response.status_code != 200:
         return GoldenCaseResult(
             case_id=case.id,

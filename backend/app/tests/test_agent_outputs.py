@@ -351,8 +351,20 @@ def test_qa_semantic_output_normalizes_dict() -> None:
             "severity": "blocking",
             "finding": "Missing pricing evidence",
             "required_fields": ["reports.content_json.sections"],
+            "dimension_results": {
+                "depth": False,
+                "citation_coverage": False,
+                "faithfulness": True,
+                "instruction_following": True,
+            },
         }
     )
     normalized = output.to_normalized_dict()
     assert normalized["reject_to"] == "writer"
     assert normalized["semantic_audit_passed"] is False
+    assert normalized["dimension_results"] == {
+        "depth": False,
+        "citation_coverage": False,
+        "faithfulness": True,
+        "instruction_following": True,
+    }

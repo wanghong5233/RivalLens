@@ -42,6 +42,43 @@ def _pricing_report(*, refs: list[str], content_len: int = 120) -> dict[str, obj
     }
 
 
+def test_promoted_rule_section_id_in_matches_chinese_title() -> None:
+    rule_yaml = """
+id: rule_pricing_requires_tier
+when:
+  section_id_in: ["pricing"]
+require:
+  evidence_refs_count_gte: 1
+  section_content_min_chars: 80
+severity: blocking
+reject_to: writer
+message: "Pricing section must include concrete tier details."
+"""
+    report = {
+        "template_id": "default",
+        "sections": [
+            {
+                "section_id": "pricing",
+                "title": "定价模型拆解",
+                "content_markdown": "x" * 120,
+                "evidence_refs": [],
+            }
+        ],
+    }
+
+    evaluated = evaluate_promoted_rule_yaml(
+        promoted_rule_id="rule_promoted_rule_pricing_requires_tier",
+        rule_yaml=rule_yaml,
+        content_json=report,
+        evidence_by_id={},
+        now=datetime.now(timezone.utc),
+    )
+
+    assert evaluated.parse_error is None
+    assert evaluated.result.passed is False
+    assert "evidence_refs_count=0 < 1" in evaluated.result.message
+
+
 def test_promoted_rule_passes_when_all_requirements_met() -> None:
     rule_yaml = """
 id: rule_pricing_requires_recent_source
@@ -138,7 +175,7 @@ reject_to: writer
     assert "not triggered" in evaluated.result.message
 
 
-def test_promoted_rule_parse_error_degrades_to_warning() -> None:
+def test_promoted_rule_parse_error_blocks_report() -> None:
     evaluated = evaluate_promoted_rule_yaml(
         promoted_rule_id="rule_promoted_rule_pricing_requires_recent_source",
         rule_yaml="id: [invalid",
@@ -148,8 +185,8 @@ def test_promoted_rule_parse_error_degrades_to_warning() -> None:
     )
     assert evaluated.enforced is False
     assert evaluated.parse_error is not None
-    assert evaluated.result.passed is True
-    assert evaluated.result.severity == "warning"
+    assert evaluated.result.passed is False
+    assert evaluated.result.severity == "blocking"
     assert "parse_error:" in evaluated.result.message
 
 

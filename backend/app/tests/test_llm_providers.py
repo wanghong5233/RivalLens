@@ -89,6 +89,76 @@ async def test_doubao_provider_wraps_connection_error(
 
 
 @pytest.mark.asyncio
+async def test_provider_classifies_429_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyStatusError(Exception):
+        def __init__(self) -> None:
+            super().__init__("rate limited")
+            self.status_code = 429
+            self.response = SimpleNamespace(headers={"retry-after": "2.5"})
+
+    async def fake_create(**_: object):
+        raise DummyStatusError()
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "APIStatusError", DummyStatusError)
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = DoubaoProvider(
+        base_url="https://ark.example.com/v3",
+        api_key="fake-key",
+        default_model="ep-demo",
+    )
+    with pytest.raises(LLMRequestError) as exc_info:
+        await provider.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+            model="ep-demo",
+            timeout_seconds=10,
+        )
+
+    assert exc_info.value.retryable is True
+    assert exc_info.value.http_status == 429
+    assert exc_info.value.retry_after_seconds == 2.5
+    assert exc_info.value.error_class == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_provider_classifies_401_as_non_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyStatusError(Exception):
+        def __init__(self) -> None:
+            super().__init__("unauthorized")
+            self.status_code = 401
+
+    async def fake_create(**_: object):
+        raise DummyStatusError()
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "APIStatusError", DummyStatusError)
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = DoubaoProvider(
+        base_url="https://ark.example.com/v3",
+        api_key="fake-key",
+        default_model="ep-demo",
+    )
+    with pytest.raises(LLMRequestError) as exc_info:
+        await provider.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+            model="ep-demo",
+            timeout_seconds=10,
+        )
+
+    assert exc_info.value.retryable is False
+    assert exc_info.value.http_status == 401
+    assert exc_info.value.error_class == "http_4xx"
+
+
+@pytest.mark.asyncio
 async def test_doubao_provider_skips_json_mode_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

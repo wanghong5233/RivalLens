@@ -10,7 +10,9 @@ from sqlalchemy import create_engine, text
 
 from core.config import settings
 from models.evidence import EvidenceRecord
+from models.report import Report
 from models.run import Run
+from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from router.run_rt import _build_run_summary_fields
 from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot
@@ -26,6 +28,10 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         evidence_count_by_competitor={"comp_cursor": 2},
         evidence_count_by_dimension={"pricing": 2},
         dimension_coverage_rate=0.5,
+        report_char_count=1234,
+        report_section_count=2,
+        report_depth="deep",
+        report_section_coverage_rate=0.5,
         source_type_distribution={"web": 3},
         desensitization_coverage=1.0,
         qa_total_steps=2,
@@ -35,6 +41,8 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         llm_token_total=1234,
         llm_call_count=5,
         llm_latency_p50_ms=321,
+        llm_provider_error_count=1,
+        llm_retry_total=2,
         manual_review_rate=0.0,
         manual_review_is_proxy=True,
         run_wall_clock_seconds=42,
@@ -142,6 +150,59 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
     assert snapshot.dimension_coverage_rate == 2 / 3
 
 
+def test_build_run_metrics_snapshot_reports_report_quality_fields() -> None:
+    run = Run(
+        run_id="run_report_metrics",
+        user_query="report metrics",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_cursor"],
+        intake_draft={"report_depth": "deep", "focus_dimensions": ["pricing", "security"]},
+        plan_tree={
+            "tasks": [
+                {
+                    "stage": "research",
+                    "focus_dimensions": ["pricing", "security"],
+                }
+            ]
+        },
+    )
+    report = Report(
+        report_id="report_metrics",
+        run_id=run.run_id,
+        status="completed",
+        content_markdown="x" * 3200,
+        content_json={
+            "sections": [
+                {"section_id": "pricing", "content_markdown": "x" * 500},
+            ]
+        },
+    )
+    writer_step = Step(
+        step_id="step_writer_report_metrics",
+        run_id=run.run_id,
+        agent_name="writer",
+        status="completed",
+        retry_count=0,
+        payload={"sections": ["pricing"]},
+    )
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=[],
+        step_rows=[writer_step],
+        llm_rows=[],
+        decision_rows=[],
+        candidate_rows=[],
+        report_rows=[report],
+    )
+
+    assert snapshot.report_char_count == 3200
+    assert snapshot.report_section_count == 1
+    assert snapshot.report_depth == "deep"
+    assert snapshot.report_section_coverage_rate == 1.0
+
+
 def test_build_run_metrics_snapshot_uses_supervisor_dimensions_without_plan_tree() -> None:
     run = Run(
         run_id="run_decision_dimension_metrics",
@@ -223,6 +284,10 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert set(payload["evidence_count_by_competitor"].keys()) >= {"comp_cursor", "comp_windsurf"}
     assert isinstance(payload["evidence_count_by_dimension"], dict)
     assert 0.0 <= payload["dimension_coverage_rate"] <= 1.0
+    assert payload["report_char_count"] >= 0
+    assert payload["report_section_count"] >= 0
+    assert payload["report_depth"] in {"quick", "deep"}
+    assert 0.0 <= payload["report_section_coverage_rate"] <= 1.0
     assert isinstance(payload["source_type_distribution"], dict)
     assert payload["source_type_distribution"]
     assert 0.0 <= payload["desensitization_coverage"] <= 1.0
@@ -235,6 +300,8 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert payload["llm_token_total"] >= 0
     assert payload["llm_call_count"] >= 1
     assert payload["llm_latency_p50_ms"] is None or payload["llm_latency_p50_ms"] >= 0
+    assert payload["llm_provider_error_count"] >= 0
+    assert payload["llm_retry_total"] >= 0
 
     assert payload["manual_review_is_proxy"] is True
     assert 0.0 <= payload["manual_review_rate"] <= 1.0
@@ -272,6 +339,10 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         assert payload["evidence_count_by_competitor"] == {"comp_cursor": 0}
         assert payload["evidence_count_by_dimension"] == {}
         assert payload["dimension_coverage_rate"] == 0.0
+        assert payload["report_char_count"] == 0
+        assert payload["report_section_count"] == 0
+        assert payload["report_depth"] == "quick"
+        assert payload["report_section_coverage_rate"] == 0.0
         assert payload["source_type_distribution"] == {}
         assert payload["desensitization_coverage"] == 0.0
         assert payload["qa_total_steps"] == 0
@@ -281,6 +352,8 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         assert payload["llm_token_total"] == 0
         assert payload["llm_call_count"] == 0
         assert payload["llm_latency_p50_ms"] is None
+        assert payload["llm_provider_error_count"] == 0
+        assert payload["llm_retry_total"] == 0
         assert payload["manual_review_rate"] == 0.0
         assert payload["manual_review_is_proxy"] is True
         assert payload["run_wall_clock_seconds"] is None

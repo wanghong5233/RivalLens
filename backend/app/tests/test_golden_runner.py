@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests.golden.runner import GoldenCase, dump_markdown_report, to_dict_rows
+import yaml
+from fastapi.testclient import TestClient
+
+from tests.golden.runner import GoldenCase, dump_markdown_report, run_case, to_dict_rows
 
 
 def test_golden_case_schema_parses_minimal_case() -> None:
@@ -26,8 +29,28 @@ def test_golden_case_schema_parses_minimal_case() -> None:
     assert case.id == "golden_case_schema_test"
     assert case.input.domain_hint == "ai_coding_tools"
     assert case.input.reference_urls == ["https://example.com/pricing"]
+    assert case.input.report_depth == "quick"
     assert case.assertions.final_qa_outcome == "approved"
     assert case.setup.promoted_qa_rules == []
+
+
+def test_golden_case_schema_accepts_report_depth() -> None:
+    case = GoldenCase.model_validate(
+        {
+            "id": "golden_case_schema_deep",
+            "description": "schema parse with report depth",
+            "input": {
+                "user_query": "deep report gate",
+                "competitors": ["comp_cursor"],
+                "domain_hint": "ai_coding_tools",
+                "reference_urls": [],
+                "target_roles": ["pm"],
+                "report_depth": "deep",
+            },
+            "assertions": {"final_qa_outcome": "force_degraded"},
+        }
+    )
+    assert case.input.report_depth == "deep"
 
 
 def test_golden_case_schema_accepts_null_pack() -> None:
@@ -97,4 +120,12 @@ def test_to_dict_rows_returns_serializable_shape() -> None:
     assert len(rows) == 1
     assert rows[0]["case_id"] == "case_2"
     assert rows[0]["passed"] is False
+
+
+def test_deep_short_report_golden_case_blocks(test_client: TestClient) -> None:
+    case_path = Path(__file__).parent / "golden" / "cases" / "13_deep_short_report_blocks.yaml"
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
+    assert result.passed is True
 

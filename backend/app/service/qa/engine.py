@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from models.evidence import EvidenceRecord
 from models.report import Report
+from models.run import Run
+from models.step import Step
 from schemas.agent_outputs import QASemanticOutput
 from schemas.ids import make_id
 from schemas.qa import Approval, Rejection, RetryPolicy
@@ -47,6 +49,10 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_writer_must_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_writer_no_fallback_mode": ["reports.content_json.risk_callouts"],
     "rule_evidence_must_be_desensitized": ["evidence.desensitized"],
+    "rule_deep_report_min_char_count": ["reports.content_markdown"],
+    "rule_deep_report_covers_target_sections": ["reports.content_json.sections[].section_id"],
+    "rule_deep_sections_min_chars": ["reports.content_json.sections[].content_markdown"],
+    "rule_deep_sections_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_report_exists": ["reports.report_id"],
 }
 _PROMOTED_RULE_REQUIRED_FIELDS = [
@@ -158,6 +164,47 @@ def _build_evidence_briefs(evidence_items: list[EvidenceRecord]) -> list[dict[st
             }
         )
     return briefs
+
+
+def _report_depth_from_run(run: Run | None) -> Literal["quick", "deep"]:
+    if run is None or not isinstance(run.intake_draft, dict):
+        return "quick"
+    depth_raw = run.intake_draft.get("report_depth")
+    return "deep" if depth_raw == "deep" else "quick"
+
+
+def _extend_sections_from_values(*, sections: list[str], values: object) -> None:
+    if not isinstance(values, list):
+        return
+    for item in values:
+        if isinstance(item, str) and item and item not in sections:
+            sections.append(item)
+
+
+def _extend_sections_from_plan_tree(*, sections: list[str], plan_tree: dict[str, object] | None) -> None:
+    if not isinstance(plan_tree, dict):
+        return
+    tasks_raw = plan_tree.get("tasks")
+    if not isinstance(tasks_raw, list):
+        return
+    for task_raw in tasks_raw:
+        if not isinstance(task_raw, dict):
+            continue
+        _extend_sections_from_values(sections=sections, values=task_raw.get("focus_dimensions"))
+
+
+def _target_sections_for_report(*, run: Run | None, writer_step: Step | None) -> list[str]:
+    sections: list[str] = []
+    if writer_step is not None and isinstance(writer_step.payload, dict):
+        _extend_sections_from_values(sections=sections, values=writer_step.payload.get("sections"))
+    if run is not None:
+        _extend_sections_from_plan_tree(sections=sections, plan_tree=run.plan_tree)
+        if isinstance(run.intake_draft, dict):
+            _extend_sections_from_values(
+                sections=sections,
+                values=run.intake_draft.get("focus_dimensions"),
+            )
+    return sections
 
 
 def _extract_rule_yaml_from_skill_content(content: str) -> str | None:
@@ -348,7 +395,9 @@ async def evaluate_report(
     promoted_rules = promoted_qa_rules or _load_promoted_qa_rules_from_skill_store()
     promoted_rule_ids = [item.rule_id for item in promoted_rules]
     async with session_factory() as session:
+        run = await session.get(Run, run_id)
         report = await session.get(Report, report_id)
+        writer_step = await session.get(Step, target_step_id)
         evidence_items = (
             await session.execute(
                 select(EvidenceRecord).where(EvidenceRecord.run_id == run_id)
@@ -379,20 +428,24 @@ async def evaluate_report(
         return build_qa_outcome(
             target_step_id=target_step_id,
             reviewer_step_id=reviewer_step_id,
-            rule_results=[missing_report],
-            qa_rejection_count=qa_rejection_count,
-        ), None, {
+        rule_results=[missing_report],
+        qa_rejection_count=qa_rejection_count,
+    ), None, {
             "qa_semantic_mode": "skipped_missing_report",
             "qa_semantic_audit_passed": False,
             "qa_semantic_error": "report_missing",
             "promoted_qa_rule_ids": promoted_rule_ids,
         }
 
+    report_depth = _report_depth_from_run(run)
+    target_sections = _target_sections_for_report(run=run, writer_step=writer_step)
     rule_results = evaluate_fast_path_rules(
         content_markdown=report.content_markdown,
         content_json=report.content_json,
         evidence_items=evidence_items,
         allowed_evidence_ids={item.id for item in evidence_items},
+        report_depth=report_depth,
+        target_sections=target_sections,
     )
     promoted_rule_results, promoted_rule_metadata = _build_promoted_rule_results(
         promoted_qa_rules=promoted_rules,
@@ -419,6 +472,8 @@ async def evaluate_report(
         report_json=report.content_json,
         failed_rule_ids=failed_rule_ids,
         evidence_briefs=evidence_briefs,
+        report_depth=report_depth,
+        target_sections=target_sections,
     )
     semantic_fallback_prompt = build_qa_semantic_fallback_user_prompt(
         failed_rule_ids=failed_rule_ids,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from agents.nodes.researcher import _build_evidence_rows, _build_initial_substate
+from agents.subgraphs.researcher import _effective_action_dimension
 from schemas.supervisor import ConductResearch
 
 
@@ -235,3 +236,37 @@ def test_build_evidence_rows_keeps_same_url_for_different_dimensions() -> None:
     assert len(rows) == 2
     assert {row.span["dimension"] for row in rows} == {"pricing", "security"}
     assert dropped_dimensions == {"count": 0, "reasons": {}}
+
+
+def test_effective_action_dimension_followup_inherits_recent_search() -> None:
+    state = {
+        "focus_dimensions": ["core_features", "pricing", "security"],
+        "pending_dimensions": ["pricing", "security"],
+        "observations_log": [
+            {"tool": "search_web", "args": {"dimension": "core_features"}},
+        ],
+    }
+    assert (
+        _effective_action_dimension(state=state, action_args={}, action="fetch_url")
+        == "core_features"
+    )
+    assert (
+        _effective_action_dimension(
+            state=state, action_args={}, action="extract_structured"
+        )
+        == "core_features"
+    )
+
+
+def test_effective_action_dimension_search_uses_pending_head() -> None:
+    state = {
+        "focus_dimensions": ["core_features", "pricing", "security"],
+        "pending_dimensions": ["pricing", "security"],
+        "observations_log": [
+            {"tool": "search_web", "args": {"dimension": "core_features"}},
+        ],
+    }
+    assert (
+        _effective_action_dimension(state=state, action_args={}, action="search_web")
+        == "pricing"
+    )

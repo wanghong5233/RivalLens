@@ -494,6 +494,7 @@ class QASemanticOutput(BaseModel):
     severity: QASeverity
     finding: str = Field(min_length=1)
     required_fields: list[str] = Field(default_factory=list)
+    dimension_results: dict[str, bool] = Field(default_factory=dict)
 
     @field_validator("reject_to")
     @classmethod
@@ -504,7 +505,11 @@ class QASemanticOutput(BaseModel):
 
     @classmethod
     def parse_llm_content(cls, content: dict[str, object]) -> QASemanticOutput:
-        return cls.model_validate(content)
+        normalized = dict(content)
+        dimension_results_raw = normalized.get("dimension_results")
+        if not isinstance(dimension_results_raw, dict):
+            normalized["dimension_results"] = {}
+        return cls.model_validate(normalized)
 
     def to_normalized_dict(self) -> dict[str, object]:
         return {
@@ -513,6 +518,7 @@ class QASemanticOutput(BaseModel):
             "reject_to": self.reject_to,
             "severity": self.severity,
             "required_fields": list(self.required_fields),
+            "dimension_results": dict(self.dimension_results),
         }
 
 

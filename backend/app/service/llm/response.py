@@ -24,6 +24,7 @@ class LLMResponse:
     completion_tokens: int | None
     latency_ms: int | None
     error: str | None
+    retry_count: int = 0
     fallback_used: bool = False
     fallback_reason: str | None = None
     prompt_text: str | None = None
@@ -41,6 +42,7 @@ class LLMResponse:
             "completion_tokens": self.completion_tokens,
             "latency_ms": self.latency_ms,
             "error": self.error,
+            "retry_count": self.retry_count,
             "fallback_used": self.fallback_used,
             "fallback_reason": self.fallback_reason,
             "prompt_text": self.prompt_text,

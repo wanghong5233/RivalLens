@@ -3,6 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from core.defaults import (
+    DEEP_REPORT_MIN_CHAR_COUNT,
+    DEEP_REPORT_MIN_EVIDENCE_REFS_PER_SECTION,
+    DEEP_REPORT_MIN_SECTION_CHAR_COUNT,
+    DEEP_REPORT_MIN_SECTION_COVERAGE_RATE,
+)
 from models.evidence import EvidenceRecord
 from schemas.contracts import validate_section_id
 
@@ -162,14 +168,154 @@ def rule_writer_no_fallback_mode(content_json: dict[str, object]) -> RuleResult:
     )
 
 
+def _iter_report_sections(content_json: dict[str, object]) -> list[dict[str, object]]:
+    sections_raw = content_json.get("sections")
+    if not isinstance(sections_raw, list):
+        return []
+    return [item for item in sections_raw if isinstance(item, dict)]
+
+
+def _section_id(section: dict[str, object]) -> str | None:
+    value = section.get("section_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _section_markdown(section: dict[str, object]) -> str:
+    value = section.get("content_markdown")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _section_evidence_refs(section: dict[str, object]) -> list[str]:
+    refs_raw = section.get("evidence_refs")
+    if not isinstance(refs_raw, list):
+        return []
+    return [item for item in refs_raw if isinstance(item, str) and item]
+
+
+def _normalized_target_sections(target_sections: list[str] | None) -> list[str]:
+    if not target_sections:
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in target_sections:
+        if item in seen:
+            continue
+        try:
+            validate_section_id(item)
+        except ValueError:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def rule_deep_report_min_char_count(
+    *,
+    content_markdown: str,
+    min_chars: int = DEEP_REPORT_MIN_CHAR_COUNT,
+) -> RuleResult:
+    char_count = len(content_markdown.strip())
+    return RuleResult(
+        rule_id="rule_deep_report_min_char_count",
+        passed=char_count >= min_chars,
+        severity="blocking",
+        reject_to="writer",
+        message=f"Deep report markdown must be at least {min_chars} chars (actual={char_count}).",
+    )
+
+
+def rule_deep_report_covers_target_sections(
+    *,
+    content_json: dict[str, object],
+    target_sections: list[str] | None,
+    min_coverage_rate: float = DEEP_REPORT_MIN_SECTION_COVERAGE_RATE,
+) -> RuleResult:
+    targets = _normalized_target_sections(target_sections)
+    if not targets:
+        return RuleResult(
+            rule_id="rule_deep_report_covers_target_sections",
+            passed=True,
+            severity="blocking",
+            reject_to="writer",
+            message="Deep report section coverage skipped because no target sections were resolved.",
+        )
+    actual_sections = {
+        section_id
+        for section in _iter_report_sections(content_json)
+        for section_id in [_section_id(section)]
+        if section_id is not None
+    }
+    covered_count = sum(1 for target in targets if target in actual_sections)
+    coverage_rate = covered_count / len(targets)
+    missing = [target for target in targets if target not in actual_sections]
+    return RuleResult(
+        rule_id="rule_deep_report_covers_target_sections",
+        passed=coverage_rate >= min_coverage_rate,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            "Deep report must cover target sections "
+            f"(coverage={coverage_rate:.2f}, min={min_coverage_rate:.2f}, missing={missing})."
+        ),
+    )
+
+
+def rule_deep_sections_min_chars(
+    *,
+    content_json: dict[str, object],
+    min_chars: int = DEEP_REPORT_MIN_SECTION_CHAR_COUNT,
+) -> RuleResult:
+    sections = _iter_report_sections(content_json)
+    short_sections = [
+        _section_id(section) or "unknown"
+        for section in sections
+        if len(_section_markdown(section)) < min_chars
+    ]
+    return RuleResult(
+        rule_id="rule_deep_sections_min_chars",
+        passed=bool(sections) and not short_sections,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            f"Every deep report section must be at least {min_chars} chars "
+            f"(short_sections={short_sections})."
+        ),
+    )
+
+
+def rule_deep_sections_cite_evidence(
+    *,
+    content_json: dict[str, object],
+    min_refs_per_section: int = DEEP_REPORT_MIN_EVIDENCE_REFS_PER_SECTION,
+) -> RuleResult:
+    sections = _iter_report_sections(content_json)
+    under_cited_sections = [
+        _section_id(section) or "unknown"
+        for section in sections
+        if len(_section_evidence_refs(section)) < min_refs_per_section
+    ]
+    return RuleResult(
+        rule_id="rule_deep_sections_cite_evidence",
+        passed=bool(sections) and not under_cited_sections,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            "Every deep report section must cite collected evidence "
+            f"(min_refs_per_section={min_refs_per_section}, under_cited={under_cited_sections})."
+        ),
+    )
+
+
 def evaluate_fast_path_rules(
     *,
     content_markdown: str,
     content_json: dict[str, object],
     evidence_items: list[EvidenceRecord],
     allowed_evidence_ids: set[str],
+    report_depth: Literal["quick", "deep"] = "quick",
+    target_sections: list[str] | None = None,
 ) -> list[RuleResult]:
-    return [
+    rule_results = [
         rule_report_must_have_markdown_content(content_markdown),
         rule_report_template_id_present(content_json),
         rule_report_must_have_at_least_one_section(content_json),
@@ -182,3 +328,16 @@ def evaluate_fast_path_rules(
         rule_writer_no_fallback_mode(content_json),
         rule_evidence_must_be_desensitized(evidence_items),
     ]
+    if report_depth == "deep":
+        rule_results.extend(
+            [
+                rule_deep_report_min_char_count(content_markdown=content_markdown),
+                rule_deep_report_covers_target_sections(
+                    content_json=content_json,
+                    target_sections=target_sections,
+                ),
+                rule_deep_sections_min_chars(content_json=content_json),
+                rule_deep_sections_cite_evidence(content_json=content_json),
+            ]
+        )
+    return rule_results

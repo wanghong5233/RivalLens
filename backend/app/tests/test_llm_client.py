@@ -60,6 +60,9 @@ def _make_client(provider: _SequencedProvider, *, max_retries: int = 2, concurre
         max_retries=max_retries,
         timeout_seconds=10,
         global_concurrency=concurrency,
+        retry_base_seconds=0.0,
+        retry_cap_seconds=0.0,
+        tpm_budget=0,
     )
 
 
@@ -186,6 +189,132 @@ async def test_llm_client_retries_on_request_error(monkeypatch: pytest.MonkeyPat
     assert provider.call_count == 3
     assert response.error is None
     assert response.content["chosen_tool"] == "Analyze"
+    assert response.retry_count == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_client_does_not_retry_non_retryable_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_research_slot(monkeypatch)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[],
+        request_errors=[
+            LLMRequestError(
+                "bad request",
+                retryable=False,
+                http_status=400,
+                error_class="http_4xx",
+            ),
+        ],
+    )
+    client = _make_client(provider, max_retries=2)
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert provider.call_count == 1
+    assert response.error is not None
+    assert response.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_llm_client_uses_retry_after_before_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_research_slot(monkeypatch)
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("service.llm.client.asyncio.sleep", fake_sleep)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[
+            ProviderRawResponse(
+                content_raw='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
+                model_name="ep-default",
+                prompt_tokens=1,
+                completion_tokens=1,
+            )
+        ],
+        request_errors=[
+            LLMRequestError(
+                "rate limited",
+                retryable=True,
+                http_status=429,
+                retry_after_seconds=1.25,
+                error_class="rate_limit",
+            )
+        ],
+    )
+    client = _make_client(provider, max_retries=1)
+
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert response.error is None
+    assert response.retry_count == 1
+    assert sleep_calls == [1.25]
+
+
+@pytest.mark.asyncio
+async def test_llm_client_full_jitter_uses_configured_upper_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_research_slot(monkeypatch)
+    sleep_calls: list[float] = []
+    jitter_bounds: list[tuple[float, float]] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    def fake_uniform(lower: float, upper: float) -> float:
+        jitter_bounds.append((lower, upper))
+        return upper
+
+    monkeypatch.setattr("service.llm.client.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("service.llm.client.random.uniform", fake_uniform)
+    provider = _SequencedProvider(
+        default_model="ep-default",
+        responses=[
+            ProviderRawResponse(
+                content_raw='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
+                model_name="ep-default",
+                prompt_tokens=1,
+                completion_tokens=1,
+            )
+        ],
+        request_errors=[
+            LLMRequestError("first", retryable=True),
+            LLMRequestError("second", retryable=True),
+        ],
+    )
+    client = LLMClient(
+        providers={"doubao": provider},
+        max_retries=2,
+        timeout_seconds=10,
+        global_concurrency=2,
+        retry_base_seconds=2.0,
+        retry_cap_seconds=3.0,
+        tpm_budget=0,
+    )
+
+    response = await client.complete_json(
+        model_slot="research",
+        system_prompt="system",
+        user_prompt="user",
+    )
+
+    assert response.error is None
+    assert response.retry_count == 2
+    assert jitter_bounds == [(0.0, 2.0), (0.0, 3.0)]
+    assert sleep_calls == [2.0, 3.0]
 
 
 @pytest.mark.asyncio
@@ -236,6 +365,7 @@ async def test_llm_client_returns_error_when_fallback_also_fails(
             LLMRequestError("primary failed once"),
             LLMRequestError("primary failed twice"),
             LLMRequestError("fallback failed"),
+            LLMRequestError("fallback failed twice"),
         ],
     )
     client = _make_client(provider, max_retries=1)
@@ -247,11 +377,12 @@ async def test_llm_client_returns_error_when_fallback_also_fails(
         fallback_user_prompt="fallback-user",
     )
 
-    assert provider.call_count == 3
+    assert provider.call_count == 4
     assert response.error is not None
     assert "primary=" in response.error
     assert "fallback=" in response.error
     assert response.fallback_used is True
+    assert response.retry_count == 2
 
 
 @pytest.mark.asyncio

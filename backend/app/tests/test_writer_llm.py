@@ -56,6 +56,7 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "- analyst_insights:" in user_prompt
     assert "- allowed_evidence_ids:" in user_prompt
     assert "- target_sections:" in user_prompt
+    assert "- report_depth: quick" in user_prompt
     assert "Fallback writer request" in fallback_prompt
     assert "- evidence_ids:" in fallback_prompt
 
