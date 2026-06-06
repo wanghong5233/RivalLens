@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,7 +11,7 @@ from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.step import Step
-from schemas.agent_outputs import AnalystOutput
+from schemas.agent_outputs import AnalystInsight, AnalystOutput, DimensionComparison
 from schemas.contracts import normalize_dimension_or_none
 from schemas.ids import make_id
 from schemas.supervisor import Analyze
@@ -25,10 +26,68 @@ from service.llm import (
 )
 from service.llm.harness import complete_structured
 from service.llm.records import build_llm_call_record
+from service.llm.response import LLMResponse
 from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.analyst")
+
+_PER_DIM_THRESHOLD = 8  # evidence 条数超过此值且维度 > 1 才并行分析
+
+
+def _group_evidence_by_dimension(
+    evidence_briefs: list[dict[str, object]],
+    focus_dimensions: list[str],
+) -> dict[str, list[dict[str, object]]]:
+    groups: dict[str, list[dict[str, object]]] = {d: [] for d in focus_dimensions}
+    overflow: list[dict[str, object]] = []
+    for brief in evidence_briefs:
+        dim = brief.get("dimension")
+        if isinstance(dim, str) and dim in groups:
+            groups[dim].append(brief)
+        else:
+            overflow.append(brief)
+    for i, brief in enumerate(overflow):
+        groups[focus_dimensions[i % len(focus_dimensions)]].append(brief)
+    return groups
+
+
+def _merge_analyst_outputs(results: list[AnalystOutput]) -> AnalystOutput:
+    seen_insight_ids: set[str] = set()
+    seen_dim_comparison: set[str] = set()
+    merged_insights: list[AnalystInsight] = []
+    merged_comparisons: list[DimensionComparison] = []
+    merged_risk_flags: list[str] = []
+    merged_sections: list[str] = []
+    summaries: list[str] = []
+
+    for out in results:
+        summaries.append(out.summary)
+        for ins in out.insights:
+            key = f"{ins.dimension}|{ins.competitor_id}"
+            if key not in seen_insight_ids:
+                seen_insight_ids.add(key)
+                merged_insights.append(ins)
+        for comp in out.comparisons:
+            if comp.dimension not in seen_dim_comparison:
+                seen_dim_comparison.add(comp.dimension)
+                merged_comparisons.append(comp)
+        for flag in out.risk_flags:
+            if flag not in merged_risk_flags:
+                merged_risk_flags.append(flag)
+        for sec in out.recommended_sections:
+            if sec not in merged_sections:
+                merged_sections.append(sec)
+
+    return AnalystOutput.model_validate(
+        {
+            "summary": "; ".join(summaries),
+            "insights": [ins.model_dump() for ins in merged_insights] or [{"dimension": "general", "competitor_id": "unknown", "text": "no insight", "evidence_ids": []}],
+            "comparisons": [c.model_dump() for c in merged_comparisons],
+            "risk_flags": merged_risk_flags,
+            "recommended_sections": merged_sections,
+        }
+    )
 
 
 def _resolve_focus_dimensions(request: Analyze) -> list[str]:
@@ -123,54 +182,121 @@ async def analyst_node(state: AgentState) -> AgentState:
     allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
     allowed_dimensions = set(focus_dimensions)
     dropped_insight_dimensions: dict[str, int] = {}
-    user_prompt = build_analyst_user_prompt(
-        user_query=user_query,
-        competitors=competitors,
-        focus_dimensions=focus_dimensions,
-        evidence_briefs=evidence_briefs,
-    )
     fallback_prompt = build_analyst_fallback_user_prompt(
         competitors=competitors,
         focus_dimensions=focus_dimensions,
         evidence_ids=sorted(allowed_evidence_ids),
     )
-    harness_result = await complete_structured(
-        model_slot="summarization",
-        system_prompt=ANALYST_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        output_model=AnalystOutput,
-        parser=lambda content: AnalystOutput.parse_llm_content(
-            content,
-            allowed_evidence_ids=allowed_evidence_ids,
-            allowed_dimensions=allowed_dimensions,
-            competitors={item for item in competitors if isinstance(item, str) and item},
-            dropped_dimensions=dropped_insight_dimensions,
-        ),
-        fallback_system_prompt=ANALYST_SYSTEM_PROMPT,
-        fallback_user_prompt=fallback_prompt,
-        repair_user_prompt_builder=lambda errors: build_analyst_repair_user_prompt(
-            validation_errors=errors,
-            focus_dimensions=focus_dimensions,
-            evidence_ids=sorted(allowed_evidence_ids),
-        ),
-        log_event="analyst.harness.finish",
-    )
-    llm_response = harness_result.llm_response
 
-    analysis_schema_error: str | None = None
-    if harness_result.value is not None:
-        analysis_mode = "llm"
-        analysis_output = harness_result.value
-        fallback_reason = llm_response.fallback_reason
+    if len(evidence_briefs) > _PER_DIM_THRESHOLD and len(focus_dimensions) > 1:
+        grouped = _group_evidence_by_dimension(evidence_briefs, focus_dimensions)
+        per_dim_tasks = [
+            complete_structured(
+                model_slot="summarization",
+                system_prompt=ANALYST_SYSTEM_PROMPT,
+                user_prompt=build_analyst_user_prompt(
+                    user_query=user_query,
+                    competitors=competitors,
+                    focus_dimensions=[dim],
+                    evidence_briefs=dim_briefs,
+                ),
+                output_model=AnalystOutput,
+                parser=lambda content, _d=dim, _di=dropped_insight_dimensions: AnalystOutput.parse_llm_content(
+                    content,
+                    allowed_evidence_ids=allowed_evidence_ids,
+                    allowed_dimensions={_d},
+                    competitors={item for item in competitors if isinstance(item, str) and item},
+                    dropped_dimensions=_di,
+                ),
+                fallback_system_prompt=ANALYST_SYSTEM_PROMPT,
+                fallback_user_prompt=build_analyst_fallback_user_prompt(
+                    competitors=competitors,
+                    focus_dimensions=[dim],
+                    evidence_ids=sorted(allowed_evidence_ids),
+                ),
+                repair_user_prompt_builder=lambda errors, _d=dim: build_analyst_repair_user_prompt(
+                    validation_errors=errors,
+                    focus_dimensions=[_d],
+                    evidence_ids=sorted(allowed_evidence_ids),
+                ),
+                log_event="analyst.harness.finish",
+            )
+            for dim, dim_briefs in grouped.items()
+            if dim_briefs
+        ]
+        gather_results = await asyncio.gather(*per_dim_tasks, return_exceptions=True)
+        valid_harness = [r for r in gather_results if not isinstance(r, Exception)]
+        valid_outputs = [r.value for r in valid_harness if r.value is not None]
+        if valid_outputs:
+            analysis_output = _merge_analyst_outputs(valid_outputs)
+            analysis_mode = "llm"
+            harness_result = valid_harness[0]
+            llm_response = harness_result.llm_response
+            fallback_reason = llm_response.fallback_reason
+            analysis_schema_error: str | None = None
+        else:
+            analysis_mode = "fallback"
+            analysis_schema_error = "analyst_all_dim_tasks_failed"
+            fallback_reason = analysis_schema_error
+            llm_response = LLMResponse(
+                model_slot="summarization",
+                provider="none",
+                model_name=None,
+                prompt_preview="",
+                prompt_hash="",
+                content={},
+                prompt_tokens=None,
+                completion_tokens=None,
+                latency_ms=None,
+                error=analysis_schema_error,
+            )
+            analysis_output = AnalystOutput.build_fallback(
+                focus_dimensions=focus_dimensions,
+                evidence_briefs=evidence_briefs,
+            )
     else:
-        analysis_mode = "fallback"
-        if llm_response.error is None:
-            analysis_schema_error = harness_result.schema_error or "analyst_output_schema_invalid"
-        fallback_reason = llm_response.error or analysis_schema_error
-        analysis_output = AnalystOutput.build_fallback(
+        user_prompt = build_analyst_user_prompt(
+            user_query=user_query,
+            competitors=competitors,
             focus_dimensions=focus_dimensions,
             evidence_briefs=evidence_briefs,
         )
+        harness_result = await complete_structured(
+            model_slot="summarization",
+            system_prompt=ANALYST_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            output_model=AnalystOutput,
+            parser=lambda content: AnalystOutput.parse_llm_content(
+                content,
+                allowed_evidence_ids=allowed_evidence_ids,
+                allowed_dimensions=allowed_dimensions,
+                competitors={item for item in competitors if isinstance(item, str) and item},
+                dropped_dimensions=dropped_insight_dimensions,
+            ),
+            fallback_system_prompt=ANALYST_SYSTEM_PROMPT,
+            fallback_user_prompt=fallback_prompt,
+            repair_user_prompt_builder=lambda errors: build_analyst_repair_user_prompt(
+                validation_errors=errors,
+                focus_dimensions=focus_dimensions,
+                evidence_ids=sorted(allowed_evidence_ids),
+            ),
+            log_event="analyst.harness.finish",
+        )
+        llm_response = harness_result.llm_response
+        analysis_schema_error = None
+        if harness_result.value is not None:
+            analysis_mode = "llm"
+            analysis_output = harness_result.value
+            fallback_reason = llm_response.fallback_reason
+        else:
+            analysis_mode = "fallback"
+            if llm_response.error is None:
+                analysis_schema_error = harness_result.schema_error or "analyst_output_schema_invalid"
+            fallback_reason = llm_response.error or analysis_schema_error
+            analysis_output = AnalystOutput.build_fallback(
+                focus_dimensions=focus_dimensions,
+                evidence_briefs=evidence_briefs,
+            )
     analysis_result = analysis_output.to_persisted_dict()
     analysis_insights = (
         [item for item in analysis_result["insights"] if isinstance(item, dict)]

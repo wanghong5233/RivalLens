@@ -251,6 +251,42 @@ def _merge_discovered_urls(existing: list[str], new_urls: list[str]) -> list[str
     return merged
 
 
+def _build_tool_history_message(
+    observations_log: list[dict[str, object]],
+    observation_briefs: list[dict[str, object]],
+) -> dict[str, str]:
+    lines = ["Already completed (do not repeat):"]
+    seen: set[str] = set()
+    for obs in observations_log:
+        if not isinstance(obs, dict):
+            continue
+        tool = obs.get("tool", "")
+        args = obs.get("args") or {}
+        url = args.get("url", "") if isinstance(args, dict) else ""
+        query = args.get("query", "") if isinstance(args, dict) else ""
+        key = f"{tool}|{url}|{query}"
+        if key in seen:
+            continue
+        seen.add(key)
+        parts = [f"tool={tool}"]
+        if url:
+            parts.append(f"url={url}")
+        if query:
+            parts.append(f"query={query!r}")
+        lines.append("- " + ", ".join(parts))
+    for brief in observation_briefs:
+        if not isinstance(brief, dict):
+            continue
+        url = brief.get("url", "")
+        tool = brief.get("tool", "")
+        key = f"{tool}|{url}"
+        if not url or key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"- tool={tool}, url={url}")
+    return {"role": "system", "content": "\n".join(lines)}
+
+
 def _archive_observations_log(observations_log: list[dict[str, object]]) -> list[dict[str, object]]:
     if len(observations_log) <= OBSERVATIONS_FULL_RETAIN:
         return observations_log
@@ -960,6 +996,10 @@ async def compress(state: ResearcherSubState) -> ResearcherSubState:
         "messages": [
             {"role": "system", "content": "compressed researcher context"},
             {"role": "assistant", "content": summary},
+            _build_tool_history_message(
+                observations_log=list(state.get("observations_log", [])),
+                observation_briefs=list(state.get("observation_briefs", [])),
+            ),
         ],
         "final_summary": summary,
     }

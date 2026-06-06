@@ -473,6 +473,7 @@ async def writer_node(state: AgentState) -> AgentState:
     report_depth = _report_depth_from_state(state)
     analyst_summary = analyst_output.summary
     risk_flags = list(analyst_output.risk_flags)
+    analyst_comparisons = [c.model_dump(mode="python") for c in analyst_output.comparisons]
     fallback_user_prompt = build_writer_fallback_user_prompt(
         template_id=request.template_id,
         requested_sections=target_sections,
@@ -495,6 +496,9 @@ async def writer_node(state: AgentState) -> AgentState:
             risk_flags=risk_flags,
             recommended_sections=analyst_output.recommended_sections,
             report_depth=report_depth,
+            qa_reasons=list(state.get("qa_reasons", [])),
+            qa_reject_to=state.get("qa_reject_to") or None,
+            analyst_comparisons=analyst_comparisons,
         ),
         output_model=WriterReportOutput,
         parser=lambda content: WriterReportOutput.parse_llm_content(

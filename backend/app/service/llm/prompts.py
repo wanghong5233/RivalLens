@@ -264,6 +264,16 @@ Rules:
 - For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors.
 - Prefer ConductResearchBatch when pending_competitors has 2+ independent competitors and analysis_done is false.
 - Keep reasoning_summary concise and operational, no markdown.
+
+QA Feedback Rules:
+- When qa_outcome is "rejected", qa_reasons lists the specific defects in the last output.
+- Route based on qa_reject_to:
+  * "writer"     -> call Write; writer will receive qa_reasons directly in its prompt.
+  * "analyst"    -> call Analyze; the analyst needs to reinterpret evidence.
+  * "researcher" -> call ConductResearch/ConductResearchBatch for more evidence.
+  * "supervisor" -> reconsider the plan before dispatching any agent.
+- Always reflect at least one qa_reason in reasoning_summary when qa_outcome is "rejected".
+- Never call Finalize while qa_outcome is "rejected" unless forced by iteration limits.
 """
 
 RESEARCHER_SYSTEM_PROMPT = """You are RivalLens Researcher in a ReAct loop.
@@ -996,6 +1006,9 @@ def build_writer_user_prompt(
     recommended_sections: Sequence[str],
     report_depth: str = "quick",
     domain_hint: str | None = None,
+    qa_reasons: Sequence[str] = (),
+    qa_reject_to: str | None = None,
+    analyst_comparisons: Sequence[dict[str, object]] = (),
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
@@ -1012,10 +1025,15 @@ def build_writer_user_prompt(
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n"
         f"- analyst_summary: {analyst_summary}\n"
         f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
-        f"- risk_flags: {_json(list(risk_flags))}\n\n"
+        f"- analyst_comparisons: {_json(list(analyst_comparisons)[:6])}\n"
+        f"- risk_flags: {_json(list(risk_flags))}\n"
+        f"- qa_reject_to: {qa_reject_to or 'none'}\n"
+        f"- qa_reasons: {_json(list(qa_reasons))}\n\n"
         "Write a battlecard with grounded evidence refs. "
         "section_id must exactly match target_sections entries. "
-        "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates."
+        "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates. "
+        "Use analyst_comparisons stance (leader/competitive/laggard/unknown) to write precise positioning language per competitor per dimension. "
+        "If qa_reject_to is 'writer' and qa_reasons is non-empty, address each qa_reason explicitly in the relevant section."
     )
 
 
