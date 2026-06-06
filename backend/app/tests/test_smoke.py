@@ -505,10 +505,11 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
         "completion_tokens",
         "latency_ms",
         "error",
-        "fallback_used",
-        "fallback_reason",
-        "created_at",
-    } == set(llm_call.keys())
+            "fallback_used",
+            "fallback_reason",
+            "retry_count",
+            "created_at",
+        } == set(llm_call.keys())
     _assert_trace_payload_omits_raw_llm_content(trace_payload)
     decision_tools = [item["chosen_tool"] for item in trace_payload["supervisor_decisions"]]
     step_agents = [item["agent_name"] for item in trace_payload["steps"]]
@@ -710,13 +711,13 @@ async def test_writer_report_evidence_refs_stable_with_table_toggle(
             )
             await session.commit()
 
+        monkeypatch.setattr("agents.nodes.writer.get_session_factory", lambda: session_factory)
         monkeypatch.setattr(settings, "WRITER_READ_CONCLUSIONS_FROM_TABLE", True)
         await writer_node(
             {
                 "run_id": run_id,
                 "user_query": "writer conclusions toggle comparison",
                 "competitors": ["comp_cursor", "comp_windsurf"],
-                "session_factory": session_factory,
                 "pending_tool_args": {
                     "template_id": "battlecard_default",
                     "sections": ["feature", "pricing"],
@@ -732,7 +733,6 @@ async def test_writer_report_evidence_refs_stable_with_table_toggle(
                 "run_id": run_id,
                 "user_query": "writer conclusions toggle comparison",
                 "competitors": ["comp_cursor", "comp_windsurf"],
-                "session_factory": session_factory,
                 "pending_tool_args": {
                     "template_id": "battlecard_default",
                     "sections": ["feature", "pricing"],

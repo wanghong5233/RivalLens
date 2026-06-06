@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from agents.nodes.researcher import _build_evidence_rows, _build_initial_substate
+import pytest
+
+from agents.nodes.researcher import _build_evidence_rows, _build_initial_substate, researcher_node
 from agents.subgraphs.researcher import _effective_action_dimension
+from models.step import Step
+from service.event_bus import RunEventType
 from schemas.supervisor import ConductResearch
 
 
@@ -236,6 +240,83 @@ def test_build_evidence_rows_keeps_same_url_for_different_dimensions() -> None:
     assert len(rows) == 2
     assert {row.span["dimension"] for row in rows} == {"pricing", "security"}
     assert dropped_dimensions == {"count": 0, "reasons": {}}
+
+
+@pytest.mark.asyncio
+async def test_researcher_node_degrades_zero_evidence_without_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added_rows: list[object] = []
+    captured_events: list[tuple[RunEventType, str | None, dict[str, object]]] = []
+
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def add(self, row: object) -> None:
+            added_rows.append(row)
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    class _FakeSubgraph:
+        async def ainvoke(self, _: object) -> dict[str, object]:
+            return {
+                "evidence_drafts": [],
+                "observations_log": [],
+                "llm_calls": [],
+                "turn_count": 1,
+                "compression_count": 0,
+                "queried_dimensions": ["pricing"],
+                "final_summary": "No grounded evidence found.",
+            }
+
+    async def _fake_emit_run_event(
+        *,
+        run_id: str,
+        event_type: RunEventType,
+        step_id: str | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        del run_id
+        captured_events.append((event_type, step_id, dict(payload or {})))
+
+    monkeypatch.setattr("agents.nodes.researcher.get_session_factory", lambda: _FakeSession)
+    monkeypatch.setattr("agents.nodes.researcher.get_researcher_subgraph", lambda: _FakeSubgraph())
+    monkeypatch.setattr("agents.nodes.researcher.emit_run_event", _fake_emit_run_event)
+
+    result = await researcher_node(
+        {
+            "run_id": "run_zero_evidence",
+            "pending_tool_args": {
+                "research_topic": "Cursor pricing",
+                "competitor_id": "Cursor",
+                "focus_dimensions": ["pricing"],
+                "max_iterations": 1,
+                "fallback_to_offline": True,
+            },
+            "researched_competitors": [],
+        }
+    )
+
+    step_rows = [row for row in added_rows if isinstance(row, Step)]
+    assert len(step_rows) == 1
+    step = step_rows[0]
+    assert step.status == "degraded"
+    assert step.payload["uncovered"] is True
+    assert step.payload["degraded_reason"] == "researcher_zero_evidence"
+    assert step.payload["evidence_ids"] == []
+    assert result["researched_competitors"] == ["Cursor"]
+    assert result["researcher_degraded_competitors"] == ["Cursor"]
+    assert captured_events[-1][0] == RunEventType.STEP_FINISH
+    assert captured_events[-1][2]["status"] == "degraded"
+    assert captured_events[-1][2]["evidence_count"] == 0
 
 
 def test_effective_action_dimension_followup_inherits_recent_search() -> None:

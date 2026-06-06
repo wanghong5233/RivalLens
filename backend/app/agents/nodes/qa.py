@@ -20,13 +20,6 @@ from utils.logger import get_logger
 log = get_logger("agents.qa")
 
 
-def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
-    session_factory = state.get("session_factory")
-    if session_factory is not None:
-        return session_factory
-    return get_session_factory()
-
-
 async def _load_review_targets(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -117,7 +110,7 @@ async def qa_node(state: AgentState) -> AgentState:
     if run_id is None:
         raise RuntimeError("AgentState.run_id is required for qa node.")
 
-    session_factory = _require_session_factory(state)
+    session_factory = get_session_factory()
     pending_review_target_step_id = state.get("pending_review_target_step_id")
     qa_rejection_count = int(state.get("qa_rejection_count", 0))
     qa_step_id = make_id("step_")

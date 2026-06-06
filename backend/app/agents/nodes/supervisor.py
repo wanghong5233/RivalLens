@@ -272,9 +272,6 @@ def _now_iso() -> str:
 
 
 def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
-    session_factory = state.get("session_factory")
-    if session_factory is not None:
-        return session_factory
     return get_session_factory()
 
 
@@ -1128,10 +1125,16 @@ async def supervisor_node(state: AgentState) -> AgentState:
 
     if decision.chosen_tool == "Finalize":
         writer_fallback = bool(state.get("writer_report_fallback_mode"))
+        researcher_degraded_competitors = [
+            item
+            for item in state.get("researcher_degraded_competitors", [])
+            if isinstance(item, str) and item
+        ]
         if (
             completion_reason == "max_iterations_hit"
             or forced_degraded_by_qa
             or writer_fallback
+            or researcher_degraded_competitors
         ):
             status = "degraded"
         else:

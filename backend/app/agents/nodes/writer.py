@@ -79,13 +79,6 @@ def _select_evidence_ids_for_section(
     return _stable_unique(matched)[:3]
 
 
-def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
-    session_factory = state.get("session_factory")
-    if session_factory is not None:
-        return session_factory
-    return get_session_factory()
-
-
 def _stable_unique(items: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -441,7 +434,7 @@ async def writer_node(state: AgentState) -> AgentState:
     if run_id is None:
         raise RuntimeError("AgentState.run_id is required for writer node.")
 
-    session_factory = _require_session_factory(state)
+    session_factory = get_session_factory()
     request = Write.model_validate(state.get("pending_tool_args", {}))
     step_id = make_id("step_")
     await emit_run_event(

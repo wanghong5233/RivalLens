@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from agents.state import AgentState
 from db.engine import get_session_factory
 from models.evidence import EvidenceRecord
@@ -18,13 +17,6 @@ from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.skill_curator")
-
-
-def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
-    session_factory = state.get("session_factory")
-    if session_factory is not None:
-        return session_factory
-    return get_session_factory()
 
 
 def _serialize_decisions(decisions_raw: object) -> list[dict[str, object]]:
@@ -129,7 +121,7 @@ async def skill_curator_node(state: AgentState) -> AgentState:
     domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
     default_tags = _default_tags(domain_hint)
 
-    session_factory = _require_session_factory(state)
+    session_factory = get_session_factory()
     step_id = make_id("step_")
     qa_reasons = [item for item in state.get("qa_reasons", []) if isinstance(item, str)]
     qa_rejection_count = int(state.get("qa_rejection_count", 0))

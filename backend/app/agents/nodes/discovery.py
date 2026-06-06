@@ -131,7 +131,7 @@ async def discovery_node(state: AgentState) -> AgentState:
     domain_context: str = pending_tool_args.get("domain_context", user_query)
     max_results: int = pending_tool_args.get("max_results", DEFAULT_DISCOVER_MAX_RESULTS)
 
-    session_factory = state.get("session_factory") or get_session_factory()
+    session_factory = get_session_factory()
 
     step_id = make_id("step_")
     async with session_factory() as session:

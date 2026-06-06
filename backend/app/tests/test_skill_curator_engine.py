@@ -6,7 +6,7 @@ from service.skill_curator.engine import generate_skill_candidates
 
 
 @pytest.mark.asyncio
-async def test_generate_skill_candidates_merges_three_generators() -> None:
+async def test_generate_skill_candidates_emits_only_consumed_qa_rules() -> None:
     result = await generate_skill_candidates(
         run_id="run_test_curator_dispatch",
         domain_hint="ai coding assistants",
@@ -18,5 +18,5 @@ async def test_generate_skill_candidates_merges_three_generators() -> None:
     )
     assert result.error is None
     candidate_types = sorted(item.candidate_type for item in result.candidates)
-    assert candidate_types == ["prompt_template", "qa_rule", "source_routing"]
+    assert candidate_types == ["qa_rule"]
 

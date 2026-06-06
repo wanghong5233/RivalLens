@@ -50,9 +50,6 @@ _USER_ALLOWED_STAGES: frozenset[str] = frozenset({"research", "analyze", "write"
 
 
 def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
-    session_factory = state.get("session_factory")
-    if session_factory is not None:
-        return session_factory
     return get_session_factory()
 
 

@@ -88,8 +88,9 @@ async def _run_supervisor_node_with_output(
         _fake_load_pending_follow_ups,
     )
     monkeypatch.setattr("agents.nodes.supervisor.emit_run_event", _fake_emit_run_event)
+    monkeypatch.setattr("agents.nodes.supervisor.get_session_factory", lambda: object())
 
-    new_state = await supervisor_node({**state, "session_factory": object()})
+    new_state = await supervisor_node(state)
     return dict(new_state), captured
 
 
@@ -260,6 +261,40 @@ async def test_supervisor_node_leaves_dimension_source_empty_for_discovery(
 
     assert captured[0][2]["chosen_tool"] == "DiscoverCompetitors"
     assert captured[0][2]["dimension_source"] is None
+
+
+@pytest.mark.asyncio
+async def test_supervisor_finalize_degrades_when_researcher_had_zero_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Finalize",
+            "tool_args": {
+                "completion_reason": "all_dimensions_covered",
+                "notes": "Done",
+            },
+            "reasoning_summary": "Workflow completed with a degraded researcher step.",
+        }
+    )
+    new_state, _ = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_degraded_research",
+        state={
+            "run_id": "run_test",
+            "user_query": "compare coding assistants",
+            "competitors": ["comp_cursor"],
+            "researched_competitors": ["comp_cursor"],
+            "researcher_degraded_competitors": ["comp_cursor"],
+            "analysis_done": True,
+            "report_draft_done": True,
+            "current_iteration": 0,
+            "decisions": [],
+        },
+    )
+
+    assert new_state["status"] == "degraded"
 
 
 def test_fallback_decision_prefers_batch_when_multiple_competitors_pending() -> None:

@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from agents.state import AgentState
 from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
@@ -23,13 +21,6 @@ from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.researcher")
-
-
-def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
-    session_factory = state.get("session_factory")
-    if session_factory is not None:
-        return session_factory
-    return get_session_factory()
 
 
 def _resolve_focus_dimensions(
@@ -289,8 +280,6 @@ def _build_evidence_rows(
                 desensitized=bool(draft.get("desensitized", False)),
             )
         )
-    if not evidence_rows:
-        raise RuntimeError("Researcher subgraph finalized without any evidence drafts.")
     return (
         evidence_rows,
         evidence_ids,
@@ -325,7 +314,7 @@ async def researcher_node(state: AgentState) -> AgentState:
     if run_id is None:
         raise RuntimeError("AgentState.run_id is required for researcher node.")
 
-    session_factory = _require_session_factory(state)
+    session_factory = get_session_factory()
     request = ConductResearch.model_validate(state.get("pending_tool_args", {}))
     domain_hint_raw = state.get("domain_hint")
     domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
@@ -384,6 +373,13 @@ async def researcher_node(state: AgentState) -> AgentState:
         "final_summary": str(subgraph_output.get("final_summary", "")),
         "dropped_dimensions": dropped_dimensions,
     }
+    zero_evidence = len(evidence_rows) == 0
+    if zero_evidence:
+        step_payload = {
+            **step_payload,
+            "uncovered": True,
+            "degraded_reason": "researcher_zero_evidence",
+        }
     log.info(
         "researcher.dimension_drops",
         run_id=run_id,
@@ -416,7 +412,7 @@ async def researcher_node(state: AgentState) -> AgentState:
                 size_bytes=None,
             )
         )
-        step.status = "completed"
+        step.status = "degraded" if zero_evidence else "completed"
         step.finished_at = datetime.now(timezone.utc)
         await session.commit()
     for evidence_row in evidence_rows:
@@ -441,9 +437,10 @@ async def researcher_node(state: AgentState) -> AgentState:
         step_id=step_id,
         payload={
             "agent_name": "researcher",
-            "status": "completed",
+            "status": "degraded" if zero_evidence else "completed",
             "evidence_count": len(evidence_ids),
             "competitor_id": request.competitor_id,
+            "degraded_reason": "researcher_zero_evidence" if zero_evidence else None,
         },
     )
 
@@ -452,9 +449,12 @@ async def researcher_node(state: AgentState) -> AgentState:
         [] if request.competitor_id in researched_competitors else [request.competitor_id]
     )
 
-    return {
+    result: AgentState = {
         "researched_competitors": researched_competitor_delta,
         "pending_tool_args": {},
         "last_completed_node": "researcher",
         "status": "running",
     }
+    if zero_evidence:
+        result["researcher_degraded_competitors"] = researched_competitor_delta or [request.competitor_id]
+    return result

@@ -426,15 +426,15 @@ Rules:
 
 RESEARCHER_SYSTEM_PROMPT = _inject_catalog(
     RESEARCHER_SYSTEM_PROMPT,
-    applies_to_filter=("general", "prompt_template", "source_routing"),
+    applies_to_filter=("general", "source_routing"),
 )
 ANALYST_SYSTEM_PROMPT = _inject_catalog(
     ANALYST_SYSTEM_PROMPT,
-    applies_to_filter=("general", "prompt_template"),
+    applies_to_filter=("general",),
 )
 WRITER_SYSTEM_PROMPT = _inject_catalog(
     WRITER_SYSTEM_PROMPT,
-    applies_to_filter=("general", "prompt_template"),
+    applies_to_filter=("general",),
 )
 QA_SEMANTIC_SYSTEM_PROMPT = _inject_catalog(
     QA_SEMANTIC_SYSTEM_PROMPT,

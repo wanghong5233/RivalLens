@@ -3,8 +3,6 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Literal, TypedDict
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from schemas.intake import IntakeClarifyRequest, IntakeExchange, RunIntakeDraft
 from schemas.plan import FollowUpRequest, PlanTree
 from schemas.supervisor import SupervisorDecision
@@ -37,11 +35,11 @@ class AgentState(TypedDict, total=False):
     pending_review_target_step_id: str | None
     qa_reasons: list[str]
     researched_competitors: Annotated[list[str], operator.add]
+    researcher_degraded_competitors: Annotated[list[str], operator.add]
     analysis_done: bool
     report_draft_done: bool
     decisions: list[SupervisorDecision]
     status: Annotated[str, _last_write_wins]
-    session_factory: async_sessionmaker[AsyncSession]
 
     # --- Phase 1+ Agent-native intake + plan-then-execute (contract; nodes TBD) ---
     # `phase` drives the conditional entry route (Invariant B). Legacy runs omit it
@@ -61,6 +59,7 @@ ACCUMULATING_STATE_FIELDS: tuple[str, ...] = (
     "competitors",
     "discovered_competitors",
     "researched_competitors",
+    "researcher_degraded_competitors",
     "follow_up_queue",
 )
 

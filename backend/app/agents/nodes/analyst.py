@@ -5,8 +5,6 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
 from agents.state import AgentState
 from db.engine import get_session_factory
 from models.artifact import Artifact
@@ -30,13 +28,6 @@ from utils.log_node import log_node
 from utils.logger import get_logger
 
 log = get_logger("agents.analyst")
-
-
-def _require_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
-    session_factory = state.get("session_factory")
-    if session_factory is not None:
-        return session_factory
-    return get_session_factory()
 
 
 def _resolve_focus_dimensions(request: Analyze) -> list[str]:
@@ -88,7 +79,7 @@ async def analyst_node(state: AgentState) -> AgentState:
     if run_id is None:
         raise RuntimeError("AgentState.run_id is required for analyst node.")
 
-    session_factory = _require_session_factory(state)
+    session_factory = get_session_factory()
     request = Analyze.model_validate(state.get("pending_tool_args", {}))
     focus_dimensions = _resolve_focus_dimensions(request)
     user_query = str(state.get("user_query", ""))
