@@ -27,6 +27,10 @@ configure_logging()
 log = get_logger("app_main")
 
 
+class UTF8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
+
+
 async def _sweep_orphan_running_runs() -> None:
     """Reconcile runs left as `running` after a previous service crash.
 
@@ -119,6 +123,7 @@ app = FastAPI(
     description="RivalLens walking skeleton backend.",
     version="0.1.0",
     lifespan=lifespan,
+    default_response_class=UTF8JSONResponse,
 )
 
 cors_allow_origins = [origin.strip() for origin in settings.CORS_ALLOW_ORIGINS.split(",") if origin.strip()]
@@ -148,13 +153,13 @@ async def request_context_middleware(request: Request, call_next):
 
 @app.exception_handler(APIException)
 async def api_exception_handler(_: Request, exc: APIException) -> JSONResponse:
-    return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+    return UTF8JSONResponse(status_code=exc.status_code, content=exc.to_dict())
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
     log.exception("unhandled_exception", error=str(exc))
-    return JSONResponse(
+    return UTF8JSONResponse(
         status_code=500,
         content={
             "error_code": "INTERNAL_SERVER_ERROR",

@@ -343,6 +343,8 @@ class RunMetricsResponse(BaseModel):
     coverage_rate: float
     evidence_count_total: int
     evidence_count_by_competitor: dict[str, int]
+    evidence_count_by_dimension: dict[str, int]
+    dimension_coverage_rate: float
     source_type_distribution: dict[str, int]
     desensitization_coverage: float
     qa_total_steps: int

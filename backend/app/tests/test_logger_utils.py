@@ -7,6 +7,7 @@ import structlog
 
 from utils.logger import (
     _SuppressNoisyAccessLog,
+    configure_logging,
     format_exception_for_log,
 )
 
@@ -71,6 +72,15 @@ def test_suppress_noisy_access_log_keeps_mutating_routes() -> None:
             exc_info=None,
         )
         assert filt.filter(record) is True
+
+
+def test_configure_logging_suppresses_noisy_third_party_loggers() -> None:
+    configure_logging()
+
+    assert logging.getLogger("urllib3").getEffectiveLevel() >= logging.WARNING
+    assert logging.getLogger("urllib3.connectionpool").getEffectiveLevel() >= logging.WARNING
+    assert logging.getLogger("readability").getEffectiveLevel() >= logging.WARNING
+    assert logging.getLogger("readability.readability").getEffectiveLevel() >= logging.WARNING
 
 
 @pytest.mark.asyncio

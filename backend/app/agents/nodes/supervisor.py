@@ -5,7 +5,7 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agents.state import AgentState
+from agents.state import AgentState, spread_without_accumulators
 from core.defaults import (
     DEFAULT_FOCUS_DIMENSIONS,
     DEFAULT_DISCOVER_MAX_RESULTS,
@@ -63,8 +63,11 @@ TriggerSource = Literal[
     "qa_rejection",
     "iteration_advance",
 ]
-FocusDimensionSource = Literal["upstream_task", "intake", "hints", "default"]
+FocusDimensionSource = Literal["upstream_task", "intake", "hints", "default", "llm_tool_output"]
 PlanTaskStage = Literal["discover", "research", "analyze", "write"]
+_DIMENSIONAL_SUPERVISOR_TOOLS = frozenset(
+    {"ConductResearch", "ConductResearchBatch", "Analyze", "Write"}
+)
 
 
 def _resolve_triggered_by(
@@ -964,7 +967,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
     )
     if qa_driven_decision is not None:
         decision, llm_response, forced_degraded_by_qa = qa_driven_decision
-        if decision.chosen_tool in {"ConductResearch", "ConductResearchBatch", "Analyze", "Write"}:
+        if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS:
             decision_dimension_source = dimension_source
     elif iteration > MAX_SUPERVISOR_ITERATIONS:
         forced_now = _now_iso()
@@ -1044,6 +1047,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 output=harness_result.value,
                 triggered_by=triggered_by,
             )
+            if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS:
+                decision_dimension_source = "llm_tool_output"
         else:
             decision = _fallback_decision(
                 run_id=run_id,
@@ -1135,7 +1140,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
         status = "running"
 
     return {
-        **state,
+        **spread_without_accumulators(state),
         "run_id": run_id,
         "decisions": decisions,
         "current_iteration": iteration,

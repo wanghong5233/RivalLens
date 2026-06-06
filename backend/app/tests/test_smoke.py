@@ -475,6 +475,7 @@ def test_get_run_detail_and_trace(test_client: TestClient) -> None:
 
     trace_response = test_client.get(f"/api/runs/{run_id}/trace")
     assert trace_response.status_code == 200
+    assert "charset=utf-8" in trace_response.headers["content-type"].lower()
     trace_payload = trace_response.json()
     assert trace_payload["run"]["run_id"] == run_id
     assert len(trace_payload["steps"]) >= 4
@@ -557,6 +558,7 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
 
     report_response = test_client.get(f"/api/runs/{run_id}/report")
     assert report_response.status_code == 200
+    assert "charset=utf-8" in report_response.headers["content-type"].lower()
     report_payload = report_response.json()
     assert report_payload["run_id"] == run_id
     assert isinstance(report_payload["content_markdown"], str)
@@ -566,6 +568,7 @@ def test_get_run_integration_endpoints(test_client: TestClient) -> None:
 
     evidence_response = test_client.get(f"/api/runs/{run_id}/evidence")
     assert evidence_response.status_code == 200
+    assert "charset=utf-8" in evidence_response.headers["content-type"].lower()
     evidence_payload = evidence_response.json()
     assert isinstance(evidence_payload, list)
     assert evidence_payload
@@ -1144,6 +1147,7 @@ def test_run_without_pack_with_arbitrary_competitors(test_client: TestClient) ->
 
     report_response = test_client.get(f"/api/runs/{run_id}/report")
     assert report_response.status_code == 200
+    assert "charset=utf-8" in report_response.headers["content-type"].lower()
     report_payload = report_response.json()
     content_json = report_payload.get("content_json", {})
     sections = content_json.get("sections", []) if isinstance(content_json, dict) else []
@@ -1152,6 +1156,7 @@ def test_run_without_pack_with_arbitrary_competitors(test_client: TestClient) ->
 
     trace_response = test_client.get(f"/api/runs/{run_id}/trace")
     assert trace_response.status_code == 200
+    assert "charset=utf-8" in trace_response.headers["content-type"].lower()
     trace_payload = trace_response.json()
     assert trace_payload["run"]["status"] in {"completed", "degraded"}
     qa_steps = [step for step in trace_payload["steps"] if step.get("agent_name") == "qa"]

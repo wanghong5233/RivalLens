@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any
 
 from langgraph.types import interrupt
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agents.state import AgentState
+from agents.state import AgentState, spread_without_accumulators
 from agents.state_coercion import (
     coerce_intake_draft_or_default,
     coerce_pending_plan_tree,
@@ -357,8 +357,7 @@ async def planner_generate_node(state: AgentState) -> AgentState:
     # Without this seed the supervisor forces DiscoverCompetitors even when the
     # user already named the competitors during intake. operator.add appends, so
     # we filter out anything already present and only return the diff.
-    state_dict = cast(dict[str, Any], state)
-    existing_competitors = list(state_dict.get("competitors") or [])
+    existing_competitors = list(state.get("competitors") or [])
     competitors_seed: list[str] = []
     if not draft.competitors_discovery_mode and draft.competitors_explicit:
         seen = set(existing_competitors)
@@ -368,11 +367,8 @@ async def planner_generate_node(state: AgentState) -> AgentState:
             seen.add(competitor)
             competitors_seed.append(competitor)
 
-    state_without_competitors = {
-        key: value for key, value in state_dict.items() if key != "competitors"
-    }
     result: dict[str, Any] = {
-        **state_without_competitors,
+        **spread_without_accumulators(state),
         "run_id": run_id,
         "phase": "planning",
         "pending_plan_tree": plan,
@@ -477,17 +473,11 @@ async def planner_wait_node(state: AgentState) -> AgentState:
         },
     )
 
-    state_dict = cast(dict[str, Any], state)
-    # `**state` would spread `competitors` from the current snapshot, but
-    # LangGraph's operator.add reducer would then concat `competitors_diff`
-    # on top. We don't want the existing list duplicated, so we omit it
-    # from the spread when there's a diff to add — the reducer keeps the
-    # existing state.competitors intact and only the diff is appended.
-    state_without_competitors = {
-        key: value for key, value in state_dict.items() if key != "competitors"
-    }
+    # `**state` would spread operator.add fields from the current snapshot, but
+    # LangGraph would treat those full lists as deltas and append them again.
+    # Drop accumulating fields from the spread; append only the true diff below.
     result: dict[str, Any] = {
-        **state_without_competitors,
+        **spread_without_accumulators(state),
         "run_id": run_id,
         "phase": "executing",
         "plan_tree": confirmed,

@@ -277,6 +277,72 @@ def test_researcher_decision_to_action_tuple_search_web() -> None:
     assert args["query"] == "Cursor pricing"
 
 
+def test_researcher_decision_dimension_falls_back_to_pending_when_out_of_focus() -> None:
+    decision = ResearcherDecisionOutput.parse_llm_content(
+        {
+            "action": "search_web",
+            "action_args": {
+                "query": "Cursor product positioning pricing strategy",
+                "dimension": "product_positioning_pricing_strategy",
+            },
+            "reasoning_summary": "Need pricing evidence",
+        }
+    )
+
+    action_tuple = decision.to_action_tuple(
+        competitor_id="Cursor",
+        focus_dimensions=["pricing"],
+        pending_dimensions=["pricing"],
+    )
+
+    assert action_tuple is not None
+    action, args = action_tuple
+    assert action == "search_web"
+    assert args["dimension"] == "pricing"
+
+
+def test_researcher_decision_fetch_url_without_dimension_does_not_use_next_pending() -> None:
+    decision = ResearcherDecisionOutput.parse_llm_content(
+        {
+            "action": "fetch_url",
+            "action_args": {"url": "https://cursor.com/pricing"},
+            "reasoning_summary": "Follow a pricing result URL",
+        }
+    )
+
+    action_tuple = decision.to_action_tuple(
+        competitor_id="Cursor",
+        focus_dimensions=["pricing", "security"],
+        pending_dimensions=["security"],
+    )
+
+    assert action_tuple is not None
+    action, args = action_tuple
+    assert action == "fetch_url"
+    assert "dimension" not in args
+
+
+def test_researcher_decision_extract_structured_without_dimension_does_not_use_next_pending() -> None:
+    decision = ResearcherDecisionOutput.parse_llm_content(
+        {
+            "action": "extract_structured",
+            "action_args": {"text": "Cursor pricing includes public team plan evidence."},
+            "reasoning_summary": "Extract details from the last fetched page",
+        }
+    )
+
+    action_tuple = decision.to_action_tuple(
+        competitor_id="Cursor",
+        focus_dimensions=["pricing", "security"],
+        pending_dimensions=["security"],
+    )
+
+    assert action_tuple is not None
+    action, args = action_tuple
+    assert action == "extract_structured"
+    assert "dimension" not in args
+
+
 def test_qa_semantic_output_normalizes_dict() -> None:
     output = QASemanticOutput.parse_llm_content(
         {

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any
 
 from langgraph.types import interrupt
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agents.state import AgentState
+from agents.state import AgentState, spread_without_accumulators
 from agents.state_coercion import coerce_intake_draft_or_default, coerce_intake_history
 from db.engine import get_session_factory
 from models.run import Run
@@ -531,7 +531,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         # Phase 2: intake.complete hands off to the planner. The graph's
         # _route_after_intake_generate reads `phase` and routes to planner_generate.
         return {
-            **state,
+            **spread_without_accumulators(state),
             "run_id": run_id,
             "phase": "planning",
             "intake_draft": next_draft,
@@ -558,7 +558,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         },
     )
     return {
-        **state,
+        **spread_without_accumulators(state),
         "run_id": run_id,
         "phase": "intake",
         "intake_draft": next_draft,
@@ -627,7 +627,7 @@ async def intake_wait_node(state: AgentState) -> AgentState:
     )
 
     return {
-        **cast(dict[str, Any], state),
+        **spread_without_accumulators(state),
         "run_id": run_id,
         "phase": "intake",
         "intake_draft": next_draft,

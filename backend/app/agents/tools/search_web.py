@@ -46,7 +46,7 @@ async def _tavily_search(query: str, *, max_results: int) -> dict[str, object]:
                 client.search,
                 query=query,
                 max_results=max_results,
-                search_depth="basic",
+                search_depth="advanced",
                 include_raw_content=False,
                 include_images=False,
             )

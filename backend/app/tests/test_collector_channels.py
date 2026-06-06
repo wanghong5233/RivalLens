@@ -8,8 +8,9 @@ from agents.tools.fetch_url import FetchUrlChannel
 from agents.tools.parse_page import infer_source_type
 from agents.tools.search_web import TavilySearchChannel
 from core.config import settings
-from service.collector.errors import RobotsBlocked
+from service.collector.errors import ChannelError, RobotsBlocked
 from service.collector.http_client import CollectorHTTPClient, FetchResponse
+from service.collector.registry import ChannelRegistry, _register_builtin_channels
 
 
 @dataclass
@@ -77,6 +78,7 @@ async def test_fetch_url_channel_respects_robots_gate(monkeypatch: pytest.Monkey
 async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FetchUrlChannel()
     limiter = _FakeLimiter()
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
     monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: limiter)
     monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
     monkeypatch.setattr(
@@ -90,6 +92,22 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
             )
         ),
     )
+    async def _fake_tavily_extract(*, url: str, query: str | None) -> dict[str, object]:
+        del query
+        return {
+            "results": [
+                {
+                    "url": url,
+                    "raw_content": (
+                        "Cursor pricing page content with enough substance for extraction. "
+                        "It describes enterprise plans, usage limits, admin controls, privacy, "
+                        "security, and billing details for team buyers in multiple paragraphs."
+                    ),
+                }
+            ]
+        }
+
+    monkeypatch.setattr("agents.tools.fetch_url._tavily_extract", _fake_tavily_extract)
 
     observation = await channel.invoke(
         url="https://cursor.com/pricing",
@@ -98,6 +116,35 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
     assert limiter.host == "cursor.com"
     assert limiter.timeout_seconds is not None
     assert observation.result.snippets[0].source_type == "pricing_page"
+    assert observation.result.snippets[0].metadata["source"] == "tavily_extract"
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_channel_rejects_low_quality_extract(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FetchUrlChannel()
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: _FakeLimiter())
+    monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
+    monkeypatch.setattr(
+        "agents.tools.fetch_url.get_collector_http_client",
+        lambda: _FakeHTTPClient(
+            FetchResponse(
+                url="https://example.com",
+                status_code=200,
+                text="unused",
+                content_type="text/html",
+            )
+        ),
+    )
+
+    async def _fake_tavily_extract(*, url: str, query: str | None) -> dict[str, object]:
+        del url, query
+        return {"results": [{"url": "https://example.com", "raw_content": "Copyright All rights reserved"}]}
+
+    monkeypatch.setattr("agents.tools.fetch_url._tavily_extract", _fake_tavily_extract)
+
+    with pytest.raises(ChannelError, match="too short"):
+        await channel.invoke(url="https://example.com")
 
 
 def test_collector_http_client_sets_user_agent_header() -> None:
@@ -126,6 +173,15 @@ def test_source_type_mapping_rules() -> None:
             official_hosts=None,
         )
         == "public_review"
+    )
+
+
+def test_builtin_registry_no_longer_registers_parse_page() -> None:
+    registry = ChannelRegistry()
+    _register_builtin_channels(registry)
+    assert "parse_page" not in registry.list_actions()
+    assert {"search_web", "fetch_url", "extract_structured"}.issubset(
+        set(registry.list_actions())
     )
 
 

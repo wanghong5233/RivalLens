@@ -55,3 +55,16 @@ class AgentState(TypedDict, total=False):
     # read+interrupted by the *_wait_node. NOT a single-node "skip LLM" cache.
     pending_clarify: IntakeClarifyRequest | None
     pending_plan_tree: PlanTree | None
+
+
+ACCUMULATING_STATE_FIELDS: tuple[str, ...] = (
+    "competitors",
+    "discovered_competitors",
+    "researched_competitors",
+    "follow_up_queue",
+)
+
+
+def spread_without_accumulators(state: AgentState) -> dict[str, object]:
+    """Copy graph state without operator.add fields that would be re-applied as deltas."""
+    return {key: value for key, value in state.items() if key not in ACCUMULATING_STATE_FIELDS}

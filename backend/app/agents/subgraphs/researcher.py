@@ -11,7 +11,7 @@ from langgraph.graph import END, StateGraph
 
 from agents.tools import get_channel_registry
 from core.defaults import MAX_REACT_TURNS
-from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_source_type
+from schemas.contracts import normalize_dimension_or_none, validate_source_type
 from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError
@@ -40,15 +40,18 @@ TOOL_ERROR_PREVIEW_LIMIT = 200
 TOOL_ACTIONS = {
     "search_web",
     "fetch_url",
-    "parse_page",
     "extract_structured",
     "load_skill",
     "read_skill_file",
 }
+DIMENSIONAL_TOOL_ACTIONS = {
+    "search_web",
+    "fetch_url",
+    "extract_structured",
+}
 ACTION_TO_CHANNEL = {
     "search_web": "search_web",
     "fetch_url": "fetch_url",
-    "parse_page": "parse_page",
     "extract_structured": "extract_structured",
     "load_skill": "load_skill",
     "read_skill_file": "read_skill_file",
@@ -58,7 +61,7 @@ log = get_logger("agents.researcher_subgraph")
 # Fields that are safe to expose in tool.start/finish event payloads.
 # WHY: keep the live feed informative (query/url/skill_id) without leaking
 # bulk content (raw HTML, full search results, transient sanitizer state).
-_SAFE_TOOL_ARG_KEYS = ("query", "url", "max_results", "skill_id", "path")
+_SAFE_TOOL_ARG_KEYS = ("query", "url", "max_results", "skill_id", "path", "dimension")
 
 
 def _safe_tool_args_summary(args: dict[str, object]) -> dict[str, Any]:
@@ -304,6 +307,42 @@ def _has_tool_attempt(state: ResearcherSubState, tool_name: str) -> bool:
     return False
 
 
+def _recent_search_dimension(state: ResearcherSubState) -> str | None:
+    focus_dimensions = list(state.get("focus_dimensions", []))
+    for item in reversed(list(state.get("observations_log", []))):
+        if not isinstance(item, dict) or item.get("tool") != "search_web":
+            continue
+        args_raw = item.get("args")
+        args = args_raw if isinstance(args_raw, dict) else {}
+        dimension_raw = args.get("dimension")
+        normalized, _ = normalize_dimension_or_none(
+            dimension_raw,
+            allowed=focus_dimensions,
+        )
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _effective_action_dimension(
+    *,
+    state: ResearcherSubState,
+    action_args: dict[str, object],
+) -> str | None:
+    focus_dimensions = list(state.get("focus_dimensions", []))
+    dimension_raw = action_args.get("dimension")
+    normalized, _ = normalize_dimension_or_none(
+        dimension_raw,
+        allowed=focus_dimensions,
+    )
+    if normalized is not None:
+        return normalized
+    pending_dimensions = list(state.get("pending_dimensions", []))
+    if pending_dimensions:
+        return pending_dimensions[0]
+    return _recent_search_dimension(state)
+
+
 def _resolve_bootstrap_skill_id(domain_hint: str | None) -> str | None:
     store = get_skill_store()
     skill_names = store.get_skill_names()
@@ -523,7 +562,11 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
     messages.append({"role": "assistant", "content": str(llm_response.content)})
 
     action_tuple = (
-        harness_result.value.to_action_tuple(competitor_id=state["competitor_id"])
+        harness_result.value.to_action_tuple(
+            competitor_id=state["competitor_id"],
+            focus_dimensions=list(state.get("focus_dimensions", [])),
+            pending_dimensions=list(state.get("pending_dimensions", [])),
+        )
         if harness_result.value is not None
         else None
     )
@@ -531,11 +574,31 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         action, action_args = action_tuple
     else:
         action, action_args = _fallback_action(state)
+    coverage_guard_triggered = False
+    if action == "finalize" and pending_dimensions and int(state.get("turn_count", 0)) < max_turns:
+        guarded_action, guarded_action_args = _fallback_action(state)
+        if guarded_action in TOOL_ACTIONS:
+            coverage_guard_triggered = True
+            action = guarded_action
+            action_args = guarded_action_args
+            guarded_dimension = guarded_action_args.get("dimension")
+            log_context = bind_step(step_id) if step_id is not None else nullcontext()
+            with log_context:
+                log.info(
+                    "researcher.coverage_guard",
+                    competitor_id=state["competitor_id"],
+                    action=guarded_action,
+                    dimension=guarded_dimension if isinstance(guarded_dimension, str) else None,
+                    pending_dimensions=pending_dimensions,
+                    turn_count=int(state.get("turn_count", 0)),
+                    max_turns=max_turns,
+                )
     if (
         domain_hint is not None
         and int(state.get("turn_count", 0)) == 0
         and action != "load_skill"
         and not _has_tool_attempt(state, "load_skill")
+        and not coverage_guard_triggered
     ):
         bootstrap_skill_id = _resolve_bootstrap_skill_id(domain_hint)
         if bootstrap_skill_id is not None:
@@ -652,14 +715,17 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
             "next_action": "finalize",
         }
     registry = get_channel_registry()
-    dimension_raw = action_args.get("dimension")
-    if isinstance(dimension_raw, str):
-        try:
-            dimension = validate_dimension(dimension_raw)
-        except ValueError:
-            dimension = None
-    else:
-        dimension = None
+    dimension = (
+        _effective_action_dimension(state=state, action_args=action_args)
+        if action_raw in DIMENSIONAL_TOOL_ACTIONS
+        else None
+    )
+    if dimension is not None:
+        action_args["dimension"] = dimension
+    if action_raw == "fetch_url":
+        query_raw = action_args.get("query")
+        if not isinstance(query_raw, str) or not query_raw.strip():
+            action_args["query"] = state["research_topic"]
 
     run_id_raw = state.get("run_id")
     run_id = run_id_raw if isinstance(run_id_raw, str) else None
@@ -689,9 +755,12 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         log_context = bind_step(step_id) if step_id is not None else nullcontext()
         with log_context:
             observation = await registry.invoke(channel_action, args=action_args)
+        observed_args = {**action_args, **observation.args}
+        if dimension is not None:
+            observed_args["dimension"] = dimension
         observation_row = {
             "tool": action_raw,
-            "args": observation.args,
+            "args": observed_args,
             "result": observation.result.model_dump(),
         }
     except (

@@ -1,13 +1,96 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
+from agents.state import ACCUMULATING_STATE_FIELDS, spread_without_accumulators
 from agents.nodes.supervisor import (
     _decision_from_tool_output,
     _derive_write_sections,
     _fallback_decision,
     _resolve_fallback_dimensions,
+    supervisor_node,
 )
 from schemas.intake import RunIntakeDraft
 from schemas.agent_outputs import SupervisorToolCallOutput
+from service.event_bus import RunEventType
+from service.llm.response import LLMResponse
+
+
+def _fake_supervisor_llm_response() -> LLMResponse:
+    return LLMResponse(
+        model_slot="research",
+        provider="fake",
+        model_name="fake-supervisor-model",
+        prompt_preview="fake supervisor prompt",
+        prompt_hash="fake_hash",
+        content={},
+        prompt_tokens=1,
+        completion_tokens=1,
+        latency_ms=1,
+        error=None,
+    )
+
+
+def test_spread_without_accumulators_drops_all_operator_add_fields() -> None:
+    state = {
+        "run_id": "run_test",
+        "competitors": ["Cursor"],
+        "discovered_competitors": ["Windsurf"],
+        "researched_competitors": ["Cursor"],
+        "follow_up_queue": [{"id": "fu_1"}],
+        "status": "running",
+    }
+
+    result = spread_without_accumulators(state)
+
+    for field_name in ACCUMULATING_STATE_FIELDS:
+        assert field_name not in result
+    assert result == {"run_id": "run_test", "status": "running"}
+
+
+async def _run_supervisor_node_with_output(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    output: SupervisorToolCallOutput,
+    state: dict[str, object],
+    step_id: str,
+) -> tuple[dict[str, object], list[tuple[RunEventType, str | None, dict[str, object]]]]:
+    captured: list[tuple[RunEventType, str | None, dict[str, object]]] = []
+
+    async def _fake_complete_structured(**_: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            value=output,
+            llm_response=_fake_supervisor_llm_response(),
+        )
+
+    async def _fake_persist_iteration(**_: object) -> str:
+        return step_id
+
+    async def _fake_load_pending_follow_ups(**_: object) -> list[dict[str, object]]:
+        return []
+
+    async def _fake_emit_run_event(
+        *,
+        run_id: str,
+        event_type: RunEventType,
+        step_id: str | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        del run_id
+        captured.append((event_type, step_id, dict(payload or {})))
+
+    monkeypatch.setattr("agents.nodes.supervisor.complete_structured", _fake_complete_structured)
+    monkeypatch.setattr("agents.nodes.supervisor._persist_iteration", _fake_persist_iteration)
+    monkeypatch.setattr(
+        "agents.nodes.supervisor._load_pending_follow_ups",
+        _fake_load_pending_follow_ups,
+    )
+    monkeypatch.setattr("agents.nodes.supervisor.emit_run_event", _fake_emit_run_event)
+
+    new_state = await supervisor_node({**state, "session_factory": object()})
+    return dict(new_state), captured
 
 
 def test_decision_from_tool_output_accepts_conduct_research_batch() -> None:
@@ -84,6 +167,99 @@ def test_decision_from_tool_output_truncates_batch_topics_to_max_eight() -> None
     assert len(topics) == 8
     assert topics[0]["competitor_id"] == "comp_0"
     assert topics[-1]["competitor_id"] == "comp_7"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_node_marks_llm_tool_output_for_happy_path_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "ConductResearchBatch",
+            "tool_args": {
+                "topics": [
+                    {
+                        "research_topic": "comp_cursor vs user_query=fake",
+                        "competitor_id": "comp_cursor",
+                        "focus_dimensions": ["feature", "pricing"],
+                        "max_iterations": 6,
+                        "fallback_to_offline": True,
+                    }
+                ],
+                "parallelism_rationale": "parallelize independent competitors",
+            },
+            "reasoning_summary": "Batch pending competitors.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_dimension",
+        state={
+            "run_id": "run_test",
+            "user_query": "compare coding assistants",
+            "competitors": ["comp_cursor"],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "decisions": [],
+        },
+    )
+
+    assert new_state["next_action"] == "researcher"
+    for field_name in ACCUMULATING_STATE_FIELDS:
+        assert field_name not in new_state
+    assert captured == [
+        (
+            RunEventType.SUPERVISOR_DECISION,
+            "step_supervisor_dimension",
+            {
+                "iteration": 1,
+                "chosen_tool": "ConductResearchBatch",
+                "triggered_by": "user_query",
+                "outcome": "dispatched",
+                "plan_task_ids": [],
+                "consumed_follow_up_ids": [],
+                "dimension_source": "llm_tool_output",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_node_leaves_dimension_source_empty_for_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "DiscoverCompetitors",
+            "tool_args": {
+                "search_queries": ["coding assistant alternatives"],
+                "domain_context": "AI coding assistant",
+                "max_results": 5,
+            },
+            "reasoning_summary": "Discover competitors first.",
+        }
+    )
+    _, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_discover",
+        state={
+            "run_id": "run_test",
+            "user_query": "find competitors",
+            "competitors": [],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "decisions": [],
+        },
+    )
+
+    assert captured[0][2]["chosen_tool"] == "DiscoverCompetitors"
+    assert captured[0][2]["dimension_source"] is None
 
 
 def test_fallback_decision_prefers_batch_when_multiple_competitors_pending() -> None:

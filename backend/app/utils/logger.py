@@ -17,6 +17,11 @@ _HTTP_CLIENT_LOGGER_NAMES = (
     "httpcore",
     "httpcore.http11",
     "httpcore.connection",
+    "urllib3",
+)
+
+_NOISY_THIRD_PARTY_LOGGER_NAMES = (
+    "readability",
 )
 
 
@@ -67,6 +72,8 @@ def _configure_third_party_loggers() -> None:
     )
     for logger_name in _HTTP_CLIENT_LOGGER_NAMES:
         logging.getLogger(logger_name).setLevel(http_level)
+    for logger_name in _NOISY_THIRD_PARTY_LOGGER_NAMES:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 def configure_logging() -> None:

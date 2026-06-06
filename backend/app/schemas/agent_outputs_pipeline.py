@@ -12,7 +12,7 @@ from core.defaults import (
     MAX_RESEARCH_COMPETITORS,
     MAX_TOTAL_PLAN_TASKS,
 )
-from schemas.contracts import validate_dimension
+from schemas.contracts import normalize_dimension_or_none, validate_dimension
 from schemas.intake import IntakeClarifyRequest, RunIntakeDraft
 from schemas.plan import PlanTask, PlanTaskStage
 from schemas.supervisor import (
@@ -39,7 +39,6 @@ SupervisorToolName = Literal[
 ResearcherActionName = Literal[
     "search_web",
     "fetch_url",
-    "parse_page",
     "extract_structured",
     "load_skill",
     "read_skill_file",
@@ -374,9 +373,26 @@ class ResearcherDecisionOutput(BaseModel):
         self,
         *,
         competitor_id: str,
+        focus_dimensions: list[str] | None = None,
+        pending_dimensions: list[str] | None = None,
     ) -> tuple[str, dict[str, object]] | None:
         action = self.action
         action_args = dict(self.action_args)
+        allowed_dimensions = focus_dimensions or []
+        pending = pending_dimensions or []
+
+        def _dimension_arg(*, fallback_to_pending: bool) -> str | None:
+            dimension_raw = action_args.get("dimension")
+            normalized, _ = normalize_dimension_or_none(
+                dimension_raw,
+                allowed=allowed_dimensions,
+            )
+            if normalized is not None:
+                return normalized
+            if fallback_to_pending and pending:
+                return pending[0]
+            return None
+
         if action == "finalize":
             return ("finalize", action_args)
         if action == "search_web":
@@ -386,35 +402,22 @@ class ResearcherDecisionOutput(BaseModel):
                 normalized: dict[str, object] = {"query": query_raw.strip()}
                 if isinstance(max_results_raw, int):
                     normalized["max_results"] = max_results_raw
-                dimension_raw = action_args.get("dimension")
-                if isinstance(dimension_raw, str):
-                    try:
-                        normalized["dimension"] = validate_dimension(dimension_raw)
-                    except ValueError:
-                        pass
+                dimension = _dimension_arg(fallback_to_pending=True)
+                if dimension is not None:
+                    normalized["dimension"] = dimension
                 return ("search_web", normalized)
             return None
         if action == "fetch_url":
             url_raw = action_args.get("url")
             if isinstance(url_raw, str) and url_raw.strip():
                 normalized = {"url": url_raw.strip(), "competitor_id": competitor_id}
-                dimension_raw = action_args.get("dimension")
-                if isinstance(dimension_raw, str):
-                    try:
-                        normalized["dimension"] = validate_dimension(dimension_raw)
-                    except ValueError:
-                        pass
+                query_raw = action_args.get("query")
+                if isinstance(query_raw, str) and query_raw.strip():
+                    normalized["query"] = query_raw.strip()
+                dimension = _dimension_arg(fallback_to_pending=False)
+                if dimension is not None:
+                    normalized["dimension"] = dimension
                 return ("fetch_url", normalized)
-            return None
-        if action == "parse_page":
-            html_raw = action_args.get("html")
-            if isinstance(html_raw, str) and html_raw.strip():
-                normalized = {"html": html_raw}
-                for key in ("source_url", "source_title"):
-                    value = action_args.get(key)
-                    if isinstance(value, str):
-                        normalized[key] = value
-                return ("parse_page", normalized)
             return None
         if action == "extract_structured":
             text_raw = action_args.get("text")
@@ -427,12 +430,9 @@ class ResearcherDecisionOutput(BaseModel):
                 source_type_raw = action_args.get("source_type")
                 if isinstance(source_type_raw, str):
                     normalized["source_type"] = source_type_raw
-                dimension_raw = action_args.get("dimension")
-                if isinstance(dimension_raw, str):
-                    try:
-                        normalized["dimension"] = validate_dimension(dimension_raw)
-                    except ValueError:
-                        pass
+                dimension = _dimension_arg(fallback_to_pending=False)
+                if dimension is not None:
+                    normalized["dimension"] = dimension
                 comp_raw = action_args.get("competitor_id")
                 normalized["competitor_id"] = (
                     comp_raw.strip()

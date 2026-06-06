@@ -182,7 +182,8 @@ Composition rules (must follow):
 2) For EACH competitor in competitors_explicit (preserve order), emit ONE task with stage="research" and competitor_id set to that competitor.
 3) Emit EXACTLY ONE task with stage="analyze" (cross-competitor synthesis).
 4) Emit EXACTLY ONE task with stage="write" (final report).
-5) focus_dimensions per task: use intake_draft.focus_dimensions if non-empty; otherwise derive 3-4 snake_case dimensions from analysis_intent.
+5) focus_dimensions per task: use intake_draft.focus_dimensions if non-empty; otherwise derive 3-4 concise snake_case dimensions from analysis_intent.
+   Each focus_dimension MUST be <= 32 chars, use a-z0-9_ only, and be 1-3 words.
 6) Cap research tasks at 8; if competitors_explicit is larger, drop the lowest-priority entries beyond 8.
 7) Use the language of analysis_intent for titles/descriptions (Chinese for Chinese intents, English for English).
 
@@ -257,7 +258,9 @@ Rules:
 - If competitors list is empty, you MUST call DiscoverCompetitors first before any ConductResearch.
 - If competitors list is non-empty, ConductResearch/ConductResearchBatch competitor_id must be from the known competitors list.
 - For DiscoverCompetitors, construct 2-4 search queries that cover the track/domain from different angles.
-- For ConductResearch and ConductResearchBatch, choose 3-5 focus_dimensions in snake_case and aligned with user_query.
+- For ConductResearch and ConductResearchBatch, choose 3-5 focus_dimensions in concise snake_case aligned with user_query.
+- Each focus_dimension MUST be <= 32 chars, use a-z0-9_ only, and be 1-3 words.
+- Set max_iterations >= the number of focus_dimensions so each requested dimension can get at least one tool turn.
 - For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors.
 - Prefer ConductResearchBatch when pending_competitors has 2+ independent competitors and analysis_done is false.
 - Keep reasoning_summary concise and operational, no markdown.
@@ -278,16 +281,10 @@ Allowed actions:
    - args schema:
      {
        "url": str,
+       "query": str | null,
        "dimension": str | null
      }
-3) parse_page
-   - args schema:
-     {
-       "html": str,
-       "source_url": str | null,
-       "source_title": str | null
-     }
-4) extract_structured
+3) extract_structured
    - args schema:
      {
        "text": str,
@@ -297,18 +294,18 @@ Allowed actions:
        "dimension": str | null,
        "competitor_id": str | null
      }
-5) load_skill
+4) load_skill
    - args schema:
      {
        "skill_id": str
      }
-6) read_skill_file
+5) read_skill_file
    - args schema:
      {
        "skill_id": str,
        "filename": str
      }
-7) finalize
+6) finalize
    - args schema:
      {
        "summary": str
@@ -316,7 +313,7 @@ Allowed actions:
 
 Output JSON schema:
 {
-  "action": "search_web" | "fetch_url" | "parse_page" | "extract_structured" | "load_skill" | "read_skill_file" | "finalize",
+  "action": "search_web" | "fetch_url" | "extract_structured" | "load_skill" | "read_skill_file" | "finalize",
   "action_args": { ... valid for action ... },
   "reasoning_summary": "short and concrete rationale"
 }
@@ -326,6 +323,7 @@ Hard constraints:
 - Evidence can only come from tool observations.
 - If enough dimensions are already covered, call finalize.
 - Prefer online collection first; use load_skill when domain-specific extraction guidance is needed.
+- When action_args.dimension is present, it MUST be exactly one value from focus_dimensions. Do not invent compound dimensions.
 - Return JSON object only, no markdown.
 """
 
@@ -437,6 +435,7 @@ def _json(value: object) -> str:
 RESEARCH_PROMPT_CHAR_BUDGET = 8000
 COMPRESSION_PROMPT_CHAR_BUDGET = 12000
 OBSERVATION_BRIEF_QUOTE_LIMIT = 200
+EVIDENCE_BRIEF_PROMPT_LIMIT = 24
 
 
 def truncate_for_prompt(value: object, *, max_chars: int) -> str:
@@ -444,6 +443,42 @@ def truncate_for_prompt(value: object, *, max_chars: int) -> str:
     if len(serialized) <= max_chars:
         return serialized
     return serialized[: max_chars - 3] + "..."
+
+
+def select_layered_evidence_briefs(
+    evidence_briefs: Sequence[dict[str, object]],
+    *,
+    limit: int = EVIDENCE_BRIEF_PROMPT_LIMIT,
+) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
+    rows = [item for item in evidence_briefs if isinstance(item, dict)]
+    if len(rows) <= limit:
+        return rows
+
+    latest_group_indexes: dict[tuple[str, str], int] = {}
+    for index in range(len(rows) - 1, -1, -1):
+        item = rows[index]
+        competitor_raw = item.get("competitor_id")
+        dimension_raw = item.get("dimension")
+        competitor_id = competitor_raw if isinstance(competitor_raw, str) and competitor_raw else "unknown"
+        dimension = dimension_raw if isinstance(dimension_raw, str) and dimension_raw else "unknown"
+        key = (competitor_id, dimension)
+        if key not in latest_group_indexes:
+            latest_group_indexes[key] = index
+
+    selected: set[int] = set()
+    for index in latest_group_indexes.values():
+        selected.add(index)
+        if len(selected) >= limit:
+            break
+
+    if len(selected) < limit:
+        for index in range(len(rows) - 1, -1, -1):
+            selected.add(index)
+            if len(selected) >= limit:
+                break
+    return [rows[index] for index in sorted(selected)]
 
 
 def evidence_draft_refs_for_prompt(
@@ -627,8 +662,10 @@ def build_supervisor_user_prompt(
             f"1) ConductResearch.tool_args.competitor_id must be in {_json(list(competitors))}.\n"
             "2) ConductResearchBatch.tool_args.topics[*].competitor_id must be unique and all in "
             f"{_json(list(competitors))}.\n"
-            "3) focus_dimensions must be 3-5 snake_case dimensions relevant to user_query; avoid hardcoded templates.\n"
-            "4) Return exactly one tool decision in this iteration.\n"
+            "3) focus_dimensions must be 3-5 concise snake_case dimensions relevant to user_query; "
+            "each value MUST be <= 32 chars, use a-z0-9_ only, and be 1-3 words; avoid hardcoded templates.\n"
+            "4) max_iterations must be >= len(focus_dimensions) for every ConductResearch topic.\n"
+            "5) Return exactly one tool decision in this iteration.\n"
         )
 
     return (
@@ -729,11 +766,12 @@ def build_researcher_user_prompt(
         f"- compressed_summary: {summary_block}\n"
         f"- observation_briefs: {briefs_payload}\n\n"
         "Action guidance:\n"
-        "1) Prefer search_web -> fetch_url -> parse_page -> extract_structured for online collection.\n"
-        "2) Use fetch_url only with URLs from discovered_urls or reference_urls.\n"
+        "1) Prefer search_web -> fetch_url -> extract_structured for online collection.\n"
+        "2) Use fetch_url only with URLs from discovered_urls or reference_urls; pass the current research_topic as query when useful.\n"
         "3) Use load_skill when domain_hint implies specialized schema or source routing.\n"
         "4) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
-        "5) action_args.dimension should come from focus_dimensions whenever possible.\n"
+        "5) action_args.dimension must be one exact value from focus_dimensions; never create compound dimensions.\n"
+        "6) If proposing future focus_dimensions in summaries or tool context, keep each concise snake_case <= 32 chars.\n"
     )
 
 
@@ -776,7 +814,9 @@ def build_researcher_fallback_user_prompt(
         f"- turn_count: {turn_count}\n"
         f"- max_turns: {max_turns}\n\n"
         f"- domain_hint: {domain_hint}\n\n"
-        "Return one action with valid action_args. Prefer search_web/fetch_url/extract_structured or load_skill."
+        "Return one action with valid action_args. Prefer search_web/fetch_url/extract_structured or load_skill. "
+        "Use only pending_dimensions values for action_args.dimension. "
+        "Do not invent long compound dimension names; focus dimensions are concise snake_case <= 32 chars."
     )
 
 
@@ -830,13 +870,14 @@ def build_analyst_user_prompt(
     evidence_briefs: Sequence[dict[str, object]],
     domain_hint: str | None = None,
 ) -> str:
+    selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
         "Analysis context:\n"
         f"- user_query: {user_query}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- domain_hint: {domain_hint}\n"
-        f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n\n"
+        f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
         "Produce cross-competitor insights with explicit evidence_ids."
     )
 
@@ -919,6 +960,7 @@ def build_writer_user_prompt(
     recommended_sections: Sequence[str],
     domain_hint: str | None = None,
 ) -> str:
+    selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
         "Writer context:\n"
         f"- user_query: {user_query}\n"
@@ -929,7 +971,7 @@ def build_writer_user_prompt(
         f"- recommended_sections: {_json(list(recommended_sections))}\n"
         f"- allowed_evidence_ids: {_json(list(allowed_evidence_ids))}\n"
         f"- competitors: {_json(list(competitors))}\n"
-        f"- evidence_briefs: {_json(list(evidence_briefs)[-24:])}\n"
+        f"- evidence_briefs: {_json(selected_evidence_briefs)}\n"
         f"- analyst_summary: {analyst_summary}\n"
         f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
         f"- risk_flags: {_json(list(risk_flags))}\n\n"

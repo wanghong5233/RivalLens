@@ -1,16 +1,50 @@
 from __future__ import annotations
 
+import asyncio
 from functools import lru_cache
+import re
+
+from tavily import TavilyClient
+from tavily.errors import (
+    BadRequestError as TavilyBadRequestError,
+    ForbiddenError as TavilyForbiddenError,
+    InvalidAPIKeyError as TavilyInvalidAPIKeyError,
+    MissingAPIKeyError as TavilyMissingAPIKeyError,
+    TimeoutError as TavilyTimeoutError,
+    UsageLimitExceededError as TavilyUsageLimitExceededError,
+)
 
 from core.config import settings
 from service.collector.base import BaseChannel, CollectorObservation, ToolObservationResult
-from service.collector.errors import ChannelError
+from service.collector.errors import ChannelError, FetchTimeout, RateLimited
 from service.collector.http_client import get_collector_http_client
 from service.collector.rate_limiter import PerHostLimiter
 from service.collector.robots import RobotsGate
 from urllib.parse import urlsplit
 
-from agents.tools.parse_page import extract_main_text, infer_source_type
+from agents.tools.parse_page import infer_source_type
+
+_TAVILY_EXTRACT_ERRORS: tuple[type[Exception], ...] = (
+    TavilyBadRequestError,
+    TavilyForbiddenError,
+    TavilyInvalidAPIKeyError,
+    TavilyMissingAPIKeyError,
+    TavilyTimeoutError,
+    TavilyUsageLimitExceededError,
+)
+_MIN_EXTRACTED_TEXT_CHARS = 160
+_NAVIGATION_WORDS = frozenset(
+    {
+        "home",
+        "login",
+        "copyright",
+        "all rights reserved",
+        "privacy policy",
+        "terms of service",
+        "table of contents",
+    }
+)
+_WORD_PATTERN = re.compile(r"[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff0-9_-]*")
 
 
 @lru_cache
@@ -23,6 +57,59 @@ def _get_robots_gate() -> RobotsGate:
     return RobotsGate(cache_ttl_seconds=settings.COLLECTOR_ROBOTS_CACHE_TTL_S)
 
 
+async def _tavily_extract(*, url: str, query: str | None) -> dict[str, object]:
+    client = TavilyClient(api_key=settings.TAVILY_API_KEY)
+    kwargs: dict[str, object] = {
+        "urls": [url],
+        "extract_depth": "advanced",
+        "format": "markdown",
+        "include_images": False,
+        "timeout": float(settings.COLLECTOR_FETCH_TIMEOUT_S),
+    }
+    if query:
+        kwargs["query"] = query
+        kwargs["chunks_per_source"] = 3
+    try:
+        return await asyncio.to_thread(client.extract, **kwargs)
+    except TavilyTimeoutError as exc:
+        raise FetchTimeout(f"tavily extract timed out: {exc}") from exc
+    except TavilyUsageLimitExceededError as exc:
+        raise RateLimited(f"tavily usage limit exceeded: {exc}") from exc
+    except _TAVILY_EXTRACT_ERRORS as exc:
+        raise ChannelError(f"tavily extract failed ({type(exc).__name__}): {exc}") from exc
+
+
+def _extract_text_from_tavily_response(response: dict[str, object]) -> tuple[str, str | None]:
+    results_raw = response.get("results")
+    results = results_raw if isinstance(results_raw, list) else []
+    if not results:
+        failed_raw = response.get("failed_results")
+        raise ChannelError(f"fetch_url extract returned no results; failed_results={failed_raw!r}")
+    first = results[0]
+    if not isinstance(first, dict):
+        raise ChannelError("fetch_url extract returned malformed result.")
+    raw_text = first.get("raw_content") or first.get("content")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise ChannelError("fetch_url extract returned empty content.")
+    source_url_raw = first.get("url")
+    source_url = source_url_raw if isinstance(source_url_raw, str) else None
+    return raw_text.strip(), source_url
+
+
+def _validate_extracted_text(text: str) -> None:
+    compact = " ".join(text.split())
+    if len(compact) < _MIN_EXTRACTED_TEXT_CHARS:
+        raise ChannelError(
+            f"fetch_url extracted content too short: chars={len(compact)} "
+            f"min_chars={_MIN_EXTRACTED_TEXT_CHARS}"
+        )
+    lower = compact.lower()
+    navigation_hits = sum(1 for word in _NAVIGATION_WORDS if word in lower)
+    words = _WORD_PATTERN.findall(compact)
+    if navigation_hits >= 3 and len(words) < 80:
+        raise ChannelError("fetch_url extracted content looks like navigation/footer boilerplate.")
+
+
 class FetchUrlChannel(BaseChannel):
     name = "fetch_url"
 
@@ -33,6 +120,8 @@ class FetchUrlChannel(BaseChannel):
             raise ChannelError("fetch_url requires non-empty url.")
         if competitor_id is not None and not isinstance(competitor_id, str):
             raise ChannelError("fetch_url competitor_id must be string when provided.")
+        query_raw = kwargs.get("query")
+        query = query_raw.strip() if isinstance(query_raw, str) and query_raw.strip() else None
 
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -46,22 +135,25 @@ class FetchUrlChannel(BaseChannel):
             user_agent=settings.COLLECTOR_USER_AGENT,
             client=http_client.client,
         )
-        fetched = await http_client.fetch_text(url, retries=1)
-        extracted_text = extract_main_text(fetched.text)
+        if not settings.TAVILY_API_KEY:
+            raise ChannelError("TAVILY_API_KEY is required for fetch_url channel.")
+        response = await _tavily_extract(url=url, query=query)
+        extracted_text, extracted_url = _extract_text_from_tavily_response(response)
+        _validate_extracted_text(extracted_text)
+        source_url = extracted_url or url
         source_type = infer_source_type(
-            source_url=fetched.url,
+            source_url=source_url,
             official_hosts=None,
         )
         snippet = self._build_snippet(
             raw_text=extracted_text,
             source_type=source_type,
-            source_url=fetched.url,
-            source_title=fetched.url,
+            source_url=source_url,
+            source_title=source_url,
             metadata={
-                "status_code": fetched.status_code,
-                "content_type": fetched.content_type or "",
-                "source": "fetch_url",
+                "source": "tavily_extract",
                 "host": host,
+                "query": query,
                 "competitor_id": competitor_id if isinstance(competitor_id, str) else None,
             },
         )
@@ -70,12 +162,13 @@ class FetchUrlChannel(BaseChannel):
             args={
                 "url": url,
                 "competitor_id": competitor_id,
+                "query": query,
             },
             result=ToolObservationResult(
                 snippets=[snippet],
                 metadata={
                     "host": host,
-                    "status_code": fetched.status_code,
+                    "source": "tavily_extract",
                 },
             ),
         )

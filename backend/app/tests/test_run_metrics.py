@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
 from core.config import settings
+from models.evidence import EvidenceRecord
+from models.run import Run
+from models.supervisor_decision import SupervisorDecisionRecord
 from router.run_rt import _build_run_summary_fields
-from service.metrics import RunMetricsSnapshot
+from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot
 
 _TERMINAL_RUN_STATUSES = {"completed", "degraded", "failed"}
 
@@ -20,6 +24,8 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         coverage_rate=0.5,
         evidence_count_total=3,
         evidence_count_by_competitor={"comp_cursor": 2},
+        evidence_count_by_dimension={"pricing": 2},
+        dimension_coverage_rate=0.5,
         source_type_distribution={"web": 3},
         desensitization_coverage=1.0,
         qa_total_steps=2,
@@ -73,6 +79,125 @@ def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 30.0) -> str
     )
 
 
+def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
+    run = Run(
+        run_id="run_dimension_metrics",
+        user_query="dimension metrics",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_cursor"],
+        plan_tree={
+            "tasks": [
+                {
+                    "stage": "research",
+                    "focus_dimensions": ["pricing", "security", "integrations"],
+                }
+            ]
+        },
+    )
+    collected_at = datetime.now(timezone.utc)
+    evidence_rows = [
+        EvidenceRecord(
+            id="ev_pricing",
+            run_id=run.run_id,
+            source_type="pricing_page",
+            source_url="https://cursor.com/pricing",
+            source_title="Cursor Pricing",
+            quote="Cursor publishes pricing details.",
+            sanitized_text="Cursor publishes pricing details.",
+            span={"dimension": "pricing", "competitor_id": "comp_cursor"},
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        ),
+        EvidenceRecord(
+            id="ev_security",
+            run_id=run.run_id,
+            source_type="docs",
+            source_url="https://cursor.com/security",
+            source_title="Cursor Security",
+            quote="Cursor describes security controls.",
+            sanitized_text="Cursor describes security controls.",
+            span={"dimension": "security", "competitor_id": "comp_cursor"},
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        ),
+    ]
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=evidence_rows,
+        step_rows=[],
+        llm_rows=[],
+        decision_rows=[],
+        candidate_rows=[],
+    )
+
+    assert snapshot.evidence_count_by_dimension == {
+        "integrations": 0,
+        "pricing": 1,
+        "security": 1,
+    }
+    assert snapshot.dimension_coverage_rate == 2 / 3
+
+
+def test_build_run_metrics_snapshot_uses_supervisor_dimensions_without_plan_tree() -> None:
+    run = Run(
+        run_id="run_decision_dimension_metrics",
+        user_query="dimension metrics",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_cursor"],
+        plan_tree=None,
+    )
+    collected_at = datetime.now(timezone.utc)
+    evidence_rows = [
+        EvidenceRecord(
+            id="ev_pricing",
+            run_id=run.run_id,
+            source_type="pricing_page",
+            source_url="https://cursor.com/pricing",
+            source_title="Cursor Pricing",
+            quote="Cursor publishes pricing details.",
+            sanitized_text="Cursor publishes pricing details.",
+            span={"dimension": "pricing", "competitor_id": "comp_cursor"},
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        )
+    ]
+    decision_rows = [
+        SupervisorDecisionRecord(
+            id="decision_dimensions",
+            run_id=run.run_id,
+            iteration=1,
+            chosen_tool="ConductResearchBatch",
+            tool_args={
+                "topics": [
+                    {
+                        "competitor_id": "Cursor",
+                        "focus_dimensions": ["pricing", "security"],
+                    }
+                ]
+            },
+            reasoning_summary="batch",
+        )
+    ]
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=evidence_rows,
+        step_rows=[],
+        llm_rows=[],
+        decision_rows=decision_rows,
+        candidate_rows=[],
+    )
+
+    assert snapshot.evidence_count_by_dimension == {"pricing": 1, "security": 0}
+    assert snapshot.dimension_coverage_rate == 0.5
+
+
 def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     create_response = test_client.post(
         "/api/runs",
@@ -96,6 +221,8 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert 0.0 <= payload["coverage_rate"] <= 1.0
     assert payload["evidence_count_total"] >= 1
     assert set(payload["evidence_count_by_competitor"].keys()) >= {"comp_cursor", "comp_windsurf"}
+    assert isinstance(payload["evidence_count_by_dimension"], dict)
+    assert 0.0 <= payload["dimension_coverage_rate"] <= 1.0
     assert isinstance(payload["source_type_distribution"], dict)
     assert payload["source_type_distribution"]
     assert 0.0 <= payload["desensitization_coverage"] <= 1.0
@@ -143,6 +270,8 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         assert payload["coverage_rate"] == 0.0
         assert payload["evidence_count_total"] == 0
         assert payload["evidence_count_by_competitor"] == {"comp_cursor": 0}
+        assert payload["evidence_count_by_dimension"] == {}
+        assert payload["dimension_coverage_rate"] == 0.0
         assert payload["source_type_distribution"] == {}
         assert payload["desensitization_coverage"] == 0.0
         assert payload["qa_total_steps"] == 0

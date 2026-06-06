@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -60,6 +61,7 @@ def _build_initial_substate(
     domain_hint: str | None,
     reference_urls: list[str],
 ) -> ResearcherSubState:
+    max_turns = max(request.max_iterations or MAX_REACT_TURNS, len(focus_dimensions))
     return {
         "run_id": run_id,
         "step_id": step_id,
@@ -70,7 +72,7 @@ def _build_initial_substate(
         "queried_dimensions": [],
         "pending_action_args": {},
         "turn_count": 0,
-        "max_turns": request.max_iterations or MAX_REACT_TURNS,
+        "max_turns": max_turns,
         "compression_count": 0,
         "last_compressed_turn": -1,
         "messages": [],
@@ -104,85 +106,123 @@ def _build_evidence_rows(
             return
         dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
 
-    effective_drafts = list(evidence_drafts)
-    if True:
-        seen_keys: set[tuple[str, str | None, str, str]] = set()
-        for observation in observations_log:
-            if not isinstance(observation, dict):
+    def dedupe_key(
+        *,
+        competitor_id: str,
+        dimension: str | None,
+        source_url: str | None,
+        quote: str,
+    ) -> tuple[str, str | None, str, str]:
+        normalized_quote = normalize_text_for_storage(quote)
+        quote_hash = hashlib.sha256(normalized_quote.encode("utf-8")).hexdigest()[:16]
+        return (
+            competitor_id,
+            dimension,
+            normalize_text_for_storage(source_url or ""),
+            quote_hash,
+        )
+
+    effective_drafts: list[dict[str, object]] = []
+    seen_keys: set[tuple[str, str | None, str, str]] = set()
+    for draft in evidence_drafts:
+        if not isinstance(draft, dict):
+            continue
+        competitor_id_raw = draft.get("competitor_id")
+        quote_raw = draft.get("quote")
+        if not isinstance(competitor_id_raw, str) or not isinstance(quote_raw, str):
+            continue
+        normalized_dimension, _ = normalize_dimension_or_none(
+            draft.get("dimension"),
+            allowed=focus_dimensions,
+        )
+        source_url_raw = draft.get("source_url")
+        key = dedupe_key(
+            competitor_id=competitor_id_raw,
+            dimension=normalized_dimension,
+            source_url=source_url_raw if isinstance(source_url_raw, str) else None,
+            quote=quote_raw,
+        )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        effective_drafts.append(draft)
+
+    for observation in observations_log:
+        if not isinstance(observation, dict):
+            continue
+        result_raw = observation.get("result")
+        if not isinstance(result_raw, dict):
+            continue
+        snippets_raw = result_raw.get("snippets")
+        if not isinstance(snippets_raw, list):
+            continue
+        args_raw = observation.get("args")
+        args = args_raw if isinstance(args_raw, dict) else {}
+        fallback_dimension_raw = args.get("dimension")
+        fallback_dimension = (
+            fallback_dimension_raw
+            if isinstance(fallback_dimension_raw, str) and fallback_dimension_raw.strip()
+            else None
+        )
+        fallback_competitor_raw = args.get("competitor_id")
+        fallback_competitor = (
+            fallback_competitor_raw
+            if isinstance(fallback_competitor_raw, str) and fallback_competitor_raw.strip()
+            else default_competitor_id
+        )
+        for snippet_raw in snippets_raw:
+            if not isinstance(snippet_raw, dict):
                 continue
-            result_raw = observation.get("result")
-            if not isinstance(result_raw, dict):
+            quote_raw = snippet_raw.get("quote")
+            if not isinstance(quote_raw, str) or not quote_raw.strip():
                 continue
-            snippets_raw = result_raw.get("snippets")
-            if not isinstance(snippets_raw, list):
-                continue
-            args_raw = observation.get("args")
-            args = args_raw if isinstance(args_raw, dict) else {}
-            fallback_dimension_raw = args.get("dimension")
-            fallback_dimension = (
-                fallback_dimension_raw
-                if isinstance(fallback_dimension_raw, str) and fallback_dimension_raw.strip()
-                else None
+            metadata_raw = snippet_raw.get("metadata", {})
+            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+            dimension_raw = snippet_raw.get("dimension")
+            if not isinstance(dimension_raw, str):
+                dimension_candidate_raw = metadata.get("dimension")
+                if isinstance(dimension_candidate_raw, str):
+                    dimension_raw = dimension_candidate_raw
+                else:
+                    dimension_raw = fallback_dimension
+            normalized_dimension, drop_reason = normalize_dimension_or_none(
+                dimension_raw,
+                allowed=focus_dimensions,
             )
-            fallback_competitor_raw = args.get("competitor_id")
-            fallback_competitor = (
-                fallback_competitor_raw
-                if isinstance(fallback_competitor_raw, str) and fallback_competitor_raw.strip()
-                else default_competitor_id
+            competitor_id_raw = snippet_raw.get("competitor_id")
+            if not isinstance(competitor_id_raw, str):
+                competitor_candidate_raw = metadata.get("competitor_id")
+                if isinstance(competitor_candidate_raw, str):
+                    competitor_id_raw = competitor_candidate_raw
+                else:
+                    competitor_id_raw = fallback_competitor
+            source_url_raw = snippet_raw.get("source_url")
+            source_url = source_url_raw if isinstance(source_url_raw, str) else None
+            key = dedupe_key(
+                competitor_id=competitor_id_raw,
+                dimension=normalized_dimension,
+                source_url=source_url,
+                quote=quote_raw,
             )
-            for snippet_raw in snippets_raw:
-                if not isinstance(snippet_raw, dict):
-                    continue
-                quote_raw = snippet_raw.get("quote")
-                if not isinstance(quote_raw, str) or not quote_raw.strip():
-                    continue
-                metadata_raw = snippet_raw.get("metadata", {})
-                metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
-                dimension_raw = snippet_raw.get("dimension")
-                if not isinstance(dimension_raw, str):
-                    dimension_candidate_raw = metadata.get("dimension")
-                    if isinstance(dimension_candidate_raw, str):
-                        dimension_raw = dimension_candidate_raw
-                    else:
-                        dimension_raw = fallback_dimension
-                normalized_dimension, drop_reason = normalize_dimension_or_none(
-                    dimension_raw,
-                    allowed=focus_dimensions,
-                )
-                competitor_id_raw = snippet_raw.get("competitor_id")
-                if not isinstance(competitor_id_raw, str):
-                    competitor_candidate_raw = metadata.get("competitor_id")
-                    if isinstance(competitor_candidate_raw, str):
-                        competitor_id_raw = competitor_candidate_raw
-                    else:
-                        competitor_id_raw = fallback_competitor
-                source_url_raw = snippet_raw.get("source_url")
-                source_url = source_url_raw if isinstance(source_url_raw, str) else ""
-                dedupe_key = (
-                    competitor_id_raw,
-                    normalized_dimension,
-                    quote_raw[:80],
-                    source_url,
-                )
-                if dedupe_key in seen_keys:
-                    continue
-                seen_keys.add(dedupe_key)
-                effective_drafts.append(
-                    {
-                        "dimension": normalized_dimension,
-                        "competitor_id": competitor_id_raw,
-                        "quote": quote_raw,
-                        "sanitized_text": snippet_raw.get("sanitized_text", quote_raw),
-                        "source_type": snippet_raw.get("source_type", "article"),
-                        "source_url": snippet_raw.get("source_url"),
-                        "source_title": snippet_raw.get("source_title"),
-                        "desensitized": snippet_raw.get("desensitized", True),
-                        "metadata": {
-                            **metadata,
-                            "dimension_drop_reason": drop_reason,
-                        },
-                    }
-                )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            effective_drafts.append(
+                {
+                    "dimension": normalized_dimension,
+                    "competitor_id": competitor_id_raw,
+                    "quote": quote_raw,
+                    "sanitized_text": snippet_raw.get("sanitized_text", quote_raw),
+                    "source_type": snippet_raw.get("source_type", "article"),
+                    "source_url": snippet_raw.get("source_url"),
+                    "source_title": snippet_raw.get("source_title"),
+                    "desensitized": snippet_raw.get("desensitized", True),
+                    "metadata": {
+                        **metadata,
+                        "dimension_drop_reason": drop_reason,
+                    },
+                }
+            )
 
     evidence_rows: list[EvidenceRecord] = []
     evidence_ids: list[str] = []

@@ -117,6 +117,33 @@ class _FakeFailureRegistry:
         raise ChannelError("simulated channel failure")
 
 
+class _FakeCoverageGuardRegistry:
+    async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
+        assert action == "search_web"
+        assert args.get("dimension") == "pricing"
+        query_raw = args.get("query")
+        assert isinstance(query_raw, str)
+        assert "pricing" in query_raw
+        return CollectorObservation(
+            channel="search_web",
+            args=args,
+            result=ToolObservationResult(
+                snippets=[
+                    CollectorSnippet(
+                        quote="Cursor publishes pricing details for team buyers.",
+                        sanitized_text="Cursor publishes pricing details for team buyers.",
+                        source_url="https://cursor.com/pricing",
+                        source_title="Cursor Pricing",
+                        source_type="pricing_page",
+                        desensitized=True,
+                        metadata={"dimension": "pricing", "competitor_id": "comp_cursor"},
+                    )
+                ],
+                metadata={"dimension": "pricing", "competitor_id": "comp_cursor"},
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_researcher_dispatcher_uses_registry_and_collects_source_type(
     monkeypatch: pytest.MonkeyPatch,
@@ -187,4 +214,86 @@ async def test_researcher_dispatcher_channel_failure_does_not_abort_run(
     observation_rows = output["observations_log"]
     assert observation_rows
     assert "error" in observation_rows[0]
+    assert output["final_summary"]
+
+
+@pytest.mark.asyncio
+async def test_researcher_coverage_guard_overrides_finalize_when_dimensions_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_researcher_subgraph.cache_clear()
+    fake_client = _FakeSequentialLLMClient(
+        responses_by_slot={
+            "research": [
+                _llm_response(
+                    "research",
+                    {
+                        "action": "finalize",
+                        "action_args": {"summary": "enough after first glance"},
+                        "reasoning_summary": "premature finalize",
+                    },
+                ),
+                _llm_response(
+                    "research",
+                    {
+                        "action": "finalize",
+                        "action_args": {"summary": "done after guard"},
+                        "reasoning_summary": "covered",
+                    },
+                ),
+            ]
+        }
+    )
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
+    monkeypatch.setattr(
+        "agents.subgraphs.researcher.get_channel_registry",
+        lambda: _FakeCoverageGuardRegistry(),
+    )
+
+    output = await get_researcher_subgraph().ainvoke(_base_state())
+
+    assert output["turn_count"] == 1
+    assert output["pending_dimensions"] == []
+    assert output["queried_dimensions"] == ["pricing"]
+    assert output["observations_log"][0]["tool"] == "search_web"
+
+
+@pytest.mark.asyncio
+async def test_researcher_coverage_guard_allows_finalize_when_pending_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_researcher_subgraph.cache_clear()
+    fake_client = _FakeSequentialLLMClient(
+        responses_by_slot={
+            "research": [
+                _llm_response(
+                    "research",
+                    {
+                        "action": "finalize",
+                        "action_args": {"summary": "already covered"},
+                        "reasoning_summary": "complete",
+                    },
+                )
+            ]
+        }
+    )
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
+    state = {**_base_state(), "pending_dimensions": [], "queried_dimensions": ["pricing"]}
+
+    output = await get_researcher_subgraph().ainvoke(state)
+
+    assert output["turn_count"] == 0
+    assert output["observations_log"] == []
+    assert output["final_summary"]
+
+
+@pytest.mark.asyncio
+async def test_researcher_coverage_guard_allows_finalize_at_max_turns() -> None:
+    get_researcher_subgraph.cache_clear()
+    state = {**_base_state(), "turn_count": 6, "max_turns": 6}
+
+    output = await get_researcher_subgraph().ainvoke(state)
+
+    assert output["turn_count"] == 6
+    assert output["observations_log"] == []
     assert output["final_summary"]
