@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from service.llm import providers as llm_providers
 from service.llm.exceptions import LLMRequestError
-from service.llm.providers import DoubaoProvider, OpenAIProvider, QwenProvider
+from service.llm.providers import DoubaoProvider, OpenAIProvider, QwenProvider, build_providers
 from utils.logger import configure_logging
 
 
@@ -195,6 +196,48 @@ async def test_doubao_provider_skips_json_mode_by_default(
 
 
 @pytest.mark.asyncio
+async def test_provider_passes_split_timeout_and_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_kwargs: list[dict[str, object]] = []
+
+    async def fake_create(**kwargs: object):
+        call_kwargs.append(dict(kwargs))
+        return _fake_response(
+            model="doubao-seed",
+            content='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
+            prompt_tokens=12,
+            completion_tokens=6,
+        )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers.settings, "LLM_CONNECT_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = DoubaoProvider(
+        base_url="https://ark.example.com/v3",
+        api_key="fake-key",
+        default_model="ep-demo",
+    )
+    await provider.complete_json(
+        system_prompt="system",
+        user_prompt="user",
+        model="ep-demo",
+        timeout_seconds=90,
+        max_tokens=2048,
+    )
+
+    assert len(call_kwargs) == 1
+    timeout = call_kwargs[0]["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == 5.0
+    assert timeout.read == 90.0
+    assert timeout.write == 10.0
+    assert timeout.pool == 5.0
+    assert call_kwargs[0]["max_tokens"] == 2048
+
+
+@pytest.mark.asyncio
 async def test_doubao_provider_caches_json_mode_unsupported_after_400(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -234,6 +277,7 @@ async def test_doubao_provider_caches_json_mode_unsupported_after_400(
         user_prompt="user",
         model="gpt-4o-mini",
         timeout_seconds=10,
+        max_tokens=2048,
     )
     call_kwargs.clear()
     await provider.complete_json(
@@ -241,10 +285,62 @@ async def test_doubao_provider_caches_json_mode_unsupported_after_400(
         user_prompt="user",
         model="gpt-4o-mini",
         timeout_seconds=10,
+        max_tokens=2048,
     )
 
     assert len(call_kwargs) == 1
     assert "response_format" not in call_kwargs[0]
+    assert call_kwargs[0]["max_tokens"] == 2048
+
+
+@pytest.mark.asyncio
+async def test_provider_json_mode_fallback_preserves_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm_providers.clear_json_mode_capability_cache()
+
+    class DummyStatusError(Exception):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            self.status_code = 400
+
+    call_kwargs: list[dict[str, object]] = []
+
+    async def fake_create(**kwargs: object):
+        call_kwargs.append(dict(kwargs))
+        if "response_format" in kwargs:
+            raise DummyStatusError(
+                "InvalidParameter: response_format.type json_object is not supported by this model"
+            )
+        return _fake_response(
+            model="gpt-4o-mini",
+            content='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
+            prompt_tokens=12,
+            completion_tokens=6,
+        )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "APIStatusError", DummyStatusError)
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = OpenAIProvider(
+        base_url="https://api.openai.com/v1",
+        api_key="fake-key",
+        default_model="gpt-4o-mini",
+    )
+    await provider.complete_json(
+        system_prompt="system",
+        user_prompt="user",
+        model="gpt-4o-mini",
+        timeout_seconds=10,
+        max_tokens=2048,
+    )
+
+    assert len(call_kwargs) == 2
+    assert call_kwargs[0]["max_tokens"] == 2048
+    assert call_kwargs[1]["max_tokens"] == 2048
+    assert "response_format" in call_kwargs[0]
+    assert "response_format" not in call_kwargs[1]
 
 
 @pytest.mark.asyncio
@@ -408,3 +504,27 @@ def test_provider_default_model_properties(monkeypatch: pytest.MonkeyPatch) -> N
     assert doubao.default_model == "ep-demo"
     assert openai_provider.default_model == "gpt-4o-mini"
     assert qwen_provider.default_model == "qwen-plus"
+
+
+def test_build_providers_uses_active_and_overridden_provider_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=None)))
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+    monkeypatch.setattr(llm_providers.settings, "LLM_ACTIVE_PROVIDER", "doubao")
+    monkeypatch.setattr(llm_providers.settings, "LLM_PROVIDER_RESEARCH", None)
+    monkeypatch.setattr(llm_providers.settings, "LLM_PROVIDER_SUMMARIZATION", None)
+    monkeypatch.setattr(llm_providers.settings, "LLM_PROVIDER_COMPRESSION", None)
+    monkeypatch.setattr(llm_providers.settings, "LLM_PROVIDER_QA", "qwen")
+    monkeypatch.setattr(llm_providers.settings, "LLM_PROVIDER_WRITER", None)
+    monkeypatch.setattr(llm_providers.settings, "DOUBAO_API_KEY", "fake-doubao-key")
+    monkeypatch.setattr(llm_providers.settings, "DOUBAO_EP", "ep-fallback")
+    monkeypatch.setattr(llm_providers.settings, "DOUBAO_MODEL_BALANCED", "ep-balanced")
+    monkeypatch.setattr(llm_providers.settings, "QWEN_API_KEY", "fake-qwen-key")
+    monkeypatch.setattr(llm_providers.settings, "QWEN_MODEL_BALANCED", "qwen-plus-catalog")
+
+    providers = build_providers()
+
+    assert set(providers) == {"doubao", "qwen"}
+    assert providers["doubao"].default_model == "ep-balanced"
+    assert providers["qwen"].default_model == "qwen-plus-catalog"

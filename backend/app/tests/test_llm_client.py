@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from core.config import settings
-from service.llm.client import LLMClient
+from service.llm.client import LLMClient, _resolve_max_tokens, _resolve_timeout_seconds
 from service.llm.exceptions import LLMRequestError
 from service.llm.response import ProviderRawResponse
 
@@ -26,6 +26,7 @@ class _SequencedProvider:
         self.call_count = 0
         self.inflight = 0
         self.max_inflight = 0
+        self.calls: list[dict[str, object]] = []
 
     async def complete_json(
         self,
@@ -34,8 +35,10 @@ class _SequencedProvider:
         user_prompt: str,
         model: str,
         timeout_seconds: int,
+        max_tokens: int | None = None,
     ) -> ProviderRawResponse:
-        del system_prompt, user_prompt, model, timeout_seconds
+        del system_prompt, user_prompt, model
+        self.calls.append({"timeout_seconds": timeout_seconds, "max_tokens": max_tokens})
         self.call_count += 1
         self.inflight += 1
         if self.inflight > self.max_inflight:
@@ -71,6 +74,43 @@ def _mock_research_slot(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LLM_MODEL_RESEARCH", None)
 
 
+def test_resolve_timeout_seconds_uses_slot_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_SECONDS", 31)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_SUMMARIZATION", 181)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_COMPRESSION", 121)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_RESEARCH", 91)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_QA", 92)
+    monkeypatch.setattr(settings, "LLM_TIMEOUT_WRITER", 182)
+
+    assert _resolve_timeout_seconds("summarization") == 181
+    assert _resolve_timeout_seconds("compression") == 121
+    assert _resolve_timeout_seconds("research") == 91
+    assert _resolve_timeout_seconds("qa") == 92
+    assert _resolve_timeout_seconds("writer") == 182
+    assert _resolve_timeout_seconds("unknown-slot") == 31
+
+
+def test_resolve_max_tokens_uses_slot_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LLM_MAX_TOKENS_SUMMARIZATION", 4096)
+    monkeypatch.setattr(settings, "LLM_MAX_TOKENS_COMPRESSION", 2048)
+    monkeypatch.setattr(settings, "LLM_MAX_TOKENS_RESEARCH", 1024)
+    monkeypatch.setattr(settings, "LLM_MAX_TOKENS_QA", 1536)
+    monkeypatch.setattr(settings, "LLM_MAX_TOKENS_WRITER", 8192)
+
+    assert _resolve_max_tokens("summarization") == 4096
+    assert _resolve_max_tokens("compression") == 2048
+    assert _resolve_max_tokens("research") == 1024
+    assert _resolve_max_tokens("qa") == 1536
+    assert _resolve_max_tokens("writer") == 8192
+    assert _resolve_max_tokens("unknown-slot") is None
+
+
+def test_resolve_max_tokens_treats_zero_as_unlimited(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LLM_MAX_TOKENS_RESEARCH", 0)
+
+    assert _resolve_max_tokens("research") is None
+
+
 @pytest.mark.asyncio
 async def test_llm_client_success(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_research_slot(monkeypatch)
@@ -102,6 +142,12 @@ async def test_llm_client_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.prompt_preview == "[system]\\nsystem\\n\\n[user]\\nuser"
     assert response.response_raw is not None
     assert response.response_raw.startswith('{"chosen_tool"')
+    assert provider.calls == [
+        {
+            "timeout_seconds": settings.LLM_TIMEOUT_RESEARCH,
+            "max_tokens": settings.LLM_MAX_TOKENS_RESEARCH,
+        }
+    ]
 
 
 @pytest.mark.asyncio

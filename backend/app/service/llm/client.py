@@ -47,9 +47,26 @@ def _trim_for_log(value: str | None, *, limit: int = 200) -> str | None:
 
 
 def _resolve_timeout_seconds(model_slot: str) -> int:
-    if model_slot == "writer":
-        return settings.LLM_TIMEOUT_WRITER
-    return settings.LLM_TIMEOUT_SECONDS
+    slot_timeouts = {
+        "summarization": settings.LLM_TIMEOUT_SUMMARIZATION,
+        "compression": settings.LLM_TIMEOUT_COMPRESSION,
+        "research": settings.LLM_TIMEOUT_RESEARCH,
+        "qa": settings.LLM_TIMEOUT_QA,
+        "writer": settings.LLM_TIMEOUT_WRITER,
+    }
+    return slot_timeouts.get(model_slot, settings.LLM_TIMEOUT_SECONDS)
+
+
+def _resolve_max_tokens(model_slot: str) -> int | None:
+    slot_max_tokens = {
+        "summarization": settings.LLM_MAX_TOKENS_SUMMARIZATION,
+        "compression": settings.LLM_MAX_TOKENS_COMPRESSION,
+        "research": settings.LLM_MAX_TOKENS_RESEARCH,
+        "qa": settings.LLM_MAX_TOKENS_QA,
+        "writer": settings.LLM_MAX_TOKENS_WRITER,
+    }
+    max_tokens = slot_max_tokens.get(model_slot, 0)
+    return max_tokens if max_tokens > 0 else None
 
 
 def _classify_llm_error(error: LLMRequestError | LLMResponseFormatError | str) -> str:
@@ -205,6 +222,7 @@ class LLMClient:
         user_prompt: str,
         model_name: str,
         timeout_seconds: int,
+        max_tokens: int | None,
         starting_retry_count: int = 0,
     ) -> tuple[ProviderRawResponse | None, int, int, LLMRequestError | None]:
         request_error: LLMRequestError | None = None
@@ -226,6 +244,7 @@ class LLMClient:
                         user_prompt=user_prompt,
                         model=model_name,
                         timeout_seconds=timeout_seconds,
+                        max_tokens=max_tokens,
                     )
                 elapsed_ms = int((perf_counter() - started_at) * 1000)
                 return raw_response, elapsed_ms, retry_count, None
@@ -335,6 +354,7 @@ class LLMClient:
         provider_name, model_name = resolve_slot(slot=model_slot, providers=self._providers)
         provider = self._providers[provider_name]
         slot_timeout_seconds = _resolve_timeout_seconds(model_slot)
+        slot_max_tokens = _resolve_max_tokens(model_slot)
         log.debug(
             "llm.call.start",
             model_slot=model_slot,
@@ -343,6 +363,7 @@ class LLMClient:
             prompt_preview_len=len(prompt_preview),
             fallback_configured=fallback_system_prompt is not None,
             timeout_seconds=slot_timeout_seconds,
+            max_tokens=slot_max_tokens,
         )
 
         request_error: LLMRequestError | None = None
@@ -356,6 +377,7 @@ class LLMClient:
             user_prompt=user_prompt,
             model_name=model_name,
             timeout_seconds=slot_timeout_seconds,
+            max_tokens=slot_max_tokens,
         )
         if raw_response_raw is not None:
             raw_response = raw_response_raw
@@ -454,6 +476,7 @@ class LLMClient:
                 user_prompt=fallback_user_prompt,
                 model_name=model_name,
                 timeout_seconds=slot_timeout_seconds,
+                max_tokens=slot_max_tokens,
                 starting_retry_count=retry_count,
             )
             if fallback_exc is not None:

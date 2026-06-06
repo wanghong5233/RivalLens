@@ -6,6 +6,34 @@ from typing import Literal
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+LLMProviderName = Literal["doubao", "openai", "qwen"]
+LLMModelTier = Literal["strong", "balanced", "fast"]
+
+LLM_PROVIDER_NAMES: tuple[str, ...] = ("doubao", "openai", "qwen")
+
+
+def _clean_optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _provider_default_model(settings: Settings, provider_name: str) -> str | None:
+    if provider_name == "doubao":
+        return _clean_optional_string(settings.DOUBAO_MODEL_BALANCED) or _clean_optional_string(
+            settings.DOUBAO_EP
+        )
+    if provider_name == "openai":
+        return _clean_optional_string(settings.OPENAI_MODEL_BALANCED) or _clean_optional_string(
+            settings.OPENAI_DEFAULT_MODEL
+        )
+    if provider_name == "qwen":
+        return _clean_optional_string(settings.QWEN_MODEL_BALANCED) or _clean_optional_string(
+            settings.QWEN_DEFAULT_MODEL
+        )
+    return None
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -36,11 +64,28 @@ class Settings(BaseSettings):
     QWEN_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     QWEN_DEFAULT_MODEL: str = "qwen-plus"
 
-    LLM_PROVIDER_SUMMARIZATION: Literal["doubao", "openai", "qwen"] = "doubao"
-    LLM_PROVIDER_RESEARCH: Literal["doubao", "openai", "qwen"] = "doubao"
-    LLM_PROVIDER_COMPRESSION: Literal["doubao", "openai", "qwen"] = "doubao"
-    LLM_PROVIDER_QA: Literal["doubao", "openai", "qwen"] = "doubao"
-    LLM_PROVIDER_WRITER: Literal["doubao", "openai", "qwen"] = "doubao"
+    LLM_ACTIVE_PROVIDER: LLMProviderName = "doubao"
+    LLM_PROVIDER_SUMMARIZATION: str | None = None
+    LLM_PROVIDER_RESEARCH: str | None = None
+    LLM_PROVIDER_COMPRESSION: str | None = None
+    LLM_PROVIDER_QA: str | None = None
+    LLM_PROVIDER_WRITER: str | None = None
+
+    LLM_TIER_SUMMARIZATION: LLMModelTier = "strong"
+    LLM_TIER_RESEARCH: LLMModelTier = "balanced"
+    LLM_TIER_COMPRESSION: LLMModelTier = "fast"
+    LLM_TIER_QA: LLMModelTier = "balanced"
+    LLM_TIER_WRITER: LLMModelTier = "strong"
+
+    DOUBAO_MODEL_STRONG: str | None = None
+    DOUBAO_MODEL_BALANCED: str | None = None
+    DOUBAO_MODEL_FAST: str | None = None
+    OPENAI_MODEL_STRONG: str | None = None
+    OPENAI_MODEL_BALANCED: str | None = None
+    OPENAI_MODEL_FAST: str | None = None
+    QWEN_MODEL_STRONG: str | None = None
+    QWEN_MODEL_BALANCED: str | None = None
+    QWEN_MODEL_FAST: str | None = None
 
     LLM_MODEL_SUMMARIZATION: str | None = None
     LLM_MODEL_RESEARCH: str | None = None
@@ -50,7 +95,17 @@ class Settings(BaseSettings):
 
     LLM_GLOBAL_CONCURRENCY: int = 4
     LLM_TIMEOUT_SECONDS: int = 30
+    LLM_TIMEOUT_SUMMARIZATION: int = 180
+    LLM_TIMEOUT_COMPRESSION: int = 120
+    LLM_TIMEOUT_RESEARCH: int = 90
+    LLM_TIMEOUT_QA: int = 90
     LLM_TIMEOUT_WRITER: int = 180
+    LLM_CONNECT_TIMEOUT_SECONDS: int = 5
+    LLM_MAX_TOKENS_SUMMARIZATION: int = 4096
+    LLM_MAX_TOKENS_WRITER: int = 8192
+    LLM_MAX_TOKENS_COMPRESSION: int = 2048
+    LLM_MAX_TOKENS_QA: int = 2048
+    LLM_MAX_TOKENS_RESEARCH: int = 2048
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BASE_SECONDS: float = 1.0
     LLM_RETRY_CAP_SECONDS: float = 30.0
@@ -86,22 +141,32 @@ class Settings(BaseSettings):
         if not self.LANGGRAPH_CHECKPOINT_DSN.startswith("postgresql://"):
             raise ValueError("LANGGRAPH_CHECKPOINT_DSN must use postgresql:// DSN format.")
 
-        providers = (
-            self.LLM_PROVIDER_SUMMARIZATION,
-            self.LLM_PROVIDER_RESEARCH,
-            self.LLM_PROVIDER_COMPRESSION,
-            self.LLM_PROVIDER_QA,
-            self.LLM_PROVIDER_WRITER,
-        )
-        use_doubao = any(item == "doubao" for item in providers)
-        use_openai = any(item == "openai" for item in providers)
-        use_qwen = any(item == "qwen" for item in providers)
+        providers = {self.LLM_ACTIVE_PROVIDER}
+        for name, value in (
+            ("LLM_PROVIDER_SUMMARIZATION", self.LLM_PROVIDER_SUMMARIZATION),
+            ("LLM_PROVIDER_RESEARCH", self.LLM_PROVIDER_RESEARCH),
+            ("LLM_PROVIDER_COMPRESSION", self.LLM_PROVIDER_COMPRESSION),
+            ("LLM_PROVIDER_QA", self.LLM_PROVIDER_QA),
+            ("LLM_PROVIDER_WRITER", self.LLM_PROVIDER_WRITER),
+        ):
+            provider_name = _clean_optional_string(value)
+            if provider_name is None:
+                continue
+            if provider_name not in LLM_PROVIDER_NAMES:
+                raise ValueError(f"{name} must be one of: {', '.join(LLM_PROVIDER_NAMES)}.")
+            providers.add(provider_name)
+
+        use_doubao = "doubao" in providers
+        use_openai = "openai" in providers
+        use_qwen = "qwen" in providers
 
         if use_doubao:
             if not self.DOUBAO_API_KEY:
                 raise ValueError("DOUBAO_API_KEY is required when any LLM slot uses doubao.")
-            if not self.DOUBAO_EP:
-                raise ValueError("DOUBAO_EP is required when any LLM slot uses doubao.")
+            if not _provider_default_model(self, "doubao"):
+                raise ValueError(
+                    "DOUBAO_MODEL_BALANCED or DOUBAO_EP is required when any LLM slot uses doubao."
+                )
             if not self.DOUBAO_BASE_URL.strip():
                 raise ValueError("DOUBAO_BASE_URL cannot be empty.")
 
@@ -121,10 +186,34 @@ class Settings(BaseSettings):
             if not self.QWEN_BASE_URL.strip():
                 raise ValueError("QWEN_BASE_URL cannot be empty.")
 
+        active_default_model = _provider_default_model(self, self.LLM_ACTIVE_PROVIDER)
+        if active_default_model is None:
+            raise ValueError(
+                f"Balanced/default model for LLM_ACTIVE_PROVIDER={self.LLM_ACTIVE_PROVIDER} "
+                "is not configured."
+            )
+
         if self.LLM_TIMEOUT_SECONDS <= 0:
             raise ValueError("LLM_TIMEOUT_SECONDS must be positive.")
-        if self.LLM_TIMEOUT_WRITER <= 0:
-            raise ValueError("LLM_TIMEOUT_WRITER must be positive.")
+        for name, value in (
+            ("LLM_TIMEOUT_SUMMARIZATION", self.LLM_TIMEOUT_SUMMARIZATION),
+            ("LLM_TIMEOUT_COMPRESSION", self.LLM_TIMEOUT_COMPRESSION),
+            ("LLM_TIMEOUT_RESEARCH", self.LLM_TIMEOUT_RESEARCH),
+            ("LLM_TIMEOUT_QA", self.LLM_TIMEOUT_QA),
+            ("LLM_TIMEOUT_WRITER", self.LLM_TIMEOUT_WRITER),
+            ("LLM_CONNECT_TIMEOUT_SECONDS", self.LLM_CONNECT_TIMEOUT_SECONDS),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive.")
+        for name, value in (
+            ("LLM_MAX_TOKENS_SUMMARIZATION", self.LLM_MAX_TOKENS_SUMMARIZATION),
+            ("LLM_MAX_TOKENS_WRITER", self.LLM_MAX_TOKENS_WRITER),
+            ("LLM_MAX_TOKENS_COMPRESSION", self.LLM_MAX_TOKENS_COMPRESSION),
+            ("LLM_MAX_TOKENS_QA", self.LLM_MAX_TOKENS_QA),
+            ("LLM_MAX_TOKENS_RESEARCH", self.LLM_MAX_TOKENS_RESEARCH),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} cannot be negative.")
         if self.ORPHAN_RUN_SWEEP_GRACE_SECONDS < 0:
             raise ValueError("ORPHAN_RUN_SWEEP_GRACE_SECONDS cannot be negative.")
         if self.LLM_MAX_RETRIES < 0:

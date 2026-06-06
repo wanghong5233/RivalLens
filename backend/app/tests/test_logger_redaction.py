@@ -36,8 +36,9 @@ class _SingleResponseProvider:
         user_prompt: str,
         model: str,
         timeout_seconds: int,
+        max_tokens: int | None = None,
     ) -> ProviderRawResponse:
-        del system_prompt, user_prompt, model, timeout_seconds
+        del system_prompt, user_prompt, model, timeout_seconds, max_tokens
         self.call_count += 1
         if self.call_count > 1:
             raise RuntimeError("Provider called more than once in redaction test.")
@@ -116,8 +117,9 @@ async def test_llm_client_logs_call_error_on_terminal_failure(
         user_prompt: str,
         model: str,
         timeout_seconds: int,
+        max_tokens: int | None = None,
     ) -> ProviderRawResponse:
-        del system_prompt, user_prompt, model, timeout_seconds
+        del system_prompt, user_prompt, model, timeout_seconds, max_tokens
         raise LLMRequestError("connection reset")
 
     provider.complete_json = _raise_request_error  # type: ignore[method-assign]

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar, Protocol
 
+import httpx
 import structlog
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
 
@@ -88,6 +89,7 @@ class LLMProvider(Protocol):
         user_prompt: str,
         model: str,
         timeout_seconds: int,
+        max_tokens: int | None = None,
     ) -> ProviderRawResponse:
         ...
 
@@ -262,6 +264,7 @@ async def _create_completion(
     system_prompt: str,
     user_prompt: str,
     timeout_seconds: int,
+    max_tokens: int | None,
     use_json_mode: bool,
 ) -> Any:
     kwargs: dict[str, Any] = {
@@ -270,8 +273,15 @@ async def _create_completion(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "timeout": timeout_seconds,
+        "timeout": httpx.Timeout(
+            connect=float(settings.LLM_CONNECT_TIMEOUT_SECONDS),
+            read=float(timeout_seconds),
+            write=10.0,
+            pool=5.0,
+        ),
     }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
     if use_json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     return await client.chat.completions.create(**kwargs)
@@ -294,6 +304,7 @@ class _OpenAICompatibleProvider:
         user_prompt: str,
         model: str,
         timeout_seconds: int,
+        max_tokens: int | None = None,
     ) -> ProviderRawResponse:
         use_json_mode = _resolve_json_mode(provider_name=self.name, model=model)
         try:
@@ -303,6 +314,7 @@ class _OpenAICompatibleProvider:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 timeout_seconds=timeout_seconds,
+                max_tokens=max_tokens,
                 use_json_mode=use_json_mode,
             )
         except APIStatusError as exc:
@@ -321,6 +333,7 @@ class _OpenAICompatibleProvider:
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         timeout_seconds=timeout_seconds,
+                        max_tokens=max_tokens,
                         use_json_mode=False,
                     )
                 except APIStatusError as fallback_exc:
@@ -437,14 +450,42 @@ class QwenProvider(_OpenAICompatibleProvider):
     name: ClassVar[str] = "qwen"
 
 
+def _clean_optional_string(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _provider_default_model(provider_name: str) -> str | None:
+    if provider_name == "doubao":
+        return _clean_optional_string(settings.DOUBAO_MODEL_BALANCED) or _clean_optional_string(
+            settings.DOUBAO_EP
+        )
+    if provider_name == "openai":
+        return _clean_optional_string(settings.OPENAI_MODEL_BALANCED) or _clean_optional_string(
+            settings.OPENAI_DEFAULT_MODEL
+        )
+    if provider_name == "qwen":
+        return _clean_optional_string(settings.QWEN_MODEL_BALANCED) or _clean_optional_string(
+            settings.QWEN_DEFAULT_MODEL
+        )
+    return None
+
+
 def _configured_provider_names() -> set[str]:
-    return {
+    provider_names = {settings.LLM_ACTIVE_PROVIDER}
+    for value in (
         settings.LLM_PROVIDER_RESEARCH,
         settings.LLM_PROVIDER_SUMMARIZATION,
         settings.LLM_PROVIDER_COMPRESSION,
         settings.LLM_PROVIDER_QA,
         settings.LLM_PROVIDER_WRITER,
-    }
+    ):
+        provider_name = _clean_optional_string(value)
+        if provider_name is not None:
+            provider_names.add(provider_name.lower())
+    return provider_names
 
 
 def build_providers() -> dict[str, LLMProvider]:
@@ -454,30 +495,43 @@ def build_providers() -> dict[str, LLMProvider]:
     if "doubao" in configured_names:
         if not settings.DOUBAO_API_KEY:
             raise RuntimeError("DOUBAO_API_KEY is required when any slot uses doubao provider.")
-        if not settings.DOUBAO_EP:
-            raise RuntimeError("DOUBAO_EP is required when any slot uses doubao provider.")
+        default_model = _provider_default_model("doubao")
+        if default_model is None:
+            raise RuntimeError(
+                "DOUBAO_MODEL_BALANCED or DOUBAO_EP is required when any slot uses doubao provider."
+            )
         providers["doubao"] = DoubaoProvider(
             base_url=settings.DOUBAO_BASE_URL,
             api_key=settings.DOUBAO_API_KEY,
-            default_model=settings.DOUBAO_EP,
+            default_model=default_model,
         )
 
     if "openai" in configured_names:
         if not settings.OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY is required when any slot uses openai provider.")
+        default_model = _provider_default_model("openai")
+        if default_model is None:
+            raise RuntimeError(
+                "OPENAI_MODEL_BALANCED or OPENAI_DEFAULT_MODEL is required when any slot uses openai provider."
+            )
         providers["openai"] = OpenAIProvider(
             base_url=settings.OPENAI_BASE_URL,
             api_key=settings.OPENAI_API_KEY,
-            default_model=settings.OPENAI_DEFAULT_MODEL,
+            default_model=default_model,
         )
 
     if "qwen" in configured_names:
         if not settings.QWEN_API_KEY:
             raise RuntimeError("QWEN_API_KEY is required when any slot uses qwen provider.")
+        default_model = _provider_default_model("qwen")
+        if default_model is None:
+            raise RuntimeError(
+                "QWEN_MODEL_BALANCED or QWEN_DEFAULT_MODEL is required when any slot uses qwen provider."
+            )
         providers["qwen"] = QwenProvider(
             base_url=settings.QWEN_BASE_URL,
             api_key=settings.QWEN_API_KEY,
-            default_model=settings.QWEN_DEFAULT_MODEL,
+            default_model=default_model,
         )
 
     return providers
