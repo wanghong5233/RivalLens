@@ -11,6 +11,9 @@ export interface RunCreateRequest {
   domain_hint?: string | null;
   reference_urls?: string[] | null;
   target_roles: string[];
+  self_product?: string | null;
+  market_scope?: string | null;
+  time_context?: string | null;
 }
 
 // --- Phase 1/2 Agent-native intake + plan-then-execute contract ---
@@ -25,6 +28,9 @@ export interface RunIntakeDraft {
   focus_dimensions: string[];
   report_depth: "quick" | "deep";
   reference_urls: string[];
+  self_product: string | null;
+  market_scope: string | null;
+  time_context: string | null;
   is_complete: boolean;
 }
 

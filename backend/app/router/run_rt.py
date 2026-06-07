@@ -112,8 +112,11 @@ class RunCreateRequest(BaseModel):
     reference_urls: list[str] | None = None
     target_roles: list[str] = Field(default_factory=list)
     report_depth: Literal["quick", "deep"] = "quick"
+    self_product: str | None = None
+    market_scope: str | None = None
+    time_context: str | None = None
 
-    @field_validator("domain_hint")
+    @field_validator("domain_hint", "self_product", "market_scope", "time_context")
     @classmethod
     def _normalize_domain_hint(cls, value: str | None) -> str | None:
         if value is None:
@@ -1293,6 +1296,9 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             focus_dimensions=list(DEFAULT_FOCUS_DIMENSIONS),
             report_depth=payload.report_depth,
             reference_urls=normalized_reference_urls,
+            self_product=payload.self_product,
+            market_scope=payload.market_scope,
+            time_context=payload.time_context,
         )
 
         async with session_factory() as session:

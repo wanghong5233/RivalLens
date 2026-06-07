@@ -162,6 +162,9 @@ function emptyDraft(userQuery: string): RunIntakeDraft {
     focus_dimensions: [],
     report_depth: "quick",
     reference_urls: [],
+    self_product: null,
+    market_scope: null,
+    time_context: null,
     is_complete: false,
   };
 }

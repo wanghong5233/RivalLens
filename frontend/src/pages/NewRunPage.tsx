@@ -80,6 +80,9 @@ export function NewRunPage(): JSX.Element {
 
   const [userQuery, setUserQuery] = useState("AI Coding 工具竞争格局分析");
   const [domainHint, setDomainHint] = useState("");
+  const [selfProduct, setSelfProduct] = useState("");
+  const [marketScope, setMarketScope] = useState("");
+  const [timeContext, setTimeContext] = useState("");
   const [competitorInput, setCompetitorInput] = useState("");
   const [selectedCompetitors, setSelectedCompetitors] = useState<string[]>([]);
   const [bulkCompetitorInput, setBulkCompetitorInput] = useState("");
@@ -248,6 +251,9 @@ export function NewRunPage(): JSX.Element {
         domain_hint: domainHint.trim() ? domainHint.trim() : null,
         reference_urls: referenceUrls.length > 0 ? referenceUrls : null,
         target_roles: targetRoles,
+        self_product: selfProduct.trim() ? selfProduct.trim() : null,
+        market_scope: marketScope.trim() ? marketScope.trim() : null,
+        time_context: timeContext.trim() ? timeContext.trim() : null,
       };
       const created = await createRunMutation.mutateAsync(payload);
       if (addToWatchlist) {
@@ -500,6 +506,47 @@ export function NewRunPage(): JSX.Element {
               <ChevronDown className="h-4 w-4 text-muted-foreground transition group-open:rotate-180" />
             </summary>
             <div className="mt-4 space-y-4 border-t border-border/80 pt-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="self-product">
+                  我方产品 / 定位
+                </label>
+                <textarea
+                  className="min-h-16 w-full rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-caption text-foreground outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-ring/40"
+                  id="self-product"
+                  onChange={(event) => setSelfProduct(event.target.value)}
+                  placeholder="例如：我们是字节 TRAE 团队，做 AI 编程 IDE，主打企业内研发提效"
+                  value={selfProduct}
+                />
+                <p className="text-xs text-muted-foreground">
+                  填写后结论会「相对我方」给出差距与投入方向，而非中立罗列。
+                </p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium" htmlFor="market-scope">
+                    市场 / 地域范围
+                  </label>
+                  <Input
+                    id="market-scope"
+                    onChange={(event) => setMarketScope(event.target.value)}
+                    placeholder="例如：中国 vs 海外 / 中小企业"
+                    value={marketScope}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium" htmlFor="time-context">
+                    时效 / 决策时间
+                  </label>
+                  <Input
+                    id="time-context"
+                    onChange={(event) => setTimeContext(event.target.value)}
+                    placeholder="例如：下月汇报 / 仅看近一年"
+                    value={timeContext}
+                  />
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="domain-hint">
                   领域提示（domain hint）

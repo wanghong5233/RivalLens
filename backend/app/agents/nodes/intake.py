@@ -220,6 +220,10 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
         normalized = [str(u).strip() for u in urls_raw if isinstance(u, str) and u.strip()]
         if normalized:
             base["reference_urls"] = normalized
+    for free_text_field in ("self_product", "market_scope", "time_context"):
+        value_raw = patch.get(free_text_field)
+        if isinstance(value_raw, str) and value_raw.strip():
+            base[free_text_field] = value_raw.strip()
     return RunIntakeDraft.model_validate(base)
 
 
@@ -375,6 +379,12 @@ def _merge_reply_into_draft(
     if "domain_hint" in targets and reply.text.strip():
         # No closed-set normalization; accept the user's domain phrase verbatim.
         base["domain_hint"] = reply.text.strip()
+
+    # Optional free-text enrichment fields: accept the user's phrasing verbatim
+    # when the Agent's clarify question targeted one of them.
+    for free_text_field in ("self_product", "market_scope", "time_context"):
+        if free_text_field in targets and reply.text.strip():
+            base[free_text_field] = reply.text.strip()
 
     # focus_dimensions / reference_urls intentionally left to the LLM —
     # they need richer parsing the wait node should not own.

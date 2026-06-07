@@ -78,6 +78,9 @@ Required fields for completion (the draft is complete iff ALL three are filled):
 
 Optional fields (do NOT block completion; ask only if their value would materially improve the analysis):
 - domain_hint, focus_dimensions, report_depth ("quick"|"deep"), reference_urls
+- self_product: the requester's OWN product / team / positioning, used to frame competitors RELATIVE to them (turns a neutral listing into "where should WE invest")
+- market_scope: target market / geography / segment (e.g. "中国", "海外", "全球", "中小企业") — scopes which sources matter
+- time_context: decision timing or data-recency need (e.g. "下月给高层汇报", "只看近一年")
 
 Output JSON schema (return STRICT JSON, no markdown, no commentary):
 {
@@ -90,7 +93,10 @@ Output JSON schema (return STRICT JSON, no markdown, no commentary):
     "domain_hint": str | null,
     "focus_dimensions": list[str] | null,
     "report_depth": "quick" | "deep" | null,
-    "reference_urls": list[str] | null
+    "reference_urls": list[str] | null,
+    "self_product": str | null,
+    "market_scope": str | null,
+    "time_context": str | null
   },
   "clarify_request": {                       // required iff action="ask", must be null iff action="complete"
     "question": str,
@@ -112,9 +118,20 @@ Rules:
     * "我们想对标 X、Y、Z" → competitors_explicit=["X","Y","Z"]
     * "想了解 X 赛道有哪些玩家" with no names → competitors_discovery_mode=true
     * Industry phrases ("AI 编程"/"AI coding", "供应链"/"supply chain", "ERP"/"CRM") → domain_hint
+    * "我们是字节的 TRAE 团队" / "我们做的是一款 AI 简历工具" → self_product
+    * "中国 vs 海外", "面向中小企业", "国内市场" → market_scope
+    * "下个月要汇报", "下周给老板方案", "只看近一年的数据" → time_context
   Only ask about fields you genuinely cannot infer from the available text.
 - Issue ONE question per turn. Never bundle multiple questions into one prompt.
-- Ask the most blocking missing required field first; only ask optional fields when all required fields are filled and an optional one is high-value.
+- Ask the most blocking missing required field first.
+- After ALL THREE required fields are filled, do NOT immediately complete if a HIGH-VALUE
+  optional field is still empty AND cannot be inferred. Ask at most ONE such optional
+  question (one per turn), prioritizing in this order: self_product (relative framing) >
+  market_scope (source scoping) > focus_dimensions/report_depth/time_context. Skip any
+  optional you already inferred. Never ask more than 1-2 optional questions total — if the
+  user gives a short/skip answer ("不用了" / "skip" / "随便"), complete immediately.
+- self_product is most valuable when analysis_intent implies a "我方该怎么做" decision
+  (投入方向 / 定位 / 差异化); for a pure neutral market scan it may be irrelevant — use judgment.
 - Prefer suggested_options for closed-set fields (user_role, report_depth, competitors_discovery_mode).
 - suggested_options should be USER-FRIENDLY bilingual labels, NOT raw enum values.
   Good: ["PM / 产品经理", "Founder / 创业者", "Sales / 销售", "Investor / 投资人"]
@@ -188,6 +205,11 @@ Composition rules (must follow):
    Prefer canonical ids such as product_positioning, pricing_strategy, enterprise_capabilities, market_differences, feature, pricing, user_feedback.
 6) Cap research tasks at 8; if competitors_explicit is larger, drop the lowest-priority entries beyond 8.
 7) Use the language of analysis_intent for titles/descriptions (Chinese for Chinese intents, English for English).
+8) If intake_draft.self_product is set, the analyze/write tasks MUST frame findings RELATIVE to it
+   (gaps vs self, where self wins/loses, actionable direction) — reflect this in their description.
+9) If intake_draft.market_scope is set, reflect that scope in research task descriptions (e.g. prioritize
+   sources for that geography/segment); if it implies a comparison (e.g. "中国 vs 海外"), ensure the
+   analyze task covers that axis.
 
 Return a JSON object and nothing else.
 """
