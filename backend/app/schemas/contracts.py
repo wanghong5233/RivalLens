@@ -7,6 +7,26 @@ from typing import Final
 _CONTRACT_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 _CONTRACT_TOKEN_SEPARATOR_PATTERN: Final[re.Pattern[str]] = re.compile(r"[^a-z0-9_]+")
 _CONTRACT_TOKEN_LEADING_NON_ALPHA_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[^a-z]+")
+_DIMENSION_ALIASES: Final[dict[str, str]] = {
+    "china_vs_global": "market_differences",
+    "global_vs_china": "market_differences",
+    "china_vs_global_market_dynamics": "market_differences",
+    "china_vs_global_market_differenc": "market_differences",
+    "market_difference": "market_differences",
+    "market_differenc": "market_differences",
+    "market_dynamics": "market_differences",
+    "enterprise_features": "enterprise_capabilities",
+    "enterprise_feature": "enterprise_capabilities",
+    "enterprise_capabilities_assessme": "enterprise_capabilities",
+    "enterprise_capabilities_assessment": "enterprise_capabilities",
+    "investment_recommendation": "strategic_recommendations",
+    "product_positioning_analysis": "product_positioning",
+    "pricing_strategy_comparison": "pricing_strategy",
+    "strategic_investment": "strategic_recommendations",
+    "strategic_investment_recommendat": "strategic_recommendations",
+    "strategic_investment_recommendation": "strategic_recommendations",
+    "strategic_recommendation": "strategic_recommendations",
+}
 
 
 def _validate_contract_token(*, value: str, field_name: str) -> str:
@@ -45,7 +65,8 @@ def validate_token_list(
 
 
 def validate_dimension(value: str) -> str:
-    return _validate_contract_token(value=value, field_name="dimension")
+    normalized = _validate_contract_token(value=value, field_name="dimension")
+    return _DIMENSION_ALIASES.get(normalized, normalized)
 
 
 def normalize_dimension_or_none(

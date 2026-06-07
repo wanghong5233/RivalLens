@@ -307,7 +307,7 @@ def test_build_run_metrics_snapshot_reports_report_quality_fields() -> None:
         agent_name="writer",
         status="completed",
         retry_count=0,
-        payload={"sections": ["pricing"]},
+        payload={"target_sections": ["pricing", "security"]},
     )
 
     snapshot = build_run_metrics_snapshot(
@@ -322,8 +322,54 @@ def test_build_run_metrics_snapshot_reports_report_quality_fields() -> None:
 
     assert snapshot.report_char_count == 3200
     assert snapshot.report_section_count == 1
+    assert snapshot.report_section_coverage_rate == 0.5
     assert snapshot.report_depth == "deep"
+
+
+def test_build_run_metrics_snapshot_counts_top_level_executive_summary_coverage() -> None:
+    run = Run(
+        run_id="run_report_metrics_summary",
+        user_query="report metrics",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_cursor"],
+        intake_draft={"report_depth": "deep"},
+        plan_tree=None,
+    )
+    report = Report(
+        report_id="report_metrics_summary",
+        run_id=run.run_id,
+        status="completed",
+        content_markdown="x" * 3200,
+        content_json={
+            "executive_summary": "Executive summary grounded in evidence.",
+            "sections": [
+                {"section_id": "pricing", "content_markdown": "x" * 500},
+            ],
+        },
+    )
+    writer_step = Step(
+        step_id="step_writer_report_metrics_summary",
+        run_id=run.run_id,
+        agent_name="writer",
+        status="completed",
+        retry_count=0,
+        payload={"target_sections": ["executive_summary", "pricing"]},
+    )
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=[],
+        step_rows=[writer_step],
+        llm_rows=[],
+        decision_rows=[],
+        candidate_rows=[],
+        report_rows=[report],
+    )
+
+    assert snapshot.report_section_count == 1
     assert snapshot.report_section_coverage_rate == 1.0
+    assert "executive_summary" in snapshot.report_section_ids
 
 
 def test_build_run_metrics_snapshot_uses_supervisor_dimensions_without_plan_tree() -> None:

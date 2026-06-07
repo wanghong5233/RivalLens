@@ -76,6 +76,8 @@ class Analyze(BaseModel):
 class Write(BaseModel):
     template_id: str | None = None
     sections: list[str] | None = None
+    qa_reasons: list[str] = Field(default_factory=list)
+    unsupported_numeric_claims: list[dict[str, object]] = Field(default_factory=list)
 
     @field_validator("template_id")
     @classmethod
@@ -94,6 +96,19 @@ class Write(BaseModel):
             field_name="sections",
             item_validator=validate_section_id,
         )
+
+    @field_validator("qa_reasons")
+    @classmethod
+    def _cap_qa_reasons(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()][:8]
+
+    @field_validator("unsupported_numeric_claims")
+    @classmethod
+    def _cap_unsupported_numeric_claims(
+        cls,
+        value: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        return value[:12]
 
 
 class Finalize(BaseModel):

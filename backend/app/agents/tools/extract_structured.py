@@ -32,7 +32,10 @@ class ExtractStructuredChannel(BaseChannel):
             except ValueError:
                 source_type = "article"
         else:
-            source_type = infer_source_type(source_url=source_url, official_hosts=None)
+            source_type = infer_source_type(
+                source_url=source_url,
+                official_hosts=None,
+            )
 
         prompt_text = text[:4000]
         fallback_prompt = f"Return minimal JSON quote for text:\n{prompt_text[:1200]}"

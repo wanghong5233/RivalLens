@@ -539,6 +539,8 @@ async def writer_node(state: AgentState) -> AgentState:
             analyst_insights=insight_briefs,
             risk_flags=risk_flags,
             recommended_sections=analyst_output.recommended_sections,
+            qa_reasons=request.qa_reasons,
+            unsupported_numeric_claims=request.unsupported_numeric_claims,
             report_depth=report_depth,
         ),
         output_model=WriterReportOutput,

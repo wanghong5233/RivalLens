@@ -22,7 +22,7 @@ from service.collector.robots import RobotsGate
 from service.collector.source_quality import MIN_EXTRACTED_TEXT_CHARS, is_low_semantic_text
 from urllib.parse import urlsplit
 
-from agents.tools.parse_page import infer_source_type
+from agents.tools.parse_page import infer_source_type, official_hosts_for_competitor
 
 _TAVILY_EXTRACT_ERRORS: tuple[type[Exception], ...] = (
     TavilyBadRequestError,
@@ -129,7 +129,9 @@ class FetchUrlChannel(BaseChannel):
         source_url = extracted_url or url
         source_type = infer_source_type(
             source_url=source_url,
-            official_hosts=None,
+            official_hosts=official_hosts_for_competitor(
+                competitor_id if isinstance(competitor_id, str) else None
+            ),
         )
         snippet = self._build_snippet(
             raw_text=extracted_text,

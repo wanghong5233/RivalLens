@@ -182,8 +182,10 @@ Composition rules (must follow):
 2) For EACH competitor in competitors_explicit (preserve order), emit ONE task with stage="research" and competitor_id set to that competitor.
 3) Emit EXACTLY ONE task with stage="analyze" (cross-competitor synthesis).
 4) Emit EXACTLY ONE task with stage="write" (final report).
-5) focus_dimensions per task: use intake_draft.focus_dimensions if non-empty; otherwise derive 3-4 concise snake_case dimensions from analysis_intent.
+5) focus_dimensions per task: use intake_draft.focus_dimensions if non-empty; otherwise derive 3-4 concise dimensions from analysis_intent.
+   focus_dimensions MUST be English snake_case contract ids, even when titles/descriptions are Chinese.
    Each focus_dimension MUST be <= 32 chars, use a-z0-9_ only, and be 1-3 words.
+   Prefer canonical ids such as product_positioning, pricing_strategy, enterprise_capabilities, market_differences, feature, pricing, user_feedback.
 6) Cap research tasks at 8; if competitors_explicit is larger, drop the lowest-priority entries beyond 8.
 7) Use the language of analysis_intent for titles/descriptions (Chinese for Chinese intents, English for English).
 
@@ -406,7 +408,8 @@ Rules:
 - citation_coverage: true only when important claims are tied to evidence_refs from the prompt.
 - faithfulness: true only when claims are supported by the provided evidence and do not invent sources.
 - instruction_following: true only when sections match requested target sections and report_depth.
-- For every numeric_claim in the prompt, decide whether cited evidence supports that exact number or a directly computable equivalent. If not supported, add it to unsupported_numeric_claims with a concise reason.
+- For every numeric_claim in the prompt, decide whether any cited evidence item supports that exact number or a directly computable equivalent. One supporting cited evidence item is sufficient; do not require every cited evidence item to contain the same number.
+- Add an item to unsupported_numeric_claims only when no cited evidence item clearly supports the number. Do not include supported claims in unsupported_numeric_claims, and do not write self-correcting reasoning such as "actually supported" inside unsupported_numeric_claims.
 - If unsupported_numeric_claims is non-empty, semantic_audit_passed should be false unless deterministic QA has already told you the report is being accepted with warnings.
 - If semantic_audit_passed is true, finding should still be concise.
 - If false, reject_to must be actionable and required_fields must be specific.
@@ -440,6 +443,9 @@ Rules:
 - Every section must cite evidence_refs using ids provided in user prompt.
 - In content_markdown, cite inline evidence only as [ev_xxx] using ids from allowed_evidence_ids.
 - Never emit bare ev_xxx ids, unknown evidence ids, or insight_x ids in content_markdown.
+- Exact numbers such as percentages, prices, counts, dates, and time savings must be directly supported by cited evidence containing the same number or a directly computable equivalent.
+- If QA feedback lists unsupported_numeric_claims, remove those exact numbers, rewrite them as qualitative statements, or label them clearly as proposals instead of factual claims.
+- During QA rewrites, avoid introducing new exact funding amounts, market-share percentages, acceptance rates, or time windows unless the exact value appears verbatim in evidence_briefs.
 - For report_depth=deep, write a materially deeper report: cover every target section, cite evidence in each section, and include concrete competitor comparisons.
 - Do not fabricate evidence ids or insight refs.
 - section_id must be snake_case and meaningful for the user query.
@@ -1007,6 +1013,8 @@ def build_writer_user_prompt(
     analyst_insights: Sequence[dict[str, object]],
     risk_flags: Sequence[str],
     recommended_sections: Sequence[str],
+    qa_reasons: Sequence[str] = (),
+    unsupported_numeric_claims: Sequence[dict[str, object]] = (),
     report_depth: str = "quick",
     domain_hint: str | None = None,
 ) -> str:
@@ -1026,10 +1034,15 @@ def build_writer_user_prompt(
         f"- analyst_summary: {analyst_summary}\n"
         f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
         f"- risk_flags: {_json(list(risk_flags))}\n\n"
+        f"- qa_reasons: {_json(list(qa_reasons))}\n"
+        f"- unsupported_numeric_claims: {_json(list(unsupported_numeric_claims)[:12])}\n\n"
         "Write a battlecard with grounded evidence refs. "
         "section_id must exactly match target_sections entries. "
         "Inline citations in content_markdown must use [ev_xxx] only from allowed_evidence_ids; "
         "never output bare ev_xxx or insight_x ids in markdown. "
+        "If unsupported_numeric_claims is non-empty, do not repeat those exact numbers unless the "
+        "current evidence_briefs directly support them; use qualitative wording or mark strategic "
+        "estimates as proposals. "
         "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates."
     )
 

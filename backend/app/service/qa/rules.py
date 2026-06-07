@@ -192,6 +192,23 @@ def _section_evidence_refs(section: dict[str, object]) -> list[str]:
     return [item for item in refs_raw if isinstance(item, str) and item]
 
 
+def _executive_summary_is_present(content_json: dict[str, object]) -> bool:
+    summary_raw = content_json.get("executive_summary")
+    return isinstance(summary_raw, str) and bool(summary_raw.strip())
+
+
+def _covered_report_section_ids(content_json: dict[str, object]) -> set[str]:
+    section_ids = {
+        section_id
+        for section in _iter_report_sections(content_json)
+        for section_id in [_section_id(section)]
+        if section_id is not None
+    }
+    if _executive_summary_is_present(content_json):
+        section_ids.add("executive_summary")
+    return section_ids
+
+
 def _normalized_target_sections(target_sections: list[str] | None) -> list[str]:
     if not target_sections:
         return []
@@ -239,12 +256,7 @@ def rule_deep_report_covers_target_sections(
             reject_to="writer",
             message="Deep report section coverage skipped because no target sections were resolved.",
         )
-    actual_sections = {
-        section_id
-        for section in _iter_report_sections(content_json)
-        for section_id in [_section_id(section)]
-        if section_id is not None
-    }
+    actual_sections = _covered_report_section_ids(content_json)
     covered_count = sum(1 for target in targets if target in actual_sections)
     coverage_rate = covered_count / len(targets)
     missing = [target for target in targets if target not in actual_sections]

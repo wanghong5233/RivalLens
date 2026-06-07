@@ -15,6 +15,7 @@ from schemas.agent_outputs import (
     WriterReportOutput,
     resolve_writer_target_sections,
 )
+from schemas.contracts import validate_dimension
 from schemas.intake import RunIntakeDraft
 
 
@@ -305,6 +306,43 @@ def test_planner_output_parses_research_tasks() -> None:
     tasks = output.to_plan_tasks()
     assert len(tasks) == 1
     assert tasks[0].competitor_id == "Cursor"
+
+
+def test_planner_output_normalizes_or_falls_back_non_contract_dimensions() -> None:
+    draft = RunIntakeDraft(
+        user_query="对比 AI 编程工具",
+        competitors_explicit=["Cursor"],
+        focus_dimensions=["产品定位", "pricing_strategy"],
+    )
+    output = PlannerOutput.parse_llm_content(
+        {
+            "rationale": "Research explicit competitors first.",
+            "tasks": [
+                {
+                    "stage": "research",
+                    "title": "Research Cursor",
+                    "description": "Collect evidence",
+                    "competitor_id": "Cursor",
+                    "focus_dimensions": ["产品定位", "enterprise capabilities"],
+                }
+            ],
+        },
+        draft=draft,
+    )
+
+    task = output.to_plan_tasks()[0]
+    assert task.focus_dimensions == ["enterprise_capabilities"]
+
+
+def test_dimension_aliases_share_canonical_namespace() -> None:
+    assert validate_dimension("china_vs_global") == "market_differences"
+    assert validate_dimension("china_vs_global_market_dynamics") == "market_differences"
+    assert validate_dimension("enterprise_features") == "enterprise_capabilities"
+    assert validate_dimension("enterprise_capabilities_assessme") == "enterprise_capabilities"
+    assert validate_dimension("product_positioning_analysis") == "product_positioning"
+    assert validate_dimension("pricing_strategy_comparison") == "pricing_strategy"
+    assert validate_dimension("investment_recommendation") == "strategic_recommendations"
+    assert validate_dimension("strategic_investment_recommendat") == "strategic_recommendations"
 
 
 def test_supervisor_tool_call_output_validates_batch_topics() -> None:

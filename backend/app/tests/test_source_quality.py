@@ -14,6 +14,15 @@ def test_is_low_semantic_text_flags_short_navigation_and_fragments() -> None:
         "Home Login Copyright All rights reserved Privacy Policy",
         min_chars=0,
     ) == (True, "navigation_boilerplate")
+    assert is_low_semantic_text(
+        "![通义灵码](https://example.com/image.png)",
+        min_chars=0,
+    ) == (True, "image_markdown")
+    assert is_low_semantic_text(
+        "Sign in Home/Tools/Coding Alternatives Pricing Reviews "
+        "OpenAlt directory page lists tools and login navigation before any useful content.",
+        min_chars=0,
+    ) == (True, "navigation_directory")
 
 
 def test_is_low_semantic_text_allows_substantive_quote() -> None:

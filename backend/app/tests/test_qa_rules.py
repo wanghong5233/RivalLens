@@ -6,6 +6,7 @@ from models.evidence import EvidenceRecord
 from models.run import Run
 from models.step import Step
 from schemas.qa import Approval, Rejection
+from service.llm.prompts import QA_SEMANTIC_SYSTEM_PROMPT
 from service.llm.response import LLMResponse
 from service.qa.engine import (
     _apply_numeric_claim_gate,
@@ -185,6 +186,34 @@ def test_evaluate_fast_path_rules_applies_deep_only_gates() -> None:
     assert "rule_deep_report_covers_target_sections" in failed_deep_rule_ids
 
 
+def test_deep_report_section_coverage_counts_top_level_executive_summary() -> None:
+    content_json = {
+        "template_id": "default",
+        "executive_summary": "Executive summary with enough substance to count as present.",
+        "sections": [
+            {
+                "section_id": "pricing",
+                "title": "Pricing",
+                "content_markdown": "x" * 240,
+                "evidence_refs": ["ev_test_001"],
+            }
+        ],
+    }
+    evidence = _make_evidence(desensitized=True)
+
+    results = evaluate_fast_path_rules(
+        content_markdown="x" * 3200,
+        content_json=content_json,
+        evidence_items=[evidence],
+        allowed_evidence_ids={"ev_test_001"},
+        report_depth="deep",
+        target_sections=["executive_summary", "pricing"],
+    )
+
+    failed_rule_ids = {item.rule_id for item in results if not item.passed}
+    assert "rule_deep_report_covers_target_sections" not in failed_rule_ids
+
+
 def test_target_sections_prefers_writer_resolved_targets_over_plan_and_intake() -> None:
     run = Run(
         run_id="run_qa_targets",
@@ -256,7 +285,7 @@ def test_target_sections_falls_back_to_plan_and_intake_without_writer_targets() 
     ]
 
 
-def test_numeric_claim_gate_blocks_first_round_and_warns_after_retry() -> None:
+def test_numeric_claim_gate_blocks_unsupported_numbers_until_removed() -> None:
     semantic_output = {
         "semantic_audit_passed": True,
         "reject_to": "writer",
@@ -287,8 +316,13 @@ def test_numeric_claim_gate_blocks_first_round_and_warns_after_retry() -> None:
     assert first_round["severity"] == "blocking"
     assert first_round["reject_to"] == "writer"
     assert "reports.content_json.sections[].evidence_refs" in first_round["required_fields"]
-    assert retry_round["semantic_audit_passed"] is True
-    assert retry_round["severity"] == "warning"
+    assert retry_round["semantic_audit_passed"] is False
+    assert retry_round["severity"] == "blocking"
+
+
+def test_qa_semantic_prompt_treats_one_supporting_citation_as_sufficient() -> None:
+    assert "One supporting cited evidence item is sufficient" in QA_SEMANTIC_SYSTEM_PROMPT
+    assert "Do not include supported claims in unsupported_numeric_claims" in QA_SEMANTIC_SYSTEM_PROMPT
 
 
 def test_engine_aggregation_rejects_when_blocking_failed() -> None:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pytest
 
 from agents.tools.fetch_url import FetchUrlChannel
-from agents.tools.parse_page import infer_source_type
+from agents.tools.parse_page import infer_source_type, official_hosts_for_competitor, source_matches_competitor
 from agents.tools.search_web import TavilySearchChannel
 from core.config import settings
 from service.collector.errors import ChannelError, RobotsBlocked
@@ -169,10 +169,53 @@ def test_source_type_mapping_rules() -> None:
     )
     assert (
         infer_source_type(
+            source_url="https://www.cursor.com/pricing",
+            official_hosts=official_hosts_for_competitor("Cursor"),
+        )
+        == "pricing_page"
+    )
+    assert source_matches_competitor(
+        source_url="https://cursor.com/pricing",
+        competitor_id="Cursor",
+    ) is True
+    assert source_matches_competitor(
+        source_url="https://billingplatform.com/blog/pricing",
+        competitor_id="Cursor",
+    ) is False
+    assert (
+        infer_source_type(
             source_url="https://community.example.com/thread/1",
             official_hosts=None,
         )
         == "public_review"
+    )
+
+
+def test_official_hosts_heuristic_for_dynamic_competitor() -> None:
+    openai_hosts = official_hosts_for_competitor("OpenAI")
+    assert "openai.com" in openai_hosts
+    assert (
+        infer_source_type(
+            source_url="https://openai.com/docs/guides",
+            official_hosts=openai_hosts,
+        )
+        == "docs"
+    )
+    assert source_matches_competitor(
+        source_url="https://openai.com/pricing",
+        competitor_id="OpenAI",
+    ) is True
+    # An unrelated vendor domain must not be treated as this competitor's official source.
+    assert source_matches_competitor(
+        source_url="https://github.com/features",
+        competitor_id="OpenAI",
+    ) is False
+    assert (
+        infer_source_type(
+            source_url="https://github.com/features",
+            official_hosts=official_hosts_for_competitor("OpenAI"),
+        )
+        == "article"
     )
 
 

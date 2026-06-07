@@ -287,20 +287,10 @@ def _apply_numeric_claim_gate(
     qa_rejection_count: int,
     has_blocking_failures_pre_semantic: bool,
 ) -> dict[str, object]:
+    del qa_rejection_count, has_blocking_failures_pre_semantic
     unsupported_claims = _unsupported_numeric_claims(semantic_output)
     if not unsupported_claims:
         return semantic_output
-    if qa_rejection_count >= 1 and not has_blocking_failures_pre_semantic:
-        return {
-            **semantic_output,
-            "semantic_audit_passed": True,
-            "severity": "warning",
-            "reject_to": "writer",
-            "finding": (
-                "Unsupported numeric claims remained after retry; accepted with warning "
-                "metadata so the report can surface unverifiable numbers."
-            ),
-        }
     required_fields_raw = semantic_output.get("required_fields")
     existing_required_fields = (
         [item for item in required_fields_raw if isinstance(item, str)]
@@ -595,6 +585,7 @@ async def evaluate_report(
             and len(evidence_items) >= 12
             and not has_blocking_failures_pre_semantic
             and not _report_has_writer_fallback_mode(report.content_json)
+            and not _unsupported_numeric_claims(semantic_output)
         ):
             # If deterministic QA already passed and semantic retry still bounces between
             # analyst/researcher, stop the loop and accept with warning-level metadata.

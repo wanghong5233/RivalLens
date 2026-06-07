@@ -34,6 +34,7 @@ class AgentState(TypedDict, total=False):
     qa_rejection_count: int
     pending_review_target_step_id: str | None
     qa_reasons: list[str]
+    qa_unsupported_numeric_claims: list[dict[str, object]]
     researched_competitors: Annotated[list[str], operator.add]
     researcher_degraded_competitors: Annotated[list[str], operator.add]
     analysis_done: bool

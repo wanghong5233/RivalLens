@@ -12,7 +12,7 @@ from core.defaults import (
     MAX_RESEARCH_COMPETITORS,
     MAX_TOTAL_PLAN_TASKS,
 )
-from schemas.contracts import normalize_dimension_or_none, validate_dimension
+from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_token_list
 from schemas.intake import IntakeClarifyRequest, RunIntakeDraft
 from schemas.plan import PlanTask, PlanTaskStage
 from schemas.supervisor import (
@@ -160,7 +160,12 @@ class PlannerOutput(BaseModel):
         if not isinstance(tasks_raw, list) or not tasks_raw:
             raise ValueError("tasks must be a non-empty list")
         default_focus = (
-            list(draft.focus_dimensions)[:MAX_FOCUS_DIMENSIONS]
+            validate_token_list(
+                values=list(draft.focus_dimensions),
+                field_name="draft.focus_dimensions",
+                item_validator=validate_dimension,
+                allow_empty=True,
+            )[:MAX_FOCUS_DIMENSIONS]
             or list(DEFAULT_FOCUS_DIMENSIONS)
         )
         parsed_tasks: list[PlannerTaskDraft] = []
@@ -190,11 +195,16 @@ class PlannerOutput(BaseModel):
                 research_count += 1
             focus_raw = item.get("focus_dimensions")
             if isinstance(focus_raw, list):
-                focus = [
-                    str(v).strip()
-                    for v in focus_raw
-                    if isinstance(v, str) and v.strip()
-                ][:MAX_FOCUS_DIMENSIONS]
+                focus = validate_token_list(
+                    values=[
+                        str(v).strip()
+                        for v in focus_raw
+                        if isinstance(v, str) and v.strip()
+                    ],
+                    field_name="tasks.focus_dimensions",
+                    item_validator=validate_dimension,
+                    allow_empty=True,
+                )[:MAX_FOCUS_DIMENSIONS]
             else:
                 focus = list(default_focus)
             if not focus:

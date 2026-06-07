@@ -5,6 +5,11 @@ from datetime import datetime, timezone
 
 from agents.state import AgentState
 from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph
+from agents.tools.parse_page import (
+    infer_source_type,
+    official_hosts_for_competitor,
+    source_matches_competitor,
+)
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from db.engine import get_session_factory
 from models.artifact import Artifact
@@ -300,9 +305,38 @@ def _build_evidence_rows(
             source_url = normalize_text_for_storage(source_url)
         if source_title is not None:
             source_title = normalize_text_for_storage(source_title)
+        inferred_source_type = infer_source_type(
+            source_url=source_url,
+            official_hosts=official_hosts_for_competitor(competitor_id_raw),
+        )
+        competitor_source_match = source_matches_competitor(
+            source_url=source_url,
+            competitor_id=competitor_id_raw,
+        )
+        official_source_types = {"official_site", "docs", "pricing_page"}
+        if normalized_source_type == "article" and inferred_source_type != "article":
+            normalized_source_type = inferred_source_type
+        elif (
+            normalized_source_type in official_source_types
+            and inferred_source_type not in official_source_types
+        ):
+            # Upstream tools classify against the union of all competitors' official
+            # hosts, so a competitor's research result pointing at another vendor's
+            # official domain can arrive mislabeled. Re-derive against this
+            # competitor's own hosts and downgrade when it is not genuinely official.
+            normalized_source_type = inferred_source_type
         metadata = {
             **metadata,
             "dimension_drop_reason": drop_reason,
+            "competitor_source_match": competitor_source_match,
+            "source_authority": (
+                "official"
+                if (
+                    competitor_source_match is True
+                    and normalized_source_type in {"official_site", "docs", "pricing_page"}
+                )
+                else "third_party"
+            ),
         }
         candidate = {
             "dimension": normalized_dimension,

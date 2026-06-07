@@ -432,6 +432,8 @@ class WriterReportOutput(BaseModel):
 
         if target_sections:
             present = {section.section_id for section in normalized_sections}
+            if self.executive_summary.strip():
+                present.add("executive_summary")
             missing = [section_id for section_id in target_sections if section_id not in present]
             if missing:
                 self.risk_callouts = stable_unique(

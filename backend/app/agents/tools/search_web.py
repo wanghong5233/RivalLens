@@ -98,7 +98,10 @@ class TavilySearchChannel(BaseChannel):
                 continue
             normalized_url = source_url if isinstance(source_url, str) else None
             normalized_title = source_title if isinstance(source_title, str) else "tavily_result"
-            source_type = infer_source_type(source_url=normalized_url, official_hosts=None)
+            source_type = infer_source_type(
+                source_url=normalized_url,
+                official_hosts=None,
+            )
             snippets.append(
                 self._build_snippet(
                     raw_text=raw_text,

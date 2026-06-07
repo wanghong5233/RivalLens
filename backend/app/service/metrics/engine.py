@@ -16,6 +16,14 @@ from models.run import Run
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
+from schemas.contracts import validate_dimension
+
+
+def _normalize_dimension(value: str) -> str | None:
+    try:
+        return validate_dimension(value)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -60,7 +68,7 @@ def _extract_dimension(span: dict[str, object] | None) -> str | None:
     if not isinstance(span, dict):
         return None
     dimension = span.get("dimension")
-    return dimension if isinstance(dimension, str) and dimension else None
+    return _normalize_dimension(dimension) if isinstance(dimension, str) and dimension else None
 
 
 def _expected_dimensions_from_plan_tree(plan_tree: dict[str, object] | None) -> set[str]:
@@ -78,7 +86,9 @@ def _expected_dimensions_from_plan_tree(plan_tree: dict[str, object] | None) -> 
             continue
         for item in focus_raw:
             if isinstance(item, str) and item:
-                dimensions.add(item)
+                normalized = _normalize_dimension(item)
+                if normalized is not None:
+                    dimensions.add(normalized)
     return dimensions
 
 
@@ -91,7 +101,9 @@ def _add_focus_dimensions_from_mapping(
     if isinstance(focus_raw, list):
         for item in focus_raw:
             if isinstance(item, str) and item:
-                dimensions.add(item)
+                normalized = _normalize_dimension(item)
+                if normalized is not None:
+                    dimensions.add(normalized)
     topics_raw = payload.get("topics")
     if not isinstance(topics_raw, list):
         return
@@ -128,25 +140,42 @@ def _latest_report(report_rows: list[Report]) -> Report | None:
 def _section_ids_from_report(report: Report | None) -> set[str]:
     if report is None or not isinstance(report.content_json, dict):
         return set()
+    content_json = report.content_json
     sections_raw = report.content_json.get("sections")
-    if not isinstance(sections_raw, list):
-        return set()
     section_ids: set[str] = set()
-    for section_raw in sections_raw:
-        if not isinstance(section_raw, dict):
-            continue
-        section_id_raw = section_raw.get("section_id")
-        if isinstance(section_id_raw, str) and section_id_raw:
-            section_ids.add(section_id_raw)
+    if isinstance(sections_raw, list):
+        for section_raw in sections_raw:
+            if not isinstance(section_raw, dict):
+                continue
+            section_id_raw = section_raw.get("section_id")
+            if isinstance(section_id_raw, str) and section_id_raw:
+                normalized = _normalize_dimension(section_id_raw)
+                if normalized is not None:
+                    section_ids.add(normalized)
+    executive_summary_raw = content_json.get("executive_summary")
+    if isinstance(executive_summary_raw, str) and executive_summary_raw.strip():
+        section_ids.add("executive_summary")
     return section_ids
 
 
 def _dimensions_from_comparisons(rows: list[ComparisonCellRecord]) -> set[str]:
-    return {row.dimension for row in rows if isinstance(row.dimension, str) and row.dimension}
+    return {
+        normalized
+        for row in rows
+        if isinstance(row.dimension, str) and row.dimension
+        for normalized in [_normalize_dimension(row.dimension)]
+        if normalized is not None
+    }
 
 
 def _sections_from_conclusions(rows: list[ConclusionRecord]) -> set[str]:
-    return {row.section for row in rows if isinstance(row.section, str) and row.section}
+    return {
+        normalized
+        for row in rows
+        if isinstance(row.section, str) and row.section
+        for normalized in [_normalize_dimension(row.section)]
+        if normalized is not None
+    }
 
 
 def _section_count_from_report(report: Report | None) -> int:
@@ -163,10 +192,18 @@ def _latest_writer_target_sections(step_rows: list[Step]) -> set[str]:
     latest_writer = max(writer_steps, key=lambda row: row.created_at)
     if not isinstance(latest_writer.payload, dict):
         return set()
-    sections_raw = latest_writer.payload.get("sections")
+    sections_raw = latest_writer.payload.get("target_sections")
+    if not isinstance(sections_raw, list):
+        sections_raw = latest_writer.payload.get("sections")
     if not isinstance(sections_raw, list):
         return set()
-    return {item for item in sections_raw if isinstance(item, str) and item}
+    return {
+        normalized
+        for item in sections_raw
+        if isinstance(item, str) and item
+        for normalized in [_normalize_dimension(item)]
+        if normalized is not None
+    }
 
 
 def _safe_rate(numerator: int, denominator: int) -> float:

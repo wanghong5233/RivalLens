@@ -6,6 +6,7 @@ import pytest
 
 from agents.state import ACCUMULATING_STATE_FIELDS, spread_without_accumulators
 from agents.nodes.supervisor import (
+    _decision_from_qa_feedback,
     _decision_from_tool_output,
     _derive_write_sections,
     _fallback_decision,
@@ -295,6 +296,52 @@ async def test_supervisor_finalize_degrades_when_researcher_had_zero_evidence(
     )
 
     assert new_state["status"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_qa_writer_rewrite_reuses_prior_writer_contract() -> None:
+    prior_writer_step = SimpleNamespace(
+        run_id="run_test",
+        agent_name="writer",
+        payload={
+            "template_id": "executive_briefing",
+            "target_sections": ["product_positioning", "pricing_strategy"],
+        },
+    )
+
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, *_: object) -> object:
+            return prior_writer_step
+
+    decision_bundle = await _decision_from_qa_feedback(
+        session_factory=lambda: _FakeSession(),  # type: ignore[arg-type]
+        run_id="run_test",
+        iteration=3,
+        triggered_by="qa_rejection",
+        qa_outcome="rejected",
+        qa_reject_to="writer",
+        qa_reasons=["Unsupported numeric claims."],
+        qa_unsupported_numeric_claims=[{"claim": "$40/seat"}],
+        user_query="compare coding assistants",
+        competitors=["Cursor"],
+        fallback_dimensions=["feature"],
+        fallback_sections=["feature", "differentiation"],
+        pending_review_target_step_id="step_writer_v1",
+    )
+
+    assert decision_bundle is not None
+    decision, _, forced_degraded = decision_bundle
+    assert forced_degraded is False
+    assert decision.chosen_tool == "Write"
+    assert decision.tool_args["template_id"] == "executive_briefing"
+    assert decision.tool_args["sections"] == ["product_positioning", "pricing_strategy"]
+    assert decision.tool_args["unsupported_numeric_claims"] == [{"claim": "$40/seat"}]
 
 
 def test_fallback_decision_prefers_batch_when_multiple_competitors_pending() -> None:

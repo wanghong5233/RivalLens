@@ -304,6 +304,81 @@ def test_build_evidence_rows_applies_source_quality_gate() -> None:
     assert dropped_dimensions["reasons"]["low_semantic"] == 1
 
 
+def test_build_evidence_rows_marks_source_authority_and_competitor_match() -> None:
+    rows, _, dropped_dimensions = _build_evidence_rows(
+        run_id="run_source_authority_test",
+        step_id="step_source_authority_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Cursor pricing page describes team plans for buyers.",
+                "sanitized_text": "Cursor pricing page describes team plans for buyers.",
+                "source_type": "article",
+                "source_url": "https://cursor.com/pricing",
+                "source_title": "Cursor Pricing",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "BillingPlatform discusses general pricing automation for B2B vendors.",
+                "sanitized_text": "BillingPlatform discusses general pricing automation for B2B vendors.",
+                "source_type": "pricing_page",
+                "source_url": "https://billingplatform.com/pricing",
+                "source_title": "BillingPlatform Pricing",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 2
+    official_row = next(row for row in rows if row.source_url == "https://cursor.com/pricing")
+    mismatch_row = next(row for row in rows if row.source_url == "https://billingplatform.com/pricing")
+    assert official_row.source_type == "pricing_page"
+    assert official_row.span["source_authority"] == "official"
+    assert official_row.span["competitor_source_match"] is True
+    assert mismatch_row.span["source_authority"] == "third_party"
+    assert mismatch_row.span["competitor_source_match"] is False
+    assert dropped_dimensions == {"count": 0, "reasons": {}}
+
+
+def test_build_evidence_rows_downgrades_cross_vendor_official_source_type() -> None:
+    rows, _, _ = _build_evidence_rows(
+        run_id="run_cross_vendor_test",
+        step_id="step_cross_vendor_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "A GitHub docs page that upstream tools labeled official by host union.",
+                "sanitized_text": "A GitHub docs page that upstream tools labeled official by host union.",
+                "source_type": "official_site",
+                "source_url": "https://github.com/features/copilot",
+                "source_title": "GitHub Copilot",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.source_type == "article"
+    assert row.span["competitor_source_match"] is False
+    assert row.span["source_authority"] == "third_party"
+
+
 def test_build_evidence_rows_restores_quality_floor_when_gate_filters_all_candidates() -> None:
     rows, ids, dropped_dimensions = _build_evidence_rows(
         run_id="run_source_quality_floor_test",

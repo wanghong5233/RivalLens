@@ -245,6 +245,7 @@ async def qa_node(state: AgentState) -> AgentState:
             "qa_reject_to": None,
             "qa_rejection_count": qa_rejection_count,
             "qa_reasons": [],
+            "qa_unsupported_numeric_claims": [],
             "status": "running",
         }
 
@@ -286,6 +287,12 @@ async def qa_node(state: AgentState) -> AgentState:
         if approval_blocked_for_fallback
         else _to_qa_reasons(review_result)
     )
+    unsupported_numeric_claims_raw = semantic_metadata.get("qa_unsupported_numeric_claims", [])
+    unsupported_numeric_claims = (
+        [item for item in unsupported_numeric_claims_raw if isinstance(item, dict)]
+        if isinstance(unsupported_numeric_claims_raw, list)
+        else []
+    )
     return {
         "last_completed_node": "writer",
         "pending_review_target_step_id": None,
@@ -293,5 +300,6 @@ async def qa_node(state: AgentState) -> AgentState:
         "qa_reject_to": event_reject_to,
         "qa_rejection_count": updated_rejection_count,
         "qa_reasons": qa_reasons,
+        "qa_unsupported_numeric_claims": unsupported_numeric_claims,
         "status": "running",
     }

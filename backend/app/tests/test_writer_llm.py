@@ -47,6 +47,8 @@ def test_build_writer_prompts_include_required_context() -> None:
         ],
         risk_flags=["pricing volatility"],
         recommended_sections=["feature", "pricing"],
+        qa_reasons=["Unsupported numeric claims."],
+        unsupported_numeric_claims=[{"claim": "$40/seat", "section_id": "pricing"}],
     )
     fallback_prompt = build_writer_fallback_user_prompt(
         template_id="battlecard_default",
@@ -63,8 +65,12 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "- report_depth: quick" in user_prompt
     assert "[ev_xxx]" in user_prompt
     assert "never output bare ev_xxx or insight_x ids in markdown" in user_prompt
+    assert "unsupported_numeric_claims" in user_prompt
+    assert "$40/seat" in user_prompt
     assert "[ev_xxx]" in WRITER_SYSTEM_PROMPT
     assert "Never emit bare ev_xxx ids" in WRITER_SYSTEM_PROMPT
+    assert "Exact numbers" in WRITER_SYSTEM_PROMPT
+    assert "During QA rewrites" in WRITER_SYSTEM_PROMPT
     assert "Fallback writer request" in fallback_prompt
     assert "- evidence_ids:" in fallback_prompt
 
@@ -102,6 +108,37 @@ def test_writer_report_output_accepts_valid_payload() -> None:
     assert report["template_id"] == "battlecard_default"
     assert len(report["sections"]) == 1
     assert report["sections"][0]["evidence_refs"] == ["ev_001"]
+
+
+def test_writer_report_output_counts_top_level_executive_summary_as_covered() -> None:
+    context = WriterExecutionContext(
+        template_id="battlecard_default",
+        target_sections=["executive_summary", "feature"],
+        allowed_evidence_ids=frozenset({"ev_001"}),
+        allowed_insight_ids=frozenset({"insight_1"}),
+    )
+    result = WriterReportOutput.parse_llm_content(
+        {
+            "template_id": "battlecard_default",
+            "title": "RivalLens Battlecard",
+            "executive_summary": "This summary is present and should cover the executive_summary target.",
+            "sections": [
+                {
+                    "section_id": "feature",
+                    "title": "Feature Comparison",
+                    "content_markdown": (
+                        "Feature analysis contains enough detail and cites grounded evidence."
+                    ),
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": ["insight_1"],
+                }
+            ],
+            "risk_callouts": [],
+        },
+        execution_context=context,
+    )
+
+    assert "uncovered_section:executive_summary" not in result.risk_callouts
 
 
 def test_writer_report_output_rejects_invalid_evidence_refs() -> None:

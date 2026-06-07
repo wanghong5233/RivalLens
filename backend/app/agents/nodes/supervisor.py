@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState, spread_without_accumulators
@@ -267,6 +268,48 @@ def _derive_write_sections(*, focus_dimensions: list[str]) -> list[str]:
     return sections[:MAX_WRITE_SECTIONS]
 
 
+async def _load_prior_writer_contract(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    run_id: str,
+    target_step_id: str | None,
+) -> tuple[str | None, list[str]]:
+    async with session_factory() as session:
+        writer_step: Step | None = None
+        if target_step_id:
+            candidate = await session.get(Step, target_step_id)
+            if (
+                candidate is not None
+                and candidate.run_id == run_id
+                and candidate.agent_name == "writer"
+                and isinstance(candidate.payload, dict)
+            ):
+                writer_step = candidate
+        if writer_step is None:
+            writer_step = (
+                await session.execute(
+                    select(Step)
+                    .where(Step.run_id == run_id, Step.agent_name == "writer")
+                    .order_by(Step.created_at.asc())
+                    .limit(1)
+                )
+            ).scalars().first()
+        if writer_step is None or not isinstance(writer_step.payload, dict):
+            return None, []
+
+        template_raw = writer_step.payload.get("template_id")
+        template_id = template_raw if isinstance(template_raw, str) and template_raw else None
+        sections_raw = writer_step.payload.get("target_sections")
+        if not isinstance(sections_raw, list):
+            sections_raw = writer_step.payload.get("sections")
+        sections = (
+            [item for item in sections_raw if isinstance(item, str) and item]
+            if isinstance(sections_raw, list)
+            else []
+        )
+        return template_id, _stable_unique(sections)[:MAX_WRITE_SECTIONS]
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -447,18 +490,21 @@ def _fallback_decision(
     return decision
 
 
-def _decision_from_qa_feedback(
+async def _decision_from_qa_feedback(
     *,
+    session_factory: async_sessionmaker[AsyncSession],
     run_id: str,
     iteration: int,
     triggered_by: TriggerSource,
     qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
     qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
     qa_reasons: list[str],
+    qa_unsupported_numeric_claims: list[dict[str, object]],
     user_query: str,
     competitors: list[str],
     fallback_dimensions: list[str],
     fallback_sections: list[str],
+    pending_review_target_step_id: str | None,
 ) -> tuple[SupervisorDecision, LLMResponse, bool] | None:
     if qa_outcome is None or qa_outcome == "approved":
         return None
@@ -498,16 +544,33 @@ def _decision_from_qa_feedback(
 
     if qa_reject_to == "writer":
         qa_reason_summary = "; ".join(qa_reasons[:3]) or "QA blocking rules failed."
+        prior_template_id, prior_sections = await _load_prior_writer_contract(
+            session_factory=session_factory,
+            run_id=run_id,
+            target_step_id=pending_review_target_step_id,
+        )
+        if prior_sections:
+            sections_source = "prior_writer_step"
+            rewrite_sections = list(prior_sections)
+        else:
+            sections_source = "fallback"
+            rewrite_sections = list(fallback_sections)
         decision = SupervisorDecision(
             id=make_id("decision_"),
             run_id=run_id,
             iteration=iteration,
             chosen_tool="Write",
             tool_args=Write(
-                template_id=None,
-                sections=fallback_sections,
+                template_id=prior_template_id,
+                sections=rewrite_sections,
+                qa_reasons=qa_reasons,
+                unsupported_numeric_claims=qa_unsupported_numeric_claims,
             ).model_dump(),
-            reasoning_summary=f"QA rejected writer output and requests rewrite: {qa_reason_summary}",
+            reasoning_summary=(
+                "QA rejected writer output and requests rewrite: "
+                f"{qa_reason_summary} "
+                f"(rewrite_sections_source={sections_source}, sections={len(rewrite_sections)})"
+            ),
             triggered_by=triggered_by,
             outcome="dispatched",
             outcome_recorded_at=now,
@@ -921,7 +984,13 @@ async def supervisor_node(state: AgentState) -> AgentState:
     report_draft_done = bool(state.get("report_draft_done", False))
     qa_outcome = state.get("qa_outcome")
     qa_reject_to = state.get("qa_reject_to")
+    pending_review_target_step_id = state.get("pending_review_target_step_id")
     qa_reasons = list(state.get("qa_reasons", []))
+    qa_unsupported_numeric_claims = [
+        item
+        for item in state.get("qa_unsupported_numeric_claims", [])
+        if isinstance(item, dict)
+    ]
     iteration = int(state.get("current_iteration", 0)) + 1
     last_completed_node = state.get("last_completed_node")
     triggered_by = _resolve_triggered_by(
@@ -950,17 +1019,24 @@ async def supervisor_node(state: AgentState) -> AgentState:
     pending_follow_ups: list[dict[str, object]] = []
 
     forced_degraded_by_qa = False
-    qa_driven_decision = _decision_from_qa_feedback(
+    qa_driven_decision = await _decision_from_qa_feedback(
+        session_factory=session_factory,
         run_id=run_id,
         iteration=iteration,
         triggered_by=triggered_by,
         qa_outcome=qa_outcome,
         qa_reject_to=qa_reject_to,
         qa_reasons=qa_reasons,
+        qa_unsupported_numeric_claims=qa_unsupported_numeric_claims,
         user_query=user_query,
         competitors=competitors,
         fallback_dimensions=fallback_dimensions,
         fallback_sections=fallback_sections,
+        pending_review_target_step_id=(
+            pending_review_target_step_id
+            if isinstance(pending_review_target_step_id, str)
+            else None
+        ),
     )
     if qa_driven_decision is not None:
         decision, llm_response, forced_degraded_by_qa = qa_driven_decision
@@ -1155,5 +1231,6 @@ async def supervisor_node(state: AgentState) -> AgentState:
         "qa_outcome": None,
         "qa_reject_to": None,
         "qa_reasons": [],
+        "qa_unsupported_numeric_claims": [],
         "status": status,
     }
