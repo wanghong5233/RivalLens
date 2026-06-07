@@ -4,6 +4,7 @@ from models.artifact import Artifact
 from models.comparison import ComparisonCellRecord
 from models.conclusion import ConclusionEvidenceLink, ConclusionRecord
 from models.evidence import EvidenceRecord
+from models.knowledge import RunKnowledgeRecord
 from models.llm_call import LLMCall
 from models.report import Report
 from models.run import Run
@@ -19,6 +20,7 @@ __all__ = [
     "ConclusionEvidenceLink",
     "ConclusionRecord",
     "EvidenceRecord",
+    "RunKnowledgeRecord",
     "LLMCall",
     "Report",
     "Run",

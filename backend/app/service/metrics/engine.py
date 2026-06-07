@@ -43,6 +43,7 @@ class RunMetricsSnapshot:
     report_depth: str
     report_section_coverage_rate: float
     source_type_distribution: dict[str, int]
+    source_authority_distribution: dict[str, int]
     desensitization_coverage: float
     qa_total_steps: int
     qa_rejected_steps: int
@@ -70,6 +71,15 @@ def _extract_dimension(span: dict[str, object] | None) -> str | None:
         return None
     dimension = span.get("dimension")
     return _normalize_dimension(dimension) if isinstance(dimension, str) and dimension else None
+
+
+def _extract_source_authority(span: dict[str, object] | None) -> str:
+    if not isinstance(span, dict):
+        return "unknown"
+    source_authority = span.get("source_authority")
+    if isinstance(source_authority, str) and source_authority:
+        return source_authority
+    return "unknown"
 
 
 def _expected_dimensions_from_plan_tree(plan_tree: dict[str, object] | None) -> set[str]:
@@ -270,6 +280,9 @@ def build_run_metrics_snapshot(
         dimension: 0 for dimension in sorted(expected_dimensions)
     }
     source_type_distribution = dict(Counter(row.source_type for row in evidence_rows))
+    source_authority_distribution = dict(
+        Counter(_extract_source_authority(row.span) for row in evidence_rows)
+    )
 
     for row in evidence_rows:
         competitor_id = _extract_competitor_id(row.span)
@@ -386,6 +399,7 @@ def build_run_metrics_snapshot(
         report_depth=_report_depth_from_run(run),
         report_section_coverage_rate=report_section_coverage_rate,
         source_type_distribution=source_type_distribution,
+        source_authority_distribution=source_authority_distribution,
         desensitization_coverage=desensitization_coverage,
         qa_total_steps=len(qa_steps),
         qa_rejected_steps=len(qa_rejected_steps),

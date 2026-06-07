@@ -24,9 +24,10 @@ from service.llm import (
 )
 from service.llm.harness import complete_structured
 from service.llm.response import LLMResponse
+from service.knowledge import load_knowledge_for_run
 from service.qa.numeric_claims import extract_numeric_claim_candidates
 from service.qa.promoted_rules import evaluate_promoted_rule_yaml
-from service.qa.rules import RuleResult, evaluate_fast_path_rules
+from service.qa.rules import RuleResult, evaluate_fast_path_rules, rule_knowledge_schema_conformance
 from service.skill_store import get_skill_store
 from utils.logger import get_logger
 
@@ -55,6 +56,13 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_deep_sections_min_chars": ["reports.content_json.sections[].content_markdown"],
     "rule_deep_sections_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_report_exists": ["reports.report_id"],
+    "rule_knowledge_schema_conformance": [
+        "run_knowledge.schema_version",
+        "run_knowledge.features",
+        "run_knowledge.pricings",
+        "run_knowledge.personas",
+        "run_knowledge.coverage",
+    ],
 }
 _PROMOTED_RULE_REQUIRED_FIELDS = [
     "reports.content_json.sections[].evidence_refs",
@@ -457,6 +465,7 @@ async def evaluate_report(
                 select(EvidenceRecord).where(EvidenceRecord.run_id == run_id)
             )
         ).scalars().all()
+        knowledge = await load_knowledge_for_run(session=session, run_id=run_id)
 
     if report is None or report.run_id != run_id:
         missing_report = RuleResult(
@@ -507,6 +516,12 @@ async def evaluate_report(
         evidence_items=evidence_items,
     )
     rule_results.extend(promoted_rule_results)
+    rule_results.append(
+        rule_knowledge_schema_conformance(
+            knowledge=knowledge,
+            expected_competitors=run.competitors if run is not None else None,
+        )
+    )
     has_blocking_failures_pre_semantic = any(
         (not item.passed and item.severity == "blocking") for item in rule_results
     )

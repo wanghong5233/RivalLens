@@ -2,6 +2,7 @@ import { createBrowserRouter, Navigate, redirect } from "react-router-dom";
 
 import { MarketingShell } from "@/app/layout/MarketingShell";
 import { WorkspaceShell } from "@/app/layout/WorkspaceShell";
+import { SHOW_DEBUG_PANELS } from "@/lib/debugFlags";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 const WORKSPACE_CHILDREN = [
@@ -53,6 +54,17 @@ const WORKSPACE_CHILDREN = [
       const module = await import("@/pages/RunTracePage");
       return { Component: module.RunTracePage };
     },
+  },
+  {
+    path: "runs/:runId/audit",
+    ...(SHOW_DEBUG_PANELS
+      ? {
+          lazy: async () => {
+            const module = await import("@/pages/RunAuditPage");
+            return { Component: module.RunAuditPage };
+          },
+        }
+      : { element: <NotFoundPage /> }),
   },
   {
     path: "runs/:runId/evidence",
@@ -157,6 +169,10 @@ export const appRouter = createBrowserRouter([
   {
     path: "/runs/:runId/trace",
     loader: ({ params }) => redirect(`/app/runs/${params.runId ?? ""}/trace`),
+  },
+  {
+    path: "/runs/:runId/audit",
+    loader: ({ params }) => redirect(`/app/runs/${params.runId ?? ""}/audit`),
   },
   {
     path: "/runs/:runId/evidence",

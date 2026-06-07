@@ -6,14 +6,24 @@ import { useBatchDeleteRuns, useClearRuns, useDeleteRun, usePatchRun, useResumeR
 import { queryClient } from "@/api/queryClient";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
 import { formatDateTime, formatRelativeTime, formatRunTitle } from "@/lib/format";
+import { runPhaseRoute } from "@/lib/runRoute";
 import { track } from "@/lib/analytics";
 
 const PAGE_SIZE = 10;
+const CLEAR_ALL_CONFIRM_TEXT = "清空全部历史";
 type StatusFilter = "all" | "running" | "completed" | "degraded" | "failed";
 
 export function DashboardPage(): JSX.Element {
@@ -39,6 +49,8 @@ export function DashboardPage(): JSX.Element {
   const [editingRunId, setEditingRunId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [isClearAllDialogOpen, setIsClearAllDialogOpen] = useState(false);
+  const [clearAllConfirmText, setClearAllConfirmText] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const selectionAnchorIndexRef = useRef<number | null>(null);
 
@@ -54,6 +66,7 @@ export function DashboardPage(): JSX.Element {
 
   const latestRuns = latestRunsQuery.data?.items ?? [];
   const continueRun = latestRuns.find((i) => i.status === "running" || i.status === "failed");
+  const hasActiveHistoryFilter = statusFilter !== "all" || searchKeyword.trim().length > 0;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
   const totalPages = Math.max(1, Math.ceil((runsQuery.data?.total ?? 0) / PAGE_SIZE));
 
@@ -156,11 +169,11 @@ export function DashboardPage(): JSX.Element {
   }
 
   async function handleClearCurrentFilter(): Promise<void> {
-    const hasFilter = statusFilter !== "all" || searchKeyword.trim().length > 0;
-    const confirmMessage = hasFilter
-      ? "将清空当前筛选下的历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？"
-      : "将清空全部历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？";
-    if (!window.confirm(confirmMessage)) {
+    if (!hasActiveHistoryFilter) {
+      pushToast({ title: "请先选择筛选条件", description: "清空全部历史请使用危险操作区。", variant: "warning" });
+      return;
+    }
+    if (!window.confirm("将清空当前筛选下的历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？")) {
       return;
     }
     try {
@@ -188,7 +201,7 @@ export function DashboardPage(): JSX.Element {
   }
 
   async function handleClearAllHistory(): Promise<void> {
-    if (!window.confirm("将清空全部历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？")) {
+    if (clearAllConfirmText !== CLEAR_ALL_CONFIRM_TEXT) {
       return;
     }
     try {
@@ -207,6 +220,8 @@ export function DashboardPage(): JSX.Element {
             : undefined,
         variant: "success",
       });
+      setClearAllConfirmText("");
+      setIsClearAllDialogOpen(false);
     } catch (error) {
       if (error instanceof Error) {
         pushToast({ title: "清空失败", description: error.message, variant: "danger" });
@@ -246,7 +261,7 @@ export function DashboardPage(): JSX.Element {
                 size="sm"
                 onClick={() => {
                   if (continueRun.status === "running") {
-                    navigate(`/app/runs/${continueRun.run_id}`);
+                    navigate(runPhaseRoute(continueRun));
                     return;
                   }
                   void handleResumeRun(continueRun.run_id);
@@ -314,18 +329,10 @@ export function DashboardPage(): JSX.Element {
             <Button
               size="sm"
               variant="ghost"
-              disabled={clearRunsMutation.isPending}
+              disabled={clearRunsMutation.isPending || !hasActiveHistoryFilter}
               onClick={() => void handleClearCurrentFilter()}
             >
               清空当前筛选
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={clearRunsMutation.isPending}
-              onClick={() => void handleClearAllHistory()}
-            >
-              清空全部历史
             </Button>
             {selectedRuns.size > 0 && (
               <Button size="sm" variant="danger" onClick={() => void handleBatchDelete()}>
@@ -352,6 +359,22 @@ export function DashboardPage(): JSX.Element {
             <option value="failed">失败</option>
           </NativeSelect>
         </div>
+        <details className="rounded-lg border border-danger/20 bg-danger/[0.03] px-3 py-2">
+          <summary className="cursor-pointer text-micro font-medium text-danger">危险操作</summary>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-micro text-foreground-muted">
+              清空全部历史会删除所有非运行中任务。这个操作不可恢复。
+            </p>
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={clearRunsMutation.isPending}
+              onClick={() => setIsClearAllDialogOpen(true)}
+            >
+              清空全部历史
+            </Button>
+          </div>
+        </details>
 
         {runsQuery.isLoading && <Skeleton className="h-32 w-full" />}
         {runsQuery.isError && (
@@ -378,7 +401,7 @@ export function DashboardPage(): JSX.Element {
               />
               <button
                 type="button"
-                onClick={() => navigate(`/app/runs/${run.run_id}`)}
+                onClick={() => navigate(runPhaseRoute(run))}
                 className="min-w-0 flex-1 text-left focus-visible:outline-none"
               >
                 {editingRunId === run.run_id ? (
@@ -451,6 +474,50 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
       </div>
+      <Dialog
+        open={isClearAllDialogOpen}
+        onOpenChange={(open) => {
+          setIsClearAllDialogOpen(open);
+          if (!open) setClearAllConfirmText("");
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认清空全部历史</DialogTitle>
+            <DialogDescription>
+              将删除所有非运行中的历史任务，运行中任务会被跳过。此操作不可恢复。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label htmlFor="clear-all-confirm" className="text-caption text-foreground-muted">
+              输入“{CLEAR_ALL_CONFIRM_TEXT}”以继续
+            </label>
+            <Input
+              id="clear-all-confirm"
+              value={clearAllConfirmText}
+              onChange={(event) => setClearAllConfirmText(event.target.value)}
+              placeholder={CLEAR_ALL_CONFIRM_TEXT}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => setIsClearAllDialogOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              disabled={clearAllConfirmText !== CLEAR_ALL_CONFIRM_TEXT || clearRunsMutation.isPending}
+              onClick={() => void handleClearAllHistory()}
+            >
+              确认清空
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

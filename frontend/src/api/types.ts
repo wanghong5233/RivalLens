@@ -140,6 +140,7 @@ export interface RunListItemResponse {
   title: string | null;
   domain_hint: string | null;
   status: RunStatus;
+  phase?: RunPhase | null;
   started_at: string;
   finished_at: string | null;
   created_at: string;
@@ -162,6 +163,7 @@ export interface StepTraceResponse {
   status: string;
   retry_count: number;
   payload: Record<string, unknown>;
+  rejection_reason: Record<string, unknown> | null;
   started_at: string;
   finished_at: string | null;
   created_at: string;
@@ -180,10 +182,39 @@ export interface SupervisorDecisionTraceResponse {
   created_at: string;
 }
 
+export interface LLMCallTraceResponse {
+  id: number;
+  step_id: string;
+  model_slot: string;
+  provider: string | null;
+  model_name: string | null;
+  prompt_hash: string | null;
+  prompt_preview: string | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  latency_ms: number | null;
+  error: string | null;
+  retry_count: number;
+  fallback_used: boolean | null;
+  fallback_reason: string | null;
+  created_at: string;
+}
+
+export interface TraceTimelineItemResponse {
+  kind: "step" | "decision" | "llm_call";
+  timestamp: string;
+  step_id: string | null;
+  agent_name: string | null;
+  summary: string;
+  payload: Record<string, unknown>;
+}
+
 export interface RunTraceResponse {
   run: RunDetailResponse;
   steps: StepTraceResponse[];
   supervisor_decisions: SupervisorDecisionTraceResponse[];
+  llm_calls: LLMCallTraceResponse[];
+  timeline: TraceTimelineItemResponse[];
 }
 
 export interface EvidenceBriefResponse {
@@ -219,6 +250,7 @@ export interface RunMetricsResponse {
   report_depth: "quick" | "deep";
   report_section_coverage_rate: number;
   source_type_distribution: Record<string, number>;
+  source_authority_distribution: Record<string, number>;
   desensitization_coverage: number;
   qa_total_steps: number;
   qa_rejected_steps: number;
@@ -250,6 +282,53 @@ export interface ConclusionItemResponse {
 export interface RunConclusionsResponse {
   run_id: string;
   items: ConclusionItemResponse[];
+}
+
+export type KnowledgeFeatureMaturity = "unknown" | "basic" | "advanced" | "leading" | null;
+
+export interface KnowledgeFeature {
+  id: string;
+  competitor_id: string;
+  name: string;
+  parent_id: string | null;
+  description: string;
+  maturity: KnowledgeFeatureMaturity;
+  evidence_ids: string[];
+}
+
+export interface KnowledgePricingTier {
+  name?: string;
+  price?: string | null;
+  unit?: string | null;
+  limits?: string[];
+}
+
+export interface KnowledgePricing {
+  id: string;
+  competitor_id: string;
+  model: string;
+  tiers: KnowledgePricingTier[];
+  free_plan: boolean | null;
+  enterprise_plan: boolean | null;
+  evidence_ids: string[];
+}
+
+export interface KnowledgePersona {
+  id: string;
+  name: string;
+  role: string;
+  pain_points: string[];
+  jobs_to_be_done: string[];
+  evidence_ids: string[];
+}
+
+export interface RunKnowledgeResponse {
+  run_id: string;
+  schema_version: string;
+  features: KnowledgeFeature[];
+  pricings: KnowledgePricing[];
+  personas: KnowledgePersona[];
+  coverage: Record<string, Record<string, string>>;
 }
 
 export type ComparisonStance = "leader" | "competitive" | "laggard" | "unknown" | string;
@@ -299,6 +378,7 @@ export interface EvidenceListItemResponse {
   sanitized_text: string;
   competitor_id: string | null;
   metadata: Record<string, unknown> | null;
+  desensitized: boolean;
   collected_at: string;
   created_at: string;
 }

@@ -369,6 +369,46 @@ Output JSON schema:
       ]
     }
   ],
+  "schema_version": "schema_v0.2",
+  "features": [
+    {
+      "id": str,
+      "competitor_id": str,
+      "name": str,
+      "parent_id": str | null,
+      "description": str | null,
+      "maturity": "unknown" | "basic" | "advanced" | "leading" | null,
+      "evidence_ids": list[str]
+    }
+  ],
+  "pricings": [
+    {
+      "id": str,
+      "competitor_id": str,
+      "model": str,
+      "tiers": list[dict],
+      "free_plan": bool | null,
+      "enterprise_plan": bool | null,
+      "evidence_ids": list[str]
+    }
+  ],
+  "personas": [
+    {
+      "id": str,
+      "name": str,
+      "role": str,
+      "pain_points": list[str],
+      "jobs_to_be_done": list[str],
+      "evidence_ids": list[str]
+    }
+  ],
+  "coverage": {
+    "<competitor_id>": {
+      "feature": "complete" | "partial" | "insufficient_data" | "missing",
+      "pricing": "complete" | "partial" | "insufficient_data" | "missing",
+      "feedback": "complete" | "partial" | "insufficient_data" | "missing"
+    }
+  },
   "risk_flags": list[str],
   "recommended_sections": list[str]
 }
@@ -379,6 +419,12 @@ Rules:
 - For comparisons, create one group per focus dimension when at least two competitors have evidence or can be marked unknown.
 - Each comparison cell must use a competitor_id from the user prompt; stance is qualitative, not numeric.
 - Use evidence_ids to ground each cell when available; if evidence is insufficient, set stance="unknown" and evidence_ids=[].
+- Also synthesize the predefined knowledge schema: features, pricings, personas, and coverage.
+- Feature and pricing items must cite existing evidence_ids. If evidence is missing, omit the item and mark coverage honestly.
+- Build feature hierarchy with parent_id when evidence supports a parent/child relationship; otherwise use null.
+- For pricing, if the pricing model is unclear but pricing evidence exists, set model="unknown".
+- Personas should reflect buyer/user roles, pain points, and jobs-to-be-done only when evidence supports them.
+- For each competitor, mark coverage as complete/partial/insufficient_data/missing. Do not invent data to fill coverage.
 - recommended_sections must use snake_case section ids that match insight dimension values.
 - Do not fabricate competitor facts.
 - Return JSON object only.
@@ -933,6 +979,8 @@ def build_analyst_user_prompt(
         "Produce cross-competitor insights with explicit evidence_ids. "
         "For each focus dimension that has grounded evidence in evidence_briefs, produce at least one insight. "
         "Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids."
+        " Also produce structured features, pricings, personas, and coverage from the same evidence. "
+        "If evidence is insufficient for a competitor, say so in coverage instead of inventing fields."
     )
 
 
@@ -947,7 +995,8 @@ def build_analyst_fallback_user_prompt(
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
-        "Return minimal valid JSON with at least one insight."
+        "Return minimal valid JSON with at least one insight, empty features/pricings/personas, "
+        "and coverage marked insufficient_data for each competitor."
     )
 
 
@@ -965,6 +1014,8 @@ def build_analyst_repair_user_prompt(
         "Rules:\n"
         "- recommended_sections must be snake_case ids matching insight dimension values.\n"
         "- Every insight must cite only evidence_ids listed above.\n"
+        "- Feature and pricing evidence_ids must cite only evidence_ids listed above.\n"
+        "- If structured knowledge is uncertain, return empty features/pricings/personas and coverage=insufficient_data.\n"
         "- Return JSON object only."
     )
 

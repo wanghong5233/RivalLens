@@ -14,6 +14,7 @@ from schemas.contracts import validate_section_id
 
 RuleSeverity = Literal["blocking", "warning"]
 RuleRejectTarget = Literal["supervisor", "researcher", "analyst", "writer"]
+_HONEST_INCOMPLETE_COVERAGE = {"partial", "insufficient_data", "missing"}
 
 
 @dataclass(frozen=True)
@@ -368,6 +369,163 @@ def rule_buyer_critical_sections_need_official_source(
         message=(
             "Buyer-critical sections should cite at least one official (vendor) source; "
             f"sections relying only on third-party evidence: {flagged}."
+        ),
+    )
+
+
+def _knowledge_items_by_competitor(
+    items: object,
+) -> dict[str, list[dict[str, object]]]:
+    by_competitor: dict[str, list[dict[str, object]]] = {}
+    if not isinstance(items, list):
+        return by_competitor
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        competitor_id = item.get("competitor_id")
+        if not isinstance(competitor_id, str) or not competitor_id.strip():
+            continue
+        by_competitor.setdefault(competitor_id.strip(), []).append(item)
+    return by_competitor
+
+
+def _coverage_status(
+    *,
+    coverage: object,
+    competitor_id: str,
+    field_name: str,
+) -> str | None:
+    if not isinstance(coverage, dict):
+        return None
+    competitor_coverage = coverage.get(competitor_id)
+    if not isinstance(competitor_coverage, dict):
+        return None
+    status = competitor_coverage.get(field_name)
+    return status if isinstance(status, str) and status else None
+
+
+def _has_non_empty_evidence_ids(item: dict[str, object]) -> bool:
+    evidence_ids = item.get("evidence_ids")
+    return isinstance(evidence_ids, list) and any(
+        isinstance(evidence_id, str) and evidence_id.strip()
+        for evidence_id in evidence_ids
+    )
+
+
+def _required_string(item: dict[str, object], key: str) -> bool:
+    value = item.get(key)
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _expected_knowledge_competitors(
+    *,
+    knowledge: dict[str, object],
+    expected_competitors: list[str] | None,
+) -> list[str]:
+    competitors: list[str] = []
+    for competitor_id in expected_competitors or []:
+        normalized = competitor_id.strip()
+        if normalized and normalized not in competitors:
+            competitors.append(normalized)
+    if competitors:
+        return competitors
+    coverage = knowledge.get("coverage")
+    if isinstance(coverage, dict):
+        for competitor_id in coverage:
+            if isinstance(competitor_id, str) and competitor_id.strip() and competitor_id not in competitors:
+                competitors.append(competitor_id)
+    for group_name in ("features", "pricings"):
+        for competitor_id in _knowledge_items_by_competitor(knowledge.get(group_name)):
+            if competitor_id not in competitors:
+                competitors.append(competitor_id)
+    return competitors
+
+
+def rule_knowledge_schema_conformance(
+    *,
+    knowledge: dict[str, object],
+    expected_competitors: list[str] | None = None,
+) -> RuleResult:
+    failures: list[str] = []
+    schema_version = knowledge.get("schema_version")
+    if not isinstance(schema_version, str) or not schema_version.strip():
+        failures.append("schema_version missing")
+
+    features_by_competitor = _knowledge_items_by_competitor(knowledge.get("features"))
+    pricings_by_competitor = _knowledge_items_by_competitor(knowledge.get("pricings"))
+    coverage = knowledge.get("coverage")
+    competitors = _expected_knowledge_competitors(
+        knowledge=knowledge,
+        expected_competitors=expected_competitors,
+    )
+
+    for item in [item for items in features_by_competitor.values() for item in items]:
+        if not _required_string(item, "id") or not _required_string(item, "name"):
+            failures.append("feature missing id/name")
+        if not _has_non_empty_evidence_ids(item):
+            failures.append("feature missing evidence_ids")
+
+    for item in [item for items in pricings_by_competitor.values() for item in items]:
+        if not _required_string(item, "id") or not _required_string(item, "model"):
+            failures.append("pricing missing id/model")
+        if not _has_non_empty_evidence_ids(item):
+            failures.append("pricing missing evidence_ids")
+
+    personas = knowledge.get("personas")
+    if isinstance(personas, list):
+        for item in personas:
+            if not isinstance(item, dict):
+                failures.append("persona must be object")
+                continue
+            pain_points = item.get("pain_points")
+            jobs_to_be_done = item.get("jobs_to_be_done")
+            has_context = (
+                isinstance(pain_points, list)
+                and any(isinstance(value, str) and value.strip() for value in pain_points)
+            ) or (
+                isinstance(jobs_to_be_done, list)
+                and any(isinstance(value, str) and value.strip() for value in jobs_to_be_done)
+            )
+            if not _required_string(item, "role") or not has_context:
+                failures.append("persona missing role or buyer context")
+
+    for competitor_id in competitors:
+        feature_count = len(features_by_competitor.get(competitor_id, []))
+        feature_status = _coverage_status(
+            coverage=coverage,
+            competitor_id=competitor_id,
+            field_name="feature",
+        )
+        if feature_count < 3 and feature_status not in _HONEST_INCOMPLETE_COVERAGE:
+            failures.append(
+                f"{competitor_id} feature coverage incomplete without honest coverage status"
+            )
+
+        pricings = pricings_by_competitor.get(competitor_id, [])
+        pricing_status = _coverage_status(
+            coverage=coverage,
+            competitor_id=competitor_id,
+            field_name="pricing",
+        )
+        has_unknown_pricing = any(item.get("model") == "unknown" for item in pricings)
+        if not pricings and pricing_status not in _HONEST_INCOMPLETE_COVERAGE:
+            failures.append(
+                f"{competitor_id} pricing missing without honest coverage status"
+            )
+        if pricings and not has_unknown_pricing:
+            # Presence of a concrete pricing item is enough; field/evidence checks above
+            # cover malformed rows.
+            pass
+
+    return RuleResult(
+        rule_id="rule_knowledge_schema_conformance",
+        passed=not failures,
+        severity="blocking",
+        reject_to="analyst",
+        message=(
+            "Knowledge schema conforms to feature/pricing/persona minimums."
+            if not failures
+            else "Knowledge schema is incomplete or malformed: " + "; ".join(sorted(set(failures)))
         ),
     )
 

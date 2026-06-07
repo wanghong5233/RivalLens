@@ -5,12 +5,16 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
+from schemas.business import Feature, Persona, Pricing
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_section_id, validate_template_id
+from schemas.ids import make_id
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 ComparisonStance = Literal["leader", "competitive", "laggard", "unknown"]
 DEFAULT_WRITER_SECTIONS: tuple[str, ...] = DEFAULT_FOCUS_DIMENSIONS
 MIN_WRITER_SECTION_CHARS = 60
+CoverageStatus = Literal["complete", "partial", "insufficient_data", "missing"]
+KnowledgeCoverage = dict[str, dict[str, CoverageStatus]]
 
 
 def stable_unique(values: list[str]) -> list[str]:
@@ -62,6 +66,195 @@ def _filter_valid_section_ids(values: list[str]) -> list[str]:
             continue
         normalized.append(canonical)
     return stable_unique(normalized)
+
+
+def _normalize_allowed_competitors(competitors: set[str] | None) -> set[str]:
+    return {item.strip() for item in competitors or set() if item.strip()}
+
+
+def _filter_allowed_evidence_ids(value: object, allowed_evidence_ids: set[str]) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return stable_unique(
+        [
+            evidence_id
+            for evidence_id in value
+            if isinstance(evidence_id, str) and evidence_id in allowed_evidence_ids
+        ]
+    )
+
+
+def _string_value(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized if normalized else None
+
+
+def _bool_or_none(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _list_of_strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return stable_unique([item.strip() for item in value if isinstance(item, str) and item.strip()])
+
+
+def _list_of_dicts(value: object) -> list[dict[object, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _normalize_coverage(
+    value: object,
+    *,
+    competitors: set[str],
+) -> KnowledgeCoverage:
+    allowed_statuses: set[CoverageStatus] = {
+        "complete",
+        "partial",
+        "insufficient_data",
+        "missing",
+    }
+    allowed_keys = {"feature", "pricing", "feedback", "persona"}
+    if not isinstance(value, dict):
+        return {}
+    normalized: KnowledgeCoverage = {}
+    for competitor_raw, coverage_raw in value.items():
+        competitor_id = _string_value(competitor_raw)
+        if competitor_id is None:
+            continue
+        if competitors and competitor_id not in competitors:
+            continue
+        if not isinstance(coverage_raw, dict):
+            continue
+        coverage_item: dict[str, CoverageStatus] = {}
+        for key_raw, status_raw in coverage_raw.items():
+            key = _string_value(key_raw)
+            status = _string_value(status_raw)
+            if key not in allowed_keys or status not in allowed_statuses:
+                continue
+            coverage_item[key] = status  # type: ignore[assignment]
+        if coverage_item:
+            normalized[competitor_id] = coverage_item
+    return normalized
+
+
+def _filter_features(
+    value: object,
+    *,
+    allowed_evidence_ids: set[str],
+    competitors: set[str],
+) -> list[dict[str, object]]:
+    raw_features = _list_of_dicts(value)
+    candidates: list[dict[str, object]] = []
+    raw_id_to_new_id: dict[str, str] = {}
+    raw_id_to_competitor: dict[str, str] = {}
+    for item in raw_features:
+        competitor_id = _string_value(item.get("competitor_id"))
+        name = _string_value(item.get("name"))
+        evidence_ids = _filter_allowed_evidence_ids(item.get("evidence_ids"), allowed_evidence_ids)
+        if (
+            competitor_id is None
+            or (competitors and competitor_id not in competitors)
+            or name is None
+            or not evidence_ids
+        ):
+            continue
+        feature_id = make_id("feat_")
+        raw_id = _string_value(item.get("id"))
+        if raw_id is not None:
+            raw_id_to_new_id[raw_id] = feature_id
+            raw_id_to_competitor[raw_id] = competitor_id
+        candidates.append(
+            {
+                "id": feature_id,
+                "competitor_id": competitor_id,
+                "name": name,
+                "parent_id": _string_value(item.get("parent_id")),
+                "description": _string_value(item.get("description")),
+                "maturity": item.get("maturity"),
+                "evidence_ids": evidence_ids,
+            }
+        )
+    filtered: list[dict[str, object]] = []
+    for item in candidates:
+        parent_id = item["parent_id"]
+        competitor_id = item["competitor_id"]
+        if (
+            isinstance(parent_id, str)
+            and raw_id_to_new_id.get(parent_id) is not None
+            and raw_id_to_competitor.get(parent_id) == competitor_id
+        ):
+            item["parent_id"] = raw_id_to_new_id[parent_id]
+        else:
+            item["parent_id"] = None
+        try:
+            filtered.append(Feature.model_validate(item).model_dump(mode="python"))
+        except ValidationError:
+            continue
+    return filtered
+
+
+def _filter_pricings(
+    value: object,
+    *,
+    allowed_evidence_ids: set[str],
+    competitors: set[str],
+) -> list[dict[str, object]]:
+    filtered: list[dict[str, object]] = []
+    for item in _list_of_dicts(value):
+        competitor_id = _string_value(item.get("competitor_id"))
+        model = _string_value(item.get("model")) or "unknown"
+        evidence_ids = _filter_allowed_evidence_ids(item.get("evidence_ids"), allowed_evidence_ids)
+        if (
+            competitor_id is None
+            or (competitors and competitor_id not in competitors)
+            or not evidence_ids
+        ):
+            continue
+        payload = {
+            "id": make_id("price_"),
+            "competitor_id": competitor_id,
+            "model": model,
+            "tiers": _list_of_dicts(item.get("tiers")),
+            "free_plan": _bool_or_none(item.get("free_plan")),
+            "enterprise_plan": _bool_or_none(item.get("enterprise_plan")),
+            "evidence_ids": evidence_ids,
+        }
+        try:
+            filtered.append(Pricing.model_validate(payload).model_dump(mode="python"))
+        except ValidationError:
+            continue
+    return filtered
+
+
+def _filter_personas(
+    value: object,
+    *,
+    allowed_evidence_ids: set[str],
+) -> list[dict[str, object]]:
+    filtered: list[dict[str, object]] = []
+    for item in _list_of_dicts(value):
+        name = _string_value(item.get("name"))
+        role = _string_value(item.get("role"))
+        if name is None or role is None:
+            continue
+        payload = {
+            "id": make_id("persona_"),
+            "name": name,
+            "role": role,
+            "pain_points": _list_of_strings(item.get("pain_points")),
+            "jobs_to_be_done": _list_of_strings(item.get("jobs_to_be_done")),
+            "evidence_ids": _filter_allowed_evidence_ids(item.get("evidence_ids"), allowed_evidence_ids),
+        }
+        try:
+            filtered.append(Persona.model_validate(payload).model_dump(mode="python"))
+        except ValidationError:
+            continue
+    return filtered
 
 
 class AnalystInsight(BaseModel):
@@ -116,9 +309,14 @@ class DimensionComparison(BaseModel):
 class AnalystOutput(BaseModel):
     """Canonical analyst artifact consumed by writer and QA."""
 
+    schema_version: str = "schema_v0.2"
     summary: str = Field(min_length=1)
     insights: list[AnalystInsight] = Field(min_length=1)
     comparisons: list[DimensionComparison] = Field(default_factory=list)
+    features: list[Feature] = Field(default_factory=list)
+    pricings: list[Pricing] = Field(default_factory=list)
+    personas: list[Persona] = Field(default_factory=list)
+    coverage: KnowledgeCoverage = Field(default_factory=dict)
     risk_flags: list[str] = Field(default_factory=list)
     recommended_sections: list[str] = Field(default_factory=list)
 
@@ -236,10 +434,30 @@ class AnalystOutput(BaseModel):
                             "cells": filtered_cells,
                         }
                     )
+        allowed_competitors = _normalize_allowed_competitors(competitors)
         payload = {
+            "schema_version": _string_value(content.get("schema_version")) or "schema_v0.2",
             "summary": content.get("summary"),
             "insights": filtered_insights,
             "comparisons": filtered_comparisons,
+            "features": _filter_features(
+                content.get("features"),
+                allowed_evidence_ids=allowed_evidence_ids,
+                competitors=allowed_competitors,
+            ),
+            "pricings": _filter_pricings(
+                content.get("pricings"),
+                allowed_evidence_ids=allowed_evidence_ids,
+                competitors=allowed_competitors,
+            ),
+            "personas": _filter_personas(
+                content.get("personas"),
+                allowed_evidence_ids=allowed_evidence_ids,
+            ),
+            "coverage": _normalize_coverage(
+                content.get("coverage"),
+                competitors=allowed_competitors,
+            ),
             "risk_flags": content.get("risk_flags") if isinstance(content.get("risk_flags"), list) else [],
             "recommended_sections": content.get("recommended_sections")
             if isinstance(content.get("recommended_sections"), list)
@@ -268,6 +486,7 @@ class AnalystOutput(BaseModel):
         *,
         focus_dimensions: list[str],
         evidence_briefs: list[dict[str, object]],
+        competitors: list[str] | None = None,
     ) -> AnalystOutput:
         covered_dimensions = stable_unique(
             [
@@ -324,10 +543,38 @@ class AnalystOutput(BaseModel):
                 evidence_ids=["ev_missing"],
                 confidence="low",
             )
+        coverage_competitors = stable_unique(
+            [
+                item.strip()
+                for item in competitors or []
+                if isinstance(item, str) and item.strip()
+            ]
+        )
+        if not coverage_competitors:
+            coverage_competitors = stable_unique(
+                [
+                    item["competitor_id"]
+                    for item in evidence_briefs
+                    if isinstance(item.get("competitor_id"), str) and item["competitor_id"]
+                ]
+            )
+        if not coverage_competitors:
+            coverage_competitors = ["unknown"]
         return cls(
             summary=summary,
             insights=[insight],
             comparisons=[],
+            features=[],
+            pricings=[],
+            personas=[],
+            coverage={
+                competitor_id: {
+                    "feature": "insufficient_data",
+                    "pricing": "insufficient_data",
+                    "feedback": "insufficient_data",
+                }
+                for competitor_id in coverage_competitors
+            },
             risk_flags=risk_flags,
             recommended_sections=covered_dimensions or focus_dimensions or [dimension],
         )

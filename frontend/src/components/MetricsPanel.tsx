@@ -36,6 +36,14 @@ function formatWallClock(value: number | null): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatDistribution(distribution: Record<string, number>): string {
+  const entries = Object.entries(distribution);
+  if (entries.length === 0) {
+    return "-";
+  }
+  return entries.map(([key, count]) => `${key}: ${count}`).join(" · ");
+}
+
 export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Element {
   const metricsQuery = useRunMetrics(runId, {
     enabled: Boolean(runId),
@@ -47,12 +55,29 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
     if (!metrics) {
       return [];
     }
+    const authorityTotal = Object.values(metrics.source_authority_distribution).reduce(
+      (sum, count) => sum + count,
+      0,
+    );
+    const officialSourceCount = metrics.source_authority_distribution.official ?? 0;
     return [
       {
         key: "coverage",
         label: "覆盖率",
         value: formatPercent(metrics.coverage_rate),
         hint: "有 evidence 的竞品数 / run 竞品总数",
+      },
+      {
+        key: "dimension_coverage",
+        label: "结构维度覆盖",
+        value: formatPercent(metrics.dimension_coverage_rate),
+        hint: "分析/报告已覆盖的目标维度比例",
+      },
+      {
+        key: "evidence_dimension_coverage",
+        label: "证据维度覆盖",
+        value: formatPercent(metrics.evidence_dimension_coverage_rate),
+        hint: "研究任务目标维度中有同维度 evidence 的比例",
       },
       {
         key: "qa_rejection",
@@ -71,6 +96,12 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
         label: "脱敏覆盖率",
         value: formatPercent(metrics.desensitization_coverage),
         hint: "desensitized=true 的 evidence 比例",
+      },
+      {
+        key: "official_source",
+        label: "官方来源占比",
+        value: formatPercent(authorityTotal === 0 ? 0 : officialSourceCount / authorityTotal),
+        hint: "source_authority=official 的 evidence 比例",
       },
       {
         key: "evidence",
@@ -95,6 +126,18 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
         label: "LLM 延迟 P50",
         value: metrics.llm_latency_p50_ms === null ? "-" : `${metrics.llm_latency_p50_ms}ms`,
         hint: "llm_calls.latency_ms 中位数",
+      },
+      {
+        key: "llm_retry_total",
+        label: "LLM 重试",
+        value: formatInteger(metrics.llm_retry_total),
+        hint: "llm_calls.retry_count 总和",
+      },
+      {
+        key: "llm_provider_error",
+        label: "Provider 错误",
+        value: formatInteger(metrics.llm_provider_error_count),
+        hint: "llm_calls.error 非空的调用数",
       },
       {
         key: "supervisor",
@@ -167,11 +210,11 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
               </div>
               <div className="rounded-md border border-border p-3">
                 <p className="mb-1 font-medium text-foreground">按 source_type 分布</p>
-                {Object.entries(metricsQuery.data!.source_type_distribution).map(([sourceType, count]) => (
-                  <p key={sourceType}>
-                    {sourceType}: {count}
-                  </p>
-                ))}
+                <p>{formatDistribution(metricsQuery.data!.source_type_distribution)}</p>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <p className="mb-1 font-medium text-foreground">按 source_authority 分布</p>
+                <p>{formatDistribution(metricsQuery.data!.source_authority_distribution)}</p>
               </div>
             </div>
 

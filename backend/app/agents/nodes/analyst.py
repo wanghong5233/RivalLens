@@ -17,6 +17,7 @@ from schemas.supervisor import Analyze
 from service.comparison import persist_comparisons_for_step
 from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import persist_comparison_conclusions_for_step, persist_conclusions_for_step
+from service.knowledge import persist_knowledge_for_step
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
     build_analyst_fallback_user_prompt,
@@ -173,6 +174,7 @@ async def analyst_node(state: AgentState) -> AgentState:
         analysis_output = AnalystOutput.build_fallback(
             focus_dimensions=focus_dimensions,
             evidence_briefs=evidence_briefs,
+            competitors=[item for item in competitors if isinstance(item, str)],
         )
     analysis_result = analysis_output.to_persisted_dict()
     analysis_insights = (
@@ -189,6 +191,31 @@ async def analyst_node(state: AgentState) -> AgentState:
         [item for item in analysis_result["comparisons"] if isinstance(item, dict)]
         if isinstance(analysis_result.get("comparisons"), list)
         else []
+    )
+    analysis_features = (
+        [item for item in analysis_result["features"] if isinstance(item, dict)]
+        if isinstance(analysis_result.get("features"), list)
+        else []
+    )
+    analysis_pricings = (
+        [item for item in analysis_result["pricings"] if isinstance(item, dict)]
+        if isinstance(analysis_result.get("pricings"), list)
+        else []
+    )
+    analysis_personas = (
+        [item for item in analysis_result["personas"] if isinstance(item, dict)]
+        if isinstance(analysis_result.get("personas"), list)
+        else []
+    )
+    analysis_coverage = (
+        analysis_result["coverage"]
+        if isinstance(analysis_result.get("coverage"), dict)
+        else {}
+    )
+    analysis_schema_version = (
+        analysis_result["schema_version"]
+        if isinstance(analysis_result.get("schema_version"), str)
+        else "schema_v0.2"
     )
     evidence_lookup = {row.id: row for row in evidence_rows}
 
@@ -349,6 +376,39 @@ async def analyst_node(state: AgentState) -> AgentState:
             step.payload = {
                 **step.payload,
                 "comparisons_persist_error": comparisons_persist_error,
+            }
+        knowledge_persist_error: str | None = None
+        try:
+            async with session.begin_nested():
+                await persist_knowledge_for_step(
+                    session=session,
+                    run_id=run_id,
+                    step_id=step_id,
+                    schema_version=analysis_schema_version,
+                    features=analysis_features,
+                    pricings=analysis_pricings,
+                    personas=analysis_personas,
+                    coverage=analysis_coverage,
+                )
+                await session.flush()
+        except SQLAlchemyError as exc:
+            knowledge_persist_error = str(exc)[:2000]
+            log.info(
+                "analyst.knowledge.persist_fail",
+                run_id=run_id,
+                step_id=step_id,
+                error=knowledge_persist_error,
+            )
+        step.payload = {
+            **step.payload,
+            "feature_count": len(analysis_features),
+            "pricing_count": len(analysis_pricings),
+            "persona_count": len(analysis_personas),
+        }
+        if knowledge_persist_error is not None:
+            step.payload = {
+                **step.payload,
+                "run_knowledge_persist_error": knowledge_persist_error,
             }
         step.status = "completed"
         step.finished_at = datetime.now(timezone.utc)

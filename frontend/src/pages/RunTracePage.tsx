@@ -1,10 +1,10 @@
-import { useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useRunDetail, useRunTrace } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import { RunTraceDag } from "@/components/dag/RunTraceDag";
 import { RunBreadcrumb } from "@/components/RunBreadcrumb";
+import { LlmCallsTable } from "@/components/trace/LlmCallsTable";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -17,36 +17,6 @@ export function RunTracePage(): JSX.Element {
   useRunEvents(runId);
   const detailQuery = useRunDetail(runId);
   const traceQuery = useRunTrace(runId);
-
-  const llmSummaries = useMemo(() => {
-    if (!traceQuery.data) {
-      return [];
-    }
-    return traceQuery.data.steps
-      .map((step) => {
-        const payload = step.payload;
-        const knownKeys = [
-          "analysis_mode",
-          "qa_semantic_mode",
-          "react_turn_count",
-          "compression_count",
-          "template_id",
-        ];
-        const highlights = knownKeys
-          .filter((key) => key in payload)
-          .map((key) => `${key}=${String(payload[key])}`);
-        if (highlights.length === 0) {
-          return null;
-        }
-        return {
-          stepId: step.step_id,
-          agentName: step.agent_name,
-          createdAt: step.created_at,
-          highlights,
-        };
-      })
-      .filter((item): item is NonNullable<typeof item> => Boolean(item));
-  }, [traceQuery.data]);
 
   return (
     <section className="space-y-4 rounded-lg border border-border bg-black/70 p-4 font-mono text-sm text-gray-100">
@@ -142,21 +112,10 @@ export function RunTracePage(): JSX.Element {
           <TabsContent value="llm">
             <Card className="bg-black/40">
               <CardHeader>
-                <CardTitle className="text-base text-gray-100">LLM highlights (from step payload)</CardTitle>
+                <CardTitle className="text-base text-gray-100">LLM calls</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2">
-                {llmSummaries.length === 0 ? (
-                  <p className="text-xs text-gray-400">暂无可解析的 LLM 摘要字段。</p>
-                ) : (
-                  llmSummaries.map((item) => (
-                    <div className="rounded border border-gray-700 p-3" key={item.stepId}>
-                      <p>
-                        <span className="text-gray-400">[{formatDateTime(item.createdAt)}]</span> {item.agentName}
-                      </p>
-                      <p className="mt-1 text-xs text-gray-400">{item.highlights.join(" · ")}</p>
-                    </div>
-                  ))
-                )}
+              <CardContent>
+                <LlmCallsTable calls={traceQuery.data.llm_calls} steps={traceQuery.data.steps} />
               </CardContent>
             </Card>
           </TabsContent>

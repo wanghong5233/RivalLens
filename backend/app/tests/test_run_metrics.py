@@ -39,6 +39,7 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         report_depth="deep",
         report_section_coverage_rate=0.5,
         source_type_distribution={"web": 3},
+        source_authority_distribution={"official": 2, "third_party": 1},
         desensitization_coverage=1.0,
         qa_total_steps=2,
         qa_rejected_steps=1,
@@ -119,7 +120,11 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
             source_title="Cursor Pricing",
             quote="Cursor publishes pricing details.",
             sanitized_text="Cursor publishes pricing details.",
-            span={"dimension": "pricing_page", "competitor_id": "comp_cursor"},
+            span={
+                "dimension": "pricing_page",
+                "competitor_id": "comp_cursor",
+                "source_authority": "official",
+            },
             collected_by="step_researcher",
             collected_at=collected_at,
             desensitized=True,
@@ -132,7 +137,11 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
             source_title="Cursor Security",
             quote="Cursor describes security controls.",
             sanitized_text="Cursor describes security controls.",
-            span={"dimension": "security_docs", "competitor_id": "comp_cursor"},
+            span={
+                "dimension": "security_docs",
+                "competitor_id": "comp_cursor",
+                "source_authority": "third_party",
+            },
             collected_by="step_researcher",
             collected_at=collected_at,
             desensitized=True,
@@ -180,6 +189,7 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
     }
     assert snapshot.comparison_dimensions == ["pricing", "security"]
     assert snapshot.dimension_coverage_rate == 2 / 3
+    assert snapshot.source_authority_distribution == {"official": 1, "third_party": 1}
 
 
 def test_build_run_metrics_snapshot_uses_downstream_focus_dimensions_for_coverage() -> None:
@@ -466,6 +476,7 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert 0.0 <= payload["report_section_coverage_rate"] <= 1.0
     assert isinstance(payload["source_type_distribution"], dict)
     assert payload["source_type_distribution"]
+    assert isinstance(payload["source_authority_distribution"], dict)
     assert 0.0 <= payload["desensitization_coverage"] <= 1.0
 
     assert payload["qa_total_steps"] >= 1
@@ -523,6 +534,7 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         assert payload["report_depth"] == "quick"
         assert payload["report_section_coverage_rate"] == 0.0
         assert payload["source_type_distribution"] == {}
+        assert payload["source_authority_distribution"] == {}
         assert payload["desensitization_coverage"] == 0.0
         assert payload["qa_total_steps"] == 0
         assert payload["qa_rejected_steps"] == 0

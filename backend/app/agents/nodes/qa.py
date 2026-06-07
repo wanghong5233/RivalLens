@@ -79,13 +79,17 @@ def _make_qa_payload(
             "qa_outcome": "approved",
             "qa_reject_to": None,
             "passed_rule_ids": review_result.passed_rule_ids,
+            "failed_rule_count": 0,
+            "failed_rule_ids": [],
         }
+    failed_rule_ids = list(review_result.failed_rule_ids)
     return {
         "target_step_id": target_step_id,
         "report_id": report_id,
         "qa_outcome": "rejected",
         "qa_reject_to": review_result.reject_to,
-        "failed_rule_ids": review_result.failed_rule_ids,
+        "failed_rule_ids": failed_rule_ids,
+        "failed_rule_count": len(failed_rule_ids),
         "reject_to": review_result.reject_to,
     }
 
@@ -169,6 +173,7 @@ async def qa_node(state: AgentState) -> AgentState:
         qa_payload["qa_reject_to"] = "supervisor" if is_force_degraded else "writer"
         qa_payload["reject_to"] = "supervisor" if is_force_degraded else "writer"
         qa_payload["failed_rule_ids"] = ["rule_writer_no_fallback_mode"]
+        qa_payload["failed_rule_count"] = 1
     elif isinstance(review_result, Rejection) and is_force_degraded:
         qa_payload["qa_outcome"] = "force_degraded"
         qa_payload["qa_reject_to"] = "supervisor"

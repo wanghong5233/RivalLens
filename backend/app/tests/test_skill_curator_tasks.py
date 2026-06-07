@@ -31,6 +31,7 @@ def _snapshot(
         report_depth="deep",
         report_section_coverage_rate=report_section_coverage_rate,
         source_type_distribution={"pricing_page": 1, "docs": 2},
+        source_authority_distribution={"official": 1, "third_party": 2},
         desensitization_coverage=1.0,
         qa_total_steps=1,
         qa_rejected_steps=0,

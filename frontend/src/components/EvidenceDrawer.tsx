@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 
 import { useRunEvidence } from "@/api/hooks";
+import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format";
@@ -21,6 +22,21 @@ const SOURCE_TYPE_ICON: Record<string, string> = {
   reddit: "💬",
   hn_thread: "🟧",
 };
+
+function getSourceAuthority(metadata: Record<string, unknown> | null): string {
+  const value = metadata?.source_authority;
+  return typeof value === "string" && value ? value : "unknown";
+}
+
+function toAuthorityLabel(value: string): string {
+  if (value === "official") {
+    return "官方来源";
+  }
+  if (value === "third_party") {
+    return "第三方来源";
+  }
+  return "来源未知";
+}
 
 export function EvidenceDrawer({
   open,
@@ -75,6 +91,7 @@ export function EvidenceDrawer({
 
           {evidenceRows.map((item) => {
             const sourceIcon = SOURCE_TYPE_ICON[item.source_type] ?? "📌";
+            const sourceAuthority = getSourceAuthority(item.metadata);
             return (
               <article className="space-y-2 rounded-md border border-border bg-card p-3" key={item.evidence_id}>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -82,6 +99,14 @@ export function EvidenceDrawer({
                   <span>{item.source_type}</span>
                   <span>·</span>
                   <span>{formatDateTime(item.collected_at)}</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Badge variant={sourceAuthority === "official" ? "success" : "secondary"}>
+                    {toAuthorityLabel(sourceAuthority)}
+                  </Badge>
+                  <Badge variant={item.desensitized ? "success" : "warning"}>
+                    {item.desensitized ? "已脱敏" : "未脱敏"}
+                  </Badge>
                 </div>
                 <p className="whitespace-pre-wrap text-sm leading-6">{item.sanitized_text}</p>
                 <div className="text-xs text-muted-foreground">

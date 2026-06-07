@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-05-29
+最后更新: 2026-06-07
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -58,9 +58,9 @@
 ### [x] METRIC-001 业务闭环指标面板
 
 - **设计**：docs/0 §4 评分维度 3 要求“准确率、覆盖率、人工修正率”等可运营指标
-- **现状**：新增 `GET /api/runs/{run_id}/metrics`，统一输出 coverage/QA/token/latency/manual-review-proxy 等指标；RunView 新增指标卡片
+- **现状**：`GET /api/runs/{run_id}/metrics` 统一输出 coverage/QA/token/latency/manual-review-proxy/source authority/desensitization 等指标；RunView 已挂载 `MetricsPanel`
 - **入口**：`backend/app/router/run_rt.py` + `backend/app/service/metrics/engine.py` + `frontend/src/components/MetricsPanel.tsx` + `frontend/src/pages/RunViewPage.tsx`
-- **验收**：至少输出 coverage_rate / qa_rejection_rate / manual_review_rate，且口径在 endpoint docstring 与前端提示中可追溯
+- **验收**：至少输出 coverage_rate / qa_rejection_rate / manual_review_rate，并在 RunView 指标面板展示；口径在 endpoint docstring 与前端提示中可追溯
 
 ### [x] EXT-002 通用 source_type 字符串契约
 

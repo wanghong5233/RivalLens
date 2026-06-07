@@ -21,6 +21,7 @@ import type {
   RunCreateRequest,
   RunCreateResponse,
   RunDetailResponse,
+  RunKnowledgeResponse,
   RunListResponse,
   RunMetricsResponse,
   RunConclusionsResponse,
@@ -98,6 +99,11 @@ async function fetchRunMetrics(runId: string): Promise<RunMetricsResponse> {
 
 async function fetchRunConclusions(runId: string): Promise<RunConclusionsResponse> {
   const { data } = await apiClient.get<RunConclusionsResponse>(`/api/runs/${runId}/conclusions`);
+  return data;
+}
+
+async function fetchRunKnowledge(runId: string): Promise<RunKnowledgeResponse> {
+  const { data } = await apiClient.get<RunKnowledgeResponse>(`/api/runs/${runId}/knowledge`);
   return data;
 }
 
@@ -350,6 +356,18 @@ export function useRunConclusions(
   return useQuery({
     queryKey: ["run-conclusions", runId],
     queryFn: () => fetchRunConclusions(runId),
+    enabled: Boolean(runId) && (options.enabled ?? true),
+    refetchInterval: options.refetchInterval,
+  });
+}
+
+export function useRunKnowledge(
+  runId: string,
+  options: QueryBehaviorOptions = {},
+): UseQueryResult<RunKnowledgeResponse, Error> {
+  return useQuery({
+    queryKey: ["run-knowledge", runId],
+    queryFn: () => fetchRunKnowledge(runId),
     enabled: Boolean(runId) && (options.enabled ?? true),
     refetchInterval: options.refetchInterval,
   });

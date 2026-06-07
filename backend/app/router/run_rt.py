@@ -39,6 +39,7 @@ from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.comparison import load_comparisons_for_run
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
+from service.knowledge import load_knowledge_for_run
 from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot, load_run_metrics_snapshot
 from service.skill_curator.tasks import run_skill_curator_for_run
 from utils.logger import bind_run, format_exception_for_log, get_logger
@@ -228,6 +229,7 @@ class RunListItemResponse(BaseModel):
     title: str | None = None
     domain_hint: str | None
     status: str
+    phase: Literal["intake", "planning", "executing", "done"] | None = None
     started_at: str
     finished_at: str | None
     created_at: str
@@ -250,6 +252,7 @@ class StepTraceResponse(BaseModel):
     status: str
     retry_count: int
     payload: dict[str, object]
+    rejection_reason: dict[str, object] | None
     started_at: str
     finished_at: str | None
     created_at: str
@@ -329,6 +332,7 @@ class EvidenceListItemResponse(BaseModel):
     sanitized_text: str
     competitor_id: str | None
     metadata: dict[str, object] | None
+    desensitized: bool
     collected_at: str
     created_at: str
 
@@ -357,6 +361,7 @@ class RunMetricsResponse(BaseModel):
     report_depth: str
     report_section_coverage_rate: float
     source_type_distribution: dict[str, int]
+    source_authority_distribution: dict[str, int]
     desensitization_coverage: float
     qa_total_steps: int
     qa_rejected_steps: int
@@ -388,6 +393,44 @@ class ConclusionItemResponse(BaseModel):
 class RunConclusionsResponse(BaseModel):
     run_id: str
     items: list[ConclusionItemResponse]
+
+
+class KnowledgeFeatureResponse(BaseModel):
+    id: str
+    competitor_id: str
+    name: str
+    parent_id: str | None = None
+    description: str | None = None
+    maturity: str | None = None
+    evidence_ids: list[str]
+
+
+class KnowledgePricingResponse(BaseModel):
+    id: str
+    competitor_id: str
+    model: str
+    tiers: list[dict[str, object]]
+    free_plan: bool | None = None
+    enterprise_plan: bool | None = None
+    evidence_ids: list[str]
+
+
+class KnowledgePersonaResponse(BaseModel):
+    id: str
+    name: str
+    role: str
+    pain_points: list[str]
+    jobs_to_be_done: list[str]
+    evidence_ids: list[str]
+
+
+class RunKnowledgeResponse(BaseModel):
+    run_id: str
+    schema_version: str
+    features: list[KnowledgeFeatureResponse]
+    pricings: list[KnowledgePricingResponse]
+    personas: list[KnowledgePersonaResponse]
+    coverage: dict[str, object]
 
 
 class ComparisonCellResponse(BaseModel):
@@ -768,6 +811,7 @@ def _to_step_trace_response(step: Step) -> StepTraceResponse:
         status=step.status,
         retry_count=step.retry_count,
         payload=step.payload,
+        rejection_reason=step.rejection_reason,
         started_at=step.started_at.isoformat(),
         finished_at=_to_iso(step.finished_at),
         created_at=step.created_at.isoformat(),
@@ -1039,6 +1083,7 @@ async def list_runs(
                 title=run.title,
                 domain_hint=run.domain_hint if run.domain_hint else None,
                 status=run.status,
+                phase=_derive_run_phase(run),
                 started_at=run.started_at.isoformat(),
                 finished_at=_to_iso(run.finished_at),
                 created_at=run.created_at.isoformat(),
@@ -2591,6 +2636,7 @@ async def get_run_evidence(
             sanitized_text=evidence.sanitized_text,
             competitor_id=_extract_competitor_id(evidence.span),
             metadata=evidence.span,
+            desensitized=evidence.desensitized,
             collected_at=evidence.collected_at.isoformat(),
             created_at=evidence.created_at.isoformat(),
         )
@@ -2614,6 +2660,29 @@ async def get_run_conclusions(run_id: str) -> RunConclusionsResponse:
     return RunConclusionsResponse(
         run_id=run_id,
         items=[ConclusionItemResponse.model_validate(item) for item in items_raw],
+    )
+
+
+@router.get("/api/runs/{run_id}/knowledge", response_model=RunKnowledgeResponse)
+async def get_run_knowledge(run_id: str) -> RunKnowledgeResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        knowledge = await load_knowledge_for_run(session=session, run_id=run_id)
+
+    return RunKnowledgeResponse(
+        run_id=run_id,
+        schema_version=knowledge["schema_version"],
+        features=[KnowledgeFeatureResponse.model_validate(item) for item in knowledge["features"]],
+        pricings=[KnowledgePricingResponse.model_validate(item) for item in knowledge["pricings"]],
+        personas=[KnowledgePersonaResponse.model_validate(item) for item in knowledge["personas"]],
+        coverage=knowledge["coverage"],
     )
 
 

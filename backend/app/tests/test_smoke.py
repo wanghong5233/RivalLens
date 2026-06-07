@@ -22,6 +22,7 @@ from schemas.business import Evidence
 from schemas.qa import Rejection, RetryPolicy
 from schemas.skill import SkillCandidate
 from schemas.supervisor import SupervisorDecision
+from router.run_rt import _to_step_trace_response
 from service.event_bus import RunEvent, RunEventType
 from service.conclusion import persist_conclusions_for_step
 from service.skill_store import get_skill_store
@@ -30,6 +31,48 @@ from service.skill_store import get_skill_store
 @pytest.fixture(autouse=True)
 def _offline_research_channels(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "TAVILY_API_KEY", None)
+
+
+def test_step_trace_response_exposes_rejection_reason() -> None:
+    timestamp = datetime.now(timezone.utc)
+    rejected_step = Step(
+        step_id="step_qa_rejected",
+        run_id="run_trace_contract",
+        agent_name="qa",
+        status="rejected",
+        retry_count=0,
+        payload={"qa_outcome": "rejected"},
+        rejection_reason={
+            "semantic_findings": [{"message": "missing evidence"}],
+            "required_fields": ["evidence_refs"],
+            "retry_policy": {"current_retry": 1},
+        },
+        started_at=timestamp,
+        finished_at=timestamp,
+        created_at=timestamp,
+    )
+    approved_step = Step(
+        step_id="step_qa_approved",
+        run_id="run_trace_contract",
+        agent_name="qa",
+        status="completed",
+        retry_count=0,
+        payload={"qa_outcome": "approved"},
+        rejection_reason=None,
+        started_at=timestamp,
+        finished_at=timestamp,
+        created_at=timestamp,
+    )
+
+    rejected_payload = _to_step_trace_response(rejected_step).model_dump()
+    approved_payload = _to_step_trace_response(approved_step).model_dump()
+
+    assert rejected_payload["rejection_reason"] == {
+        "semantic_findings": [{"message": "missing evidence"}],
+        "required_fields": ["evidence_refs"],
+        "retry_policy": {"current_retry": 1},
+    }
+    assert approved_payload["rejection_reason"] is None
 
 
 def _fetch_persisted_snapshot(run_id: str) -> dict[str, int | str | bool | float]:

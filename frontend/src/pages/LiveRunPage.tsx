@@ -19,7 +19,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 
 import { useRunDetail, useSubmitRunFollowUp } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
@@ -94,7 +94,6 @@ const TERMINAL_STATUSES = new Set(["completed", "degraded", "failed", "cancelled
 
 const MAX_TOOL_ENTRIES = 12;
 const MAX_EVIDENCE_ENTRIES = 30;
-const TERMINAL_REDIRECT_MS = 2_500;
 
 // Stuck detection: when the run is still "running" but no SSE traffic has been
 // seen for this long, surface a "可能已中断" hint with a one-tap stop. Empirical
@@ -110,7 +109,6 @@ function buildToolKey(payload: ToolEventPayload): string {
 export function LiveRunPage(): JSX.Element {
   const { runId: rawRunId } = useParams<{ runId: string }>();
   const runId = rawRunId ?? "";
-  const navigate = useNavigate();
   const runDetail = useRunDetail(runId);
 
   const planTree = runDetail.data?.plan_tree ?? null;
@@ -320,18 +318,6 @@ export function LiveRunPage(): JSX.Element {
     }, STUCK_HINT_TICK_MS);
     return () => window.clearInterval(intervalId);
   }, [runStatus]);
-
-  // When the run reaches a terminal state, defer the navigation a moment so
-  // the user can see the final flips (completed tiles + last evidence cards).
-  useEffect(() => {
-    if (!runId || !runStatus || !TERMINAL_STATUSES.has(runStatus)) {
-      return;
-    }
-    const timeoutId = window.setTimeout(() => {
-      navigate(`/app/runs/${runId}`, { replace: true });
-    }, TERMINAL_REDIRECT_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [runId, runStatus, navigate]);
 
   const stageTasks = useMemo(() => {
     if (planTree === null) {

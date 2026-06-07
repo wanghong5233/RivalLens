@@ -1,20 +1,31 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 
 import { useRunReport } from "@/api/hooks";
+import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { Logo } from "@/components/Logo";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toCitationLinkMarkdown, transformEvidenceMarkdownUrl } from "@/lib/evidenceLinks";
 
 export function SharedReportPage(): JSX.Element {
   const { runId } = useParams<{ runId: string }>();
+  const [isEvidenceDrawerOpen, setIsEvidenceDrawerOpen] = useState(false);
+  const [activeEvidenceIds, setActiveEvidenceIds] = useState<string[]>([]);
   const reportQuery = useRunReport(runId ?? "", { enabled: Boolean(runId) });
   const reportWithCitationLinks = useMemo(
     () => toCitationLinkMarkdown(reportQuery.data?.content_markdown ?? ""),
     [reportQuery.data?.content_markdown],
   );
+
+  function openEvidenceDrawer(evidenceIds: string[]): void {
+    if (evidenceIds.length === 0 || !runId) {
+      return;
+    }
+    setActiveEvidenceIds(evidenceIds);
+    setIsEvidenceDrawerOpen(true);
+  }
 
   return (
     <section className="space-y-6 py-8">
@@ -41,12 +52,13 @@ export function SharedReportPage(): JSX.Element {
                 if (href?.startsWith("evidence://")) {
                   const evidenceId = href.replace("evidence://", "");
                   return (
-                    <Link
+                    <button
                       className="rounded bg-primary/10 px-1.5 py-0.5 text-micro text-primary ring-1 ring-inset ring-primary/20 hover:bg-primary/20"
-                      to={`/app/runs/${runId}/evidence?evidence_id=${encodeURIComponent(evidenceId)}`}
+                      onClick={() => openEvidenceDrawer([evidenceId])}
+                      type="button"
                     >
                       {children}
-                    </Link>
+                    </button>
                   );
                 }
                 return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
@@ -63,6 +75,13 @@ export function SharedReportPage(): JSX.Element {
       <p className="text-center text-micro text-foreground-subtle">
         由 RivalLens AI 竞品雷达生成 · 数据来源为公开信息
       </p>
+
+      <EvidenceDrawer
+        evidenceIds={activeEvidenceIds}
+        onOpenChange={setIsEvidenceDrawerOpen}
+        open={isEvidenceDrawerOpen}
+        runId={runId ?? ""}
+      />
     </section>
   );
 }

@@ -438,6 +438,10 @@ class _FakeLLMClient:
 
         insights: list[dict[str, object]] = []
         comparisons: list[dict[str, object]] = []
+        features: list[dict[str, object]] = []
+        pricings: list[dict[str, object]] = []
+        personas: list[dict[str, object]] = []
+        coverage: dict[str, dict[str, str]] = {}
         for dimension in focus_dimensions:
             dimension_evidence = [
                 item
@@ -477,6 +481,73 @@ class _FakeLLMClient:
             if len(cells) >= 2:
                 comparisons.append({"dimension": dimension, "cells": cells})
 
+        for competitor_id in competitors:
+            competitor_feature_evidence = [
+                item
+                for item in evidence_briefs
+                if item.get("competitor_id") == competitor_id
+                and item.get("dimension") == "feature"
+                and isinstance(item.get("evidence_id"), str)
+            ]
+            competitor_pricing_evidence = [
+                item
+                for item in evidence_briefs
+                if item.get("competitor_id") == competitor_id
+                and item.get("dimension") == "pricing"
+                and isinstance(item.get("evidence_id"), str)
+            ]
+            if competitor_feature_evidence:
+                evidence_id = competitor_feature_evidence[0]["evidence_id"]
+                features.extend(
+                    [
+                        {
+                            "id": f"llm_feat_{competitor_id}_{index}",
+                            "competitor_id": competitor_id,
+                            "name": f"{competitor_id} feature signal {index}",
+                            "parent_id": None,
+                            "description": f"Deterministic {competitor_id} feature signal.",
+                            "maturity": "basic",
+                            "evidence_ids": [evidence_id],
+                        }
+                        for index in range(3)
+                    ]
+                )
+            if competitor_pricing_evidence:
+                pricings.append(
+                    {
+                        "id": f"llm_price_{competitor_id}",
+                        "competitor_id": competitor_id,
+                        "model": "unknown",
+                        "tiers": [],
+                        "free_plan": None,
+                        "enterprise_plan": None,
+                        "evidence_ids": [competitor_pricing_evidence[0]["evidence_id"]],
+                    }
+                )
+            coverage[competitor_id] = {
+                "feature": "complete" if competitor_feature_evidence else "insufficient_data",
+                "pricing": "complete" if competitor_pricing_evidence else "insufficient_data",
+                "feedback": "partial",
+            }
+
+        feedback_evidence = [
+            item
+            for item in evidence_briefs
+            if item.get("dimension") == "user_feedback"
+            and isinstance(item.get("evidence_id"), str)
+        ]
+        if feedback_evidence:
+            personas.append(
+                {
+                    "id": "llm_persona_engineering_manager",
+                    "name": "Engineering manager",
+                    "role": "engineering_manager",
+                    "pain_points": ["Manual comparison work"],
+                    "jobs_to_be_done": ["Compare tools with evidence"],
+                    "evidence_ids": [feedback_evidence[0]["evidence_id"]],
+                }
+            )
+
         if not insights and evidence_briefs:
             first = evidence_briefs[0]
             evidence_id = first.get("evidence_id")
@@ -491,9 +562,14 @@ class _FakeLLMClient:
                     }
                 )
         content = {
+            "schema_version": "schema_v0.2",
             "summary": "Deterministic analyst summary with structured comparisons.",
             "insights": insights,
             "comparisons": comparisons,
+            "features": features,
+            "pricings": pricings,
+            "personas": personas,
+            "coverage": coverage,
             "risk_flags": [],
             "recommended_sections": focus_dimensions,
         }

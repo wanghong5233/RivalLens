@@ -5,6 +5,7 @@ import {
   Download,
   RotateCcw,
   Share2,
+  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -13,11 +14,22 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 
 import { queryClient } from "@/api/queryClient";
-import { useResetRun, useRunComparisons, useRunConclusions, useRunDetail, useRunMetrics, useRunReport, useRunTrace } from "@/api/hooks";
+import {
+  useResetRun,
+  useRunComparisons,
+  useRunConclusions,
+  useRunDetail,
+  useRunKnowledge,
+  useRunMetrics,
+  useRunReport,
+  useRunTrace,
+} from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import { BattlecardGrid } from "@/components/battlecard";
 import { ComparisonMatrix } from "@/components/comparison/ComparisonMatrix";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
+import { KnowledgePanel } from "@/components/knowledge/KnowledgePanel";
+import { MetricsPanel } from "@/components/MetricsPanel";
 import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +38,8 @@ import { pushToast } from "@/components/ui/toaster";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toCitationLinkMarkdown, transformEvidenceMarkdownUrl } from "@/lib/evidenceLinks";
 import { formatDateTime, formatDuration, formatRunTitle } from "@/lib/format";
+import { SHOW_DEBUG_PANELS } from "@/lib/debugFlags";
+import { runPhaseRoute } from "@/lib/runRoute";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +75,10 @@ export function RunViewPage(): JSX.Element {
     enabled: isReportReady,
     refetchInterval: isRunActive ? 2_000 : false,
   });
+  const knowledgeQuery = useRunKnowledge(runId, {
+    enabled: isReportReady,
+    refetchInterval: isRunActive ? 2_000 : false,
+  });
   const metricsQuery = useRunMetrics(runId, {
     enabled: isReportReady,
     refetchInterval: isRunActive ? 2_000 : false,
@@ -75,6 +93,7 @@ export function RunViewPage(): JSX.Element {
   const reportWithCitationLinks = useMemo(() => toCitationLinkMarkdown(reportMarkdown), [reportMarkdown]);
   const conclusions = conclusionsQuery.data?.items ?? [];
   const comparisons = comparisonsQuery.data?.items ?? [];
+  const activeRunRoute = detailQuery.data ? runPhaseRoute(detailQuery.data) : null;
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) return;
@@ -170,6 +189,19 @@ export function RunViewPage(): JSX.Element {
 
       {detailQuery.data && !isTerminalFailure && (
         <>
+          {/* Running hint */}
+          {isRunActive && activeRunRoute !== null && activeRunRoute !== `/app/runs/${runId}` ? (
+            <div className="flex flex-col gap-3 rounded-lg border border-primary/25 bg-primary/[0.06] p-4 text-caption text-foreground-muted sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-primary" />
+                <span>分析仍在进行中，建议查看实时进度，避免在报告生成前看到空结果。</span>
+              </div>
+              <Button asChild size="sm" variant="secondary">
+                <Link to={activeRunRoute}>前往实时进度</Link>
+              </Button>
+            </div>
+          ) : null}
+
           {/* KPI bar */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <KpiCard label="覆盖率" value={metricsQuery.data ? `${(metricsQuery.data.coverage_rate * 100).toFixed(0)}%` : "-"} />
@@ -185,11 +217,14 @@ export function RunViewPage(): JSX.Element {
             />
           </div>
 
+          {isReportReady ? <MetricsPanel isRunActive={isRunActive} runId={runId} /> : null}
+
           {/* Tabs */}
           <Tabs defaultValue="battlecard">
             <div className="flex items-center justify-between gap-3">
               <TabsList>
                 <TabsTrigger value="battlecard">Battlecard</TabsTrigger>
+                <TabsTrigger value="knowledge">竞品知识</TabsTrigger>
                 <TabsTrigger value="report">完整报告</TabsTrigger>
                 <TabsTrigger value="trace">决策回放</TabsTrigger>
               </TabsList>
@@ -207,6 +242,11 @@ export function RunViewPage(): JSX.Element {
                 <Button size="sm" variant="ghost" onClick={() => navigate(`/app/compare?run_ids=${runId}`)} aria-label="对比矩阵">
                   <Copy className="h-3.5 w-3.5" />
                 </Button>
+                {SHOW_DEBUG_PANELS && isReportReady ? (
+                  <Button size="sm" variant="ghost" onClick={() => navigate(`/app/runs/${runId}/audit`)} aria-label="运行诊断">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
               </div>
             </div>
 
@@ -222,6 +262,24 @@ export function RunViewPage(): JSX.Element {
               {isReportReady && !conclusionsQuery.isLoading && (
                 <BattlecardGrid runId={runId} conclusions={conclusions} />
               )}
+            </TabsContent>
+
+            {/* Knowledge tab */}
+            <TabsContent value="knowledge" className="space-y-4">
+              {!isReportReady && (
+                <div className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-surface p-4 text-caption text-foreground-muted">
+                  <Activity className="h-4 w-4 text-primary" />
+                  报告生成后将展示结构化功能树、定价模型和用户画像。
+                </div>
+              )}
+              {isReportReady ? (
+                <KnowledgePanel
+                  errorMessage={knowledgeQuery.error?.message ?? null}
+                  isLoading={knowledgeQuery.isLoading}
+                  knowledge={knowledgeQuery.data ?? null}
+                  onEvidenceClick={openEvidenceDrawer}
+                />
+              ) : null}
             </TabsContent>
 
             {/* Full report tab */}

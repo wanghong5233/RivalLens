@@ -19,6 +19,21 @@ interface SourceMeta {
   icon: LucideIcon;
 }
 
+function getSourceAuthority(metadata: Record<string, unknown> | null): string {
+  const value = metadata?.source_authority;
+  return typeof value === "string" && value ? value : "unknown";
+}
+
+function toAuthorityLabel(value: string): string {
+  if (value === "official") {
+    return "官方来源";
+  }
+  if (value === "third_party") {
+    return "第三方来源";
+  }
+  return "来源未知";
+}
+
 function toSourceMeta(sourceType: string): SourceMeta {
   const normalized = sourceType.toLowerCase();
   if (normalized.includes("pricing")) {
@@ -43,6 +58,7 @@ export function RunEvidencePage(): JSX.Element {
 
   const competitorId = searchParams.get("competitor_id")?.trim() ?? "";
   const sourceType = searchParams.get("source_type")?.trim() ?? "";
+  const sourceAuthority = searchParams.get("source_authority")?.trim() ?? "";
   const highlightedEvidenceId = searchParams.get("evidence_id")?.trim() ?? "";
 
   const detailQuery = useRunDetail(runId);
@@ -64,17 +80,33 @@ export function RunEvidencePage(): JSX.Element {
     return Array.from(values).sort();
   }, [allEvidenceQuery.data]);
 
+  const sourceAuthorityOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const item of allEvidenceQuery.data ?? []) {
+      values.add(getSourceAuthority(item.metadata));
+    }
+    return Array.from(values).sort();
+  }, [allEvidenceQuery.data]);
+
+  const visibleEvidence = useMemo(() => {
+    const items = filteredEvidenceQuery.data ?? [];
+    if (!sourceAuthority) {
+      return items;
+    }
+    return items.filter((item) => getSourceAuthority(item.metadata) === sourceAuthority);
+  }, [filteredEvidenceQuery.data, sourceAuthority]);
+
   const hasHighlightedEvidence = useMemo(() => {
     if (!highlightedEvidenceId) {
       return false;
     }
-    return (filteredEvidenceQuery.data ?? []).some(
+    return visibleEvidence.some(
       (item) => item.evidence_id === highlightedEvidenceId,
     );
-  }, [filteredEvidenceQuery.data, highlightedEvidenceId]);
+  }, [highlightedEvidenceId, visibleEvidence]);
   const groupedEvidence = useMemo(() => {
     const groups = new Map<string, EvidenceListItemResponse[]>();
-    for (const item of filteredEvidenceQuery.data ?? []) {
+    for (const item of visibleEvidence) {
       const groupKey = item.competitor_id ?? "未标注竞品";
       const current = groups.get(groupKey) ?? [];
       current.push(item);
@@ -83,11 +115,12 @@ export function RunEvidencePage(): JSX.Element {
     return Array.from(groups.entries()).sort(([left], [right]) =>
       left.localeCompare(right, "zh-CN"),
     );
-  }, [filteredEvidenceQuery.data]);
+  }, [visibleEvidence]);
 
   function patchSearchParams(next: {
     competitorId?: string;
     sourceType?: string;
+    sourceAuthority?: string;
     highlightedEvidenceId?: string;
   }): void {
     const params = new URLSearchParams(searchParams);
@@ -103,6 +136,13 @@ export function RunEvidencePage(): JSX.Element {
         params.set("source_type", next.sourceType);
       } else {
         params.delete("source_type");
+      }
+    }
+    if (next.sourceAuthority !== undefined) {
+      if (next.sourceAuthority) {
+        params.set("source_authority", next.sourceAuthority);
+      } else {
+        params.delete("source_authority");
       }
     }
     if (next.highlightedEvidenceId !== undefined) {
@@ -153,7 +193,7 @@ export function RunEvidencePage(): JSX.Element {
           <CardContent className="pt-6">
             <p className="text-xs text-muted-foreground">当前筛选结果</p>
             <p className="mt-1 text-2xl font-semibold tabular-nums">
-              {(filteredEvidenceQuery.data ?? []).length}
+              {visibleEvidence.length}
             </p>
           </CardContent>
         </Card>
@@ -175,7 +215,7 @@ export function RunEvidencePage(): JSX.Element {
         <CardHeader className="pb-3">
           <CardTitle className="text-base">筛选</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-3">
+        <CardContent className="grid gap-3 sm:grid-cols-4">
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">competitor</span>
             <NativeSelect
@@ -216,6 +256,26 @@ export function RunEvidencePage(): JSX.Element {
             </NativeSelect>
           </label>
 
+          <label className="space-y-1 text-sm">
+            <span className="text-muted-foreground">source_authority</span>
+            <NativeSelect
+              onChange={(event) =>
+                patchSearchParams({
+                  sourceAuthority: event.currentTarget.value,
+                  highlightedEvidenceId: "",
+                })
+              }
+              value={sourceAuthority}
+            >
+              <option value="">全部</option>
+              {sourceAuthorityOptions.map((item) => (
+                <option key={item} value={item}>
+                  {toAuthorityLabel(item)}
+                </option>
+              ))}
+            </NativeSelect>
+          </label>
+
           <div className="flex items-end">
             <Button onClick={clearFilters} size="sm" variant="outline">
               清空筛选
@@ -250,7 +310,7 @@ export function RunEvidencePage(): JSX.Element {
 
       {!filteredEvidenceQuery.isLoading &&
       !filteredEvidenceQuery.isError &&
-      (filteredEvidenceQuery.data ?? []).length === 0 ? (
+      visibleEvidence.length === 0 ? (
         <Card>
           <CardContent className="pt-6 text-sm text-muted-foreground">
             当前筛选条件下没有 evidence。
@@ -272,6 +332,7 @@ export function RunEvidencePage(): JSX.Element {
                 const sourceMeta = toSourceMeta(item.source_type);
                 const SourceIcon = sourceMeta.icon;
                 const isHighlighted = item.evidence_id === highlightedEvidenceId;
+                const itemSourceAuthority = getSourceAuthority(item.metadata);
                 return (
                   <article
                     className={cn(
@@ -288,6 +349,14 @@ export function RunEvidencePage(): JSX.Element {
                         <span>{formatDateTime(item.collected_at)}</span>
                       </div>
                       <span className="font-mono text-xs text-muted-foreground">{item.evidence_id}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <Badge variant={itemSourceAuthority === "official" ? "success" : "secondary"}>
+                        {toAuthorityLabel(itemSourceAuthority)}
+                      </Badge>
+                      <Badge variant={item.desensitized ? "success" : "warning"}>
+                        {item.desensitized ? "已脱敏" : "未脱敏"}
+                      </Badge>
                     </div>
                     {item.source_title ? <p className="text-sm font-medium text-foreground">{item.source_title}</p> : null}
                     <p className="whitespace-pre-wrap text-sm leading-6 text-slate-200">{item.sanitized_text}</p>

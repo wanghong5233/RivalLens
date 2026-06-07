@@ -11,6 +11,7 @@ import { formatDateTime, formatRunTitle } from "@/lib/format";
 
 export function LandingPage(): JSX.Element {
   const completedRunsQuery = useRunsList({ status: "completed", limit: 3, offset: 0 });
+  const previewRun = completedRunsQuery.data?.items[0] ?? null;
 
   useEffect(() => {
     document.title = "RivalLens — AI 竞品雷达";
@@ -27,7 +28,7 @@ export function LandingPage(): JSX.Element {
           AI-Powered Competitive Intelligence
         </p>
         <h1 className="mx-auto max-w-3xl font-display text-display text-foreground">
-          3 分钟产出可溯源的
+          生成可溯源的
           <br />
           <span className="text-primary">Battlecard 报告</span>
         </h1>
@@ -47,34 +48,63 @@ export function LandingPage(): JSX.Element {
         </div>
       </section>
 
-      {/* Product preview mock — Battlecard style */}
+      {/* Product preview */}
       <section className="relative mx-auto max-w-4xl">
         <div className="rounded-xl border border-white/[0.06] bg-surface p-6 shadow-raised">
           <div className="mb-4 flex items-center gap-3">
             <div className="h-2 w-2 rounded-full bg-success" />
-            <span className="text-caption text-foreground-muted">分析完成 · 3 个竞品 · 42 条结论</span>
+            <span className="text-caption text-foreground-muted">最近完成的真实分析</span>
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
-            {["Competitor A", "Competitor B", "Competitor C"].map((name) => (
-              <div key={name} className="rounded-lg border border-white/[0.06] bg-page p-4">
-                <p className="mb-3 text-caption font-semibold text-foreground">{name}</p>
-                <div className="space-y-2">
-                  <div className="flex items-start gap-2">
-                    <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-                    <span className="text-micro text-foreground-muted">定价策略偏向企业级，年付折扣 20%</span>
+          {completedRunsQuery.isLoading ? (
+            <Skeleton className="h-28 w-full" />
+          ) : null}
+          {completedRunsQuery.isError ? (
+            <div className="rounded-lg border border-danger/30 bg-danger/5 p-4 text-caption text-danger">
+              {completedRunsQuery.error.message}
+            </div>
+          ) : null}
+          {!completedRunsQuery.isLoading && !completedRunsQuery.isError ? (
+            previewRun ? (
+              <Link
+                className="block rounded-lg border border-white/[0.06] bg-page p-5 transition-colors hover:border-white/[0.12]"
+                to={`/share/${previewRun.run_id}`}
+              >
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <p
+                      className="line-clamp-2 text-h3 font-semibold text-foreground"
+                      title={previewRun.user_query}
+                    >
+                      {formatRunTitle(previewRun)}
+                    </p>
+                    <p className="mt-2 text-caption text-foreground-muted">
+                      {previewRun.domain_hint ?? "通用场景"}
+                    </p>
                   </div>
-                  <div className="flex items-start gap-2">
-                    <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
-                    <span className="text-micro text-foreground-muted">用户反馈集中在上手门槛高</span>
-                  </div>
-                  <div className="flex items-start gap-2">
-                    <span className="mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
-                    <span className="text-micro text-foreground-muted">API 集成能力强，文档完善</span>
-                  </div>
+                  <StatusBadge status={previewRun.status} />
                 </div>
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <PreviewMetric label="证据" value={`${previewRun.evidence_count}`} />
+                  <PreviewMetric label="步骤" value={`${previewRun.step_count}`} />
+                  <PreviewMetric
+                    label="完成时间"
+                    value={
+                      previewRun.finished_at
+                        ? formatDateTime(previewRun.finished_at)
+                        : "-"
+                    }
+                  />
+                </div>
+              </Link>
+            ) : (
+              <div className="rounded-lg border border-dashed border-white/[0.08] bg-page p-5">
+                <p className="text-caption font-medium text-foreground">暂无真实报告预览</p>
+                <p className="mt-2 text-caption text-foreground-muted">
+                  完成一次分析后，这里会展示最新报告的标题、证据量和执行步骤。
+                </p>
               </div>
-            ))}
-          </div>
+            )
+          ) : null}
         </div>
         <div className="absolute -inset-px -z-10 rounded-xl bg-gradient-to-b from-primary/20 to-transparent opacity-40 blur-xl" />
       </section>
@@ -105,7 +135,7 @@ export function LandingPage(): JSX.Element {
           </div>
           <h3 className="text-h3 text-foreground">一键分享</h3>
           <p className="text-caption text-foreground-muted">
-            导出 PDF / Markdown 或生成公开链接，让团队快速对齐决策结论，无需重复沟通。
+            导出 Markdown 或生成公开链接，让团队快速对齐决策结论，无需重复沟通。
           </p>
         </div>
       </section>
@@ -170,6 +200,17 @@ export function LandingPage(): JSX.Element {
           </div>
         </div>
       </footer>
+    </div>
+  );
+}
+
+function PreviewMetric({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="rounded-md border border-white/[0.06] bg-white/[0.02] px-3 py-2">
+      <p className="text-micro text-foreground-subtle">{label}</p>
+      <p className="mt-1 truncate text-caption font-medium text-foreground" title={value}>
+        {value}
+      </p>
     </div>
   );
 }
