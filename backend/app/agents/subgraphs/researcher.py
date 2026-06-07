@@ -45,6 +45,8 @@ TOOL_ACTIONS = {
     "fetch_url",
     "extract_structured",
     "parse_tables",
+    "parse_images",
+    "parse_document",
     "load_skill",
     "read_skill_file",
 }
@@ -53,6 +55,8 @@ DIMENSIONAL_TOOL_ACTIONS = {
     "fetch_url",
     "extract_structured",
     "parse_tables",
+    "parse_images",
+    "parse_document",
 }
 # Follow-up tools elaborate on a page the latest search already surfaced; they
 # must inherit that search's dimension, never the next pending one.
@@ -60,12 +64,16 @@ _FOLLOWUP_DIMENSIONAL_ACTIONS = {
     "fetch_url",
     "extract_structured",
     "parse_tables",
+    "parse_images",
+    "parse_document",
 }
 ACTION_TO_CHANNEL = {
     "search_web": "search_web",
     "fetch_url": "fetch_url",
     "extract_structured": "extract_structured",
     "parse_tables": "parse_tables",
+    "parse_images": "parse_images",
+    "parse_document": "parse_document",
     "load_skill": "load_skill",
     "read_skill_file": "read_skill_file",
 }

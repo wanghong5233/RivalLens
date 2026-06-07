@@ -4,6 +4,8 @@ import json
 import re
 from typing import Any
 
+from service.llm.content import UserPromptContent, user_prompt_trace_text
+
 TRACE_TEXT_LIMIT = 20_000
 _TRUNCATED_SUFFIX = "\n...[truncated]"
 
@@ -39,8 +41,8 @@ def sanitize_trace_text(value: str | None, *, limit: int = TRACE_TEXT_LIMIT) -> 
     return truncate_trace_text(redact_trace_text(value), limit=limit)
 
 
-def build_prompt_trace_text(*, system_prompt: str, user_prompt: str) -> str:
-    raw = f"[system]\n{system_prompt}\n\n[user]\n{user_prompt}".strip()
+def build_prompt_trace_text(*, system_prompt: str, user_prompt: UserPromptContent) -> str:
+    raw = f"[system]\n{system_prompt}\n\n[user]\n{user_prompt_trace_text(user_prompt)}".strip()
     return truncate_trace_text(redact_trace_text(raw))
 
 

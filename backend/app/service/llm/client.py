@@ -9,6 +9,7 @@ from json import JSONDecodeError
 from time import perf_counter
 
 from core.config import settings
+from service.llm.content import UserPromptContent, serialize_user_prompt, user_prompt_trace_text
 from service.llm.exceptions import LLMRequestError, LLMResponseFormatError
 from service.llm.providers import LLMProvider, build_providers
 from service.llm.rate_limiter import AsyncTokenBucket, estimate_tokens
@@ -28,8 +29,9 @@ def _format_error(error: LLMRequestError | LLMResponseFormatError) -> str:
     return f"{type(error).__name__}: {error_message[:300]}"
 
 
-def _prompt_hash(*, system_prompt: str, user_prompt: str) -> str:
-    return hashlib.sha256(f"{system_prompt}\n{user_prompt}".encode("utf-8")).hexdigest()[:64]
+def _prompt_hash(*, system_prompt: str, user_prompt: UserPromptContent) -> str:
+    serialized_user = serialize_user_prompt(user_prompt)
+    return hashlib.sha256(f"{system_prompt}\n{serialized_user}".encode("utf-8")).hexdigest()[:64]
 
 
 def _merge_request_errors(*, primary_error: Exception, fallback_error: Exception | None) -> str:
@@ -53,6 +55,7 @@ def _resolve_timeout_seconds(model_slot: str) -> int:
         "research": settings.LLM_TIMEOUT_RESEARCH,
         "qa": settings.LLM_TIMEOUT_QA,
         "writer": settings.LLM_TIMEOUT_WRITER,
+        "vision": settings.LLM_TIMEOUT_VISION,
     }
     return slot_timeouts.get(model_slot, settings.LLM_TIMEOUT_SECONDS)
 
@@ -64,6 +67,7 @@ def _resolve_max_tokens(model_slot: str) -> int | None:
         "research": settings.LLM_MAX_TOKENS_RESEARCH,
         "qa": settings.LLM_MAX_TOKENS_QA,
         "writer": settings.LLM_MAX_TOKENS_WRITER,
+        "vision": settings.LLM_MAX_TOKENS_VISION,
     }
     max_tokens = slot_max_tokens.get(model_slot, 0)
     return max_tokens if max_tokens > 0 else None
@@ -219,7 +223,7 @@ class LLMClient:
         provider_name: str,
         provider: LLMProvider,
         system_prompt: str,
-        user_prompt: str,
+        user_prompt: UserPromptContent,
         model_name: str,
         timeout_seconds: int,
         max_tokens: int | None,
@@ -285,10 +289,10 @@ class LLMClient:
         *,
         model_slot: str = "research",
         system_prompt: str | None = None,
-        user_prompt: str | None = None,
+        user_prompt: UserPromptContent | None = None,
         prompt: str | None = None,
         fallback_system_prompt: str | None = None,
-        fallback_user_prompt: str | None = None,
+        fallback_user_prompt: UserPromptContent | None = None,
     ) -> LLMResponse:
         if prompt is not None and system_prompt is None and user_prompt is None:
             # Keep old supervisor path stable until all callers are migrated.

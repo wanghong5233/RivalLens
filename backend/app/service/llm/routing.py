@@ -12,6 +12,7 @@ SLOT_NAMES: tuple[str, ...] = (
     "compression",
     "qa",
     "writer",
+    "vision",
 )
 MODEL_TIERS: tuple[str, ...] = ("strong", "balanced", "fast")
 PROVIDER_NAMES: tuple[str, ...] = ("doubao", "openai", "qwen")
@@ -61,7 +62,11 @@ def _resolve_tier(slot: str) -> str:
     return tier
 
 
-def _resolve_catalog_model(provider_name: str, tier: str) -> str | None:
+def _resolve_catalog_model(provider_name: str, tier: str, *, slot: str | None = None) -> str | None:
+    if slot == "vision" and provider_name == "doubao":
+        vision_model = _clean_optional_string(getattr(settings, "DOUBAO_MODEL_VISION", None))
+        if vision_model:
+            return vision_model
     model_raw = getattr(settings, f"{provider_name.upper()}_MODEL_{tier.upper()}", None)
     if model_raw is not None and not isinstance(model_raw, str):
         raise LLMRequestError(
@@ -87,6 +92,7 @@ def resolve_slot(*, slot: str, providers: Mapping[str, LLMProvider]) -> tuple[st
     model_name = _slot_model_override(slot) or _resolve_catalog_model(
         provider_name,
         tier,
+        slot=slot,
     ) or _clean_optional_string(provider.default_model)
     if not model_name:
         raise LLMRequestError(

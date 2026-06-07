@@ -70,16 +70,19 @@ class Settings(BaseSettings):
     LLM_PROVIDER_COMPRESSION: str | None = None
     LLM_PROVIDER_QA: str | None = None
     LLM_PROVIDER_WRITER: str | None = None
+    LLM_PROVIDER_VISION: str | None = None
 
     LLM_TIER_SUMMARIZATION: LLMModelTier = "strong"
     LLM_TIER_RESEARCH: LLMModelTier = "balanced"
     LLM_TIER_COMPRESSION: LLMModelTier = "fast"
     LLM_TIER_QA: LLMModelTier = "balanced"
     LLM_TIER_WRITER: LLMModelTier = "strong"
+    LLM_TIER_VISION: LLMModelTier = "fast"
 
     DOUBAO_MODEL_STRONG: str | None = None
     DOUBAO_MODEL_BALANCED: str | None = None
     DOUBAO_MODEL_FAST: str | None = None
+    DOUBAO_MODEL_VISION: str | None = None
     OPENAI_MODEL_STRONG: str | None = None
     OPENAI_MODEL_BALANCED: str | None = None
     OPENAI_MODEL_FAST: str | None = None
@@ -92,6 +95,7 @@ class Settings(BaseSettings):
     LLM_MODEL_COMPRESSION: str | None = None
     LLM_MODEL_QA: str | None = None
     LLM_MODEL_WRITER: str | None = None
+    LLM_MODEL_VISION: str | None = None
 
     LLM_GLOBAL_CONCURRENCY: int = 4
     LLM_TIMEOUT_SECONDS: int = 30
@@ -100,12 +104,14 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_RESEARCH: int = 90
     LLM_TIMEOUT_QA: int = 90
     LLM_TIMEOUT_WRITER: int = 180
+    LLM_TIMEOUT_VISION: int = 90
     LLM_CONNECT_TIMEOUT_SECONDS: int = 5
     LLM_MAX_TOKENS_SUMMARIZATION: int = 4096
     LLM_MAX_TOKENS_WRITER: int = 8192
     LLM_MAX_TOKENS_COMPRESSION: int = 2048
     LLM_MAX_TOKENS_QA: int = 2048
     LLM_MAX_TOKENS_RESEARCH: int = 2048
+    LLM_MAX_TOKENS_VISION: int = 2048
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BASE_SECONDS: float = 1.0
     LLM_RETRY_CAP_SECONDS: float = 30.0
@@ -118,6 +124,10 @@ class Settings(BaseSettings):
     COLLECTOR_OFFLINE_SNAPSHOT_DIR: str = "./data/snapshots"
     COLLECTOR_FETCH_TIMEOUT_S: int = 10
     COLLECTOR_ROBOTS_CACHE_TTL_S: int = 3600
+    COLLECTOR_BROWSER_ENABLED: bool = True
+    COLLECTOR_BROWSER_MAX_CONCURRENT: int = 4
+    COLLECTOR_AGENT_BROWSER_BIN: str = "agent-browser"
+    PARSE_IMAGES_MAX_PER_PAGE: int = 3
     WRITER_READ_CONCLUSIONS_FROM_TABLE: bool = True
     CURATOR_MIN_COVERAGE_RATE: float = 1.0
     CURATOR_MIN_DIMENSION_COVERAGE_RATE: float = 0.5
@@ -148,6 +158,7 @@ class Settings(BaseSettings):
             ("LLM_PROVIDER_COMPRESSION", self.LLM_PROVIDER_COMPRESSION),
             ("LLM_PROVIDER_QA", self.LLM_PROVIDER_QA),
             ("LLM_PROVIDER_WRITER", self.LLM_PROVIDER_WRITER),
+            ("LLM_PROVIDER_VISION", self.LLM_PROVIDER_VISION),
         ):
             provider_name = _clean_optional_string(value)
             if provider_name is None:
@@ -201,6 +212,7 @@ class Settings(BaseSettings):
             ("LLM_TIMEOUT_RESEARCH", self.LLM_TIMEOUT_RESEARCH),
             ("LLM_TIMEOUT_QA", self.LLM_TIMEOUT_QA),
             ("LLM_TIMEOUT_WRITER", self.LLM_TIMEOUT_WRITER),
+            ("LLM_TIMEOUT_VISION", self.LLM_TIMEOUT_VISION),
             ("LLM_CONNECT_TIMEOUT_SECONDS", self.LLM_CONNECT_TIMEOUT_SECONDS),
         ):
             if value <= 0:
@@ -211,6 +223,7 @@ class Settings(BaseSettings):
             ("LLM_MAX_TOKENS_COMPRESSION", self.LLM_MAX_TOKENS_COMPRESSION),
             ("LLM_MAX_TOKENS_QA", self.LLM_MAX_TOKENS_QA),
             ("LLM_MAX_TOKENS_RESEARCH", self.LLM_MAX_TOKENS_RESEARCH),
+            ("LLM_MAX_TOKENS_VISION", self.LLM_MAX_TOKENS_VISION),
         ):
             if value < 0:
                 raise ValueError(f"{name} cannot be negative.")
@@ -245,6 +258,11 @@ class Settings(BaseSettings):
         ):
             if value < 0 or value > 1:
                 raise ValueError(f"{name} must be between 0 and 1.")
+
+        if self.COLLECTOR_BROWSER_MAX_CONCURRENT <= 0:
+            raise ValueError("COLLECTOR_BROWSER_MAX_CONCURRENT must be positive.")
+        if self.PARSE_IMAGES_MAX_PER_PAGE <= 0:
+            raise ValueError("PARSE_IMAGES_MAX_PER_PAGE must be positive.")
 
         return self
 

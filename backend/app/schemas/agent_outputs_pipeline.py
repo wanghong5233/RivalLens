@@ -41,6 +41,8 @@ ResearcherActionName = Literal[
     "fetch_url",
     "extract_structured",
     "parse_tables",
+    "parse_images",
+    "parse_document",
     "load_skill",
     "read_skill_file",
     "finalize",
@@ -463,6 +465,37 @@ class ResearcherDecisionOutput(BaseModel):
                 if dimension is not None:
                     normalized["dimension"] = dimension
                 return ("parse_tables", normalized)
+            return None
+        if action == "parse_images":
+            urls_raw = action_args.get("image_urls")
+            if isinstance(urls_raw, list) and urls_raw:
+                image_urls = [
+                    item.strip()
+                    for item in urls_raw
+                    if isinstance(item, str) and item.strip()
+                ]
+                if image_urls:
+                    normalized = {"image_urls": image_urls}
+                    for key in ("source_url", "source_title", "context"):
+                        value = action_args.get(key)
+                        if isinstance(value, str) and value.strip():
+                            normalized[key] = value.strip()
+                    dimension = _dimension_arg(fallback_to_pending=False)
+                    if dimension is not None:
+                        normalized["dimension"] = dimension
+                    return ("parse_images", normalized)
+            return None
+        if action == "parse_document":
+            url_raw = action_args.get("url")
+            if isinstance(url_raw, str) and url_raw.strip():
+                normalized = {"url": url_raw.strip()}
+                title_raw = action_args.get("source_title")
+                if isinstance(title_raw, str) and title_raw.strip():
+                    normalized["source_title"] = title_raw.strip()
+                dimension = _dimension_arg(fallback_to_pending=False)
+                if dimension is not None:
+                    normalized["dimension"] = dimension
+                return ("parse_document", normalized)
             return None
         if action == "load_skill":
             skill_id_raw = action_args.get("skill_id")

@@ -8,6 +8,7 @@ from typing import Generic, Literal, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from service.llm.client import get_llm_client
+from service.llm.content import UserPromptContent
 from service.llm.response import LLMResponse
 from utils.logger import get_logger
 
@@ -89,11 +90,11 @@ async def complete_structured(
     *,
     model_slot: str,
     system_prompt: str,
-    user_prompt: str,
+    user_prompt: UserPromptContent,
     output_model: type[T],
     parser: Callable[[dict[str, object]], T],
     fallback_system_prompt: str | None = None,
-    fallback_user_prompt: str | None = None,
+    fallback_user_prompt: UserPromptContent | None = None,
     repair_user_prompt_builder: Callable[[list[str]], str] | None = None,
     max_repair_attempts: int = 1,
     log_event: str = "llm.harness.finish",

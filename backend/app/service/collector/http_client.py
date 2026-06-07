@@ -18,6 +18,14 @@ class FetchResponse:
     content_type: str | None
 
 
+@dataclass(slots=True)
+class FetchBytesResponse:
+    url: str
+    status_code: int
+    raw_bytes: bytes
+    content_type: str | None
+
+
 class CollectorHTTPClient:
     def __init__(
         self,
@@ -39,9 +47,12 @@ class CollectorHTTPClient:
     def client(self) -> httpx.AsyncClient:
         return self._client
 
-    async def fetch_text(self, url: str, *, retries: int = 1) -> FetchResponse:
-        if not url:
-            raise ValueError("CollectorHTTPClient.fetch_text requires non-empty url.")
+    async def _get_with_retries(
+        self,
+        url: str,
+        *,
+        retries: int,
+    ) -> httpx.Response:
         attempts = retries + 1
         last_error: Exception | None = None
         for attempt in range(attempts):
@@ -65,14 +76,33 @@ class CollectorHTTPClient:
                 continue
             if response.status_code >= 400:
                 raise ChannelError(f"fetch failed status={response.status_code} url={url}")
-            return FetchResponse(
-                url=str(response.url),
-                status_code=response.status_code,
-                text=response.text,
-                content_type=response.headers.get("content-type"),
-            )
+            return response
 
-        raise ChannelError(f"fetch failed url={url} error={type(last_error).__name__ if last_error else 'unknown'}")
+        raise ChannelError(
+            f"fetch failed url={url} error={type(last_error).__name__ if last_error else 'unknown'}"
+        )
+
+    async def fetch_text(self, url: str, *, retries: int = 1) -> FetchResponse:
+        if not url:
+            raise ValueError("CollectorHTTPClient.fetch_text requires non-empty url.")
+        response = await self._get_with_retries(url, retries=retries)
+        return FetchResponse(
+            url=str(response.url),
+            status_code=response.status_code,
+            text=response.text,
+            content_type=response.headers.get("content-type"),
+        )
+
+    async def fetch_bytes(self, url: str, *, retries: int = 1) -> FetchBytesResponse:
+        if not url:
+            raise ValueError("CollectorHTTPClient.fetch_bytes requires non-empty url.")
+        response = await self._get_with_retries(url, retries=retries)
+        return FetchBytesResponse(
+            url=str(response.url),
+            status_code=response.status_code,
+            raw_bytes=response.content,
+            content_type=response.headers.get("content-type"),
+        )
 
 
 @lru_cache

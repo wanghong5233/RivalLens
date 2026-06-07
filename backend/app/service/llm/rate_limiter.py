@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from math import ceil
 from time import monotonic
 
+from service.llm.content import UserPromptContent, serialize_user_prompt
 
-def estimate_tokens(*, system_prompt: str, user_prompt: str) -> int:
-    prompt_chars = len(system_prompt) + len(user_prompt)
-    return max(1, ceil(prompt_chars / 3) + 1024)
 
+def estimate_tokens(*, system_prompt: str, user_prompt: UserPromptContent) -> int:
+    serialized_user = serialize_user_prompt(user_prompt)
+    prompt_chars = len(system_prompt) + len(serialized_user)
+    image_parts = 0
+    if isinstance(user_prompt, list):
+        image_parts = sum(
+            1
+            for item in user_prompt
+            if isinstance(item, dict) and item.get("type") == "image_url"
+        )
+    return max(1, ceil(prompt_chars / 3) + 1024 + image_parts * 512)
 
 class AsyncTokenBucket:
     def __init__(

@@ -362,6 +362,17 @@ class AnalystOutput(BaseModel):
         )
 
 
+class ParseImagesOutput(BaseModel):
+    description: str = Field(min_length=1)
+
+    @classmethod
+    def parse_llm_content(cls, content: dict[str, object]) -> ParseImagesOutput:
+        description_raw = content.get("description")
+        if not isinstance(description_raw, str) or not description_raw.strip():
+            raise ValueError("description is required")
+        return cls(description=description_raw.strip())
+
+
 class WriterSectionOutput(BaseModel):
     section_id: str
     title: str = Field(min_length=1)
@@ -553,6 +564,7 @@ __all__ = [
     "ExtractStructuredOutput",
     "IntakeTurnOutput",
     "MIN_WRITER_SECTION_CHARS",
+    "ParseImagesOutput",
     "PlannerOutput",
     "QASemanticOutput",
     "ResearcherCompressionOutput",

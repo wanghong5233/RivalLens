@@ -16,7 +16,7 @@ class _DummyProvider:
 
 def _reset_routing_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LLM_ACTIVE_PROVIDER", "doubao")
-    for slot in ("RESEARCH", "SUMMARIZATION", "COMPRESSION", "QA", "WRITER"):
+    for slot in ("RESEARCH", "SUMMARIZATION", "COMPRESSION", "QA", "WRITER", "VISION"):
         monkeypatch.setattr(settings, f"LLM_PROVIDER_{slot}", None)
         monkeypatch.setattr(settings, f"LLM_MODEL_{slot}", None)
     monkeypatch.setattr(settings, "LLM_TIER_SUMMARIZATION", "strong")
@@ -24,6 +24,8 @@ def _reset_routing_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "LLM_TIER_COMPRESSION", "fast")
     monkeypatch.setattr(settings, "LLM_TIER_QA", "balanced")
     monkeypatch.setattr(settings, "LLM_TIER_WRITER", "strong")
+    monkeypatch.setattr(settings, "LLM_TIER_VISION", "fast")
+    monkeypatch.setattr(settings, "DOUBAO_MODEL_VISION", None)
     for provider in ("DOUBAO", "OPENAI", "QWEN"):
         for tier in ("STRONG", "BALANCED", "FAST"):
             monkeypatch.setattr(settings, f"{provider}_MODEL_{tier}", None)
@@ -149,3 +151,19 @@ def test_resolve_slot_rejects_empty_catalog_and_default(
             slot="research",
             providers={"doubao": _DummyProvider(default_model="")},
         )
+
+
+def test_resolve_slot_vision_prefers_doubao_seed_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_routing_settings(monkeypatch)
+    monkeypatch.setattr(settings, "DOUBAO_MODEL_VISION", "ep-doubao-seed-2-lite")
+    monkeypatch.setattr(settings, "DOUBAO_MODEL_FAST", "ep-doubao-fast-fallback")
+
+    provider_name, model_name = resolve_slot(
+        slot="vision",
+        providers={"doubao": _DummyProvider(default_model="ep-default")},
+    )
+
+    assert provider_name == "doubao"
+    assert model_name == "ep-doubao-seed-2-lite"

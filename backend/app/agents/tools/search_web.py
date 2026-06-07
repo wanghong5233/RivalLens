@@ -48,7 +48,7 @@ async def _tavily_search(query: str, *, max_results: int) -> dict[str, object]:
                 max_results=max_results,
                 search_depth="advanced",
                 include_raw_content=False,
-                include_images=False,
+                include_images=True,
             )
         except TypeError:
             return await asyncio.to_thread(
@@ -88,6 +88,7 @@ class TavilySearchChannel(BaseChannel):
         results_raw = response.get("results", [])
         results = results_raw if isinstance(results_raw, list) else []
         snippets: list = []
+        image_urls: list[str] = []
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -111,9 +112,15 @@ class TavilySearchChannel(BaseChannel):
                     },
                 )
             )
+            images_raw = result.get("images")
+            if isinstance(images_raw, list):
+                for image_url in images_raw:
+                    if isinstance(image_url, str) and image_url.strip():
+                        image_urls.append(image_url.strip())
         if not snippets:
             raise ChannelError("search_web returned no usable snippets.")
 
+        deduped_images = list(dict.fromkeys(image_urls))
         return CollectorObservation(
             channel=self.name,
             args={
@@ -125,6 +132,7 @@ class TavilySearchChannel(BaseChannel):
                 metadata={
                     "query": query,
                     "result_count": len(snippets),
+                    "image_urls": deduped_images[: settings.PARSE_IMAGES_MAX_PER_PAGE],
                 },
             ),
         )

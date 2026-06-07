@@ -313,18 +313,34 @@ Allowed actions:
        "source_title": str | null,
        "dimension": str | null
      }
-5) load_skill
+5) parse_images
+   - args schema:
+     {
+       "image_urls": list[str],
+       "source_url": str | null,
+       "source_title": str | null,
+       "context": str | null,
+       "dimension": str | null
+     }
+6) parse_document
+   - args schema:
+     {
+       "url": str,
+       "source_title": str | null,
+       "dimension": str | null
+     }
+7) load_skill
    - args schema:
      {
        "skill_id": str
      }
-6) read_skill_file
+8) read_skill_file
    - args schema:
      {
        "skill_id": str,
        "filename": str
      }
-7) finalize
+9) finalize
    - args schema:
      {
        "summary": str
@@ -332,7 +348,7 @@ Allowed actions:
 
 Output JSON schema:
 {
-  "action": "search_web" | "fetch_url" | "extract_structured" | "parse_tables" | "load_skill" | "read_skill_file" | "finalize",
+  "action": "search_web" | "fetch_url" | "extract_structured" | "parse_tables" | "parse_images" | "parse_document" | "load_skill" | "read_skill_file" | "finalize",
   "action_args": { ... valid for action ... },
   "reasoning_summary": "short and concrete rationale"
 }
@@ -341,7 +357,7 @@ Hard constraints:
 - Never fabricate evidence quotes, source_url, or source_title.
 - Evidence can only come from tool observations.
 - If enough dimensions are already covered, call finalize.
-- Prefer online collection first; use parse_tables when fetched HTML contains pricing/feature matrices.
+- Prefer online collection first; use parse_tables when fetched HTML contains pricing/feature matrices; use parse_images when search_web metadata includes image_urls; use parse_document for PDF/whitepaper URLs.
 - Preloaded skill instructions (when present in user prompt) already contain domain routing guidance; skip load_skill unless you need supporting files.
 - When action_args.dimension is present, it MUST be exactly one value from focus_dimensions. Do not invent compound dimensions.
 - Return JSON object only, no markdown.
@@ -824,7 +840,7 @@ def build_researcher_user_prompt(
         f"- preloaded_skill_instructions: {skill_block}\n"
         f"- observation_briefs: {briefs_payload}\n\n"
         "Action guidance:\n"
-        "1) Prefer search_web -> fetch_url -> parse_tables (for HTML tables) -> extract_structured for online collection.\n"
+        "1) Prefer search_web -> fetch_url -> parse_tables (for HTML tables) -> parse_images (for image_urls from search) -> parse_document (PDF) -> extract_structured for online collection.\n"
         "2) Use fetch_url only with URLs from discovered_urls or reference_urls; pass the current research_topic as query when useful.\n"
         "3) Use load_skill only when preloaded_skill_instructions is (none) and domain_hint implies specialized routing.\n"
         "4) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
@@ -1294,4 +1310,29 @@ def build_extract_structured_repair_user_prompt(
         "- Return JSON object only."
     )
 
+
+PARSE_IMAGES_SYSTEM_PROMPT = """You are a vision assistant for RivalLens competitive analysis.
+Return STRICT JSON:
+{
+  "description": str
+}
+
+Rules:
+- Describe all visible product information: pricing tiers, feature badges, comparison matrices, architecture labels.
+- Be factual; do not invent details not visible in the images.
+- Return JSON object only.
+"""
+
+
+def build_parse_images_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    context: str,
+) -> str:
+    return (
+        "Repair parse_images JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- context: {context}\n\n"
+        "Return JSON: {\"description\": \"...\"} with non-empty description."
+    )
 

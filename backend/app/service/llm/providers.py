@@ -9,7 +9,7 @@ import structlog
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from core.config import settings
-from service.llm.exceptions import LLMRequestError, LLMResponseFormatError
+from service.llm.content import UserPromptContent
 from service.llm.response import ProviderRawResponse
 from utils.logger import get_logger
 
@@ -86,7 +86,7 @@ class LLMProvider(Protocol):
         self,
         *,
         system_prompt: str,
-        user_prompt: str,
+        user_prompt: UserPromptContent,
         model: str,
         timeout_seconds: int,
         max_tokens: int | None = None,
@@ -262,7 +262,7 @@ async def _create_completion(
     client: AsyncOpenAI,
     model: str,
     system_prompt: str,
-    user_prompt: str,
+    user_prompt: UserPromptContent,
     timeout_seconds: int,
     max_tokens: int | None,
     use_json_mode: bool,
@@ -301,7 +301,7 @@ class _OpenAICompatibleProvider:
         self,
         *,
         system_prompt: str,
-        user_prompt: str,
+        user_prompt: UserPromptContent,
         model: str,
         timeout_seconds: int,
         max_tokens: int | None = None,

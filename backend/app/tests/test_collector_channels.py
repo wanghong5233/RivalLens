@@ -5,12 +5,17 @@ from dataclasses import dataclass
 import pytest
 
 from agents.tools.fetch_url import FetchUrlChannel
+from agents.tools.parse_document import ParseDocumentChannel
+from agents.tools.parse_images import ParseImagesChannel
 from agents.tools.parse_page import infer_source_type
 from agents.tools.search_web import TavilySearchChannel
 from core.config import settings
+from schemas.agent_outputs import ParseImagesOutput
 from service.collector.errors import ChannelError, RobotsBlocked
-from service.collector.http_client import CollectorHTTPClient, FetchResponse
+from service.collector.http_client import CollectorHTTPClient, FetchBytesResponse, FetchResponse
 from service.collector.registry import ChannelRegistry, _register_builtin_channels
+from service.llm.harness import StructuredLLMResult
+from service.llm.response import LLMResponse
 
 
 @dataclass
@@ -37,6 +42,7 @@ class _BlockRobotsGate:
 @dataclass
 class _FakeHTTPClient:
     fetch_response: FetchResponse
+    fetch_bytes_response: FetchBytesResponse | None = None
 
     @property
     def client(self) -> object:
@@ -50,6 +56,29 @@ class _FakeHTTPClient:
             text=self.fetch_response.text,
             content_type=self.fetch_response.content_type,
         )
+
+    async def fetch_bytes(self, url: str, *, retries: int = 1) -> FetchBytesResponse:
+        del retries
+        if self.fetch_bytes_response is None:
+            raise ChannelError("fetch_bytes not configured in test fake client.")
+        return FetchBytesResponse(
+            url=url,
+            status_code=self.fetch_bytes_response.status_code,
+            raw_bytes=self.fetch_bytes_response.raw_bytes,
+            content_type=self.fetch_bytes_response.content_type,
+        )
+
+
+_RICH_PRICING_HTML = """
+<html><body><main>
+<h1>Cursor Pricing</h1>
+<p>Enterprise and team plans with advanced admin controls, privacy settings,
+security controls, billing options, usage limits, and dedicated support for
+large engineering organizations evaluating AI coding assistants.</p>
+<p>Pro tier includes unlimited completions, priority access, and extended context
+windows for professional developers building production applications.</p>
+</main></body></html>
+"""
 
 
 @pytest.mark.asyncio
@@ -78,7 +107,6 @@ async def test_fetch_url_channel_respects_robots_gate(monkeypatch: pytest.Monkey
 async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FetchUrlChannel()
     limiter = _FakeLimiter()
-    monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
     monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: limiter)
     monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
     monkeypatch.setattr(
@@ -87,27 +115,11 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
             FetchResponse(
                 url="https://cursor.com/pricing",
                 status_code=200,
-                text="<html><body>Pricing page content</body></html>",
+                text=_RICH_PRICING_HTML,
                 content_type="text/html",
             )
         ),
     )
-    async def _fake_tavily_extract(*, url: str, query: str | None) -> dict[str, object]:
-        del query
-        return {
-            "results": [
-                {
-                    "url": url,
-                    "raw_content": (
-                        "Cursor pricing page content with enough substance for extraction. "
-                        "It describes enterprise plans, usage limits, admin controls, privacy, "
-                        "security, and billing details for team buyers in multiple paragraphs."
-                    ),
-                }
-            ]
-        }
-
-    monkeypatch.setattr("agents.tools.fetch_url._tavily_extract", _fake_tavily_extract)
 
     observation = await channel.invoke(
         url="https://cursor.com/pricing",
@@ -116,13 +128,14 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
     assert limiter.host == "cursor.com"
     assert limiter.timeout_seconds is not None
     assert observation.result.snippets[0].source_type == "pricing_page"
-    assert observation.result.snippets[0].metadata["source"] == "tavily_extract"
+    assert observation.result.snippets[0].metadata["source"] == "httpx_extract"
 
 
 @pytest.mark.asyncio
 async def test_fetch_url_channel_rejects_low_quality_extract(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FetchUrlChannel()
     monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr(settings, "COLLECTOR_BROWSER_ENABLED", False)
     monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: _FakeLimiter())
     monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
     monkeypatch.setattr(
@@ -131,7 +144,7 @@ async def test_fetch_url_channel_rejects_low_quality_extract(monkeypatch: pytest
             FetchResponse(
                 url="https://example.com",
                 status_code=200,
-                text="unused",
+                text='<html><body><div id="root"></div></body></html>',
                 content_type="text/html",
             )
         ),
@@ -176,13 +189,12 @@ def test_source_type_mapping_rules() -> None:
     )
 
 
-def test_builtin_registry_registers_parse_tables() -> None:
+def test_builtin_registry_registers_collector_channels() -> None:
     registry = ChannelRegistry()
     _register_builtin_channels(registry)
-    assert "parse_tables" in registry.list_actions()
-    assert {"search_web", "fetch_url", "extract_structured"}.issubset(
-        set(registry.list_actions())
-    )
+    actions = set(registry.list_actions())
+    assert {"parse_tables", "parse_images", "parse_document"}.issubset(actions)
+    assert {"search_web", "fetch_url", "extract_structured"}.issubset(actions)
 
 
 @pytest.mark.asyncio
@@ -208,3 +220,73 @@ async def test_search_web_channel_with_mocked_tavily(monkeypatch: pytest.MonkeyP
     observation = await channel.invoke(query="cursor pricing", max_results=3)
     assert observation.result.snippets
     assert observation.result.snippets[0].source_type in {"article", "public_review", "pricing_page"}
+
+
+@pytest.mark.asyncio
+async def test_parse_images_channel_uses_vision_harness(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_complete_structured(**kwargs: object) -> StructuredLLMResult[ParseImagesOutput]:
+        del kwargs
+        return StructuredLLMResult(
+            value=ParseImagesOutput(description="Pro plan $99/mo with team admin controls."),
+            outcome="primary",
+            llm_response=LLMResponse(
+                model_slot="vision",
+                provider="doubao",
+                model_name="ep-vision",
+                prompt_preview="preview",
+                prompt_hash="abc",
+                content={"description": "Pro plan $99/mo with team admin controls."},
+                prompt_tokens=1,
+                completion_tokens=1,
+                latency_ms=10,
+                error=None,
+            ),
+            validation_errors=(),
+            attempts=(),
+        )
+
+    monkeypatch.setattr("agents.tools.parse_images.complete_structured", _fake_complete_structured)
+    channel = ParseImagesChannel()
+    observation = await channel.invoke(
+        image_urls=["https://cdn.example.com/pricing.png"],
+        source_url="https://cursor.com/pricing",
+        source_title="Cursor pricing screenshot",
+    )
+    assert observation.result.snippets[0].metadata["source"] == "parse_images"
+    assert "$99" in observation.result.snippets[0].quote
+
+
+@pytest.mark.asyncio
+async def test_parse_document_channel_extracts_html_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    html_bytes = (
+        b"<html><body><main><h1>Security Whitepaper</h1>"
+        b"<p>Enterprise customers receive SOC2 reports, SSO, and audit logs "
+        b"for compliance reviews across regulated industries and global teams.</p>"
+        b"<table><tr><th>Control</th><th>Status</th></tr>"
+        b"<tr><td>SSO</td><td>Enabled</td></tr></table>"
+        b"</main></body></html>"
+    )
+    monkeypatch.setattr(
+        "agents.tools.parse_document.get_collector_http_client",
+        lambda: _FakeHTTPClient(
+            fetch_response=FetchResponse(
+                url="https://example.com/security.html",
+                status_code=200,
+                text="unused",
+                content_type="text/html",
+            ),
+            fetch_bytes_response=FetchBytesResponse(
+                url="https://example.com/security.html",
+                status_code=200,
+                raw_bytes=html_bytes,
+                content_type="text/html",
+            ),
+        ),
+    )
+    channel = ParseDocumentChannel()
+    observation = await channel.invoke(url="https://example.com/security.html")
+    assert observation.result.snippets[0].metadata["source"] == "parse_document"
+    assert "SOC2" in observation.result.snippets[0].quote
+    assert observation.result.metadata["doc_kind"] == "html"
