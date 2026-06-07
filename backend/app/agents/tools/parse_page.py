@@ -7,14 +7,17 @@ from service.collector.base import SourceType
 
 REVIEW_HOST_KEYWORDS = ("forum", "reddit", "community", "review", "discuss", "news.ycombinator")
 DOC_PATH_KEYWORDS = ("/docs", "/api", "/reference")
+DOC_HOSTS = {"help.aliyun.com", "docs.github.com"}
 PRICING_PATH_KEYWORDS = ("/pricing", "/plans")
 OFFICIAL_HOSTS_BY_COMPETITOR: dict[str, set[str]] = {
     "cursor": {"cursor.com", "www.cursor.com"},
     "github_copilot": {"github.com", "docs.github.com"},
     "copilot": {"github.com", "docs.github.com"},
     "windsurf": {"windsurf.com", "www.windsurf.com", "codeium.com", "www.codeium.com"},
-    "tongyi_lingma": {"lingma.aliyun.com", "tongyi.aliyun.com"},
-    "通义灵码": {"lingma.aliyun.com", "tongyi.aliyun.com"},
+    "tongyi_lingma": {"lingma.aliyun.com", "tongyi.aliyun.com", "help.aliyun.com"},
+    "通义灵码": {"lingma.aliyun.com", "tongyi.aliyun.com", "help.aliyun.com"},
+    "qoder": {"lingma.aliyun.com", "tongyi.aliyun.com", "help.aliyun.com"},
+    "qoder_cn": {"lingma.aliyun.com", "tongyi.aliyun.com", "help.aliyun.com"},
     "baidu_comate": {"comate.baidu.com"},
     "wenxin_comate": {"comate.baidu.com"},
     "文心_comate": {"comate.baidu.com"},
@@ -121,7 +124,7 @@ def infer_source_type(
         host in normalized_official_hosts
         or any(host.endswith(f".{official}") for official in normalized_official_hosts)
     ):
-        if any(keyword in path for keyword in DOC_PATH_KEYWORDS):
+        if host in DOC_HOSTS or any(keyword in path for keyword in DOC_PATH_KEYWORDS):
             return "docs"
         if any(keyword in path for keyword in PRICING_PATH_KEYWORDS):
             return "pricing_page"

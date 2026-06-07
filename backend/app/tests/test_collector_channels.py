@@ -219,6 +219,33 @@ def test_official_hosts_heuristic_for_dynamic_competitor() -> None:
     )
 
 
+def test_tongyi_lingma_aliyun_help_is_official_docs() -> None:
+    official_hosts = official_hosts_for_competitor("通义灵码")
+    assert "help.aliyun.com" in official_hosts
+    assert (
+        infer_source_type(
+            source_url="https://help.aliyun.com/zh/lingma/product-overview",
+            official_hosts=official_hosts,
+        )
+        == "docs"
+    )
+    assert source_matches_competitor(
+        source_url="https://help.aliyun.com/zh/lingma/product-overview",
+        competitor_id="通义灵码",
+    ) is True
+    assert source_matches_competitor(
+        source_url="https://developer.aliyun.com/article/1662698",
+        competitor_id="通义灵码",
+    ) is False
+    assert (
+        infer_source_type(
+            source_url="https://developer.aliyun.com/article/1662698",
+            official_hosts=official_hosts,
+        )
+        == "article"
+    )
+
+
 def test_builtin_registry_no_longer_registers_parse_page() -> None:
     registry = ChannelRegistry()
     _register_builtin_channels(registry)
