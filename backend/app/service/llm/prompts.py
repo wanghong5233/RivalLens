@@ -118,7 +118,7 @@ Rules:
     * "我们想对标 X、Y、Z" → competitors_explicit=["X","Y","Z"]
     * "想了解 X 赛道有哪些玩家" with no names → competitors_discovery_mode=true
     * Industry phrases ("AI 编程"/"AI coding", "供应链"/"supply chain", "ERP"/"CRM") → domain_hint
-    * "我们是字节的 TRAE 团队" / "我们做的是一款 AI 简历工具" → self_product
+    * "我们是某大厂 AI 工具团队" / "我们做的是一款 AI 简历工具" → self_product
     * "中国 vs 海外", "面向中小企业", "国内市场" → market_scope
     * "下个月要汇报", "下周给老板方案", "只看近一年的数据" → time_context
   Only ask about fields you genuinely cannot infer from the available text.

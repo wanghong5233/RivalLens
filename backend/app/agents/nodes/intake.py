@@ -69,6 +69,21 @@ _DEPTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("quick", ("quick", "速览", "快速")),
     ("deep", ("deep", "深度", "完整", "详细")),
 )
+_OPTIONAL_CLARIFY_TARGETS: frozenset[str] = frozenset(
+    {
+        "domain_hint",
+        "focus_dimensions",
+        "report_depth",
+        "reference_urls",
+        "self_product",
+        "market_scope",
+        "time_context",
+    }
+)
+_OPTIONAL_FREE_TEXT_TARGETS: frozenset[str] = frozenset(
+    {"domain_hint", "self_product", "market_scope", "time_context"}
+)
+_MAX_OPTIONAL_CLARIFY_TURNS_AFTER_COMPLETE = 2
 
 
 def _match_keyword(text: str, table: tuple[tuple[str, tuple[str, ...]], ...]) -> str | None:
@@ -240,6 +255,15 @@ def _clarify_target_satisfied(field_target: str, draft: RunIntakeDraft) -> bool:
         return bool(draft.analysis_intent and draft.analysis_intent.strip())
     if field_target in {"competitors_explicit", "competitors_discovery_mode"}:
         return bool(draft.competitors_explicit) or draft.competitors_discovery_mode is True
+    if field_target == "domain_hint":
+        return bool(draft.domain_hint and draft.domain_hint.strip())
+    if field_target == "focus_dimensions":
+        return bool(draft.focus_dimensions)
+    if field_target == "reference_urls":
+        return bool(draft.reference_urls)
+    if field_target in {"self_product", "market_scope", "time_context"}:
+        value = getattr(draft, field_target)
+        return bool(isinstance(value, str) and value.strip())
     return False
 
 
@@ -252,6 +276,36 @@ def _unsatisfied_clarify_targets(
         for target in clarify.field_targets
         if not _clarify_target_satisfied(target, draft)
     ]
+
+
+def _answered_optional_turn_count(history: list[IntakeExchange]) -> int:
+    return sum(
+        1
+        for exchange in history
+        if any(target in _OPTIONAL_CLARIFY_TARGETS for target in exchange.clarify.field_targets)
+    )
+
+
+def _answered_optional_targets(history: list[IntakeExchange]) -> set[str]:
+    out: set[str] = set()
+    for exchange in history:
+        for target in exchange.clarify.field_targets:
+            if target in _OPTIONAL_CLARIFY_TARGETS:
+                out.add(target)
+    return out
+
+
+def _should_drop_optional_clarify(
+    clarify: IntakeClarifyRequest,
+    history: list[IntakeExchange],
+) -> bool:
+    """Prevent a complete intake draft from getting trapped in optional re-asks."""
+    targets = set(clarify.field_targets)
+    if not targets or not targets.issubset(_OPTIONAL_CLARIFY_TARGETS):
+        return False
+    if targets & _answered_optional_targets(history):
+        return True
+    return _answered_optional_turn_count(history) >= _MAX_OPTIONAL_CLARIFY_TURNS_AFTER_COMPLETE
 
 
 def _fallback_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
@@ -376,15 +430,18 @@ def _merge_reply_into_draft(
                 base["report_depth"] = depth
                 break
 
-    if "domain_hint" in targets and reply.text.strip():
+    option_text = "、".join(option.strip() for option in reply.selected_options if option.strip())
+    reply_signal = reply.text.strip() or option_text
+
+    if "domain_hint" in targets and reply_signal:
         # No closed-set normalization; accept the user's domain phrase verbatim.
-        base["domain_hint"] = reply.text.strip()
+        base["domain_hint"] = reply_signal
 
     # Optional free-text enrichment fields: accept the user's phrasing verbatim
     # when the Agent's clarify question targeted one of them.
-    for free_text_field in ("self_product", "market_scope", "time_context"):
-        if free_text_field in targets and reply.text.strip():
-            base[free_text_field] = reply.text.strip()
+    for free_text_field in _OPTIONAL_FREE_TEXT_TARGETS - {"domain_hint"}:
+        if free_text_field in targets and reply_signal:
+            base[free_text_field] = reply_signal
 
     # focus_dimensions / reference_urls intentionally left to the LLM —
     # they need richer parsing the wait node should not own.
@@ -493,21 +550,30 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         reasoning_summary = ""
         title_content = {}
 
-    # When the merged draft is already complete, an LLM `ask` that only targets
-    # required fields the user has already supplied is redundant noise. Drop those
-    # satisfied targets so a complete draft is not stalled by a re-ask (R8).
+    # When the merged draft is already complete, redundant required re-asks and
+    # repeated optional re-asks are noise. Drop them so intake can hand off to
+    # planning instead of trapping the user in clarification loops.
     if (
         action_raw == "ask"
         and parsed_clarify is not None
         and next_draft.is_complete
-        and not _unsatisfied_clarify_targets(parsed_clarify, next_draft)
     ):
-        log.info(
-            "intake.generate.ask_dropped_complete_draft",
-            run_id=run_id,
-            dropped_field_targets=list(parsed_clarify.field_targets),
-        )
-        parsed_clarify = None
+        unsatisfied_targets = _unsatisfied_clarify_targets(parsed_clarify, next_draft)
+        drop_reason: str | None = None
+        if not unsatisfied_targets:
+            drop_reason = "targets_already_satisfied"
+        elif _should_drop_optional_clarify(parsed_clarify, history):
+            drop_reason = "optional_repeat_or_limit"
+
+        if drop_reason is not None:
+            log.info(
+                "intake.generate.ask_dropped_complete_draft",
+                run_id=run_id,
+                dropped_field_targets=list(parsed_clarify.field_targets),
+                unsatisfied_targets=unsatisfied_targets,
+                reason=drop_reason,
+            )
+            parsed_clarify = None
 
     # Decision order matters. The key invariant: if the merged draft already
     # satisfies all required fields, the run MUST move to `complete` regardless

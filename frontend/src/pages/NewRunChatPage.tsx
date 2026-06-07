@@ -19,6 +19,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import {
+  fetchRunIntakeSession,
   useCreateRunIntake,
   useReplyRunIntake,
   type CreateRunIntakeVariables,
@@ -74,6 +75,27 @@ const WELCOME_TEXT =
   "你好，我是 RivalLens。告诉我你想做的竞品分析，我会先帮你对齐角色、意图和竞品范围，再开始抓取证据。";
 
 const POST_COMPLETE_DELAY_MS = 1500;
+
+// run_id is the session id. We pin it in sessionStorage (not the URL, since the
+// chat lives at the static /runs/new route) so a refresh can restore the current
+// pending question from the server instead of losing the thread.
+const INTAKE_SESSION_KEY = "rivallens.intake.run_id";
+
+// Raw schema keys (market_scope, domain_hint, …) are debug-grade. Map them to
+// user-facing labels for the clarify bubble; unknown keys are hidden, not shown raw.
+const FIELD_TARGET_LABELS: Record<string, string> = {
+  user_role: "用户身份",
+  analysis_intent: "分析意图",
+  competitors_explicit: "竞品范围",
+  competitors_discovery_mode: "竞品范围",
+  domain_hint: "行业领域",
+  focus_dimensions: "关注维度",
+  report_depth: "报告深度",
+  reference_urls: "参考链接",
+  self_product: "我方产品",
+  market_scope: "市场范围",
+  time_context: "时效",
+};
 
 function buildIdempotencyKey(): string {
   if (
@@ -344,6 +366,69 @@ export function NewRunChatPage(): JSX.Element {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
+  // Session restore: the server is the source of truth. On (re)mount, if a run is
+  // pinned in sessionStorage and still awaiting the user mid-intake, rebuild the
+  // thread from history + pending_clarify so a refresh resumes the current question.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) {
+      return;
+    }
+    restoredRef.current = true;
+    const savedRunId = sessionStorage.getItem(INTAKE_SESSION_KEY);
+    if (savedRunId === null || savedRunId.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const session = await fetchRunIntakeSession(savedRunId);
+        if (cancelled) {
+          return;
+        }
+        if (
+          session.phase !== "intake" ||
+          !session.awaiting_user ||
+          session.pending_clarify === null
+        ) {
+          sessionStorage.removeItem(INTAKE_SESSION_KEY);
+          return;
+        }
+        const rebuilt: ChatMessage[] = [
+          { id: "welcome", kind: "assistant.welcome", text: WELCOME_TEXT },
+        ];
+        if (session.intake_draft?.user_query) {
+          rebuilt.push({
+            id: newMessageId(),
+            kind: "user",
+            text: session.intake_draft.user_query,
+            selectedOptions: [],
+          });
+        }
+        for (const exchange of session.history) {
+          rebuilt.push(clarifyMessageFromPayload(exchange.clarify));
+          rebuilt.push({
+            id: newMessageId(),
+            kind: "user",
+            text: exchange.reply.text,
+            selectedOptions: [...exchange.reply.selected_options],
+          });
+        }
+        rebuilt.push(clarifyMessageFromPayload(session.pending_clarify));
+        setMessages(rebuilt);
+        setDraft(session.intake_draft);
+        setRunId(session.run_id);
+        setStatus("awaiting_user");
+      } catch {
+        // Stale / deleted run: drop the pointer and let the user start fresh.
+        sessionStorage.removeItem(INTAKE_SESSION_KEY);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const currentClarify = useMemo<ChatMessage | null>(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
@@ -354,14 +439,18 @@ export function NewRunChatPage(): JSX.Element {
     return null;
   }, [messages]);
   const activeGhostSuggestion = useMemo(() => {
-    if (currentClarify === null || currentClarify.kind !== "assistant.clarify") {
+    if (
+      status !== "awaiting_user" ||
+      currentClarify === null ||
+      currentClarify.kind !== "assistant.clarify"
+    ) {
       return null;
     }
     if (currentClarify.suggestedOptions.length > 0) {
       return null;
     }
     return currentClarify.suggestedAnswer;
-  }, [currentClarify]);
+  }, [currentClarify, status]);
 
   // --- SSE: clarify_request / user_reply / complete -------------------------
 
@@ -419,6 +508,7 @@ export function NewRunChatPage(): JSX.Element {
 
   const handleIntakeComplete = useCallback(
     (payload: IntakeCompletePayload) => {
+      sessionStorage.removeItem(INTAKE_SESSION_KEY);
       const draftFromEvent = payload.draft as Partial<RunIntakeDraft> | undefined;
       if (draftFromEvent) {
         setDraft({
@@ -511,8 +601,10 @@ export function NewRunChatPage(): JSX.Element {
       createIdempotencyKeyRef.current = null;
       createIdempotencyQueryRef.current = null;
       setRunId(response.run_id);
+      sessionStorage.setItem(INTAKE_SESSION_KEY, response.run_id);
       setDraft(response.intake_draft);
       if (response.phase === "done") {
+        sessionStorage.removeItem(INTAKE_SESSION_KEY);
         setStatus("complete");
         pushToast({
           title: "已开始分析",
@@ -524,6 +616,7 @@ export function NewRunChatPage(): JSX.Element {
         return;
       }
       if (response.phase === "planning") {
+        sessionStorage.removeItem(INTAKE_SESSION_KEY);
         setStatus("complete");
         pushToast({
           title: "计划已生成",
@@ -694,11 +787,15 @@ export function NewRunChatPage(): JSX.Element {
   }
 
   const activeRowIds = useMemo<Set<string>>(() => {
-    if (currentClarify === null || currentClarify.kind !== "assistant.clarify") {
+    if (
+      status !== "awaiting_user" ||
+      currentClarify === null ||
+      currentClarify.kind !== "assistant.clarify"
+    ) {
       return new Set();
     }
     return activeRowIdsFromFieldTargets(currentClarify.fieldTargets);
-  }, [currentClarify]);
+  }, [currentClarify, status]);
   const checklistRows = useMemo(
     () => deriveChecklistRows(draft, activeRowIds),
     [draft, activeRowIds],
@@ -773,22 +870,24 @@ export function NewRunChatPage(): JSX.Element {
 
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-3 lg:items-stretch">
         <div className="flex min-h-0 flex-col gap-3 lg:col-span-2">
-          <Card className="flex min-h-[18rem] flex-1 flex-col lg:min-h-0">
+          <Card className="flex h-0 min-h-[18rem] flex-1 flex-col lg:min-h-0">
             <CardHeader className="pb-2">
               <CardTitle className="inline-flex items-center gap-2 text-lg">
                 <Sparkles className="h-4 w-4 text-primary" />
                 Agent 对话
               </CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-1 flex-col gap-2 overflow-hidden pt-0">
-              <div className="flex-1 space-y-3 overflow-y-auto pr-2">
+            <CardContent className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden pt-0">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-2">
                 {messages.map((message) => (
                   <MessageBubble
                     key={message.id}
                     message={message}
                     onOptionToggle={toggleOption}
                     selectedOptions={composerOptions}
-                    isCurrentClarify={currentClarify?.id === message.id}
+                    isCurrentClarify={
+                      status === "awaiting_user" && currentClarify?.id === message.id
+                    }
                   />
                 ))}
                 {isBusy && <ThinkingBubble status={status} />}
@@ -1039,11 +1138,20 @@ function MessageBubble({
         {message.kind === "assistant.clarify" ? (
           <>
             <p className="whitespace-pre-wrap break-words">{message.question}</p>
-            {message.fieldTargets.length > 0 && (
-              <p className="mt-1 text-xs text-foreground-muted">
-                关于：{message.fieldTargets.join("、")}
-              </p>
-            )}
+            {(() => {
+              const labels = Array.from(
+                new Set(
+                  message.fieldTargets
+                    .map((target) => FIELD_TARGET_LABELS[target])
+                    .filter((label): label is string => Boolean(label)),
+                ),
+              );
+              return labels.length > 0 ? (
+                <p className="mt-1 text-xs text-foreground-muted">
+                  关于：{labels.join("、")}
+                </p>
+              ) : null;
+            })()}
             {message.suggestedOptions.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {message.suggestedOptions.map((option) => {

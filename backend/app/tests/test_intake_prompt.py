@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from agents.nodes.intake import (
+    _merge_reply_into_draft,
     _clarify_target_satisfied,
     _fallback_clarify,
+    _should_drop_optional_clarify,
     _unsatisfied_clarify_targets,
 )
-from schemas.intake import IntakeClarifyRequest, RunIntakeDraft
+from schemas.intake import IntakeClarifyRequest, IntakeExchange, IntakeUserReply, RunIntakeDraft
 from service.llm.prompts import INTAKE_SYSTEM_PROMPT
 
 
@@ -51,8 +53,10 @@ def test_clarify_target_satisfied_tracks_completion_fields() -> None:
     assert _clarify_target_satisfied("analysis_intent", draft) is True
     assert _clarify_target_satisfied("competitors_explicit", draft) is True
     assert _clarify_target_satisfied("competitors_discovery_mode", draft) is True
-    # Unknown / optional targets are never treated as satisfied.
-    assert _clarify_target_satisfied("report_depth", draft) is False
+    assert _clarify_target_satisfied("market_scope", draft) is False
+
+    scoped = draft.model_copy(update={"market_scope": "中国 / China"})
+    assert _clarify_target_satisfied("market_scope", scoped) is True
 
 
 def test_unsatisfied_targets_empty_when_user_already_supplied_required_fields() -> None:
@@ -85,3 +89,42 @@ def test_unsatisfied_targets_preserves_genuinely_new_question() -> None:
     )
 
     assert _unsatisfied_clarify_targets(clarify, draft) == ["focus_dimensions"]
+
+
+def test_merge_reply_uses_selected_options_for_optional_text_fields() -> None:
+    draft = RunIntakeDraft(
+        user_query="找 one person company 方向",
+        user_role="founder",
+        analysis_intent="寻找适合一人公司的可变现方向",
+        competitors_discovery_mode=True,
+    )
+
+    next_draft = _merge_reply_into_draft(
+        draft,
+        IntakeClarifyRequest(
+            question="您主要关注哪个市场区域？",
+            field_targets=["market_scope"],
+            suggested_options=["全球 / Global", "中国 / China"],
+        ),
+        IntakeUserReply(text="", selected_options=["中国 / China"]),
+    )
+
+    assert next_draft.market_scope == "中国 / China"
+
+
+def test_optional_clarify_repeat_is_dropped_after_complete_draft() -> None:
+    history = [
+        IntakeExchange(
+            clarify=IntakeClarifyRequest(
+                question="您主要关注哪个市场区域？",
+                field_targets=["market_scope"],
+            ),
+            reply=IntakeUserReply(text="", selected_options=["中国 / China"]),
+        )
+    ]
+    clarify = IntakeClarifyRequest(
+        question="为了筛选高变现潜力方向，您希望重点考察哪个市场区域？",
+        field_targets=["market_scope"],
+    )
+
+    assert _should_drop_optional_clarify(clarify, history) is True

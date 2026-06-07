@@ -14,6 +14,7 @@ import type {
   FollowUpRequest,
   IntakeCreateRequest,
   IntakeCreateResponse,
+  IntakeSessionResponse,
   IntakeUserReply,
   PlanConfirmRequest,
   RunAcceptedResponse,
@@ -208,6 +209,15 @@ async function createRunIntake(
   const { data } = await apiClient.post<IntakeCreateResponse>("/api/runs/intake", payload, {
     headers,
   });
+  return data;
+}
+
+export async function fetchRunIntakeSession(
+  runId: string,
+): Promise<IntakeSessionResponse> {
+  const { data } = await apiClient.get<IntakeSessionResponse>(
+    `/api/runs/${runId}/intake-session`,
+  );
   return data;
 }
 

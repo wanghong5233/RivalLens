@@ -123,7 +123,7 @@ export function WorkspaceShell(): JSX.Element {
         scroll the main column when content exceeds viewport.
       */}
       <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-8 py-6">
+        <div className="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col px-8 py-6">
           <Outlet />
         </div>
       </main>

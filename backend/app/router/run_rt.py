@@ -34,7 +34,13 @@ from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from models.watchlist import WatchlistItem
 from schemas.ids import make_id
-from schemas.intake import IntakeClarifyRequest, IntakeUserReply, RunIntakeDraft, UserRole
+from schemas.intake import (
+    IntakeClarifyRequest,
+    IntakeExchange,
+    IntakeUserReply,
+    RunIntakeDraft,
+    UserRole,
+)
 from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.comparison import load_comparisons_for_run
 from service.conclusion import load_conclusions_for_run
@@ -2338,6 +2344,78 @@ async def get_run(run_id: str) -> RunDetailResponse:
                 message=f"run_id={run_id} does not exist",
             )
         return _to_run_detail(run)
+
+
+class IntakeSessionResponse(BaseModel):
+    """Server-side projection of an intake chat session (Invariant: server is the
+    source of truth). Lets the FE rebuild the chat after a refresh/reconnect from
+    `history` + `pending_clarify` instead of relying on live-only SSE.
+    """
+
+    run_id: str
+    status: str
+    phase: str | None
+    awaiting_user: bool
+    intake_draft: RunIntakeDraft | None
+    pending_clarify: IntakeClarifyRequest | None
+    history: list[IntakeExchange]
+
+
+@router.get("/api/runs/{run_id}/intake-session", response_model=IntakeSessionResponse)
+async def get_run_intake_session(run_id: str, request: Request) -> IntakeSessionResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        phase = _derive_run_phase(run)
+        db_draft = (
+            RunIntakeDraft.model_validate(run.intake_draft)
+            if run.intake_draft is not None
+            else None
+        )
+        run_status = run.status
+
+    graph = getattr(request.app.state, "compiled_graph", None)
+    if graph is None:
+        raise APIException(
+            status_code=503,
+            error_code="GRAPH_NOT_INITIALIZED",
+            message="agent graph is not ready",
+        )
+    snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
+    values: dict[str, object] = snapshot.values or {}
+
+    draft = _coerce_intake_draft_from_state(values) or db_draft
+
+    raw_pending = values.get("pending_clarify")
+    if isinstance(raw_pending, IntakeClarifyRequest):
+        pending = raw_pending
+    elif isinstance(raw_pending, dict):
+        pending = IntakeClarifyRequest.model_validate(raw_pending)
+    else:
+        pending = None
+
+    raw_history = values.get("intake_history") or []
+    history = [
+        item if isinstance(item, IntakeExchange) else IntakeExchange.model_validate(item)
+        for item in raw_history
+        if isinstance(item, (IntakeExchange, dict))
+    ]
+
+    return IntakeSessionResponse(
+        run_id=run_id,
+        status=run_status,
+        phase=phase,
+        awaiting_user=snapshot.next == ("intake_wait",),
+        intake_draft=draft,
+        pending_clarify=pending,
+        history=history,
+    )
 
 
 class RunPatchRequest(BaseModel):

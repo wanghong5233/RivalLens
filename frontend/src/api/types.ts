@@ -65,6 +65,21 @@ export interface IntakeCreateResponse {
   first_clarify_request?: IntakeClarifyRequest | null;
 }
 
+export interface IntakeExchange {
+  clarify: IntakeClarifyRequest;
+  reply: IntakeUserReply;
+}
+
+export interface IntakeSessionResponse {
+  run_id: string;
+  status: RunStatus;
+  phase: RunPhase | null;
+  awaiting_user: boolean;
+  intake_draft: RunIntakeDraft | null;
+  pending_clarify: IntakeClarifyRequest | null;
+  history: IntakeExchange[];
+}
+
 export type PlanTaskStage = "discover" | "research" | "analyze" | "write";
 
 export interface PlanTask {
