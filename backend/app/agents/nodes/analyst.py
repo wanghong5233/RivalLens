@@ -55,6 +55,7 @@ def _build_evidence_briefs(
             dropped_reasons[drop_reason] = dropped_reasons.get(drop_reason, 0) + 1
         competitor_raw = span.get("competitor_id")
         competitor_id = competitor_raw if isinstance(competitor_raw, str) else "unknown"
+        authority_raw = span.get("source_authority")
         briefs.append(
             {
                 "evidence_id": row.id,
@@ -63,6 +64,8 @@ def _build_evidence_briefs(
                 "quote_preview": row.sanitized_text[:220],
                 "source_title": row.source_title or "",
                 "source_url": row.source_url or "",
+                "source_type": row.source_type or "",
+                "source_authority": authority_raw if isinstance(authority_raw, str) else "third_party",
             }
         )
     return (

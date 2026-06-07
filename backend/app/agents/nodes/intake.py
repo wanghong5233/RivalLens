@@ -223,6 +223,33 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
     return RunIntakeDraft.model_validate(base)
 
 
+def _clarify_target_satisfied(field_target: str, draft: RunIntakeDraft) -> bool:
+    """Whether a clarify `field_target` is already satisfied by the current draft.
+
+    Only the completion-gate fields are tracked; unknown targets are treated as
+    unsatisfied so a genuinely new question (e.g. an optional dimension the LLM
+    wants to confirm) is never silently dropped.
+    """
+    if field_target == "user_role":
+        return draft.user_role is not None
+    if field_target == "analysis_intent":
+        return bool(draft.analysis_intent and draft.analysis_intent.strip())
+    if field_target in {"competitors_explicit", "competitors_discovery_mode"}:
+        return bool(draft.competitors_explicit) or draft.competitors_discovery_mode is True
+    return False
+
+
+def _unsatisfied_clarify_targets(
+    clarify: IntakeClarifyRequest, draft: RunIntakeDraft
+) -> list[str]:
+    """Subset of clarify field_targets the draft does not yet satisfy."""
+    return [
+        target
+        for target in clarify.field_targets
+        if not _clarify_target_satisfied(target, draft)
+    ]
+
+
 def _fallback_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
     """Deterministic clarify question when the LLM output is unusable.
 
@@ -455,6 +482,22 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         parsed_clarify = None
         reasoning_summary = ""
         title_content = {}
+
+    # When the merged draft is already complete, an LLM `ask` that only targets
+    # required fields the user has already supplied is redundant noise. Drop those
+    # satisfied targets so a complete draft is not stalled by a re-ask (R8).
+    if (
+        action_raw == "ask"
+        and parsed_clarify is not None
+        and next_draft.is_complete
+        and not _unsatisfied_clarify_targets(parsed_clarify, next_draft)
+    ):
+        log.info(
+            "intake.generate.ask_dropped_complete_draft",
+            run_id=run_id,
+            dropped_field_targets=list(parsed_clarify.field_targets),
+        )
+        parsed_clarify = None
 
     # Decision order matters. The key invariant: if the merged draft already
     # satisfies all required fields, the run MUST move to `complete` regardless

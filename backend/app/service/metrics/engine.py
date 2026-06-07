@@ -16,7 +16,7 @@ from models.run import Run
 from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
-from schemas.contracts import validate_dimension
+from schemas.contracts import DERIVED_DIMENSIONS, validate_dimension
 
 
 def _normalize_dimension(value: str) -> str | None:
@@ -37,6 +37,7 @@ class RunMetricsSnapshot:
     conclusion_sections: list[str]
     report_section_ids: list[str]
     dimension_coverage_rate: float
+    evidence_dimension_coverage_rate: float
     report_char_count: int
     report_section_count: int
     report_depth: str
@@ -80,6 +81,35 @@ def _expected_dimensions_from_plan_tree(plan_tree: dict[str, object] | None) -> 
     dimensions: set[str] = set()
     for task_raw in tasks_raw:
         if not isinstance(task_raw, dict):
+            continue
+        focus_raw = task_raw.get("focus_dimensions")
+        if not isinstance(focus_raw, list):
+            continue
+        for item in focus_raw:
+            if isinstance(item, str) and item:
+                normalized = _normalize_dimension(item)
+                if normalized is not None:
+                    dimensions.add(normalized)
+    return dimensions
+
+
+def _research_dimensions_from_plan_tree(plan_tree: dict[str, object] | None) -> set[str]:
+    """Dimensions that research tasks were asked to gather evidence for.
+
+    Unlike `_expected_dimensions_from_plan_tree` this ignores analyze/write tasks,
+    so analyst-synthesized (derived) dimensions don't pollute the evidence-coverage
+    denominator (R9).
+    """
+    if not isinstance(plan_tree, dict):
+        return set()
+    tasks_raw = plan_tree.get("tasks")
+    if not isinstance(tasks_raw, list):
+        return set()
+    dimensions: set[str] = set()
+    for task_raw in tasks_raw:
+        if not isinstance(task_raw, dict):
+            continue
+        if task_raw.get("stage") != "research":
             continue
         focus_raw = task_raw.get("focus_dimensions")
         if not isinstance(focus_raw, list):
@@ -274,6 +304,27 @@ def build_run_metrics_snapshot(
         else len(dimension_denominator)
     )
     dimension_coverage_rate = _safe_rate(covered_dimension_count, len(dimension_denominator))
+
+    # Evidence-grounded coverage: of the dimensions research tasks were asked to
+    # gather, how many actually have on-dimension evidence. Unlike the downstream
+    # `dimension_coverage_rate` (satisfied by a report section existing), this is
+    # not inflated by derived dimensions that carry zero gathered evidence (R9).
+    research_dimensions = _research_dimensions_from_plan_tree(run.plan_tree)
+    if not research_dimensions:
+        research_dimensions = {
+            dimension
+            for dimension in expected_dimensions
+            if dimension not in DERIVED_DIMENSIONS
+        }
+    evidence_dimension_denominator = research_dimensions or evidence_dimensions
+    covered_evidence_dimension_count = sum(
+        1
+        for dimension in evidence_dimension_denominator
+        if evidence_count_by_dimension.get(dimension, 0) > 0
+    )
+    evidence_dimension_coverage_rate = _safe_rate(
+        covered_evidence_dimension_count, len(evidence_dimension_denominator)
+    )
     expected_report_sections = _latest_writer_target_sections(step_rows) or expected_dimensions
     report_section_coverage_rate = (
         _safe_rate(
@@ -329,6 +380,7 @@ def build_run_metrics_snapshot(
         conclusion_sections=sorted(conclusion_sections),
         report_section_ids=sorted(report_section_ids),
         dimension_coverage_rate=dimension_coverage_rate,
+        evidence_dimension_coverage_rate=evidence_dimension_coverage_rate,
         report_char_count=len(latest_report.content_markdown.strip()) if latest_report is not None else 0,
         report_section_count=_section_count_from_report(latest_report),
         report_depth=_report_depth_from_run(run),

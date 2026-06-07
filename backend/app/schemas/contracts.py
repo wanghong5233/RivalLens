@@ -69,6 +69,30 @@ def validate_dimension(value: str) -> str:
     return _DIMENSION_ALIASES.get(normalized, normalized)
 
 
+# Dimensions the analyst synthesizes from other dimensions' evidence rather than
+# the researcher gathering them as standalone facts. A research task that chases
+# these wastes its turn budget and produces zero on-dimension evidence (R9).
+DERIVED_DIMENSIONS: Final[frozenset[str]] = frozenset({"strategic_recommendations"})
+
+
+def is_derived_dimension(value: str) -> bool:
+    try:
+        return validate_dimension(value) in DERIVED_DIMENSIONS
+    except ValueError:
+        return False
+
+
+def research_focus_dimensions(focus_dimensions: list[str]) -> list[str]:
+    """Subset of focus dimensions a research task should collect evidence for.
+
+    Drops derived dimensions (analyst-synthesized), preserving original spelling.
+    Falls back to the full list if every dimension is derived — a research task
+    must keep at least one target rather than become a no-op.
+    """
+    research = [dim for dim in focus_dimensions if not is_derived_dimension(dim)]
+    return research or list(focus_dimensions)
+
+
 def normalize_dimension_or_none(
     raw: object,
     *,

@@ -25,6 +25,7 @@ from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
 from schemas.agent_outputs import PlannerOutput
+from schemas.contracts import research_focus_dimensions
 from schemas.ids import make_id
 from schemas.intake import RunIntakeDraft
 from schemas.plan import PlanConfirmRequest, PlanTask, PlanTaskStage, PlanTree
@@ -64,6 +65,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
     never lies about what the executor would do.
     """
     focus = list(draft.focus_dimensions) or list(DEFAULT_FOCUS_DIMENSIONS)
+    research_focus = research_focus_dimensions(focus)
     tasks: list[PlanTask] = []
     competitors = list(draft.competitors_explicit)
     if draft.competitors_discovery_mode or not competitors:
@@ -73,7 +75,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
                 title="发现赛道头部竞品",
                 description="基于用户问题在公开渠道检索可能的头部竞品。",
                 competitor_id=None,
-                focus_dimensions=focus,
+                focus_dimensions=research_focus,
             )
         )
     for competitor in competitors[:MAX_RESEARCH_COMPETITORS]:
@@ -83,7 +85,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
                 title=f"调研 {competitor}"[:PLAN_TASK_TITLE_MAX_LEN],
                 description=f"按维度收集 {competitor} 的事实证据。",
                 competitor_id=competitor,
-                focus_dimensions=focus,
+                focus_dimensions=research_focus,
             )
         )
     tasks.append(
@@ -157,6 +159,7 @@ def reconcile_plan_tree_after_discovery(
         if task.stage == "research":
             insert_at = index + 1
 
+    research_focus = research_focus_dimensions(focus)
     new_research_tasks: list[PlanTask] = []
     for competitor in discovered_competitors[:MAX_RESEARCH_COMPETITORS]:
         if competitor in existing_research:
@@ -167,7 +170,7 @@ def reconcile_plan_tree_after_discovery(
                 title=f"调研 {competitor}"[:PLAN_TASK_TITLE_MAX_LEN],
                 description=f"按维度收集 {competitor} 的事实证据。",
                 competitor_id=competitor,
-                focus_dimensions=focus,
+                focus_dimensions=research_focus,
                 source="agent",
                 enabled=True,
             )

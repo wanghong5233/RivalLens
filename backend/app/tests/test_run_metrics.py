@@ -33,6 +33,7 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         conclusion_sections=[],
         report_section_ids=[],
         dimension_coverage_rate=0.5,
+        evidence_dimension_coverage_rate=0.5,
         report_char_count=1234,
         report_section_count=2,
         report_depth="deep",
@@ -271,6 +272,9 @@ def test_build_run_metrics_snapshot_uses_downstream_focus_dimensions_for_coverag
     assert snapshot.conclusion_sections == ["pricing"]
     assert snapshot.report_section_ids == ["implementation"]
     assert snapshot.dimension_coverage_rate == 1.0
+    # R9: downstream coverage is 1.0, but no research dimension has on-dimension
+    # evidence — the honest evidence-grounded rate must expose that (0/3).
+    assert snapshot.evidence_dimension_coverage_rate == 0.0
 
 
 def test_build_run_metrics_snapshot_reports_report_quality_fields() -> None:

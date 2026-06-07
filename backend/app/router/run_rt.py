@@ -351,6 +351,7 @@ class RunMetricsResponse(BaseModel):
     conclusion_sections: list[str]
     report_section_ids: list[str]
     dimension_coverage_rate: float
+    evidence_dimension_coverage_rate: float
     report_char_count: int
     report_section_count: int
     report_depth: str

@@ -3,7 +3,9 @@ from __future__ import annotations
 import pytest
 
 from schemas.contracts import (
+    is_derived_dimension,
     normalize_dimension_or_none,
+    research_focus_dimensions,
     validate_dimension,
     validate_section_id,
     validate_token_list,
@@ -47,3 +49,25 @@ def test_normalize_dimension_or_none_reports_missing_invalid_and_out_of_focus() 
         None,
         "out_of_focus",
     )
+
+
+def test_is_derived_dimension_matches_aliases() -> None:
+    assert is_derived_dimension("strategic_recommendations") is True
+    # Aliases normalize to the canonical derived dimension.
+    assert is_derived_dimension("Investment Recommendation") is True
+    assert is_derived_dimension("pricing_strategy") is False
+    assert is_derived_dimension("!!!") is False
+
+
+def test_research_focus_dimensions_drops_derived_keeps_spelling() -> None:
+    focus = ["pricing_strategy", "strategic_recommendations", "enterprise_capabilities"]
+    assert research_focus_dimensions(focus) == [
+        "pricing_strategy",
+        "enterprise_capabilities",
+    ]
+
+
+def test_research_focus_dimensions_falls_back_when_all_derived() -> None:
+    focus = ["strategic_recommendations", "Investment Recommendation"]
+    # A research task must keep at least one target rather than become a no-op.
+    assert research_focus_dimensions(focus) == focus

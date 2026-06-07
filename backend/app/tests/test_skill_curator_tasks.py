@@ -11,6 +11,7 @@ def _snapshot(
     *,
     coverage_rate: float = 1.0,
     dimension_coverage_rate: float = 0.5,
+    evidence_dimension_coverage_rate: float = 0.5,
     report_section_coverage_rate: float = 1.0,
     qa_rejection_rate: float = 0.0,
 ) -> RunMetricsSnapshot:
@@ -24,6 +25,7 @@ def _snapshot(
         conclusion_sections=[],
         report_section_ids=["feature"],
         dimension_coverage_rate=dimension_coverage_rate,
+        evidence_dimension_coverage_rate=evidence_dimension_coverage_rate,
         report_char_count=3200,
         report_section_count=3,
         report_depth="deep",
@@ -65,9 +67,21 @@ def test_curator_skip_reason_uses_quality_thresholds(monkeypatch: pytest.MonkeyP
     assert (
         curator_tasks._curator_skip_reason(  # noqa: SLF001 - focused gate regression
             run_status="completed",
-            snapshot=_snapshot(dimension_coverage_rate=0.49),
+            snapshot=_snapshot(evidence_dimension_coverage_rate=0.49),
         )
-        == "dimension_coverage_rate_below_threshold"
+        == "evidence_dimension_coverage_rate_below_threshold"
+    )
+    # The downstream dimension_coverage_rate must NOT gate the curator anymore:
+    # a report-section-only coverage of 1.0 with poor evidence must still skip.
+    assert (
+        curator_tasks._curator_skip_reason(  # noqa: SLF001 - focused gate regression
+            run_status="completed",
+            snapshot=_snapshot(
+                dimension_coverage_rate=1.0,
+                evidence_dimension_coverage_rate=0.49,
+            ),
+        )
+        == "evidence_dimension_coverage_rate_below_threshold"
     )
     assert (
         curator_tasks._curator_skip_reason(  # noqa: SLF001 - focused gate regression

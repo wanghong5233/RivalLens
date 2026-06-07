@@ -325,6 +325,7 @@ Hard constraints:
 - Evidence can only come from tool observations.
 - If enough dimensions are already covered, call finalize.
 - Prefer online collection first; use load_skill when domain-specific extraction guidance is needed.
+- For buyer-critical dimensions (pricing, enterprise, security, compliance), gather evidence from the vendor's OWN site first (e.g. search `site:<official-domain> pricing`, or fetch the official pricing/security/docs page); fall back to third-party articles only when the official source yields nothing.
 - When action_args.dimension is present, it MUST be exactly one value from focus_dimensions. Do not invent compound dimensions.
 - Return JSON object only, no markdown.
 """
@@ -498,7 +499,11 @@ def select_layered_evidence_briefs(
     if len(rows) <= limit:
         return rows
 
-    latest_group_indexes: dict[tuple[str, str], int] = {}
+    # Per (competitor, dimension) group keep one representative. Prefer an official
+    # source over a third-party one so buyer-critical claims surface vendor evidence
+    # when it exists; within the same authority tier, keep the latest (R10).
+    group_official_index: dict[tuple[str, str], int] = {}
+    group_latest_index: dict[tuple[str, str], int] = {}
     for index in range(len(rows) - 1, -1, -1):
         item = rows[index]
         competitor_raw = item.get("competitor_id")
@@ -506,12 +511,14 @@ def select_layered_evidence_briefs(
         competitor_id = competitor_raw if isinstance(competitor_raw, str) and competitor_raw else "unknown"
         dimension = dimension_raw if isinstance(dimension_raw, str) and dimension_raw else "unknown"
         key = (competitor_id, dimension)
-        if key not in latest_group_indexes:
-            latest_group_indexes[key] = index
+        if key not in group_latest_index:
+            group_latest_index[key] = index
+        if item.get("source_authority") == "official" and key not in group_official_index:
+            group_official_index[key] = index
 
     selected: set[int] = set()
-    for index in latest_group_indexes.values():
-        selected.add(index)
+    for key, latest_index in group_latest_index.items():
+        selected.add(group_official_index.get(key, latest_index))
         if len(selected) >= limit:
             break
 

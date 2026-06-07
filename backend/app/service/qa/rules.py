@@ -318,6 +318,60 @@ def rule_deep_sections_cite_evidence(
     )
 
 
+# Sections where a buyer cannot trust third-party summaries alone — at least one
+# cited source must come from the vendor itself (R10).
+_OFFICIAL_REQUIRED_SECTION_KEYWORDS: tuple[str, ...] = (
+    "pricing",
+    "enterprise",
+    "compliance",
+    "security",
+)
+
+
+def _evidence_authority_by_id(evidence_items: list[EvidenceRecord]) -> dict[str, str]:
+    authority_by_id: dict[str, str] = {}
+    for item in evidence_items:
+        span = item.span if isinstance(item.span, dict) else {}
+        authority_raw = span.get("source_authority")
+        authority_by_id[item.id] = (
+            authority_raw if isinstance(authority_raw, str) else "third_party"
+        )
+    return authority_by_id
+
+
+def rule_buyer_critical_sections_need_official_source(
+    *,
+    content_json: dict[str, object],
+    evidence_items: list[EvidenceRecord],
+) -> RuleResult:
+    authority_by_id = _evidence_authority_by_id(evidence_items)
+    flagged: list[str] = []
+    for section in _iter_report_sections(content_json):
+        section_id = _section_id(section)
+        if section_id is None:
+            continue
+        lowered = section_id.lower()
+        if not any(keyword in lowered for keyword in _OFFICIAL_REQUIRED_SECTION_KEYWORDS):
+            continue
+        refs = _section_evidence_refs(section)
+        if not refs:
+            # Missing citations are covered by the citation rules; this gate only
+            # judges the authority of sources that ARE cited.
+            continue
+        if not any(authority_by_id.get(ref) == "official" for ref in refs):
+            flagged.append(section_id)
+    return RuleResult(
+        rule_id="rule_buyer_critical_sections_need_official_source",
+        passed=not flagged,
+        severity="warning",
+        reject_to="researcher",
+        message=(
+            "Buyer-critical sections should cite at least one official (vendor) source; "
+            f"sections relying only on third-party evidence: {flagged}."
+        ),
+    )
+
+
 def evaluate_fast_path_rules(
     *,
     content_markdown: str,
@@ -339,6 +393,10 @@ def evaluate_fast_path_rules(
         ),
         rule_writer_no_fallback_mode(content_json),
         rule_evidence_must_be_desensitized(evidence_items),
+        rule_buyer_critical_sections_need_official_source(
+            content_json=content_json,
+            evidence_items=evidence_items,
+        ),
     ]
     if report_depth == "deep":
         rule_results.extend(

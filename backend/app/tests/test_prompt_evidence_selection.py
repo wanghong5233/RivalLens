@@ -59,6 +59,29 @@ def test_select_layered_evidence_briefs_covers_competitor_dimension_groups() -> 
     }
 
 
+def test_select_layered_evidence_briefs_prefers_official_within_group() -> None:
+    # Same (competitor, dimension) group: an official source must win over a newer
+    # third-party one so buyer-critical claims surface vendor evidence (R10).
+    evidence_briefs = [
+        {
+            "evidence_id": "official_pricing",
+            "competitor_id": "Cursor",
+            "dimension": "pricing",
+            "source_authority": "official",
+        },
+        {
+            "evidence_id": "third_party_pricing_newer",
+            "competitor_id": "Cursor",
+            "dimension": "pricing",
+            "source_authority": "third_party",
+        },
+    ]
+
+    selected = select_layered_evidence_briefs(evidence_briefs, limit=1)
+
+    assert [item["evidence_id"] for item in selected] == ["official_pricing"]
+
+
 def test_select_layered_evidence_briefs_fills_remaining_with_newest() -> None:
     evidence_briefs = [
         {"evidence_id": f"ev_{index}", "competitor_id": "Cursor", "dimension": "pricing"}

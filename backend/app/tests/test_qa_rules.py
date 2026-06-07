@@ -18,6 +18,7 @@ from service.qa.engine import (
 from service.qa.rules import (
     RuleResult,
     evaluate_fast_path_rules,
+    rule_buyer_critical_sections_need_official_source,
     rule_evidence_must_be_desensitized,
     rule_deep_report_min_char_count,
     rule_report_must_have_at_least_one_section,
@@ -44,6 +45,74 @@ def _make_evidence(*, desensitized: bool) -> EvidenceRecord:
         collected_at=datetime.now(timezone.utc),
         desensitized=desensitized,
     )
+
+
+def _make_evidence_with_authority(
+    *, evidence_id: str, source_authority: str
+) -> EvidenceRecord:
+    return EvidenceRecord(
+        id=evidence_id,
+        run_id="run_test_authority",
+        source_type="article",
+        source_url="https://example.com",
+        source_title="Example",
+        quote="quoted text",
+        sanitized_text="sanitized text",
+        span={"dimension": "pricing_strategy", "source_authority": source_authority},
+        collected_by="step_researcher_001",
+        collected_at=datetime.now(timezone.utc),
+        desensitized=True,
+    )
+
+
+def test_rule_buyer_critical_sections_need_official_source_warns_on_third_party_only() -> None:
+    content_json = {
+        "sections": [
+            {"section_id": "pricing_strategy", "evidence_refs": ["ev_third_party"]},
+        ]
+    }
+    evidence_items = [
+        _make_evidence_with_authority(
+            evidence_id="ev_third_party", source_authority="third_party"
+        )
+    ]
+
+    result = rule_buyer_critical_sections_need_official_source(
+        content_json=content_json,
+        evidence_items=evidence_items,
+    )
+
+    assert result.passed is False
+    assert result.severity == "warning"
+    assert "pricing_strategy" in result.message
+
+
+def test_rule_buyer_critical_sections_need_official_source_passes_with_official() -> None:
+    content_json = {
+        "sections": [
+            {
+                "section_id": "pricing_strategy",
+                "evidence_refs": ["ev_official", "ev_third_party"],
+            },
+            # Non-critical section is ignored regardless of authority.
+            {"section_id": "market_differences", "evidence_refs": ["ev_third_party"]},
+        ]
+    }
+    evidence_items = [
+        _make_evidence_with_authority(
+            evidence_id="ev_official", source_authority="official"
+        ),
+        _make_evidence_with_authority(
+            evidence_id="ev_third_party", source_authority="third_party"
+        ),
+    ]
+
+    result = rule_buyer_critical_sections_need_official_source(
+        content_json=content_json,
+        evidence_items=evidence_items,
+    )
+
+    assert result.passed is True
 
 
 def test_rule_report_must_have_markdown_content_pass_and_fail() -> None:

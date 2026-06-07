@@ -254,6 +254,7 @@ def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str
         span = row.span if isinstance(row.span, dict) else {}
         dimension_raw = span.get("dimension")
         competitor_id_raw = span.get("competitor_id")
+        authority_raw = span.get("source_authority")
         briefs.append(
             {
                 "evidence_id": row.id,
@@ -262,6 +263,8 @@ def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str
                 "quote_preview": row.sanitized_text[:220],
                 "source_title": row.source_title or "",
                 "source_url": row.source_url or "",
+                "source_type": row.source_type or "",
+                "source_authority": authority_raw if isinstance(authority_raw, str) else "third_party",
             }
         )
     return briefs

@@ -149,6 +149,7 @@ def _snapshot_quality_payload(snapshot: RunMetricsSnapshot) -> dict[str, object]
     return {
         "coverage_rate": snapshot.coverage_rate,
         "dimension_coverage_rate": snapshot.dimension_coverage_rate,
+        "evidence_dimension_coverage_rate": snapshot.evidence_dimension_coverage_rate,
         "report_section_coverage_rate": snapshot.report_section_coverage_rate,
         "qa_rejection_rate": snapshot.qa_rejection_rate,
         "evidence_count_total": snapshot.evidence_count_total,
@@ -167,8 +168,11 @@ def _curator_skip_reason(
         return "run_degraded"
     if snapshot.coverage_rate < settings.CURATOR_MIN_COVERAGE_RATE:
         return "coverage_rate_below_threshold"
-    if snapshot.dimension_coverage_rate < settings.CURATOR_MIN_DIMENSION_COVERAGE_RATE:
-        return "dimension_coverage_rate_below_threshold"
+    # Gate on evidence-grounded coverage, not the downstream rate that a report
+    # section alone can satisfy — a run that never gathered a dimension's evidence
+    # must not seed skills as if it had (R9).
+    if snapshot.evidence_dimension_coverage_rate < settings.CURATOR_MIN_DIMENSION_COVERAGE_RATE:
+        return "evidence_dimension_coverage_rate_below_threshold"
     if snapshot.report_section_coverage_rate < settings.CURATOR_MIN_REPORT_SECTION_COVERAGE_RATE:
         return "report_section_coverage_rate_below_threshold"
     if snapshot.qa_rejection_rate > settings.CURATOR_MAX_QA_REJECTION_RATE:

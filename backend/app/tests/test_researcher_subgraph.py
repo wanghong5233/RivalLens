@@ -7,6 +7,9 @@ import pytest
 from agents.subgraphs.researcher import (
     COMPRESS_AFTER_TURNS,
     ResearcherSubState,
+    _fallback_action,
+    _is_official_priority_dimension,
+    _pick_url_for_dimension,
     get_researcher_subgraph,
 )
 from service.collector.base import CollectorObservation, CollectorSnippet, ToolObservationResult
@@ -43,6 +46,38 @@ class _FakeSequentialLLMClient:
             latency_ms=1,
             error=None,
         )
+
+
+def test_is_official_priority_dimension_matches_buyer_critical() -> None:
+    assert _is_official_priority_dimension("pricing_strategy") is True
+    assert _is_official_priority_dimension("enterprise_capabilities") is True
+    assert _is_official_priority_dimension("security_compliance") is True
+    assert _is_official_priority_dimension("product_positioning") is False
+
+
+def test_pick_url_for_dimension_prefers_official_host_for_pricing() -> None:
+    urls = [
+        "https://www.g2.com/products/cursor/pricing",
+        "https://cursor.com/pricing",
+    ]
+    # cursor.com is in the curated official host map; it must win for pricing.
+    selected = _pick_url_for_dimension(
+        urls, "pricing_strategy", official_hosts={"cursor.com", "www.cursor.com"}
+    )
+    assert selected == "https://cursor.com/pricing"
+
+
+def test_fallback_action_targets_official_domain_for_pricing() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "research_topic": "cursor pricing",
+        "competitor_id": "cursor",
+        "pending_dimensions": ["pricing_strategy"],
+        "observations_log": [],
+    }
+    action, args = _fallback_action(state)
+    assert action == "search_web"
+    assert "site:" in str(args["query"])
+    assert "cursor.com" in str(args["query"])
 
 
 def _llm_response(model_slot: str, content: dict[str, object]) -> LLMResponse:

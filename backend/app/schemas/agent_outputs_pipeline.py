@@ -12,7 +12,12 @@ from core.defaults import (
     MAX_RESEARCH_COMPETITORS,
     MAX_TOTAL_PLAN_TASKS,
 )
-from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_token_list
+from schemas.contracts import (
+    normalize_dimension_or_none,
+    research_focus_dimensions,
+    validate_dimension,
+    validate_token_list,
+)
 from schemas.intake import IntakeClarifyRequest, RunIntakeDraft
 from schemas.plan import PlanTask, PlanTaskStage
 from schemas.supervisor import (
@@ -209,6 +214,10 @@ class PlannerOutput(BaseModel):
                 focus = list(default_focus)
             if not focus:
                 focus = list(default_focus)
+            if stage_raw in {"discover", "research"}:
+                # Derived dimensions are analyst-synthesized, not independently
+                # gathered; keep them out of research/discovery focus (R9).
+                focus = research_focus_dimensions(focus)
             parsed_tasks.append(
                 PlannerTaskDraft(
                     stage=cast(PlanTaskStage, stage_raw),

@@ -213,6 +213,7 @@ export interface RunMetricsResponse {
   conclusion_sections: string[];
   report_section_ids: string[];
   dimension_coverage_rate: number;
+  evidence_dimension_coverage_rate: number;
   report_char_count: number;
   report_section_count: number;
   report_depth: "quick" | "deep";

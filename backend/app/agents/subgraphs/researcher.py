@@ -10,6 +10,7 @@ from typing import Any, Literal, TypedDict
 from langgraph.graph import END, StateGraph
 
 from agents.tools import get_channel_registry
+from agents.tools.parse_page import official_hosts_for_competitor
 from core.defaults import MAX_REACT_TURNS
 from schemas.contracts import normalize_dimension_or_none, validate_source_type
 from schemas.supervisor import FocusDimension
@@ -410,10 +411,18 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                 return ("load_skill", {"skill_id": skill_id})
         if not _has_attempt("search_web"):
             query_prefix = f"{domain_hint} " if domain_hint else ""
+            base_query = f"{query_prefix}{state['competitor_id']} {dimension} {state['research_topic']}"
+            query = base_query
+            # For buyer-critical dimensions, target the vendor's own domain so the
+            # first attempt favors official pricing/security/enterprise pages (R10).
+            if _is_official_priority_dimension(dimension):
+                primary_host = _primary_official_host(state.get("competitor_id"))
+                if primary_host is not None:
+                    query = f"site:{primary_host} {state['competitor_id']} {dimension}"
             return (
                 "search_web",
                 {
-                    "query": f"{query_prefix}{state['competitor_id']} {dimension} {state['research_topic']}",
+                    "query": query,
                     "max_results": 5,
                     "dimension": dimension,
                 },
@@ -433,10 +442,49 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
     return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 
 
-def _pick_url_for_dimension(urls: list[str], dimension: FocusDimension) -> str | None:
+# Dimensions where third-party articles are not trustworthy enough for a buyer:
+# pricing, enterprise readiness, security, and compliance must be sourced from the
+# vendor's own pages first (R10).
+_OFFICIAL_PRIORITY_DIMENSION_KEYWORDS: tuple[str, ...] = (
+    "pricing",
+    "enterprise",
+    "compliance",
+    "security",
+)
+
+
+def _is_official_priority_dimension(dimension: str) -> bool:
+    lowered = dimension.lower()
+    return any(keyword in lowered for keyword in _OFFICIAL_PRIORITY_DIMENSION_KEYWORDS)
+
+
+def _primary_official_host(competitor_id: str | None) -> str | None:
+    hosts = official_hosts_for_competitor(competitor_id)
+    if not hosts:
+        return None
+    # Shortest host is the most likely apex domain (cursor.com over docs.cursor.com).
+    return min(hosts, key=len)
+
+
+def _url_host_matches(url: str, official_hosts: set[str]) -> bool:
+    lowered = url.lower()
+    return any(host.lower() in lowered for host in official_hosts)
+
+
+def _pick_url_for_dimension(
+    urls: list[str],
+    dimension: FocusDimension,
+    *,
+    official_hosts: set[str] | None = None,
+) -> str | None:
     if not urls:
         return None
     dimension_lower = dimension.lower()
+    # High-risk dimensions: prefer the vendor's own domain over any third-party URL.
+    if official_hosts and _is_official_priority_dimension(dimension):
+        for url in urls:
+            if _url_host_matches(url, official_hosts):
+                return url
     if "pricing" in dimension_lower:
         for url in urls:
             lowered = url.lower()
@@ -451,6 +499,7 @@ def _pick_url_for_dimension(urls: list[str], dimension: FocusDimension) -> str |
 
 
 def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension) -> str | None:
+    official_hosts = official_hosts_for_competitor(state.get("competitor_id"))
     reference_urls_raw = state.get("reference_urls", [])
     reference_urls = (
         [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
@@ -458,7 +507,9 @@ def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension)
         else []
     )
     if reference_urls:
-        selected = _pick_url_for_dimension(reference_urls, dimension)
+        selected = _pick_url_for_dimension(
+            reference_urls, dimension, official_hosts=official_hosts
+        )
         if selected is not None:
             return selected
 
@@ -469,7 +520,9 @@ def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension)
         else []
     )
     if discovered_urls:
-        return _pick_url_for_dimension(discovered_urls, dimension)
+        return _pick_url_for_dimension(
+            discovered_urls, dimension, official_hosts=official_hosts
+        )
     return None
 
 
