@@ -81,6 +81,7 @@ def _make_qa_payload(
             "passed_rule_ids": review_result.passed_rule_ids,
             "failed_rule_count": 0,
             "failed_rule_ids": [],
+            "warning_rule_ids": review_result.warning_rule_ids,
         }
     failed_rule_ids = list(review_result.failed_rule_ids)
     return {
@@ -90,6 +91,7 @@ def _make_qa_payload(
         "qa_reject_to": review_result.reject_to,
         "failed_rule_ids": failed_rule_ids,
         "failed_rule_count": len(failed_rule_ids),
+        "warning_rule_ids": review_result.warning_rule_ids,
         "reject_to": review_result.reject_to,
     }
 
@@ -241,6 +243,7 @@ async def qa_node(state: AgentState) -> AgentState:
                 "qa_outcome": event_qa_outcome,
                 "reject_to": event_reject_to,
                 "target_step_id": writer_step.step_id,
+                "warning_rule_ids": qa_payload.get("warning_rule_ids", []),
             },
         )
         return {
@@ -285,6 +288,7 @@ async def qa_node(state: AgentState) -> AgentState:
             "reject_to": event_reject_to,
             "target_step_id": writer_step.step_id,
             "failed_rule_count": len(failed_rule_ids),
+            "warning_rule_ids": qa_payload.get("warning_rule_ids", []),
         },
     )
     qa_reasons = (

@@ -11,10 +11,14 @@ from core.defaults import (
 )
 from models.evidence import EvidenceRecord
 from schemas.contracts import validate_section_id
+from service.locale import source_locale, target_country_from_scope
 
 RuleSeverity = Literal["blocking", "warning"]
 RuleRejectTarget = Literal["supervisor", "researcher", "analyst", "writer"]
 _HONEST_INCOMPLETE_COVERAGE = {"partial", "insufficient_data", "missing"}
+# Coverage floor, NOT a dominance target: an explicitly China-scoped analysis should have
+# at least some domestic firsthand grounding. Foreign sources stay valid for breadth.
+_MIN_DOMESTIC_COVERAGE_RATE = 0.20
 
 
 @dataclass(frozen=True)
@@ -373,6 +377,47 @@ def rule_buyer_critical_sections_need_official_source(
     )
 
 
+def _is_domestic_source(*, item: EvidenceRecord) -> bool:
+    locale = source_locale(
+        source_url=item.source_url,
+        span=item.span if isinstance(item.span, dict) else None,
+        sanitized_text=item.sanitized_text,
+    )
+    return locale["country"] == "china" or locale["language"] == "zh"
+
+
+def rule_locale_mismatch(
+    *,
+    market_scope: str | None,
+    evidence_items: list[EvidenceRecord],
+    min_domestic_rate: float = _MIN_DOMESTIC_COVERAGE_RATE,
+) -> RuleResult:
+    # Region is derived ONLY from an explicit market scope; output language never gates it.
+    target_country = target_country_from_scope(market_scope=market_scope)
+    if target_country != "china" or not evidence_items:
+        return RuleResult(
+            rule_id="rule_locale_mismatch",
+            passed=True,
+            severity="warning",
+            reject_to="researcher",
+            message="Locale coverage check skipped: no explicit regional market scope (language does not constrain market).",
+        )
+    domestic_count = sum(1 for item in evidence_items if _is_domestic_source(item=item))
+    domestic_rate = domestic_count / len(evidence_items)
+    return RuleResult(
+        rule_id="rule_locale_mismatch",
+        passed=domestic_rate >= min_domestic_rate,
+        severity="warning",
+        reject_to="researcher",
+        message=(
+            "Explicit China-scope analysis has thin domestic firsthand coverage; "
+            "add home-market sources (foreign sources remain valid for breadth) "
+            f"(domestic_coverage={domestic_rate:.2f}, floor={min_domestic_rate:.2f}, "
+            f"domestic={domestic_count}, total={len(evidence_items)})."
+        ),
+    )
+
+
 def _knowledge_items_by_competitor(
     items: object,
 ) -> dict[str, list[dict[str, object]]]:
@@ -538,6 +583,7 @@ def evaluate_fast_path_rules(
     allowed_evidence_ids: set[str],
     report_depth: Literal["quick", "deep"] = "quick",
     target_sections: list[str] | None = None,
+    market_scope: str | None = None,
 ) -> list[RuleResult]:
     rule_results = [
         rule_report_must_have_markdown_content(content_markdown),
@@ -553,6 +599,10 @@ def evaluate_fast_path_rules(
         rule_evidence_must_be_desensitized(evidence_items),
         rule_buyer_critical_sections_need_official_source(
             content_json=content_json,
+            evidence_items=evidence_items,
+        ),
+        rule_locale_mismatch(
+            market_scope=market_scope,
             evidence_items=evidence_items,
         ),
     ]

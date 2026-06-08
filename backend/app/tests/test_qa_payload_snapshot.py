@@ -38,6 +38,7 @@ def test_qa_payload_snapshot_records_zero_failed_rules_for_approval() -> None:
         approval_id="approval_test",
         step_id="step_writer",
         passed_rule_ids=["rule_report_must_have_markdown_content"],
+        warning_rule_ids=["rule_locale_mismatch"],
         semantic_audit_passed=True,
         reviewer_step_id="step_qa",
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -51,3 +52,4 @@ def test_qa_payload_snapshot_records_zero_failed_rules_for_approval() -> None:
 
     assert payload["failed_rule_count"] == 0
     assert payload["failed_rule_ids"] == []
+    assert payload["warning_rule_ids"] == ["rule_locale_mismatch"]

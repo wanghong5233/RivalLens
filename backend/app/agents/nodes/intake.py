@@ -21,6 +21,7 @@ from schemas.intake import (
     RunIntakeDraft,
 )
 from service.event_bus import RunEventType, emit_run_event
+from service.locale import detect_language
 from service.llm import (
     INTAKE_SYSTEM_PROMPT,
     build_intake_fallback_user_prompt,
@@ -84,6 +85,12 @@ _OPTIONAL_FREE_TEXT_TARGETS: frozenset[str] = frozenset(
     {"domain_hint", "self_product", "market_scope", "time_context"}
 )
 _MAX_OPTIONAL_CLARIFY_TURNS_AFTER_COMPLETE = 2
+
+
+def _ensure_response_language(draft: RunIntakeDraft, user_query: str) -> RunIntakeDraft:
+    if draft.response_language in {"zh", "en"}:
+        return draft
+    return draft.model_copy(update={"response_language": detect_language(user_query)})
 
 
 def _match_keyword(text: str, table: tuple[tuple[str, tuple[str, ...]], ...]) -> str | None:
@@ -239,6 +246,9 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
         value_raw = patch.get(free_text_field)
         if isinstance(value_raw, str) and value_raw.strip():
             base[free_text_field] = value_raw.strip()
+    language_raw = patch.get("response_language")
+    if isinstance(language_raw, str) and language_raw in {"zh", "en"}:
+        base["response_language"] = language_raw
     return RunIntakeDraft.model_validate(base)
 
 
@@ -501,7 +511,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
     session_factory = _resolve_session_factory(state)
     run_id = state.get("run_id") or make_id("run_")
     user_query = state.get("user_query") or ""
-    draft = coerce_intake_draft_or_default(state)
+    draft = _ensure_response_language(coerce_intake_draft_or_default(state), user_query)
     history = coerce_intake_history(state)
     turn = len(history) + 1
     draft_dump = draft.model_dump(exclude={"is_complete"})
@@ -651,6 +661,8 @@ async def intake_generate_node(state: AgentState) -> AgentState:
             "run_id": run_id,
             "phase": "planning",
             "intake_draft": next_draft,
+            "market_scope": next_draft.market_scope,
+            "response_language": next_draft.response_language,
             "intake_history": history,
             "pending_clarify": None,
         }
@@ -678,6 +690,8 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         "run_id": run_id,
         "phase": "intake",
         "intake_draft": next_draft,
+        "market_scope": next_draft.market_scope,
+        "response_language": next_draft.response_language,
         "intake_history": history,
         "pending_clarify": clarify,
     }

@@ -11,7 +11,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app_main import app
+from core.config import settings
 from service.llm.response import LLMResponse
+
+
+@pytest.fixture(autouse=True)
+def _disable_external_bocha_key_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "BOCHA_API_KEY", None)
 
 
 @pytest.fixture(autouse=True)
@@ -412,12 +418,26 @@ class _FakeLLMClient:
             content = {
                 "action": "extract_structured",
                 "action_args": {
-                    "text": f"{competitor_id} {pending_dimensions[0]} signal extracted in deterministic test mode.",
-                    "source_url": f"https://example.com/{competitor_id}/{pending_dimensions[0]}",
-                    "source_title": f"{competitor_id} {pending_dimensions[0]}",
+                    "text": (
+                        f"{competitor_id} {pending_dimensions[0]} 中文资料，"
+                        "用于国内市场竞品分析。"
+                    )
+                    if "locale-zh-demo" in prompt_lower
+                    else f"{competitor_id} {pending_dimensions[0]} signal extracted in deterministic test mode.",
+                    "source_url": (
+                        f"https://example.cn/{competitor_id}/{pending_dimensions[0]}"
+                        if "locale-zh-demo" in prompt_lower
+                        else f"https://example.com/{competitor_id}/{pending_dimensions[0]}"
+                    ),
+                    "source_title": (
+                        f"{competitor_id} {pending_dimensions[0]} 中文来源"
+                        if "locale-zh-demo" in prompt_lower
+                        else f"{competitor_id} {pending_dimensions[0]}"
+                    ),
                     "source_type": "article",
                     "competitor_id": competitor_id,
                     "dimension": pending_dimensions[0],
+                    "response_language": "zh" if "locale-zh-demo" in prompt_lower else "en",
                 },
                 "reasoning_summary": "Use deterministic extract_structured path for researcher tests.",
             }

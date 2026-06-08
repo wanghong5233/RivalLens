@@ -21,6 +21,8 @@ class GoldenCaseAssertions(BaseModel):
     final_qa_outcome: str | None = None
     qa_rejection_count_gte: int | None = None
     qa_reject_to_includes: list[str] = Field(default_factory=list)
+    warning_rule_ids_includes: list[str] = Field(default_factory=list)
+    warning_rule_ids_excludes: list[str] = Field(default_factory=list)
     must_include_promoted_rule_id: str | None = None
     must_include_collector_action: str | None = None
 
@@ -41,6 +43,7 @@ class GoldenCaseInput(BaseModel):
     reference_urls: list[str] = Field(default_factory=list)
     target_roles: list[str] = Field(default_factory=lambda: ["pm"])
     report_depth: str = "quick"
+    market_scope: str | None = None
 
 
 class GoldenCase(BaseModel):
@@ -61,6 +64,7 @@ class GoldenCaseResult:
     qa_reject_to: str | None
     qa_rejection_count: int
     promoted_blocked_rule_ids: list[str]
+    warning_rule_ids: list[str]
     coverage_rate: float | None
     llm_token_total: int | None
     run_wall_clock_seconds: int | None
@@ -232,6 +236,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
                     "reference_urls": list(case.input.reference_urls),
                     "target_roles": case.input.target_roles,
                     "report_depth": case.input.report_depth,
+                    "market_scope": case.input.market_scope,
                 },
             )
         finally:
@@ -249,6 +254,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
             qa_reject_to=None,
             qa_rejection_count=0,
             promoted_blocked_rule_ids=[],
+            warning_rule_ids=[],
             coverage_rate=None,
             llm_token_total=None,
             run_wall_clock_seconds=None,
@@ -274,12 +280,18 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         if isinstance(value, str)
     ]
     failed_rule_ids: list[str] = []
+    warning_rule_ids: list[str] = []
     promoted_blocked_rule_ids: list[str] = []
     for item in qa_payloads:
         failed_rule_ids_raw = item.get("failed_rule_ids")
         if isinstance(failed_rule_ids_raw, list):
             failed_rule_ids.extend(
                 value for value in failed_rule_ids_raw if isinstance(value, str)
+            )
+        warning_rule_ids_raw = item.get("warning_rule_ids")
+        if isinstance(warning_rule_ids_raw, list):
+            warning_rule_ids.extend(
+                value for value in warning_rule_ids_raw if isinstance(value, str)
             )
         blocked_rule_ids_raw = item.get("promoted_qa_blocked_rule_ids")
         if isinstance(blocked_rule_ids_raw, list):
@@ -330,6 +342,21 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
             )
             if failed is not None:
                 failures.append(failed)
+    if case.assertions.warning_rule_ids_includes:
+        for expected in case.assertions.warning_rule_ids_includes:
+            failed = assert_contains(
+                values=warning_rule_ids,
+                expected=expected,
+                field="warning_rule_ids",
+            )
+            if failed is not None:
+                failures.append(failed)
+    if case.assertions.warning_rule_ids_excludes:
+        for unexpected in case.assertions.warning_rule_ids_excludes:
+            if unexpected in warning_rule_ids:
+                failures.append(
+                    f"warning_rule_ids expected to exclude {unexpected!r}, got {warning_rule_ids!r}"
+                )
     if case.assertions.must_include_promoted_rule_id is not None:
         failed = assert_contains(
             values=failed_rule_ids,
@@ -356,6 +383,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         qa_reject_to=qa_reject_to,
         qa_rejection_count=qa_rejection_count,
         promoted_blocked_rule_ids=promoted_blocked_rule_ids,
+        warning_rule_ids=warning_rule_ids,
         coverage_rate=coverage_rate,
         llm_token_total=llm_token_total,
         run_wall_clock_seconds=run_wall_clock_seconds,
@@ -389,6 +417,7 @@ def dump_markdown_report(*, results: list[GoldenCaseResult], report_path: Path) 
         lines.append(f"- qa_reject_to: `{item.qa_reject_to}`")
         lines.append(f"- qa_rejection_count: {item.qa_rejection_count}")
         lines.append(f"- promoted_blocked_rule_ids: {item.promoted_blocked_rule_ids}")
+        lines.append(f"- warning_rule_ids: {item.warning_rule_ids}")
         lines.append(f"- coverage_rate: {item.coverage_rate}")
         lines.append(f"- llm_token_total: {item.llm_token_total}")
         lines.append(f"- run_wall_clock_seconds: {item.run_wall_clock_seconds}")

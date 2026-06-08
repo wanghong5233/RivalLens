@@ -58,6 +58,8 @@ def _build_initial_substate(
     request: ConductResearch,
     focus_dimensions: list[FocusDimension],
     domain_hint: str | None,
+    market_scope: str | None,
+    response_language: str | None,
     reference_urls: list[str],
 ) -> ResearcherSubState:
     max_turns = max(request.max_iterations or MAX_REACT_TURNS, len(focus_dimensions))
@@ -83,6 +85,8 @@ def _build_initial_substate(
         "final_summary": "",
         "compressed_summary": "",
         "domain_hint": domain_hint,
+        "market_scope": market_scope,
+        "response_language": response_language,
         "reference_urls": reference_urls,
         "discovered_urls": [],
     }
@@ -420,6 +424,16 @@ async def researcher_node(state: AgentState) -> AgentState:
     request = ConductResearch.model_validate(state.get("pending_tool_args", {}))
     domain_hint_raw = state.get("domain_hint")
     domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
+    market_scope_raw = state.get("market_scope")
+    market_scope = (
+        market_scope_raw if isinstance(market_scope_raw, str) and market_scope_raw.strip() else None
+    )
+    response_language_raw = state.get("response_language")
+    response_language = (
+        response_language_raw
+        if isinstance(response_language_raw, str) and response_language_raw in {"zh", "en"}
+        else None
+    )
     reference_urls_raw = state.get("reference_urls", [])
     reference_urls = (
         [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
@@ -445,6 +459,8 @@ async def researcher_node(state: AgentState) -> AgentState:
         request=request,
         focus_dimensions=focus_dimensions,
         domain_hint=domain_hint,
+        market_scope=market_scope,
+        response_language=response_language,
         reference_urls=reference_urls,
     )
     subgraph_output = await subgraph.ainvoke(subgraph_input)

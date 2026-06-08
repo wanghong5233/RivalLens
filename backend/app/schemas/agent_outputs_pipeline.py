@@ -62,6 +62,10 @@ INTAKE_PATCHABLE_FIELDS: frozenset[str] = frozenset(
         "focus_dimensions",
         "report_depth",
         "reference_urls",
+        "self_product",
+        "market_scope",
+        "time_context",
+        "response_language",
     }
 )
 PLANNER_VALID_STAGES: frozenset[str] = frozenset({"discover", "research", "analyze", "write"})

@@ -46,6 +46,7 @@ from service.comparison import load_comparisons_for_run
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.knowledge import load_knowledge_for_run
+from service.locale import detect_language
 from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot, load_run_metrics_snapshot
 from service.skill_curator.tasks import run_skill_curator_for_run
 from utils.logger import bind_run, format_exception_for_log, get_logger
@@ -371,6 +372,8 @@ class RunMetricsResponse(BaseModel):
     report_section_coverage_rate: float
     source_type_distribution: dict[str, int]
     source_authority_distribution: dict[str, int]
+    locale_match_rate: float
+    locale_distribution: dict[str, int]
     desensitization_coverage: float
     qa_total_steps: int
     qa_rejected_steps: int
@@ -1305,6 +1308,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             self_product=payload.self_product,
             market_scope=payload.market_scope,
             time_context=payload.time_context,
+            response_language=detect_language(payload.user_query),
         )
 
         async with session_factory() as session:
@@ -1325,6 +1329,8 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
         initial_state: dict[str, object] = {
             "run_id": run_id,
             "domain_hint": payload.domain_hint,
+            "market_scope": direct_intake_draft.market_scope,
+            "response_language": direct_intake_draft.response_language,
             "reference_urls": normalized_reference_urls,
             "competitors": normalized_competitors,
             "discovered_competitors": [],
@@ -1723,6 +1729,7 @@ async def create_run_intake(
         focus_dimensions=list(payload.focus_dimensions),
         report_depth=payload.report_depth,
         reference_urls=normalized_reference_urls,
+        response_language=detect_language(payload.user_query),
     )
 
     session_factory = get_session_factory()
@@ -1837,6 +1844,8 @@ async def create_run_intake(
             "run_id": run_id,
             "user_query": payload.user_query,
             "domain_hint": payload.domain_hint,
+            "market_scope": initial_draft.market_scope,
+            "response_language": initial_draft.response_language,
             "reference_urls": normalized_reference_urls,
             "competitors": list(payload.competitors_explicit),
             "discovered_competitors": [],

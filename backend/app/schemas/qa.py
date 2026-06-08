@@ -16,6 +16,7 @@ class Rejection(BaseModel):
     step_id: str
     reject_to: Literal["supervisor", "researcher", "analyst", "writer"]
     failed_rule_ids: list[str] = Field(default_factory=list)
+    warning_rule_ids: list[str] = Field(default_factory=list)
     semantic_findings: list[str] = Field(default_factory=list)
     required_fields: list[str] = Field(default_factory=list)
     retry_policy: RetryPolicy
@@ -28,6 +29,7 @@ class Approval(BaseModel):
     approval_id: str
     step_id: str
     passed_rule_ids: list[str] = Field(default_factory=list)
+    warning_rule_ids: list[str] = Field(default_factory=list)
     semantic_audit_passed: bool
     reviewer_step_id: str
     created_at: str

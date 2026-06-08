@@ -272,6 +272,8 @@ export interface RunMetricsResponse {
   report_section_coverage_rate: number;
   source_type_distribution: Record<string, number>;
   source_authority_distribution: Record<string, number>;
+  locale_match_rate: number;
+  locale_distribution: Record<string, number>;
   desensitization_coverage: number;
   qa_total_steps: number;
   qa_rejected_steps: number;

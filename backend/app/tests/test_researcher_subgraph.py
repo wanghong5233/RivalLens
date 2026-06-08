@@ -243,5 +243,7 @@ async def test_researcher_subgraph_forces_finalize_when_turn_limit_hit(
     state["max_turns"] = 1
 
     output = await get_researcher_subgraph().ainvoke(state)
-    assert output["pending_action_args"]["summary"] == "max researcher turns hit, force finalize"
+    assert output["pending_action_args"] == {}
+    assert output["next_action"] == "finalize"
+    assert output["final_summary"]
     assert output["llm_calls"] == []

@@ -68,6 +68,7 @@ SENSITIVE_ASSIGNMENT_PATTERN: re.Pattern[str] = re.compile(
         |OPENAI_API_KEY
         |QWEN_API_KEY
         |TAVILY_API_KEY
+        |BOCHA_API_KEY
         |ANTHROPIC_API_KEY
         |GITHUB_TOKEN
         |DOUBAO_EP

@@ -10,6 +10,7 @@ from agents.nodes.supervisor import (
     _decision_from_tool_output,
     _derive_write_sections,
     _fallback_decision,
+    _discovery_search_queries,
     _resolve_fallback_dimensions,
     supervisor_node,
 )
@@ -169,6 +170,42 @@ def test_decision_from_tool_output_truncates_batch_topics_to_max_eight() -> None
     assert len(topics) == 8
     assert topics[0]["competitor_id"] == "comp_0"
     assert topics[-1]["competitor_id"] == "comp_7"
+
+
+def test_discovery_search_queries_localize_chinese_market_scope() -> None:
+    queries = _discovery_search_queries(
+        user_query="OPC 变现工具",
+        market_scope="中国市场",
+        response_language="zh",
+    )
+
+    assert queries
+    assert all("中国市场" in query for query in queries)
+    assert any("竞品" in query or "替代" in query for query in queries)
+    assert not any("competitors alternatives" in query for query in queries)
+
+
+def test_fallback_decision_uses_localized_discovery_queries() -> None:
+    decision = _fallback_decision(
+        run_id="run_test",
+        iteration=1,
+        competitors=[],
+        researched_competitors=[],
+        analysis_done=False,
+        report_draft_done=False,
+        triggered_by="user_query",
+        user_query="OPC 变现工具",
+        fallback_dimensions=["feature", "pricing"],
+        fallback_sections=["feature", "pricing"],
+        market_scope="中国市场",
+        response_language="zh",
+    )
+
+    assert decision.chosen_tool == "DiscoverCompetitors"
+    search_queries = decision.tool_args["search_queries"]
+    assert isinstance(search_queries, list)
+    assert all("中国市场" in query for query in search_queries)
+    assert not any("competitors alternatives" in query for query in search_queries)
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from contextlib import nullcontext
@@ -11,11 +12,13 @@ from langgraph.graph import END, StateGraph
 
 from agents.tools import get_channel_registry
 from agents.tools.parse_page import official_hosts_for_competitor
+from agents.tools.rerank_bocha import rerank as rerank_bocha
+from core.config import settings
 from core.defaults import MAX_REACT_TURNS
 from schemas.contracts import normalize_dimension_or_none, validate_source_type
 from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
-from service.desensitize import DesensitizeError
+from service.desensitize import DesensitizeError, normalize_text_for_storage
 from service.event_bus import RunEventType, emit_run_event
 from service.llm.prompts import evidence_draft_refs_for_prompt
 from schemas.agent_outputs import ResearcherCompressionOutput, ResearcherDecisionOutput
@@ -38,6 +41,8 @@ COMPRESS_AFTER_TURNS = 4
 COMPRESS_AFTER_CHARS = 2400
 OBSERVATIONS_FULL_RETAIN = 2
 TOOL_ERROR_PREVIEW_LIMIT = 200
+RERANK_DOCUMENT_BATCH_SIZE = 50
+RERANK_DOCUMENT_CHAR_LIMIT = 512
 TOOL_ACTIONS = {
     "search_web",
     "fetch_url",
@@ -68,7 +73,18 @@ log = get_logger("agents.researcher_subgraph")
 # Fields that are safe to expose in tool.start/finish event payloads.
 # WHY: keep the live feed informative (query/url/skill_id) without leaking
 # bulk content (raw HTML, full search results, transient sanitizer state).
-_SAFE_TOOL_ARG_KEYS = ("query", "url", "max_results", "skill_id", "path", "dimension")
+_SAFE_TOOL_ARG_KEYS = (
+    "query",
+    "query_variants",
+    "url",
+    "max_results",
+    "skill_id",
+    "path",
+    "dimension",
+    "response_language",
+    "market_scope",
+    "country",
+)
 
 
 def _safe_tool_args_summary(args: dict[str, object]) -> dict[str, Any]:
@@ -141,8 +157,11 @@ class ResearcherSubState(TypedDict, total=False):
     final_summary: str
     compressed_summary: str
     domain_hint: str | None
+    market_scope: str | None
+    response_language: str | None
     reference_urls: list[str]
     discovered_urls: list[str]
+    rerank_reflected_dimensions: list[FocusDimension]
 
 
 def _approx_chars(messages: list[dict[str, str]]) -> int:
@@ -419,10 +438,17 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                 primary_host = _primary_official_host(state.get("competitor_id"))
                 if primary_host is not None:
                     query = f"site:{primary_host} {state['competitor_id']} {dimension}"
+            query_variants = _fallback_query_variants(
+                state=state,
+                dimension=dimension,
+                primary_query=query,
+                base_query=base_query,
+            )
             return (
                 "search_web",
                 {
                     "query": query,
+                    "query_variants": query_variants,
                     "max_results": 5,
                     "dimension": dimension,
                 },
@@ -464,6 +490,40 @@ def _primary_official_host(competitor_id: str | None) -> str | None:
         return None
     # Shortest host is the most likely apex domain (cursor.com over docs.cursor.com).
     return min(hosts, key=len)
+
+
+def _fallback_query_variants(
+    *,
+    state: ResearcherSubState,
+    dimension: str,
+    primary_query: str,
+    base_query: str,
+) -> list[str]:
+    competitor_id = state.get("competitor_id")
+    competitor = competitor_id if isinstance(competitor_id, str) else ""
+    response_language = state.get("response_language")
+    market_scope_raw = state.get("market_scope")
+    market_scope = market_scope_raw.strip() if isinstance(market_scope_raw, str) else ""
+    primary_host = _primary_official_host(competitor)
+    candidates = [primary_query, base_query]
+    if primary_host is not None:
+        candidates.append(f"site:{primary_host} {competitor} {dimension}")
+    if response_language == "zh":
+        scope_prefix = f"{market_scope} " if market_scope else "中文 国内 "
+        candidates.append(f"{scope_prefix}{competitor} {dimension} 评测 对比")
+    else:
+        scope_prefix = f"{market_scope} " if market_scope else ""
+        candidates.append(f"{scope_prefix}{competitor} {dimension} reviews comparison")
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in candidates:
+        cleaned = item.strip()
+        key = cleaned.casefold()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+    return out[:3]
 
 
 def _url_host_matches(url: str, official_hosts: set[str]) -> bool:
@@ -539,6 +599,183 @@ def _needs_compress(state: ResearcherSubState) -> bool:
     if _effective_prompt_size(state) >= COMPRESS_AFTER_CHARS:
         return True
     return _approx_chars(messages) >= COMPRESS_AFTER_CHARS
+
+
+def _evidence_draft_identity_key(
+    *,
+    competitor_id: str,
+    dimension: str | None,
+    source_url: str | None,
+    quote: str,
+) -> tuple[str, str | None, str, str]:
+    normalized_quote = normalize_text_for_storage(quote)
+    quote_hash = hashlib.sha256(normalized_quote.encode("utf-8")).hexdigest()[:16]
+    return (
+        competitor_id,
+        dimension,
+        normalize_text_for_storage(source_url or ""),
+        quote_hash,
+    )
+
+
+def _evidence_draft_document_text(draft: dict[str, object]) -> str | None:
+    for key in ("sanitized_text", "quote"):
+        value = draft.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:RERANK_DOCUMENT_CHAR_LIMIT]
+    return None
+
+
+def _evidence_draft_dimension(
+    draft: dict[str, object],
+    *,
+    allowed: list[FocusDimension],
+) -> str | None:
+    dimension, _ = normalize_dimension_or_none(draft.get("dimension"), allowed=allowed)
+    return dimension
+
+
+async def _rerank_evidence_drafts(
+    *,
+    evidence_drafts: list[dict[str, object]],
+    query: str,
+) -> list[dict[str, object]]:
+    copied_drafts: list[dict[str, object]] = []
+    eligible: list[tuple[int, str]] = []
+    for index, draft in enumerate(evidence_drafts):
+        copied = dict(draft)
+        metadata_raw = copied.get("metadata", {})
+        copied["metadata"] = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+        copied_drafts.append(copied)
+        document = _evidence_draft_document_text(copied)
+        if document is not None:
+            eligible.append((index, document))
+
+    query_text = query.strip()
+    if not copied_drafts or not eligible or not query_text:
+        return copied_drafts
+
+    scores_by_index: dict[int, float] = {}
+    for batch_start in range(0, len(eligible), RERANK_DOCUMENT_BATCH_SIZE):
+        batch = eligible[batch_start : batch_start + RERANK_DOCUMENT_BATCH_SIZE]
+        batch_documents = [document for _, document in batch]
+        ranked = await rerank_bocha(
+            query=query_text,
+            documents=batch_documents,
+            top_n=len(batch_documents),
+        )
+        for relative_index, score in ranked:
+            if score is None or relative_index < 0 or relative_index >= len(batch):
+                continue
+            original_index = batch[relative_index][0]
+            scores_by_index[original_index] = score
+
+    if not scores_by_index:
+        log.info(
+            "researcher.rerank_skipped",
+            evidence_draft_count=len(copied_drafts),
+            eligible_count=len(eligible),
+        )
+        return copied_drafts
+
+    kept_scored: list[tuple[float, int, dict[str, object]]] = []
+    kept_unscored: list[tuple[int, dict[str, object]]] = []
+    dropped_count = 0
+    for index, draft in enumerate(copied_drafts):
+        score = scores_by_index.get(index)
+        if score is None:
+            kept_unscored.append((index, draft))
+            continue
+        if score < settings.RERANK_DROP_THRESHOLD:
+            dropped_count += 1
+            continue
+        metadata = draft["metadata"]
+        if isinstance(metadata, dict):
+            metadata["rerank_score"] = score
+        kept_scored.append((score, index, draft))
+
+    kept_scored.sort(key=lambda item: (-item[0], item[1]))
+    reranked = [draft for _, _, draft in kept_scored]
+    reranked.extend(draft for _, draft in kept_unscored)
+    log.info(
+        "researcher.rerank",
+        evidence_draft_count=len(copied_drafts),
+        eligible_count=len(eligible),
+        scored_count=len(scores_by_index),
+        dropped_count=dropped_count,
+        kept_count=len(reranked),
+        drop_threshold=settings.RERANK_DROP_THRESHOLD,
+    )
+    return reranked
+
+
+def _select_rerank_reflection_dimension(
+    *,
+    state: ResearcherSubState,
+    evidence_drafts: list[dict[str, object]],
+) -> str | None:
+    focus_dimensions = list(state.get("focus_dimensions", []))
+    if not focus_dimensions:
+        return None
+    if int(state.get("turn_count", 0)) >= int(state.get("max_turns", MAX_REACT_TURNS)):
+        return None
+    if settings.RERANK_MIN_HIGH_SCORE_PER_DIM <= 0:
+        return None
+
+    reflected = {
+        item
+        for item in state.get("rerank_reflected_dimensions", [])
+        if isinstance(item, str)
+    }
+    high_score_counts = {dimension: 0 for dimension in focus_dimensions}
+    saw_rerank_score = False
+    for draft in evidence_drafts:
+        metadata_raw = draft.get("metadata", {})
+        metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+        score_raw = metadata.get("rerank_score")
+        if not isinstance(score_raw, (int, float)):
+            continue
+        saw_rerank_score = True
+        dimension = _evidence_draft_dimension(draft, allowed=focus_dimensions)
+        if dimension is None:
+            continue
+        if float(score_raw) > settings.RERANK_COVERAGE_THRESHOLD:
+            high_score_counts[dimension] = high_score_counts.get(dimension, 0) + 1
+
+    if not saw_rerank_score:
+        return None
+    for dimension in focus_dimensions:
+        if dimension in reflected:
+            continue
+        if high_score_counts.get(dimension, 0) < settings.RERANK_MIN_HIGH_SCORE_PER_DIM:
+            return dimension
+    return None
+
+
+def _rerank_reflection_search_args(
+    *,
+    state: ResearcherSubState,
+    dimension: str,
+) -> dict[str, object]:
+    competitor_id = state.get("competitor_id")
+    competitor = competitor_id if isinstance(competitor_id, str) else ""
+    domain_hint_raw = state.get("domain_hint")
+    domain_hint = domain_hint_raw.strip() if isinstance(domain_hint_raw, str) else ""
+    response_language = state.get("response_language")
+    quality_terms = "官方 定价 文档 客户 案例 评测 对比" if response_language == "zh" else "official docs pricing customer case review comparison"
+    base_query = f"{competitor} {dimension} {state.get('research_topic', '')}".strip()
+    primary_query = f"{domain_hint} {base_query} {quality_terms}".strip()
+    return {
+        "query": primary_query,
+        "query_variants": _fallback_query_variants(
+            state=state,
+            dimension=dimension,
+            primary_query=primary_query,
+            base_query=base_query,
+        ),
+        "max_results": 5,
+        "dimension": dimension,
+    }
 
 
 async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
@@ -701,6 +938,27 @@ def _append_evidence_drafts(
         dimension_raw,
         allowed=focus_dimensions,
     )
+    seen_evidence = set()
+    for item in evidence_drafts:
+        if not isinstance(item, dict):
+            continue
+        item_competitor = item.get("competitor_id")
+        item_quote = item.get("quote")
+        if not isinstance(item_competitor, str) or not isinstance(item_quote, str):
+            continue
+        item_dimension, _ = normalize_dimension_or_none(
+            item.get("dimension"),
+            allowed=focus_dimensions,
+        )
+        item_source_url = item.get("source_url")
+        seen_evidence.add(
+            _evidence_draft_identity_key(
+                competitor_id=item_competitor,
+                dimension=item_dimension,
+                source_url=item_source_url if isinstance(item_source_url, str) else None,
+                quote=item_quote,
+            )
+        )
 
     for snippet in snippets:
         if not isinstance(snippet, dict):
@@ -740,6 +998,15 @@ def _append_evidence_drafts(
             if isinstance(snippet_competitor_raw, str)
             else competitor_id
         )
+        evidence_key = _evidence_draft_identity_key(
+            competitor_id=snippet_competitor,
+            dimension=snippet_dimension,
+            source_url=source_url,
+            quote=quote,
+        )
+        if evidence_key in seen_evidence:
+            continue
+        seen_evidence.add(evidence_key)
         metadata = {
             **metadata,
             "dimension_drop_reason": snippet_dimension_drop_reason or dimension_drop_reason,
@@ -786,10 +1053,19 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     )
     if dimension is not None:
         action_args["dimension"] = dimension
+    if action_raw == "search_web":
+        response_language = state.get("response_language")
+        market_scope = state.get("market_scope")
+        if isinstance(response_language, str) and response_language in {"zh", "en"}:
+            action_args.setdefault("response_language", response_language)
+        if isinstance(market_scope, str) and market_scope.strip():
+            action_args.setdefault("market_scope", market_scope.strip())
     if action_raw == "fetch_url":
         query_raw = action_args.get("query")
         if not isinstance(query_raw, str) or not query_raw.strip():
-            action_args["query"] = state["research_topic"]
+            research_topic_raw = state.get("research_topic")
+            if isinstance(research_topic_raw, str) and research_topic_raw.strip():
+                action_args["query"] = research_topic_raw.strip()
 
     run_id_raw = state.get("run_id")
     run_id = run_id_raw if isinstance(run_id_raw, str) else None
@@ -1029,7 +1305,58 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
                 evidence_draft_count=len(state.get("evidence_drafts", [])),
                 final_summary_len=len(final_summary) if isinstance(final_summary, str) else 0,
             )
-        return state
+        return {
+            **state,
+            "pending_action_args": {},
+            "next_action": "finalize",
+        }
+
+    evidence_drafts = await _rerank_evidence_drafts(
+        evidence_drafts=list(state.get("evidence_drafts", [])),
+        query=state.get("research_topic", ""),
+    )
+    reflection_dimension = _select_rerank_reflection_dimension(
+        state=state,
+        evidence_drafts=evidence_drafts,
+    )
+    if reflection_dimension is not None:
+        reflected_dimensions = [
+            item
+            for item in state.get("rerank_reflected_dimensions", [])
+            if isinstance(item, str)
+        ]
+        reflected_dimensions.append(reflection_dimension)
+        pending_dimensions = [
+            reflection_dimension,
+            *[
+                item
+                for item in state.get("pending_dimensions", [])
+                if item != reflection_dimension
+            ],
+        ]
+        action_args = _rerank_reflection_search_args(
+            state=state,
+            dimension=reflection_dimension,
+        )
+        log_context = bind_step(step_id) if step_id is not None else nullcontext()
+        with log_context:
+            log.info(
+                "researcher.rerank_reflect_reresearch",
+                competitor_id=state.get("competitor_id"),
+                dimension=reflection_dimension,
+                turn_count=int(state.get("turn_count", 0)),
+                max_turns=int(state.get("max_turns", MAX_REACT_TURNS)),
+                coverage_threshold=settings.RERANK_COVERAGE_THRESHOLD,
+                min_high_score_per_dim=settings.RERANK_MIN_HIGH_SCORE_PER_DIM,
+            )
+        return {
+            **state,
+            "evidence_drafts": evidence_drafts,
+            "pending_dimensions": pending_dimensions,
+            "rerank_reflected_dimensions": reflected_dimensions,
+            "pending_action_args": {"_action": "search_web", **action_args},
+            "next_action": "tool_exec",
+        }
 
     observations = list(state.get("observations_log", []))
     final_summary = f"finalized with {len(observations)} observations"
@@ -1037,11 +1364,14 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
     with log_context:
         log.info(
             "researcher.finalize",
-            evidence_draft_count=len(state.get("evidence_drafts", [])),
+            evidence_draft_count=len(evidence_drafts),
             final_summary_len=len(final_summary),
         )
     return {
         **state,
+        "evidence_drafts": evidence_drafts,
+        "pending_action_args": {},
+        "next_action": "finalize",
         "final_summary": final_summary,
     }
 
@@ -1053,6 +1383,13 @@ def _route_after_llm_decide(
     if next_action in {"tool_exec", "compress", "finalize"}:
         return next_action
     return "finalize"
+
+
+def _route_after_finalize(state: ResearcherSubState) -> Literal["tool_exec", "end"]:
+    action_raw = dict(state.get("pending_action_args", {})).get("_action")
+    if state.get("next_action") == "tool_exec" and action_raw in TOOL_ACTIONS:
+        return "tool_exec"
+    return "end"
 
 
 def build_researcher_subgraph():
@@ -1073,7 +1410,14 @@ def build_researcher_subgraph():
     )
     graph.add_edge("tool_exec", "llm_decide")
     graph.add_edge("compress", "llm_decide")
-    graph.add_edge("finalize", END)
+    graph.add_conditional_edges(
+        "finalize",
+        _route_after_finalize,
+        {
+            "tool_exec": "tool_exec",
+            "end": END,
+        },
+    )
     return graph.compile()
 
 

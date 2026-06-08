@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from agents.state import AgentState
+from agents.state_coercion import coerce_intake_draft_or_default
 from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
@@ -88,6 +89,7 @@ async def analyst_node(state: AgentState) -> AgentState:
     request = Analyze.model_validate(state.get("pending_tool_args", {}))
     focus_dimensions = _resolve_focus_dimensions(request)
     user_query = str(state.get("user_query", ""))
+    intake_draft = coerce_intake_draft_or_default(state)
     competitors = list(state.get("competitors", []))
     step_id = make_id("step_")
     await emit_run_event(
@@ -132,6 +134,10 @@ async def analyst_node(state: AgentState) -> AgentState:
         competitors=competitors,
         focus_dimensions=focus_dimensions,
         evidence_briefs=evidence_briefs,
+        domain_hint=intake_draft.domain_hint,
+        analysis_intent=intake_draft.analysis_intent,
+        market_scope=intake_draft.market_scope,
+        response_language=intake_draft.response_language,
     )
     fallback_prompt = build_analyst_fallback_user_prompt(
         competitors=competitors,

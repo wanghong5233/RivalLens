@@ -7,6 +7,7 @@ from core.config import settings
 from service.llm.prompts import (
     PLANNER_SYSTEM_PROMPT,
     SUPERVISOR_SYSTEM_PROMPT,
+    build_discovery_extract_user_prompt,
     build_researcher_user_prompt,
     build_supervisor_user_prompt,
 )
@@ -71,6 +72,41 @@ def test_focus_dimension_prompts_constrain_name_length() -> None:
     assert "<= 32 chars" in combined
     assert "max_iterations" in combined
     assert "len(focus_dimensions)" in combined
+
+
+def test_discovery_extract_prompt_includes_locale_and_disambiguation_context() -> None:
+    prompt = build_discovery_extract_user_prompt(
+        search_results="OPC 相关厂商包括 A 和 B。",
+        domain_context="创作者变现工具",
+        user_query="国内 OPC 变现竞品",
+        market_scope="中国市场",
+        analysis_intent="寻找国内创作者变现产品竞品",
+        response_language="zh",
+    )
+
+    assert "- market_scope: 中国市场" in prompt
+    assert "- analysis_intent: 寻找国内创作者变现产品竞品" in prompt
+    assert "Disambiguate polysemous entity names" in prompt
+    assert "OPC may mean" in prompt
+    assert "Write relevance_reason in Chinese" in prompt
+
+
+def test_supervisor_prompt_includes_market_scope_for_discovery() -> None:
+    prompt = build_supervisor_user_prompt(
+        user_query="国内 CRM 销售 AI 工具",
+        iteration=1,
+        competitors=[],
+        researched_competitors=[],
+        analysis_done=False,
+        report_draft_done=False,
+        qa_outcome=None,
+        qa_reject_to=None,
+        qa_reasons=[],
+        market_scope="中国市场",
+    )
+
+    assert "- market_scope: 中国市场" in prompt
+    assert "include it in discovery search queries" in prompt
 
 
 @pytest.mark.asyncio

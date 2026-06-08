@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from agents.state_coercion import coerce_intake_draft_or_default
 from core.config import settings
 from db.engine import get_session_factory
 from models.artifact import Artifact
@@ -395,14 +396,36 @@ def _render_report_markdown(
     report_content: dict[str, object],
     *,
     allowed_evidence_ids: set[str],
+    response_language: str | None = None,
 ) -> str:
+    labels = (
+        {
+            "default_title": "RivalLens 报告",
+            "executive_summary": "执行摘要",
+            "section": "章节",
+            "no_executive_summary": "暂无执行摘要。",
+            "no_content": "暂无内容。",
+            "evidence": "证据",
+            "risk_callouts": "风险提示",
+        }
+        if response_language == "zh"
+        else {
+            "default_title": "RivalLens Report",
+            "executive_summary": "Executive Summary",
+            "section": "Section",
+            "no_executive_summary": "No executive summary.",
+            "no_content": "No content.",
+            "evidence": "Evidence",
+            "risk_callouts": "Risk Callouts",
+        }
+    )
     title_raw = report_content.get("title")
-    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else "RivalLens Report"
+    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else labels["default_title"]
     executive_summary_raw = report_content.get("executive_summary")
     executive_summary = (
         executive_summary_raw.strip()
         if isinstance(executive_summary_raw, str) and executive_summary_raw.strip()
-        else "No executive summary."
+        else labels["no_executive_summary"]
     )
     executive_summary = _sanitize_report_markdown_text(
         executive_summary,
@@ -411,7 +434,7 @@ def _render_report_markdown(
     markdown_lines = [
         f"# {title}",
         "",
-        "## Executive Summary",
+        f"## {labels['executive_summary']}",
         executive_summary,
         "",
     ]
@@ -424,13 +447,13 @@ def _render_report_markdown(
             section_title = (
                 section_title_raw.strip()
                 if isinstance(section_title_raw, str) and section_title_raw.strip()
-                else "Section"
+                else labels["section"]
             )
             section_body_raw = section.get("content_markdown")
             section_body = (
                 section_body_raw.strip()
                 if isinstance(section_body_raw, str) and section_body_raw.strip()
-                else "No content."
+                else labels["no_content"]
             )
             section_body = _sanitize_report_markdown_text(
                 section_body,
@@ -453,7 +476,8 @@ def _render_report_markdown(
                 evidence_refs = []
             if evidence_refs:
                 markdown_lines.append(
-                    "Evidence: " + ", ".join(f"[{evidence_id}]" for evidence_id in evidence_refs)
+                    f"{labels['evidence']}: "
+                    + ", ".join(f"[{evidence_id}]" for evidence_id in evidence_refs)
                 )
             markdown_lines.append("")
 
@@ -463,7 +487,7 @@ def _render_report_markdown(
     else:
         risk_callouts = []
     if risk_callouts:
-        markdown_lines.append("## Risk Callouts")
+        markdown_lines.append(f"## {labels['risk_callouts']}")
         for item in risk_callouts:
             sanitized_item = _sanitize_report_markdown_text(
                 item,
@@ -518,6 +542,7 @@ async def writer_node(state: AgentState) -> AgentState:
         allowed_insight_ids=allowed_insight_ids,
     )
     target_sections = execution_context.target_sections
+    intake_draft = coerce_intake_draft_or_default(state)
     report_depth = _report_depth_from_state(state)
     analyst_summary = analyst_output.summary
     risk_flags = list(analyst_output.risk_flags)
@@ -545,6 +570,10 @@ async def writer_node(state: AgentState) -> AgentState:
             qa_reasons=request.qa_reasons,
             unsupported_numeric_claims=request.unsupported_numeric_claims,
             report_depth=report_depth,
+            domain_hint=intake_draft.domain_hint,
+            analysis_intent=intake_draft.analysis_intent,
+            market_scope=intake_draft.market_scope,
+            response_language=intake_draft.response_language,
         ),
         output_model=WriterReportOutput,
         parser=lambda content: WriterReportOutput.parse_llm_content(
@@ -605,6 +634,7 @@ async def writer_node(state: AgentState) -> AgentState:
     markdown = _render_report_markdown(
         report_content,
         allowed_evidence_ids=allowed_evidence_ids,
+        response_language=intake_draft.response_language,
     )
     llm_call_error = llm_response.error or writer_schema_error
     section_count = (

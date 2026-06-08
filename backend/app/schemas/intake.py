@@ -34,6 +34,7 @@ class RunIntakeDraft(BaseModel):
     self_product: str | None = None
     market_scope: str | None = None
     time_context: str | None = None
+    response_language: Literal["zh", "en"] | None = None
 
     @computed_field
     @property

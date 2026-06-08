@@ -49,6 +49,9 @@ def test_build_writer_prompts_include_required_context() -> None:
         recommended_sections=["feature", "pricing"],
         qa_reasons=["Unsupported numeric claims."],
         unsupported_numeric_claims=[{"claim": "$40/seat", "section_id": "pricing"}],
+        analysis_intent="对比企业版能力和定价",
+        market_scope="中国市场",
+        response_language="zh",
     )
     fallback_prompt = build_writer_fallback_user_prompt(
         template_id="battlecard_default",
@@ -62,6 +65,9 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "- analyst_insights:" in user_prompt
     assert "- allowed_evidence_ids:" in user_prompt
     assert "- target_sections:" in user_prompt
+    assert "- analysis_intent: 对比企业版能力和定价" in user_prompt
+    assert "- market_scope: 中国市场" in user_prompt
+    assert "- response_language: zh" in user_prompt
     assert "- report_depth: quick" in user_prompt
     assert "[ev_xxx]" in user_prompt
     assert "never output bare ev_xxx or insight_x ids in markdown" in user_prompt
@@ -69,6 +75,7 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "$40/seat" in user_prompt
     assert "[ev_xxx]" in WRITER_SYSTEM_PROMPT
     assert "Never emit bare ev_xxx ids" in WRITER_SYSTEM_PROMPT
+    assert "Write all report output in response_language" in WRITER_SYSTEM_PROMPT
     assert "Exact numbers" in WRITER_SYSTEM_PROMPT
     assert "During QA rewrites" in WRITER_SYSTEM_PROMPT
     assert "Fallback writer request" in fallback_prompt
@@ -246,6 +253,35 @@ def test_report_markdown_sanitizes_internal_ids() -> None:
     assert "insight_" not in markdown
     assert " ev_001" not in markdown
     assert " ev_002" not in markdown
+
+
+def test_report_markdown_localizes_fixed_labels_for_chinese_output() -> None:
+    report_content = {
+        "title": "国内销售 AI 工具对比",
+        "executive_summary": "适合线下拜访团队的工具需要覆盖线索、跟进和邮件协同。",
+        "sections": [
+            {
+                "title": "选型建议",
+                "content_markdown": "优先选择能绑定销售流程证据的工具 [ev_001]。",
+                "evidence_refs": ["ev_001"],
+                "insight_refs": [],
+            }
+        ],
+        "risk_callouts": ["国内可用性需要复核 [ev_001]"],
+    }
+
+    markdown = _render_report_markdown(
+        report_content,
+        allowed_evidence_ids={"ev_001"},
+        response_language="zh",
+    )
+
+    assert "## 执行摘要" in markdown
+    assert "证据: [ev_001]" in markdown
+    assert "## 风险提示" in markdown
+    assert "## Executive Summary" not in markdown
+    assert "Evidence:" not in markdown
+    assert "## Risk Callouts" not in markdown
 
 
 def test_fallback_report_sections_follow_target_sections() -> None:

@@ -104,6 +104,12 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
         hint: "source_authority=official 的 evidence 比例",
       },
       {
+        key: "locale_match",
+        label: "地域匹配度",
+        value: formatPercent(metrics.locale_match_rate),
+        hint: "source_url 地域/文本语言与目标市场语言匹配的 evidence 比例",
+      },
+      {
         key: "evidence",
         label: "证据总量",
         value: formatInteger(metrics.evidence_count_total),
@@ -215,6 +221,10 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
               <div className="rounded-md border border-border p-3">
                 <p className="mb-1 font-medium text-foreground">按 source_authority 分布</p>
                 <p>{formatDistribution(metricsQuery.data!.source_authority_distribution)}</p>
+              </div>
+              <div className="rounded-md border border-border p-3">
+                <p className="mb-1 font-medium text-foreground">按地域/语言分布</p>
+                <p>{formatDistribution(metricsQuery.data!.locale_distribution)}</p>
               </div>
             </div>
 

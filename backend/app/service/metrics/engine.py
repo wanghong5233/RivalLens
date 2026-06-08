@@ -17,6 +17,7 @@ from models.skill_candidate import SkillCandidateRecord
 from models.step import Step
 from models.supervisor_decision import SupervisorDecisionRecord
 from schemas.contracts import DERIVED_DIMENSIONS, validate_dimension
+from service.locale import source_locale, target_country_from_scope
 
 
 def _normalize_dimension(value: str) -> str | None:
@@ -44,6 +45,8 @@ class RunMetricsSnapshot:
     report_section_coverage_rate: float
     source_type_distribution: dict[str, int]
     source_authority_distribution: dict[str, int]
+    locale_match_rate: float
+    locale_distribution: dict[str, int]
     desensitization_coverage: float
     qa_total_steps: int
     qa_rejected_steps: int
@@ -171,6 +174,38 @@ def _report_depth_from_run(run: Run) -> str:
     return "quick"
 
 
+def _target_country_from_run(run: Run) -> str | None:
+    market_scope = (
+        run.intake_draft.get("market_scope")
+        if isinstance(run.intake_draft, dict)
+        else None
+    )
+    return target_country_from_scope(market_scope=market_scope)
+
+
+def _locale_matches(
+    *,
+    source_url: str | None,
+    span: dict[str, object] | None,
+    sanitized_text: str,
+    target_country: str | None,
+) -> bool:
+    """A source is in-scope unless an explicit region target excludes it.
+
+    No region target → every source counts (global breadth is correct). Region/language
+    spread stays observable via locale_distribution; locale_match_rate only measures
+    coverage of an explicitly requested region.
+    """
+    if target_country != "china":
+        return True
+    locale = source_locale(
+        source_url=source_url,
+        span=span,
+        sanitized_text=sanitized_text,
+    )
+    return locale["country"] == "china" or locale["language"] == "zh"
+
+
 def _latest_report(report_rows: list[Report]) -> Report | None:
     if not report_rows:
         return None
@@ -283,8 +318,25 @@ def build_run_metrics_snapshot(
     source_authority_distribution = dict(
         Counter(_extract_source_authority(row.span) for row in evidence_rows)
     )
+    target_country = _target_country_from_run(run)
+    locale_distribution_counter: Counter[str] = Counter()
+    locale_matched_count = 0
 
     for row in evidence_rows:
+        row_locale = source_locale(
+            source_url=row.source_url,
+            span=row.span if isinstance(row.span, dict) else None,
+            sanitized_text=row.sanitized_text,
+        )
+        locale_key = f'{row_locale["country"]}:{row_locale["language"]}'
+        locale_distribution_counter[locale_key] += 1
+        if _locale_matches(
+            source_url=row.source_url,
+            span=row.span if isinstance(row.span, dict) else None,
+            sanitized_text=row.sanitized_text,
+            target_country=target_country,
+        ):
+            locale_matched_count += 1
         competitor_id = _extract_competitor_id(row.span)
         if competitor_id is not None:
             evidence_count_by_competitor[competitor_id] = (
@@ -400,6 +452,8 @@ def build_run_metrics_snapshot(
         report_section_coverage_rate=report_section_coverage_rate,
         source_type_distribution=source_type_distribution,
         source_authority_distribution=source_authority_distribution,
+        locale_match_rate=_safe_rate(locale_matched_count, len(evidence_rows)),
+        locale_distribution=dict(locale_distribution_counter),
         desensitization_coverage=desensitization_coverage,
         qa_total_steps=len(qa_steps),
         qa_rejected_steps=len(qa_rejected_steps),

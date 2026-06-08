@@ -27,7 +27,11 @@ from service.llm.response import LLMResponse
 from service.knowledge import load_knowledge_for_run
 from service.qa.numeric_claims import extract_numeric_claim_candidates
 from service.qa.promoted_rules import evaluate_promoted_rule_yaml
-from service.qa.rules import RuleResult, evaluate_fast_path_rules, rule_knowledge_schema_conformance
+from service.qa.rules import (
+    RuleResult,
+    evaluate_fast_path_rules,
+    rule_knowledge_schema_conformance,
+)
 from service.skill_store import get_skill_store
 from utils.logger import get_logger
 
@@ -51,6 +55,11 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_writer_must_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_writer_no_fallback_mode": ["reports.content_json.risk_callouts"],
     "rule_evidence_must_be_desensitized": ["evidence.desensitized"],
+    "rule_locale_mismatch": [
+        "runs.intake_draft.market_scope",
+        "evidence.source_url",
+        "evidence.sanitized_text",
+    ],
     "rule_deep_report_min_char_count": ["reports.content_markdown"],
     "rule_deep_report_covers_target_sections": ["reports.content_json.sections[].section_id"],
     "rule_deep_sections_min_chars": ["reports.content_json.sections[].content_markdown"],
@@ -93,6 +102,11 @@ def _build_approval(
         approval_id=f"approval_{uuid4().hex[:12]}",
         step_id=target_step_id,
         passed_rule_ids=[item.rule_id for item in rule_results if item.passed],
+        warning_rule_ids=[
+            item.rule_id
+            for item in rule_results
+            if (not item.passed and item.severity == "warning")
+        ],
         semantic_audit_passed=semantic_audit_passed,
         reviewer_step_id=reviewer_step_id,
         created_at=_now_iso(),
@@ -105,6 +119,7 @@ def _build_rejection(
     reviewer_step_id: str,
     qa_rejection_count: int,
     failed_rules: list[RuleResult],
+    warning_rule_ids: list[str],
 ) -> Rejection:
     primary_rule = failed_rules[0]
     required_fields: set[str] = set()
@@ -118,6 +133,7 @@ def _build_rejection(
         step_id=target_step_id,
         reject_to=primary_rule.reject_to,
         failed_rule_ids=[item.rule_id for item in failed_rules],
+        warning_rule_ids=warning_rule_ids,
         semantic_findings=[item.message for item in failed_rules],
         required_fields=sorted(required_fields),
         retry_policy=RetryPolicy(
@@ -148,6 +164,11 @@ def build_qa_outcome(
             reviewer_step_id=reviewer_step_id,
             qa_rejection_count=qa_rejection_count,
             failed_rules=failed_blocking_rules,
+            warning_rule_ids=[
+                item.rule_id
+                for item in rule_results
+                if (not item.passed and item.severity == "warning")
+            ],
         )
     return _build_approval(
         target_step_id=target_step_id,
@@ -385,6 +406,11 @@ def _build_qa_fast_path_log_fields(
         for item in rule_results
         if (not item.passed and item.severity == "blocking")
     ]
+    warning_rule_ids = [
+        item.rule_id
+        for item in rule_results
+        if (not item.passed and item.severity == "warning")
+    ]
     return {
         "mode": mode,
         "rule_count": len(rule_results),
@@ -392,6 +418,7 @@ def _build_qa_fast_path_log_fields(
         "blocking_failed_rule_count": len(blocking_failed_rule_ids),
         "failed_rule_ids": failed_rule_ids,
         "blocking_failed_rule_ids": blocking_failed_rule_ids,
+        "warning_rule_ids": warning_rule_ids,
         "promoted_qa_rule_ids": promoted_qa_rule_ids,
         "promoted_qa_blocked_rule_ids": list(
             promoted_rule_metadata.get("promoted_qa_blocked_rule_ids", [])
@@ -416,6 +443,11 @@ def _build_qa_slow_path_log_fields(
     schema_error: str | None,
 ) -> dict[str, object]:
     failed_rule_ids = [item.rule_id for item in rule_results if not item.passed]
+    warning_rule_ids = [
+        item.rule_id
+        for item in rule_results
+        if (not item.passed and item.severity == "warning")
+    ]
     finding_raw = semantic_output.get("finding") if semantic_output is not None else None
     reject_to_raw = semantic_output.get("reject_to") if semantic_output is not None else None
     severity_raw = semantic_output.get("severity") if semantic_output is not None else None
@@ -434,6 +466,7 @@ def _build_qa_slow_path_log_fields(
         "has_error": semantic_response.error is not None,
         "failed_rule_count": len(failed_rule_ids),
         "failed_rule_ids": failed_rule_ids,
+        "warning_rule_ids": warning_rule_ids,
         "semantic_finding_preview": (
             finding_raw[:300] if isinstance(finding_raw, str) else None
         ),
@@ -491,9 +524,9 @@ async def evaluate_report(
         return build_qa_outcome(
             target_step_id=target_step_id,
             reviewer_step_id=reviewer_step_id,
-        rule_results=[missing_report],
-        qa_rejection_count=qa_rejection_count,
-    ), None, {
+            rule_results=[missing_report],
+            qa_rejection_count=qa_rejection_count,
+        ), None, {
             "qa_semantic_mode": "skipped_missing_report",
             "qa_semantic_audit_passed": False,
             "qa_semantic_error": "report_missing",
@@ -502,6 +535,12 @@ async def evaluate_report(
 
     report_depth = _report_depth_from_run(run)
     target_sections = _target_sections_for_report(run=run, writer_step=writer_step)
+    intake_draft = (
+        run.intake_draft
+        if run is not None and isinstance(run.intake_draft, dict)
+        else {}
+    )
+    market_scope_raw = intake_draft.get("market_scope")
     rule_results = evaluate_fast_path_rules(
         content_markdown=report.content_markdown,
         content_json=report.content_json,
@@ -509,6 +548,7 @@ async def evaluate_report(
         allowed_evidence_ids={item.id for item in evidence_items},
         report_depth=report_depth,
         target_sections=target_sections,
+        market_scope=market_scope_raw if isinstance(market_scope_raw, str) else None,
     )
     promoted_rule_results, promoted_rule_metadata = _build_promoted_rule_results(
         promoted_qa_rules=promoted_rules,

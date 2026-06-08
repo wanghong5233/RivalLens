@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agents.nodes.intake import (
+    _apply_patch,
     _merge_reply_into_draft,
     _clarify_target_satisfied,
     _fallback_clarify,
@@ -8,6 +9,7 @@ from agents.nodes.intake import (
     _unsatisfied_clarify_targets,
 )
 from schemas.intake import IntakeClarifyRequest, IntakeExchange, IntakeUserReply, RunIntakeDraft
+from service.locale import detect_language
 from service.llm.prompts import INTAKE_SYSTEM_PROMPT
 
 
@@ -23,6 +25,26 @@ def test_intake_prompt_removes_specific_ai_coding_title_templates() -> None:
     assert "TRAE" not in INTAKE_SYSTEM_PROMPT
     assert "Copilot" not in INTAKE_SYSTEM_PROMPT
     assert "[产品A] vs [产品B]" in INTAKE_SYSTEM_PROMPT
+
+
+def test_detect_language_uses_chinese_character_ratio() -> None:
+    assert detect_language("工业自动化设备销售团队要找国内 AI 工具") == "zh"
+    assert detect_language("Compare CRM sales intelligence tools") == "en"
+    assert detect_language("CRM 工具 compare pricing") == "zh"
+    assert detect_language("") == "en"
+
+
+def test_intake_prompt_exposes_response_language_contract() -> None:
+    assert '"response_language": "zh" | "en" | null' in INTAKE_SYSTEM_PROMPT
+    assert "response_language defaults to the detected language of user_query" in INTAKE_SYSTEM_PROMPT
+
+
+def test_apply_patch_accepts_response_language_override() -> None:
+    draft = RunIntakeDraft(user_query="请用英文输出国内销售工具分析")
+
+    next_draft = _apply_patch(draft, {"response_language": "en"})
+
+    assert next_draft.response_language == "en"
 
 
 def test_fallback_clarify_analysis_intent_is_domain_neutral() -> None:

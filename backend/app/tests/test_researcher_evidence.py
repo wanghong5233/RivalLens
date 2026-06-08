@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from agents.nodes.researcher import _build_evidence_rows, _build_initial_substate, researcher_node
-from agents.subgraphs.researcher import _effective_action_dimension
+from agents.subgraphs.researcher import _append_evidence_drafts, _effective_action_dimension
 from models.step import Step
 from service.event_bus import RunEventType
 from schemas.supervisor import ConductResearch
@@ -56,10 +56,14 @@ def test_initial_researcher_substate_raises_turn_budget_to_cover_focus_dimension
         ),
         focus_dimensions=["core_features", "pricing", "security", "integrations"],
         domain_hint=None,
+        market_scope="中国市场",
+        response_language="zh",
         reference_urls=[],
     )
 
     assert substate["max_turns"] == 4
+    assert substate["market_scope"] == "中国市场"
+    assert substate["response_language"] == "zh"
 
 
 def test_build_evidence_rows_keeps_out_of_focus_dimension_as_unclassified() -> None:
@@ -240,6 +244,76 @@ def test_build_evidence_rows_keeps_same_url_for_different_dimensions() -> None:
     assert len(rows) == 2
     assert {row.span["dimension"] for row in rows} == {"pricing", "security"}
     assert dropped_dimensions == {"count": 0, "reasons": {}}
+
+
+def test_append_evidence_drafts_keeps_same_url_for_different_dimensions() -> None:
+    drafts = _append_evidence_drafts(
+        evidence_drafts=[],
+        observation={
+            "competitor_id": "Cursor",
+            "snippets": [
+                {
+                    "quote": "Cursor pricing includes a public team plan.",
+                    "sanitized_text": "Cursor pricing includes a public team plan.",
+                    "source_url": "https://cursor.com/pricing",
+                    "source_title": "Cursor Pricing",
+                    "source_type": "pricing_page",
+                    "metadata": {"dimension": "pricing"},
+                },
+                {
+                    "quote": "Cursor security controls are described for enterprise buyers.",
+                    "sanitized_text": "Cursor security controls are described for enterprise buyers.",
+                    "source_url": "https://cursor.com/pricing",
+                    "source_title": "Cursor Pricing",
+                    "source_type": "pricing_page",
+                    "metadata": {"dimension": "security"},
+                },
+            ],
+        },
+        focus_dimensions=["pricing", "security"],
+    )
+
+    assert len(drafts) == 2
+    assert {draft["dimension"] for draft in drafts} == {"pricing", "security"}
+
+
+def test_append_evidence_drafts_dedupes_same_identity_only() -> None:
+    drafts = _append_evidence_drafts(
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Cursor pricing includes a public team plan.",
+                "source_url": "https://cursor.com/pricing",
+            }
+        ],
+        observation={
+            "competitor_id": "Cursor",
+            "dimension": "pricing",
+            "snippets": [
+                {
+                    "quote": "Cursor pricing includes a public team plan.",
+                    "sanitized_text": "Cursor pricing includes a public team plan.",
+                    "source_url": "https://cursor.com/pricing",
+                    "source_title": "Cursor Pricing",
+                    "source_type": "pricing_page",
+                    "metadata": {},
+                },
+                {
+                    "quote": "Cursor pricing also documents enterprise billing controls.",
+                    "sanitized_text": "Cursor pricing also documents enterprise billing controls.",
+                    "source_url": "https://cursor.com/pricing",
+                    "source_title": "Cursor Pricing",
+                    "source_type": "pricing_page",
+                    "metadata": {},
+                },
+            ],
+        },
+        focus_dimensions=["pricing"],
+    )
+
+    assert len(drafts) == 2
+    assert drafts[1]["quote"] == "Cursor pricing also documents enterprise billing controls."
 
 
 def test_build_evidence_rows_applies_source_quality_gate() -> None:

@@ -38,17 +38,27 @@ def _get_tavily_rate_limiter() -> PerHostLimiter:
     return PerHostLimiter(qps=settings.COLLECTOR_PER_HOST_QPS)
 
 
-async def _tavily_search(query: str, *, max_results: int) -> dict[str, object]:
+async def _tavily_search(
+    query: str,
+    *,
+    max_results: int,
+    country: str | None = None,
+) -> dict[str, object]:
     client = TavilyClient(api_key=settings.TAVILY_API_KEY)
     try:
         try:
+            kwargs: dict[str, object] = {
+                "query": query,
+                "max_results": max_results,
+                "search_depth": "advanced",
+                "include_raw_content": False,
+                "include_images": False,
+            }
+            if country is not None:
+                kwargs["country"] = country
             return await asyncio.to_thread(
                 client.search,
-                query=query,
-                max_results=max_results,
-                search_depth="advanced",
-                include_raw_content=False,
-                include_images=False,
+                **kwargs,
             )
         except TypeError:
             return await asyncio.to_thread(
@@ -79,12 +89,14 @@ class TavilySearchChannel(BaseChannel):
             raise ChannelError("search_web max_results must be in range [1, 10].")
         if not settings.TAVILY_API_KEY:
             raise ChannelError("TAVILY_API_KEY is required for search_web channel.")
+        country_raw = kwargs.get("country")
+        country = country_raw.strip() if isinstance(country_raw, str) and country_raw.strip() else None
 
         await _get_tavily_rate_limiter().acquire(
             "api.tavily.com",
             timeout_seconds=float(settings.COLLECTOR_FETCH_TIMEOUT_S),
         )
-        response = await _tavily_search(query, max_results=max_results)
+        response = await _tavily_search(query, max_results=max_results, country=country)
         results_raw = response.get("results", [])
         results = results_raw if isinstance(results_raw, list) else []
         snippets: list = []
@@ -111,6 +123,7 @@ class TavilySearchChannel(BaseChannel):
                     metadata={
                         "source": "tavily_search",
                         "query": query,
+                        "country": country,
                     },
                 )
             )
@@ -122,12 +135,15 @@ class TavilySearchChannel(BaseChannel):
             args={
                 "query": query,
                 "max_results": max_results,
+                "country": country,
             },
             result=ToolObservationResult(
                 snippets=snippets,
                 metadata={
                     "query": query,
                     "result_count": len(snippets),
+                    "provider": "tavily",
+                    "country": country,
                 },
             ),
         )

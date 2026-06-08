@@ -19,6 +19,8 @@ class AgentState(TypedDict, total=False):
     run_id: str
     user_query: str
     domain_hint: str | None
+    market_scope: str | None
+    response_language: str | None
     reference_urls: list[str]
     competitors: Annotated[list[str], operator.add]
     discovered_competitors: Annotated[list[str], operator.add]

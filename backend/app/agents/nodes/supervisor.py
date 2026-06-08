@@ -30,6 +30,7 @@ from service.llm import (
 from service.llm.harness import complete_structured
 from service.llm.records import build_llm_call_record
 from service.llm.response import LLMResponse
+from service.locale import detect_language
 from utils.log_node import log_node
 from utils.logger import bind_step, get_logger
 
@@ -103,10 +104,56 @@ def _stable_unique(values: list[str]) -> list[str]:
     return ordered
 
 
+def _clean_optional_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 def _get_object_field(item: object, field_name: str) -> object:
     if isinstance(item, dict):
         return item.get(field_name)
     return getattr(item, field_name, None)
+
+
+def _state_or_intake_string(state: AgentState, field_name: str) -> str | None:
+    direct = _clean_optional_string(state.get(field_name))
+    if direct is not None:
+        return direct
+    intake_draft = state.get("intake_draft")
+    if intake_draft is None:
+        return None
+    return _clean_optional_string(_get_object_field(intake_draft, field_name))
+
+
+def _state_response_language(state: AgentState, *, user_query: str) -> str:
+    value = _state_or_intake_string(state, "response_language")
+    if value in {"zh", "en"}:
+        return value
+    return detect_language(user_query)
+
+
+def _discovery_search_queries(
+    *,
+    user_query: str,
+    market_scope: str | None,
+    response_language: str,
+) -> list[str]:
+    scope_prefix = f"{market_scope} " if market_scope else ""
+    if response_language == "zh":
+        candidates = [
+            f"{scope_prefix}{user_query} 竞品 替代 产品",
+            f"{scope_prefix}{user_query} 对比 评测 厂商",
+            f"{scope_prefix}{user_query} 市场 解决方案",
+        ]
+    else:
+        candidates = [
+            f"{scope_prefix}{user_query} competitors alternatives",
+            f"{scope_prefix}{user_query} comparison reviews vendors",
+            f"{scope_prefix}{user_query} market solutions",
+        ]
+    return _stable_unique([item.strip() for item in candidates if item.strip()])[:3]
 
 
 def _normalize_focus_dimensions(raw: object) -> list[str]:
@@ -351,12 +398,18 @@ def _fallback_decision(
     user_query: str,
     fallback_dimensions: list[str],
     fallback_sections: list[str],
+    market_scope: str | None = None,
+    response_language: str = "en",
 ) -> SupervisorDecision:
     now = _now_iso()
 
     if not competitors:
         args = DiscoverCompetitors(
-            search_queries=[user_query, f"{user_query} competitors alternatives"],
+            search_queries=_discovery_search_queries(
+                user_query=user_query,
+                market_scope=market_scope,
+                response_language=response_language,
+            ),
             domain_context=user_query,
             max_results=DEFAULT_DISCOVER_MAX_RESULTS,
         ).model_dump()
@@ -978,6 +1031,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
     decisions = list(state.get("decisions", []))
     user_query_raw = state.get("user_query", "")
     user_query = user_query_raw if isinstance(user_query_raw, str) else ""
+    market_scope = _state_or_intake_string(state, "market_scope")
+    response_language = _state_response_language(state, user_query=user_query)
     competitors = list(state.get("competitors", []))
     researched_competitors = list(state.get("researched_competitors", []))
     analysis_done = bool(state.get("analysis_done", False))
@@ -1084,6 +1139,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             qa_outcome=qa_outcome,
             qa_reject_to=qa_reject_to,
             qa_reasons=qa_reasons,
+            market_scope=market_scope,
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
         )
@@ -1093,6 +1149,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             researched_competitors=researched_competitors,
             analysis_done=analysis_done,
             report_draft_done=report_draft_done,
+            market_scope=market_scope,
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
         )
@@ -1134,6 +1191,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 user_query=user_query,
                 fallback_dimensions=fallback_dimensions,
                 fallback_sections=fallback_sections,
+                market_scope=market_scope,
+                response_language=response_language,
             )
             decision_dimension_source = dimension_source
 

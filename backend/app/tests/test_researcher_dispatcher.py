@@ -6,8 +6,12 @@ import pytest
 
 from agents.subgraphs.researcher import (
     ResearcherSubState,
+    _fallback_action,
+    _rerank_evidence_drafts,
+    finalize,
     get_researcher_subgraph,
 )
+from core.config import settings
 from service.collector.base import CollectorObservation, CollectorSnippet, ToolObservationResult
 from service.collector.errors import ChannelError
 from service.llm.response import LLMResponse
@@ -82,6 +86,8 @@ def _base_state() -> ResearcherSubState:
         "final_summary": "",
         "compressed_summary": "",
         "domain_hint": None,
+        "market_scope": None,
+        "response_language": None,
         "reference_urls": [],
         "discovered_urls": [],
     }
@@ -142,6 +148,161 @@ class _FakeCoverageGuardRegistry:
                 metadata={"dimension": "pricing", "competitor_id": "comp_cursor"},
             ),
         )
+
+
+def test_fallback_action_builds_localized_query_variants() -> None:
+    state = _base_state()
+    state["competitor_id"] = "纷享销客"
+    state["research_topic"] = "B2B 销售 AI 工具"
+    state["domain_hint"] = "CRM"
+    state["market_scope"] = "中国市场"
+    state["response_language"] = "zh"
+    state["observations_log"] = [{"tool": "load_skill", "args": {"skill_id": "crm"}}]
+
+    action, args = _fallback_action(state)
+
+    assert action == "search_web"
+    assert args["dimension"] == "pricing"
+    assert args["query"] in args["query_variants"]
+    assert len(args["query_variants"]) >= 2
+    assert any("评测" in item or "对比" in item for item in args["query_variants"])
+
+
+@pytest.mark.asyncio
+async def test_rerank_evidence_drafts_drops_low_scores_and_orders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_rerank(
+        *,
+        query: str,
+        documents: list[str],
+        top_n: int | None = None,
+    ) -> list[tuple[int, float | None]]:
+        del query, documents, top_n
+        return [(1, 0.91), (2, 0.53), (0, 0.12)]
+
+    monkeypatch.setattr("agents.subgraphs.researcher.rerank_bocha", _fake_rerank)
+    monkeypatch.setattr(settings, "RERANK_DROP_THRESHOLD", 0.2)
+    drafts = [
+        {"dimension": "pricing", "quote": "noise", "metadata": {}},
+        {"dimension": "pricing", "quote": "strong", "metadata": {}},
+        {"dimension": "security", "quote": "medium", "metadata": {}},
+    ]
+
+    reranked = await _rerank_evidence_drafts(
+        evidence_drafts=drafts,
+        query="cursor pricing",
+    )
+
+    assert [item["quote"] for item in reranked] == ["strong", "medium"]
+    assert reranked[0]["metadata"]["rerank_score"] == 0.91
+    assert reranked[1]["metadata"]["rerank_score"] == 0.53
+
+
+@pytest.mark.asyncio
+async def test_finalize_reflects_low_high_score_coverage_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _identity_rerank(
+        *,
+        evidence_drafts: list[dict[str, object]],
+        query: str,
+    ) -> list[dict[str, object]]:
+        del query
+        return evidence_drafts
+
+    monkeypatch.setattr("agents.subgraphs.researcher._rerank_evidence_drafts", _identity_rerank)
+    monkeypatch.setattr(settings, "RERANK_COVERAGE_THRESHOLD", 0.5)
+    monkeypatch.setattr(settings, "RERANK_MIN_HIGH_SCORE_PER_DIM", 2)
+    state = {
+        **_base_state(),
+        "focus_dimensions": ["pricing"],
+        "pending_dimensions": [],
+        "queried_dimensions": ["pricing"],
+        "turn_count": 1,
+        "evidence_drafts": [
+            {
+                "dimension": "pricing",
+                "quote": "one relevant pricing source",
+                "metadata": {"rerank_score": 0.8},
+            }
+        ],
+        "response_language": "en",
+    }
+
+    output = await finalize(state)
+
+    assert output["next_action"] == "tool_exec"
+    assert output["pending_action_args"]["_action"] == "search_web"
+    assert output["pending_action_args"]["dimension"] == "pricing"
+    assert output["pending_dimensions"] == ["pricing"]
+    assert output["rerank_reflected_dimensions"] == ["pricing"]
+    assert output["final_summary"] == ""
+
+
+@pytest.mark.asyncio
+async def test_finalize_does_not_reflect_when_high_score_coverage_is_sufficient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _identity_rerank(
+        *,
+        evidence_drafts: list[dict[str, object]],
+        query: str,
+    ) -> list[dict[str, object]]:
+        del query
+        return evidence_drafts
+
+    monkeypatch.setattr("agents.subgraphs.researcher._rerank_evidence_drafts", _identity_rerank)
+    monkeypatch.setattr(settings, "RERANK_COVERAGE_THRESHOLD", 0.5)
+    monkeypatch.setattr(settings, "RERANK_MIN_HIGH_SCORE_PER_DIM", 2)
+    state = {
+        **_base_state(),
+        "focus_dimensions": ["pricing"],
+        "pending_dimensions": [],
+        "queried_dimensions": ["pricing"],
+        "evidence_drafts": [
+            {"dimension": "pricing", "quote": "source a", "metadata": {"rerank_score": 0.8}},
+            {"dimension": "pricing", "quote": "source b", "metadata": {"rerank_score": 0.7}},
+        ],
+    }
+
+    output = await finalize(state)
+
+    assert output["next_action"] == "finalize"
+    assert output["pending_action_args"] == {}
+    assert output["final_summary"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_does_not_repeat_rerank_reflection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _identity_rerank(
+        *,
+        evidence_drafts: list[dict[str, object]],
+        query: str,
+    ) -> list[dict[str, object]]:
+        del query
+        return evidence_drafts
+
+    monkeypatch.setattr("agents.subgraphs.researcher._rerank_evidence_drafts", _identity_rerank)
+    monkeypatch.setattr(settings, "RERANK_COVERAGE_THRESHOLD", 0.5)
+    monkeypatch.setattr(settings, "RERANK_MIN_HIGH_SCORE_PER_DIM", 2)
+    state = {
+        **_base_state(),
+        "focus_dimensions": ["pricing"],
+        "pending_dimensions": [],
+        "queried_dimensions": ["pricing"],
+        "rerank_reflected_dimensions": ["pricing"],
+        "evidence_drafts": [
+            {"dimension": "pricing", "quote": "source a", "metadata": {"rerank_score": 0.8}},
+        ],
+    }
+
+    output = await finalize(state)
+
+    assert output["pending_action_args"] == {}
+    assert output["final_summary"]
 
 
 @pytest.mark.asyncio

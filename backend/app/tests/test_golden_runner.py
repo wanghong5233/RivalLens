@@ -30,6 +30,7 @@ def test_golden_case_schema_parses_minimal_case() -> None:
     assert case.input.domain_hint == "ai_coding_tools"
     assert case.input.reference_urls == ["https://example.com/pricing"]
     assert case.input.report_depth == "quick"
+    assert case.input.market_scope is None
     assert case.assertions.final_qa_outcome == "approved"
     assert case.setup.promoted_qa_rules == []
 
@@ -46,11 +47,17 @@ def test_golden_case_schema_accepts_report_depth() -> None:
                 "reference_urls": [],
                 "target_roles": ["pm"],
                 "report_depth": "deep",
+                "market_scope": "中国大陆",
             },
-            "assertions": {"final_qa_outcome": "force_degraded"},
+            "assertions": {
+                "final_qa_outcome": "force_degraded",
+                "warning_rule_ids_includes": ["rule_locale_mismatch"],
+            },
         }
     )
     assert case.input.report_depth == "deep"
+    assert case.input.market_scope == "中国大陆"
+    assert case.assertions.warning_rule_ids_includes == ["rule_locale_mismatch"]
 
 
 def test_golden_case_schema_accepts_null_pack() -> None:
@@ -84,6 +91,7 @@ def test_dump_markdown_report_writes_file(tmp_path: Path) -> None:
         qa_reject_to=None,
         qa_rejection_count=0,
         promoted_blocked_rule_ids=[],
+        warning_rule_ids=[],
         coverage_rate=1.0,
         llm_token_total=42,
         run_wall_clock_seconds=12,
@@ -110,6 +118,7 @@ def test_to_dict_rows_returns_serializable_shape() -> None:
                 qa_reject_to="writer",
                 qa_rejection_count=1,
                 promoted_blocked_rule_ids=["rule_promoted_demo"],
+                warning_rule_ids=["rule_locale_mismatch"],
                 coverage_rate=0.9,
                 llm_token_total=88,
                 run_wall_clock_seconds=24,
@@ -124,6 +133,16 @@ def test_to_dict_rows_returns_serializable_shape() -> None:
 
 def test_deep_short_report_golden_case_blocks(test_client: TestClient) -> None:
     case_path = Path(__file__).parent / "golden" / "cases" / "13_deep_short_report_blocks.yaml"
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
+    assert result.passed is True
+
+
+def test_locale_zh_domestic_golden_case_passes_without_locale_warning(
+    test_client: TestClient,
+) -> None:
+    case_path = Path(__file__).parent / "golden" / "cases" / "14_locale_zh_domestic.yaml"
     loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
     assert isinstance(loaded, dict)
     result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)

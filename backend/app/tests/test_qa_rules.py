@@ -21,6 +21,7 @@ from service.qa.rules import (
     rule_buyer_critical_sections_need_official_source,
     rule_evidence_must_be_desensitized,
     rule_deep_report_min_char_count,
+    rule_locale_mismatch,
     rule_report_must_have_at_least_one_section,
     rule_report_must_have_markdown_content,
     rule_report_section_count_in_bounds,
@@ -59,6 +60,27 @@ def _make_evidence_with_authority(
         quote="quoted text",
         sanitized_text="sanitized text",
         span={"dimension": "pricing_strategy", "source_authority": source_authority},
+        collected_by="step_researcher_001",
+        collected_at=datetime.now(timezone.utc),
+        desensitized=True,
+    )
+
+
+def _make_locale_evidence(
+    *,
+    evidence_id: str,
+    source_url: str,
+    sanitized_text: str,
+) -> EvidenceRecord:
+    return EvidenceRecord(
+        id=evidence_id,
+        run_id="run_test_locale",
+        source_type="article",
+        source_url=source_url,
+        source_title="Locale Source",
+        quote=sanitized_text,
+        sanitized_text=sanitized_text,
+        span={},
         collected_by="step_researcher_001",
         collected_at=datetime.now(timezone.utc),
         desensitized=True,
@@ -110,6 +132,48 @@ def test_rule_buyer_critical_sections_need_official_source_passes_with_official(
     result = rule_buyer_critical_sections_need_official_source(
         content_json=content_json,
         evidence_items=evidence_items,
+    )
+
+    assert result.passed is True
+
+
+def test_rule_locale_mismatch_warns_for_china_scope_with_overseas_english_sources() -> None:
+    result = rule_locale_mismatch(
+        market_scope="中国大陆",
+        evidence_items=[
+            _make_locale_evidence(
+                evidence_id="ev_en_1",
+                source_url="https://example.com/a",
+                sanitized_text="English source about product positioning.",
+            ),
+            _make_locale_evidence(
+                evidence_id="ev_en_2",
+                source_url="https://example.org/b",
+                sanitized_text="Another English source about product positioning.",
+            ),
+        ],
+    )
+
+    assert result.passed is False
+    assert result.severity == "warning"
+    assert "domestic_coverage=0.00" in result.message
+
+
+def test_rule_locale_mismatch_passes_for_china_scope_with_domestic_sources() -> None:
+    result = rule_locale_mismatch(
+        market_scope="中国大陆",
+        evidence_items=[
+            _make_locale_evidence(
+                evidence_id="ev_cn_1",
+                source_url="https://example.cn/a",
+                sanitized_text="中文来源介绍产品能力。",
+            ),
+            _make_locale_evidence(
+                evidence_id="ev_cn_2",
+                source_url="https://36kr.com/p/123",
+                sanitized_text="这是一条中文市场报道。",
+            ),
+        ],
     )
 
     assert result.passed is True
@@ -536,3 +600,32 @@ def test_engine_aggregation_approves_when_all_rules_pass() -> None:
     assert isinstance(result, Approval)
     assert result.semantic_audit_passed is True
     assert len(result.passed_rule_ids) == 4
+
+
+def test_engine_aggregation_keeps_warning_rule_ids_on_approval() -> None:
+    rule_results = [
+        RuleResult(
+            rule_id="rule_report_must_have_markdown_content",
+            passed=True,
+            severity="blocking",
+            reject_to="writer",
+            message="ok",
+        ),
+        RuleResult(
+            rule_id="rule_locale_mismatch",
+            passed=False,
+            severity="warning",
+            reject_to="researcher",
+            message="low locale match",
+        ),
+    ]
+
+    result = build_qa_outcome(
+        target_step_id="step_writer_001",
+        reviewer_step_id="step_qa_001",
+        rule_results=rule_results,
+        qa_rejection_count=0,
+    )
+
+    assert isinstance(result, Approval)
+    assert result.warning_rule_ids == ["rule_locale_mismatch"]

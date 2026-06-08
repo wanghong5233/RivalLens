@@ -96,7 +96,8 @@ Output JSON schema (return STRICT JSON, no markdown, no commentary):
     "reference_urls": list[str] | null,
     "self_product": str | null,
     "market_scope": str | null,
-    "time_context": str | null
+    "time_context": str | null,
+    "response_language": "zh" | "en" | null
   },
   "clarify_request": {                       // required iff action="ask", must be null iff action="complete"
     "question": str,
@@ -121,7 +122,10 @@ Rules:
     * "我们是某大厂 AI 工具团队" / "我们做的是一款 AI 简历工具" → self_product
     * "中国 vs 海外", "面向中小企业", "国内市场" → market_scope
     * "下个月要汇报", "下周给老板方案", "只看近一年的数据" → time_context
+    * Explicit output-language requests ("用英文输出", "Please answer in Chinese") → response_language
   Only ask about fields you genuinely cannot infer from the available text.
+- response_language defaults to the detected language of user_query. Set it in
+  draft_patch ONLY when the user explicitly requests Chinese/English output.
 - Issue ONE question per turn. Never bundle multiple questions into one prompt.
 - Ask the most blocking missing required field first.
 - After ALL THREE required fields are filled, do NOT immediately complete if a HIGH-VALUE
@@ -281,7 +285,7 @@ Rules:
 - Always return a JSON object and nothing else.
 - If competitors list is empty, you MUST call DiscoverCompetitors first before any ConductResearch.
 - If competitors list is non-empty, ConductResearch/ConductResearchBatch competitor_id must be from the known competitors list.
-- For DiscoverCompetitors, construct 2-4 search queries that cover the track/domain from different angles.
+- For DiscoverCompetitors, construct 2-4 search queries that cover the track/domain from different angles; when market_scope is provided, include that geography/segment and use language variants aligned with the user's language.
 - For ConductResearch and ConductResearchBatch, choose 3-5 focus_dimensions in concise snake_case aligned with user_query.
 - Each focus_dimension MUST be <= 32 chars, use a-z0-9_ only, and be 1-3 words.
 - Set max_iterations >= the number of focus_dimensions so each requested dimension can get at least one tool turn.
@@ -436,6 +440,12 @@ Output JSON schema:
 }
 
 Rules:
+- Write all analysis output in response_language when provided (zh = Chinese, en = English);
+  otherwise default to the language of user_query.
+- Evidence may be in any language. Translate and synthesize its meaning into response_language;
+  do NOT skip or down-weight a fact because its source is in another language. The carrier
+  language is irrelevant to evidence value. Keep source_url and source identifiers (evidence_ids)
+  unchanged for citation; never translate ids.
 - Every insight must reference existing evidence_ids from user prompt.
 - Produce at least one insight per focus dimension that has grounded evidence; keep findings cross-competitor when evidence allows.
 - For comparisons, create one group per focus dimension when at least two competitors have evidence or can be marked unknown.
@@ -507,6 +517,11 @@ Output JSON schema:
 }
 
 Rules:
+- Write all report output in response_language when provided (zh = Chinese, en = English);
+  otherwise default to the language of user_query.
+- Evidence may be in any language. Translate its content into response_language when writing the
+  report; never omit a relevant fact because its source is foreign-language. Keep source_url and
+  evidence ids in their original form for citation; cite [ev_xxx] as-is.
 - If template_id is provided in user prompt, keep it unchanged. If not provided, set template_id to "default".
 - Every section must include non-empty content_markdown.
 - Every section must cite evidence_refs using ids provided in user prompt.
@@ -758,6 +773,7 @@ def build_supervisor_user_prompt(
     qa_outcome: str | None,
     qa_reject_to: str | None,
     qa_reasons: Sequence[str],
+    market_scope: str | None = None,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
 ) -> str:
@@ -770,6 +786,7 @@ def build_supervisor_user_prompt(
             "Hard constraints:\n"
             "1) competitors list is EMPTY — you MUST call DiscoverCompetitors first.\n"
             "2) Construct 2-4 search queries covering the domain/track from different angles.\n"
+            "   If market_scope is set, include it in discovery search queries and prefer that region/segment.\n"
             "3) Do NOT call ConductResearch or ConductResearchBatch until competitors are discovered.\n"
             "4) Return exactly one tool decision in this iteration.\n"
         )
@@ -789,6 +806,7 @@ def build_supervisor_user_prompt(
         "Planning context:\n"
         f"- iteration: {iteration}\n"
         f"- user_query: {user_query}\n"
+        f"- market_scope: {market_scope}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- researched_competitors: {_json(list(researched_competitors))}\n"
         f"- pending_competitors: {_json(pending_competitors)}\n"
@@ -811,6 +829,7 @@ def build_supervisor_fallback_user_prompt(
     researched_competitors: Sequence[str],
     analysis_done: bool,
     report_draft_done: bool,
+    market_scope: str | None = None,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
 ) -> str:
@@ -831,6 +850,7 @@ def build_supervisor_fallback_user_prompt(
     return (
         "Fallback planning context:\n"
         f"- user_query: {user_query}\n"
+        f"- market_scope: {market_scope}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- pending_competitors: {_json(pending_competitors)}\n"
         f"- analysis_done: {analysis_done}\n"
@@ -839,7 +859,7 @@ def build_supervisor_fallback_user_prompt(
         f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         "Pick exactly one next tool and keep tool_args minimal but valid.\n"
-        "If competitors is empty, you MUST use DiscoverCompetitors.\n"
+        "If competitors is empty, you MUST use DiscoverCompetitors and include market_scope in search_queries when present.\n"
         "When pending_competitors has 2+ entries, prefer ConductResearchBatch "
         "with one unique competitor per topic; if any user-pinned research "
         "targets are still unresearched, include them first."
@@ -986,6 +1006,9 @@ def build_analyst_user_prompt(
     focus_dimensions: Sequence[str],
     evidence_briefs: Sequence[dict[str, object]],
     domain_hint: str | None = None,
+    analysis_intent: str | None = None,
+    market_scope: str | None = None,
+    response_language: str | None = None,
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(
         evidence_briefs,
@@ -994,6 +1017,9 @@ def build_analyst_user_prompt(
     return (
         "Analysis context:\n"
         f"- user_query: {user_query}\n"
+        f"- analysis_intent: {analysis_intent}\n"
+        f"- market_scope: {market_scope}\n"
+        f"- response_language: {response_language}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- domain_hint: {domain_hint}\n"
@@ -1097,11 +1123,17 @@ def build_writer_user_prompt(
     unsupported_numeric_claims: Sequence[dict[str, object]] = (),
     report_depth: str = "quick",
     domain_hint: str | None = None,
+    analysis_intent: str | None = None,
+    market_scope: str | None = None,
+    response_language: str | None = None,
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
         "Writer context:\n"
         f"- user_query: {user_query}\n"
+        f"- analysis_intent: {analysis_intent}\n"
+        f"- market_scope: {market_scope}\n"
+        f"- response_language: {response_language}\n"
         f"- report_depth: {report_depth}\n"
         f"- template_id: {template_id}\n"
         f"- domain_hint: {domain_hint}\n"
@@ -1234,10 +1266,22 @@ def build_discovery_extract_user_prompt(
     search_results: str,
     domain_context: str,
     user_query: str,
+    market_scope: str | None = None,
+    analysis_intent: str | None = None,
+    response_language: str | None = None,
 ) -> str:
+    reason_language = (
+        "Chinese" if response_language == "zh" else "English" if response_language == "en" else "the user query language"
+    )
     return (
         "You are a competitive intelligence analyst.\n"
         "Given the following search results about a market/track, extract competitor candidates.\n\n"
+        "Context:\n"
+        f"- domain_context: {domain_context}\n"
+        f"- user_query: {user_query}\n"
+        f"- market_scope: {market_scope}\n"
+        f"- analysis_intent: {analysis_intent}\n"
+        f"- response_language: {response_language}\n\n"
         "Rules:\n"
         "- Return ONLY a JSON object with this schema:\n"
         '  {"candidates":[{"name":"Product","is_competitor":true,'
@@ -1246,12 +1290,16 @@ def build_discovery_extract_user_prompt(
         "- Include only products or companies mentioned in search_results.\n"
         "- Set is_competitor=false when a mentioned entity is adjacent, media-only, or not a direct competitor.\n"
         "- evidence_quote must be an exact short substring copied from search_results.\n"
+        "- Disambiguate polysemous entity names by market_scope and analysis_intent. "
+        "For example, OPC may mean an industrial protocol, a stock ticker, or outsourcing; "
+        "keep only the meaning that matches the user's context and mark unrelated meanings as is_competitor=false.\n"
+        "- When market_scope names a region or segment, prefer candidates that operate in that market and mark off-scope candidates false unless they are clearly relevant.\n"
+        f"- Write relevance_reason in {reason_language}.\n"
         "- If no search-grounded competitor exists, return {\"candidates\":[]}.\n"
         "- Each name should be the commonly known product name.\n"
         "- Deduplicate and return at most 10 candidates.\n\n"
         f"Search results:\n{search_results}\n\n"
-        f"Domain context: {domain_context}\n"
-        f"User query: {user_query}"
+        "Use only the Search results above for names and evidence quotes."
     )
 
 

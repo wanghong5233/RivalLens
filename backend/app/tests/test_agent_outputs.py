@@ -15,6 +15,7 @@ from schemas.agent_outputs import (
     WriterReportOutput,
     resolve_writer_target_sections,
 )
+from schemas.agent_outputs_pipeline import INTAKE_PATCHABLE_FIELDS, IntakeTurnOutput as PipelineIntakeTurnOutput
 from schemas.contracts import validate_dimension
 from schemas.intake import RunIntakeDraft
 
@@ -439,6 +440,39 @@ def test_intake_turn_output_requires_clarify_for_ask() -> None:
                 "reasoning_summary": "",
             }
         )
+
+
+def test_intake_patchable_fields_include_optional_scope_contract() -> None:
+    assert {
+        "self_product",
+        "market_scope",
+        "time_context",
+        "response_language",
+    }.issubset(INTAKE_PATCHABLE_FIELDS)
+
+
+def test_intake_turn_parser_preserves_optional_scope_patch_fields() -> None:
+    parsed = PipelineIntakeTurnOutput.parse_llm_content(
+        {
+            "action": "complete",
+            "draft_patch": {
+                "self_product": "某大厂 AI 工具团队",
+                "market_scope": "中国市场",
+                "time_context": "只看近一年",
+                "response_language": "zh",
+                "unknown_field": "drop me",
+            },
+            "clarify_request": None,
+            "reasoning_summary": "done",
+        }
+    )
+
+    assert parsed.draft_patch == {
+        "self_product": "某大厂 AI 工具团队",
+        "market_scope": "中国市场",
+        "time_context": "只看近一年",
+        "response_language": "zh",
+    }
 
 
 def test_planner_output_parses_research_tasks() -> None:

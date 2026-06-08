@@ -95,6 +95,7 @@ def test_select_layered_evidence_briefs_fills_remaining_with_newest() -> None:
 
 def test_analyst_prompt_requires_per_dimension_insights() -> None:
     assert "at least one insight per focus dimension" in ANALYST_SYSTEM_PROMPT
+    assert "Write all analysis output in response_language" in ANALYST_SYSTEM_PROMPT
 
     prompt = build_analyst_user_prompt(
         user_query="compare AI coding tools",
@@ -107,9 +108,15 @@ def test_analyst_prompt_requires_per_dimension_insights() -> None:
                 "dimension": "pricing",
             }
         ],
+        analysis_intent="Compare enterprise pricing and security posture.",
+        market_scope="Global enterprise buyers",
+        response_language="en",
     )
 
     assert "For each focus dimension that has grounded evidence" in prompt
+    assert "- analysis_intent: Compare enterprise pricing and security posture." in prompt
+    assert "- market_scope: Global enterprise buyers" in prompt
+    assert "- response_language: en" in prompt
 
 
 def test_analyst_prompt_uses_larger_evidence_budget() -> None:

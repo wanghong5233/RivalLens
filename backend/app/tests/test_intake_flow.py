@@ -190,6 +190,7 @@ async def test_intake_flow_real_graph_postgres_resume() -> None:
             assert persisted_draft.user_role == "pm"
             assert persisted_draft.analysis_intent == "对比 Notion 和 Cursor 的定价策略"
             assert persisted_draft.competitors_explicit == ["Notion", "Cursor"]
+            assert persisted_draft.response_language == "zh"
             assert persisted_draft.is_complete is True
             assert values.get("phase") == "planning"
             # History should record all three exchanges (clarify, reply) pairs.

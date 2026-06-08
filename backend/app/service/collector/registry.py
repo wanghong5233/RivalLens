@@ -40,13 +40,15 @@ class ChannelRegistry:
 def _register_builtin_channels(registry: ChannelRegistry) -> None:
     from agents.tools.extract_structured import ExtractStructuredChannel
     from agents.tools.fetch_url import FetchUrlChannel
-    from agents.tools.search_web import TavilySearchChannel
+    from agents.tools.search_bocha import BochaSearchChannel
+    from agents.tools.search_router import SearchWebRouterChannel
     from agents.tools.skill_tools import LoadSkillChannel, ReadSkillFileChannel
 
     registry.register_many(
         [
             FetchUrlChannel(),
-            TavilySearchChannel(),
+            SearchWebRouterChannel(),
+            BochaSearchChannel(),
             ExtractStructuredChannel(),
             LoadSkillChannel(),
             ReadSkillFileChannel(),

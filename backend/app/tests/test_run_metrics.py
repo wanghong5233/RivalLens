@@ -40,6 +40,8 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         report_section_coverage_rate=0.5,
         source_type_distribution={"web": 3},
         source_authority_distribution={"official": 2, "third_party": 1},
+        locale_match_rate=1.0,
+        locale_distribution={"global:en": 3},
         desensitization_coverage=1.0,
         qa_total_steps=2,
         qa_rejected_steps=1,
@@ -190,6 +192,60 @@ def test_build_run_metrics_snapshot_reports_dimension_coverage() -> None:
     assert snapshot.comparison_dimensions == ["pricing", "security"]
     assert snapshot.dimension_coverage_rate == 2 / 3
     assert snapshot.source_authority_distribution == {"official": 1, "third_party": 1}
+    assert snapshot.locale_distribution == {"global:en": 2}
+    assert snapshot.locale_match_rate == 1.0
+
+
+def test_build_run_metrics_snapshot_reports_low_locale_match_for_china_scope() -> None:
+    run = Run(
+        run_id="run_locale_metrics",
+        user_query="国内竞品分析",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_a"],
+        intake_draft={"market_scope": "中国大陆", "response_language": "zh"},
+    )
+    collected_at = datetime.now(timezone.utc)
+    evidence_rows = [
+        EvidenceRecord(
+            id="ev_cn",
+            run_id=run.run_id,
+            source_type="article",
+            source_url="https://example.cn/news",
+            source_title="中文来源",
+            quote="中文来源介绍产品能力。",
+            sanitized_text="中文来源介绍产品能力。",
+            span={"competitor_id": "comp_a"},
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        ),
+        EvidenceRecord(
+            id="ev_en",
+            run_id=run.run_id,
+            source_type="article",
+            source_url="https://example.com/news",
+            source_title="English source",
+            quote="English source discusses product capabilities.",
+            sanitized_text="English source discusses product capabilities.",
+            span={"competitor_id": "comp_a"},
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        ),
+    ]
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=evidence_rows,
+        step_rows=[],
+        llm_rows=[],
+        decision_rows=[],
+        candidate_rows=[],
+    )
+
+    assert snapshot.locale_distribution == {"china:zh": 1, "global:en": 1}
+    assert snapshot.locale_match_rate == 0.5
 
 
 def test_build_run_metrics_snapshot_uses_downstream_focus_dimensions_for_coverage() -> None:
@@ -477,6 +533,8 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert isinstance(payload["source_type_distribution"], dict)
     assert payload["source_type_distribution"]
     assert isinstance(payload["source_authority_distribution"], dict)
+    assert 0.0 <= payload["locale_match_rate"] <= 1.0
+    assert isinstance(payload["locale_distribution"], dict)
     assert 0.0 <= payload["desensitization_coverage"] <= 1.0
 
     assert payload["qa_total_steps"] >= 1
@@ -535,6 +593,8 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         assert payload["report_section_coverage_rate"] == 0.0
         assert payload["source_type_distribution"] == {}
         assert payload["source_authority_distribution"] == {}
+        assert payload["locale_match_rate"] == 0.0
+        assert payload["locale_distribution"] == {}
         assert payload["desensitization_coverage"] == 0.0
         assert payload["qa_total_steps"] == 0
         assert payload["qa_rejected_steps"] == 0

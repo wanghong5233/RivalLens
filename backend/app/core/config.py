@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     COLLECTOR_PER_HOST_QPS: int = 1
     COLLECTOR_USER_AGENT: str = "RivalLens-Researcher/0.1"
     TAVILY_API_KEY: str | None = None
+    BOCHA_API_KEY: str | None = None
+    BOCHA_BASE_URL: str = "https://api.bochaai.com/v1"
+    BOCHA_RERANK_MODEL: str = "gte-rerank"
+    RERANK_DROP_THRESHOLD: float = 0.2
+    RERANK_COVERAGE_THRESHOLD: float = 0.5
+    RERANK_MIN_HIGH_SCORE_PER_DIM: int = 2
     COLLECTOR_OFFLINE_SNAPSHOT_DIR: str = "./data/snapshots"
     COLLECTOR_FETCH_TIMEOUT_S: int = 10
     COLLECTOR_ROBOTS_CACHE_TTL_S: int = 3600
@@ -237,6 +243,20 @@ class Settings(BaseSettings):
             raise ValueError("COLLECTOR_ROBOTS_CACHE_TTL_S must be positive.")
         if not self.COLLECTOR_USER_AGENT.strip():
             raise ValueError("COLLECTOR_USER_AGENT cannot be empty.")
+        if not self.BOCHA_BASE_URL.strip():
+            raise ValueError("BOCHA_BASE_URL cannot be empty.")
+        if not self.BOCHA_RERANK_MODEL.strip():
+            raise ValueError("BOCHA_RERANK_MODEL cannot be empty.")
+        for name, value in (
+            ("RERANK_DROP_THRESHOLD", self.RERANK_DROP_THRESHOLD),
+            ("RERANK_COVERAGE_THRESHOLD", self.RERANK_COVERAGE_THRESHOLD),
+        ):
+            if value < 0 or value > 1:
+                raise ValueError(f"{name} must be between 0 and 1.")
+        if self.RERANK_COVERAGE_THRESHOLD < self.RERANK_DROP_THRESHOLD:
+            raise ValueError("RERANK_COVERAGE_THRESHOLD must be >= RERANK_DROP_THRESHOLD.")
+        if self.RERANK_MIN_HIGH_SCORE_PER_DIM < 0:
+            raise ValueError("RERANK_MIN_HIGH_SCORE_PER_DIM cannot be negative.")
         for name, value in (
             ("CURATOR_MIN_COVERAGE_RATE", self.CURATOR_MIN_COVERAGE_RATE),
             ("CURATOR_MIN_DIMENSION_COVERAGE_RATE", self.CURATOR_MIN_DIMENSION_COVERAGE_RATE),

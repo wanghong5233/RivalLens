@@ -38,6 +38,28 @@ _DISCOVERY_SNIPPET_PREVIEW_LIMIT = 220
 _DISCOVERY_EVIDENCE_PREVIEW_LIMIT = 220
 
 
+def _clean_optional_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _state_or_intake_string(state: AgentState, field_name: str) -> str | None:
+    direct = _clean_optional_string(state.get(field_name))
+    if direct is not None:
+        return direct
+    intake_draft = state.get("intake_draft")
+    if intake_draft is None:
+        return None
+    return _clean_optional_string(getattr(intake_draft, field_name, None))
+
+
+def _state_response_language(state: AgentState) -> str | None:
+    value = _state_or_intake_string(state, "response_language")
+    return value if value in {"zh", "en"} else None
+
+
 def _normalize_alias_key(value: str) -> str:
     lowered = value.casefold()
     without_punctuation = re.sub(r"[^\w\s]", " ", lowered, flags=re.UNICODE)
@@ -126,6 +148,9 @@ async def discovery_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id", "unknown")
     pending_tool_args = state.get("pending_tool_args", {})
     user_query = state.get("user_query", "")
+    market_scope = _state_or_intake_string(state, "market_scope")
+    response_language = _state_response_language(state)
+    analysis_intent = _state_or_intake_string(state, "analysis_intent")
 
     search_queries: list[str] = pending_tool_args.get("search_queries", [user_query])
     domain_context: str = pending_tool_args.get("domain_context", user_query)
@@ -162,6 +187,8 @@ async def discovery_node(state: AgentState) -> AgentState:
                 "args_summary": {
                     "query": query,
                     "max_results": min(max_results, DISCOVERY_SEARCH_MAX_RESULTS_CAP),
+                    **({"response_language": response_language} if response_language is not None else {}),
+                    **({"market_scope": market_scope} if market_scope is not None else {}),
                 },
             },
         )
@@ -169,13 +196,15 @@ async def discovery_node(state: AgentState) -> AgentState:
         snippets_added = 0
         error_text: str | None = None
         try:
-            observation = await registry.invoke(
-                "search_web",
-                args={
-                    "query": query,
-                    "max_results": min(max_results, DISCOVERY_SEARCH_MAX_RESULTS_CAP),
-                },
-            )
+            search_args: dict[str, object] = {
+                "query": query,
+                "max_results": min(max_results, DISCOVERY_SEARCH_MAX_RESULTS_CAP),
+            }
+            if response_language is not None:
+                search_args["response_language"] = response_language
+            if market_scope is not None:
+                search_args["market_scope"] = market_scope
+            observation = await registry.invoke("search_web", args=search_args)
             for snippet in observation.result.snippets:
                 text = snippet.sanitized_text or snippet.quote
                 if text:
@@ -226,6 +255,9 @@ async def discovery_node(state: AgentState) -> AgentState:
             search_results=combined_results,
             domain_context=domain_context,
             user_query=user_query,
+            market_scope=market_scope,
+            analysis_intent=analysis_intent,
+            response_language=response_language,
         )
         fallback_prompt = build_discovery_extract_fallback_user_prompt(
             domain_context=domain_context,
