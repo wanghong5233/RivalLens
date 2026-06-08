@@ -313,10 +313,6 @@ class AnalystOutput(BaseModel):
     summary: str = Field(min_length=1)
     insights: list[AnalystInsight] = Field(min_length=1)
     comparisons: list[DimensionComparison] = Field(default_factory=list)
-    features: list[Feature] = Field(default_factory=list)
-    pricings: list[Pricing] = Field(default_factory=list)
-    personas: list[Persona] = Field(default_factory=list)
-    coverage: KnowledgeCoverage = Field(default_factory=dict)
     risk_flags: list[str] = Field(default_factory=list)
     recommended_sections: list[str] = Field(default_factory=list)
 
@@ -440,24 +436,6 @@ class AnalystOutput(BaseModel):
             "summary": content.get("summary"),
             "insights": filtered_insights,
             "comparisons": filtered_comparisons,
-            "features": _filter_features(
-                content.get("features"),
-                allowed_evidence_ids=allowed_evidence_ids,
-                competitors=allowed_competitors,
-            ),
-            "pricings": _filter_pricings(
-                content.get("pricings"),
-                allowed_evidence_ids=allowed_evidence_ids,
-                competitors=allowed_competitors,
-            ),
-            "personas": _filter_personas(
-                content.get("personas"),
-                allowed_evidence_ids=allowed_evidence_ids,
-            ),
-            "coverage": _normalize_coverage(
-                content.get("coverage"),
-                competitors=allowed_competitors,
-            ),
             "risk_flags": content.get("risk_flags") if isinstance(content.get("risk_flags"), list) else [],
             "recommended_sections": content.get("recommended_sections")
             if isinstance(content.get("recommended_sections"), list)
@@ -564,17 +542,6 @@ class AnalystOutput(BaseModel):
             summary=summary,
             insights=[insight],
             comparisons=[],
-            features=[],
-            pricings=[],
-            personas=[],
-            coverage={
-                competitor_id: {
-                    "feature": "insufficient_data",
-                    "pricing": "insufficient_data",
-                    "feedback": "insufficient_data",
-                }
-                for competitor_id in coverage_competitors
-            },
             risk_flags=risk_flags,
             recommended_sections=covered_dimensions or focus_dimensions or [dimension],
         )

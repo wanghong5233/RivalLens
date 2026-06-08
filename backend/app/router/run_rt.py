@@ -370,6 +370,10 @@ class RunMetricsResponse(BaseModel):
     report_section_count: int
     report_depth: str
     report_section_coverage_rate: float
+    knowledge_feature_count: int
+    knowledge_pricing_count: int
+    knowledge_persona_count: int
+    knowledge_schema_coverage_rate: float
     source_type_distribution: dict[str, int]
     source_authority_distribution: dict[str, int]
     locale_match_rate: float
@@ -438,6 +442,7 @@ class KnowledgePersonaResponse(BaseModel):
 
 class RunKnowledgeResponse(BaseModel):
     run_id: str
+    analysis_archetype: str
     schema_version: str
     features: list[KnowledgeFeatureResponse]
     pricings: list[KnowledgePricingResponse]
@@ -2768,9 +2773,17 @@ async def get_run_knowledge(run_id: str) -> RunKnowledgeResponse:
                 message=f"run_id={run_id} does not exist",
             )
         knowledge = await load_knowledge_for_run(session=session, run_id=run_id)
+        intake_draft = run.intake_draft if isinstance(run.intake_draft, dict) else {}
+        analysis_archetype_raw = intake_draft.get("analysis_archetype")
+        analysis_archetype = (
+            analysis_archetype_raw
+            if analysis_archetype_raw in {"comparison", "landscape"}
+            else "comparison"
+        )
 
     return RunKnowledgeResponse(
         run_id=run_id,
+        analysis_archetype=analysis_archetype,
         schema_version=knowledge["schema_version"],
         features=[KnowledgeFeatureResponse.model_validate(item) for item in knowledge["features"]],
         pricings=[KnowledgePricingResponse.model_validate(item) for item in knowledge["pricings"]],

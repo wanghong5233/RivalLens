@@ -126,6 +126,7 @@ def test_get_run_knowledge_returns_persisted_schema(test_client: TestClient) -> 
 
         assert response.status_code == 200
         assert payload["run_id"] == run_id
+        assert payload["analysis_archetype"] == "comparison"
         assert payload["schema_version"] == "schema_v0.2"
         assert payload["features"][0]["id"] == "feat_cursor_repo"
         assert payload["pricings"][0]["model"] == "unknown"
@@ -146,6 +147,7 @@ def test_get_run_knowledge_returns_empty_payload_when_no_knowledge_exists(
         assert response.status_code == 200
         assert payload == {
             "run_id": run_id,
+            "analysis_archetype": "comparison",
             "schema_version": "schema_v0.2",
             "features": [],
             "pricings": [],

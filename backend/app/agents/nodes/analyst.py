@@ -12,13 +12,14 @@ from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.step import Step
 from schemas.agent_outputs import AnalystOutput
-from schemas.contracts import normalize_dimension_or_none
+from core.defaults import DEFAULT_FOCUS_DIMENSIONS
+from schemas.contracts import normalize_dimension_or_none, normalize_dimensions
 from schemas.ids import make_id
 from schemas.supervisor import Analyze
 from service.comparison import persist_comparisons_for_step
 from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import persist_comparison_conclusions_for_step, persist_conclusions_for_step
-from service.knowledge import persist_knowledge_for_step
+from service.knowledge import extract_knowledge_schema, persist_knowledge_for_step
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
     build_analyst_fallback_user_prompt,
@@ -37,6 +38,24 @@ def _resolve_focus_dimensions(request: Analyze) -> list[str]:
     if request.focus_dimensions:
         return sorted(set(request.focus_dimensions))
     return []
+
+
+def _focus_dimensions_from_plan_tree(plan_tree: object) -> list[str]:
+    if not isinstance(plan_tree, dict):
+        return []
+    tasks = plan_tree.get("tasks")
+    if not isinstance(tasks, list):
+        return []
+    collected: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        if task.get("stage") not in {"analyze", "write"}:
+            continue
+        raw = task.get("focus_dimensions")
+        if isinstance(raw, list):
+            collected.extend(item for item in raw if isinstance(item, str))
+    return normalize_dimensions(collected, allow_empty=True)
 
 
 def _build_evidence_briefs(
@@ -88,6 +107,10 @@ async def analyst_node(state: AgentState) -> AgentState:
     session_factory = get_session_factory()
     request = Analyze.model_validate(state.get("pending_tool_args", {}))
     focus_dimensions = _resolve_focus_dimensions(request)
+    if not focus_dimensions:
+        focus_dimensions = _focus_dimensions_from_plan_tree(state.get("plan_tree"))
+    if not focus_dimensions:
+        focus_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)
     user_query = str(state.get("user_query", ""))
     intake_draft = coerce_intake_draft_or_default(state)
     competitors = list(state.get("competitors", []))
@@ -115,17 +138,19 @@ async def analyst_node(state: AgentState) -> AgentState:
         evidence_rows=evidence_rows,
         focus_dimensions=focus_dimensions,
     )
-    if not focus_dimensions:
-        focus_dimensions = sorted(
-            {
-                item["dimension"]
-                for item in evidence_briefs
-                if isinstance(item.get("dimension"), str) and item["dimension"]
-            }
-        )
-        if not focus_dimensions:
-            # Empty-evidence fallback is intentionally broader than the default intake focus.
-            focus_dimensions = ["general", "feature", "pricing"]
+    competitors_with_evidence = {
+        str(brief["competitor_id"])
+        for brief in evidence_briefs
+        if isinstance(brief.get("competitor_id"), str)
+        and brief["competitor_id"] not in ("", "unknown")
+    }
+    comparison_yield_gated_competitors = sorted(
+        competitor
+        for competitor in competitors
+        if isinstance(competitor, str)
+        and competitor
+        and competitor not in competitors_with_evidence
+    )
     allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
     allowed_dimensions = set(focus_dimensions)
     dropped_insight_dimensions: dict[str, int] = {}
@@ -138,6 +163,7 @@ async def analyst_node(state: AgentState) -> AgentState:
         analysis_intent=intake_draft.analysis_intent,
         market_scope=intake_draft.market_scope,
         response_language=intake_draft.response_language,
+        analysis_archetype=intake_draft.analysis_archetype,
     )
     fallback_prompt = build_analyst_fallback_user_prompt(
         competitors=competitors,
@@ -198,31 +224,19 @@ async def analyst_node(state: AgentState) -> AgentState:
         if isinstance(analysis_result.get("comparisons"), list)
         else []
     )
-    analysis_features = (
-        [item for item in analysis_result["features"] if isinstance(item, dict)]
-        if isinstance(analysis_result.get("features"), list)
-        else []
+    knowledge_extraction = extract_knowledge_schema(
+        evidence_briefs=evidence_briefs,
+        competitors=[item for item in competitors if isinstance(item, str)],
+        focus_dimensions=focus_dimensions,
+        analysis_archetype=intake_draft.analysis_archetype,
     )
-    analysis_pricings = (
-        [item for item in analysis_result["pricings"] if isinstance(item, dict)]
-        if isinstance(analysis_result.get("pricings"), list)
-        else []
-    )
-    analysis_personas = (
-        [item for item in analysis_result["personas"] if isinstance(item, dict)]
-        if isinstance(analysis_result.get("personas"), list)
-        else []
-    )
-    analysis_coverage = (
-        analysis_result["coverage"]
-        if isinstance(analysis_result.get("coverage"), dict)
-        else {}
-    )
-    analysis_schema_version = (
-        analysis_result["schema_version"]
-        if isinstance(analysis_result.get("schema_version"), str)
-        else "schema_v0.2"
-    )
+    analysis_features = list(knowledge_extraction.features)
+    analysis_pricings = list(knowledge_extraction.pricings)
+    analysis_personas = list(knowledge_extraction.personas)
+    analysis_coverage = dict(knowledge_extraction.coverage)
+    analysis_schema_version = knowledge_extraction.schema_version
+    schema_extraction_mode = knowledge_extraction.extraction_mode
+    schema_missing_reasons = dict(knowledge_extraction.missing_reasons)
     evidence_lookup = {row.id: row for row in evidence_rows}
 
     llm_call_error = llm_response.error or analysis_schema_error
@@ -246,6 +260,10 @@ async def analyst_node(state: AgentState) -> AgentState:
             "llm_prompt_preview": llm_response.prompt_preview,
             "llm_fallback_used": llm_response.fallback_used,
             "llm_fallback_reason": llm_response.fallback_reason,
+            "schema_extraction_mode": schema_extraction_mode,
+            "schema_extraction_error": None,
+            "schema_coverage_by_competitor": analysis_coverage,
+            "schema_missing_reasons": schema_missing_reasons,
         }
         log.info(
             "analyst.dimension_drops",
@@ -363,6 +381,7 @@ async def analyst_node(state: AgentState) -> AgentState:
                     comparisons=analysis_comparisons,
                     evidence_lookup=evidence_lookup,
                     competitors=[item for item in competitors if isinstance(item, str)],
+                    competitors_with_evidence=competitors_with_evidence,
                 )
                 await session.flush()
                 persisted_comparison_count = len(comparison_records)
@@ -377,7 +396,15 @@ async def analyst_node(state: AgentState) -> AgentState:
         step.payload = {
             **step.payload,
             "comparison_count": persisted_comparison_count,
+            "comparison_yield_gated_competitors": comparison_yield_gated_competitors,
         }
+        if comparison_yield_gated_competitors:
+            log.info(
+                "analyst.comparison_yield_gate",
+                run_id=run_id,
+                step_id=step_id,
+                gated_competitors=comparison_yield_gated_competitors,
+            )
         if comparisons_persist_error is not None:
             step.payload = {
                 **step.payload,

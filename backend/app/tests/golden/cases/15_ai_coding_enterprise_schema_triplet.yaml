@@ -1,0 +1,21 @@
+id: 15_ai_coding_enterprise_schema_triplet
+description: AI coding tools comparison should persist schema triplet coverage.
+setup:
+  promoted_qa_rules: []
+input:
+  user_query: "对比 Cursor、Windsurf、TRAE、Claude Code 的企业能力与定价策略"
+  competitors:
+    - comp_cursor
+    - comp_windsurf
+    - comp_trae
+    - comp_claude_code
+  domain_hint: ai coding assistants
+  reference_urls: []
+  target_roles:
+    - pm
+assertions:
+  final_qa_outcome: approved
+  knowledge_feature_count_gte: 2
+  knowledge_pricing_count_gte: 2
+  knowledge_persona_count_gte: 1
+  knowledge_schema_coverage_rate_gte: 0.5

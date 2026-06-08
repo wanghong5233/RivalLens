@@ -13,6 +13,7 @@ from core.defaults import (
     MAX_TOTAL_PLAN_TASKS,
 )
 from schemas.contracts import (
+    ensure_comparison_schema_dimensions,
     normalize_dimension_or_none,
     research_focus_dimensions,
     validate_dimension,
@@ -66,6 +67,7 @@ INTAKE_PATCHABLE_FIELDS: frozenset[str] = frozenset(
         "market_scope",
         "time_context",
         "response_language",
+        "analysis_archetype",
     }
 )
 PLANNER_VALID_STAGES: frozenset[str] = frozenset({"discover", "research", "analyze", "write"})
@@ -177,6 +179,10 @@ class PlannerOutput(BaseModel):
             )[:MAX_FOCUS_DIMENSIONS]
             or list(DEFAULT_FOCUS_DIMENSIONS)
         )
+        default_focus = ensure_comparison_schema_dimensions(
+            default_focus,
+            analysis_archetype=draft.analysis_archetype,
+        )[:MAX_FOCUS_DIMENSIONS]
         parsed_tasks: list[PlannerTaskDraft] = []
         research_count = 0
         for item in tasks_raw:
@@ -221,7 +227,10 @@ class PlannerOutput(BaseModel):
             if stage_raw in {"discover", "research"}:
                 # Derived dimensions are analyst-synthesized, not independently
                 # gathered; keep them out of research/discovery focus (R9).
-                focus = research_focus_dimensions(focus)
+                focus = research_focus_dimensions(
+                    focus,
+                    analysis_archetype=draft.analysis_archetype,
+                )
             parsed_tasks.append(
                 PlannerTaskDraft(
                     stage=cast(PlanTaskStage, stage_raw),

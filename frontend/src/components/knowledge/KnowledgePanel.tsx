@@ -55,6 +55,15 @@ function getCoverageRows(knowledge: RunKnowledgeResponse | null): Array<{
   );
 }
 
+function hasCoverageDeficit(knowledge: RunKnowledgeResponse | null): boolean {
+  if (knowledge === null) {
+    return false;
+  }
+  return Object.values(knowledge.coverage).some((dimensions) =>
+    Object.values(dimensions).some((status) => status === "insufficient_data" || status === "missing"),
+  );
+}
+
 function getCompetitorIds(knowledge: RunKnowledgeResponse | null): string[] {
   if (knowledge === null) {
     return [];
@@ -319,6 +328,8 @@ export function KnowledgePanel({
   const featureGroups = useMemo(() => groupFeatures(knowledge?.features ?? []), [knowledge?.features]);
   const pricingGroups = useMemo(() => groupPricings(knowledge?.pricings ?? []), [knowledge?.pricings]);
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
+  const analysisArchetype = knowledge?.analysis_archetype ?? "comparison";
+  const hasCoverageDeficits = useMemo(() => hasCoverageDeficit(knowledge), [knowledge]);
   const hasKnowledge =
     (knowledge?.features.length ?? 0) + (knowledge?.pricings.length ?? 0) + (knowledge?.personas.length ?? 0) > 0;
 
@@ -348,14 +359,22 @@ export function KnowledgePanel({
             Schema 三件套
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            schema_version: {knowledge?.schema_version ?? "-"}
+            schema_version: {knowledge?.schema_version ?? "-"} · archetype: {analysisArchetype}
           </p>
         </div>
         <CoverageStrip knowledge={knowledge} />
       </div>
 
       {!hasKnowledge ? (
-        <EmptyBlock text="当前 run 尚未落库功能树、定价模型或用户画像；若 coverage 标记为证据不足，说明系统选择诚实降级而非补造结论。" />
+        <EmptyBlock
+          text={
+            analysisArchetype === "landscape"
+              ? "当前是 landscape 机会扫描：系统不会强制逐竞品三件套。请重点查看机会洞察与比较结论。"
+              : hasCoverageDeficits
+                ? "当前是 comparison 对比：三件套为空且 coverage 显示证据不足，说明需要补采证据或等待下一轮抽取。"
+                : "当前 run 尚未落库功能树、定价模型或用户画像；可能仍在处理中。"
+          }
+        />
       ) : null}
 
       <section className="space-y-3">
@@ -364,7 +383,11 @@ export function KnowledgePanel({
           功能树
         </h4>
         {competitorIds.length === 0 || knowledge?.features.length === 0 ? (
-          <EmptyBlock text="暂无功能树条目。" />
+          <EmptyBlock
+            text={
+              analysisArchetype === "landscape" ? "landscape 模式不强制输出功能树。" : "暂无功能树条目（待补采/待抽取）。"
+            }
+          />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
             {competitorIds.map((competitorId) => {
@@ -388,7 +411,11 @@ export function KnowledgePanel({
           定价模型
         </h4>
         {competitorIds.length === 0 || knowledge?.pricings.length === 0 ? (
-          <EmptyBlock text="暂无定价模型条目。" />
+          <EmptyBlock
+            text={
+              analysisArchetype === "landscape" ? "landscape 模式不强制输出定价模型。" : "暂无定价模型条目（待补采/待抽取）。"
+            }
+          />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
             {competitorIds.map((competitorId) => {
@@ -421,7 +448,11 @@ export function KnowledgePanel({
           用户画像
         </h4>
         {knowledge?.personas.length === 0 ? (
-          <EmptyBlock text="暂无用户画像条目。" />
+          <EmptyBlock
+            text={
+              analysisArchetype === "landscape" ? "landscape 模式不强制输出用户画像。" : "暂无用户画像条目（待补采/待抽取）。"
+            }
+          />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
             {(knowledge?.personas ?? []).map((persona) => (

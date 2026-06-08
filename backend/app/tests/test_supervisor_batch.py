@@ -128,6 +128,8 @@ def test_decision_from_tool_output_accepts_conduct_research_batch() -> None:
         iteration=1,
         output=output,
         triggered_by="user_query",
+        fallback_dimensions=["feature", "pricing", "user_feedback"],
+        fallback_sections=["feature", "pricing", "user_feedback"],
     )
 
     assert decision.chosen_tool == "ConductResearchBatch"
@@ -163,6 +165,8 @@ def test_decision_from_tool_output_truncates_batch_topics_to_max_eight() -> None
         iteration=1,
         output=output,
         triggered_by="user_query",
+        fallback_dimensions=["feature", "pricing", "user_feedback"],
+        fallback_sections=["feature", "pricing", "user_feedback"],
     )
 
     topics = decision.tool_args["topics"]
@@ -175,6 +179,7 @@ def test_decision_from_tool_output_truncates_batch_topics_to_max_eight() -> None
 def test_discovery_search_queries_localize_chinese_market_scope() -> None:
     queries = _discovery_search_queries(
         user_query="OPC 变现工具",
+        domain_context=None,
         market_scope="中国市场",
         response_language="zh",
     )
@@ -198,6 +203,7 @@ def test_fallback_decision_uses_localized_discovery_queries() -> None:
         fallback_dimensions=["feature", "pricing"],
         fallback_sections=["feature", "pricing"],
         market_scope="中国市场",
+        domain_context=None,
         response_language="zh",
     )
 
@@ -206,6 +212,53 @@ def test_fallback_decision_uses_localized_discovery_queries() -> None:
     assert isinstance(search_queries, list)
     assert all("中国市场" in query for query in search_queries)
     assert not any("competitors alternatives" in query for query in search_queries)
+
+
+def test_fallback_discovery_prefers_resolved_domain_context() -> None:
+    decision = _fallback_decision(
+        run_id="run_test",
+        iteration=1,
+        competitors=[],
+        researched_competitors=[],
+        analysis_done=False,
+        report_draft_done=False,
+        triggered_by="user_query",
+        user_query="OPC 变现工具",
+        fallback_dimensions=["feature", "pricing"],
+        fallback_sections=["feature", "pricing"],
+        domain_context="one person company monetization",
+        response_language="zh",
+    )
+
+    assert decision.chosen_tool == "DiscoverCompetitors"
+    assert decision.tool_args["domain_context"] == "one person company monetization"
+    assert all("one person company monetization" in query for query in decision.tool_args["search_queries"])
+
+
+def test_decision_from_tool_output_clamps_llm_dimensions_to_fallback_dimensions() -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Analyze",
+            "tool_args": {
+                "focus_dimensions": ["made_up_dimension", "subscription_tiers"],
+                "parallel_by_dimension": True,
+                "require_cross_competitor": True,
+            },
+            "reasoning_summary": "Analyze with LLM-invented dimensions.",
+        }
+    )
+
+    decision = _decision_from_tool_output(
+        run_id="run_test",
+        iteration=2,
+        output=output,
+        triggered_by="researcher_completion",
+        fallback_dimensions=["product_positioning", "pricing_strategy"],
+        fallback_sections=["product_positioning", "pricing_strategy"],
+    )
+
+    assert decision.chosen_tool == "Analyze"
+    assert decision.tool_args["focus_dimensions"] == ["product_positioning", "pricing_strategy"]
 
 
 @pytest.mark.asyncio
@@ -260,7 +313,7 @@ async def test_supervisor_node_marks_llm_tool_output_for_happy_path_dimensions(
                 "outcome": "dispatched",
                 "plan_task_ids": [],
                 "consumed_follow_up_ids": [],
-                "dimension_source": "llm_tool_output",
+                "dimension_source": "default",
             },
         )
     ]
@@ -424,7 +477,13 @@ def test_resolve_fallback_dimensions_prefers_matching_plan_task_over_hints() -> 
     )
 
     assert source == "upstream_task"
-    assert dimensions == ["supply_chain", "implementation"]
+    assert dimensions == [
+        "supply_chain",
+        "implementation",
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
 
 
 def test_resolve_fallback_dimensions_uses_intake_before_hints() -> None:
@@ -442,7 +501,13 @@ def test_resolve_fallback_dimensions_uses_intake_before_hints() -> None:
     )
 
     assert source == "intake"
-    assert dimensions == ["implementation", "integration"]
+    assert dimensions == [
+        "implementation",
+        "integration",
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
 
 
 def test_resolve_fallback_dimensions_uses_hints_only_without_upstream() -> None:
@@ -458,6 +523,24 @@ def test_resolve_fallback_dimensions_uses_hints_only_without_upstream() -> None:
 
     assert source == "hints"
     assert dimensions[0] == "pricing"
+
+
+def test_resolve_fallback_dimensions_landscape_keeps_original_research_dimensions() -> None:
+    dimensions, source = _resolve_fallback_dimensions(
+        plan_tree=None,
+        intake_draft={
+            "analysis_archetype": "landscape",
+            "focus_dimensions": ["implementation", "market_differences"],
+        },
+        user_query="机会扫描，重点看实施门槛",
+        competitors=["comp_a", "comp_b"],
+        researched_competitors=[],
+        analysis_done=False,
+        report_draft_done=False,
+    )
+
+    assert source == "intake"
+    assert dimensions == ["implementation", "market_differences"]
 
 
 def test_resolve_fallback_dimensions_defaults_without_upstream_or_hints() -> None:

@@ -306,6 +306,36 @@ class CompetitorKnowledgeAggregate(BaseModel):
 - 每个最终 conclusion 至少绑定 1 条 evidence；
 - 报告至少覆盖 feature / pricing / user feedback / differentiation / SWOT 五维之一。
 
+### 3.4 Runtime `run_knowledge` 合同（`schema_v0.3` 补充）
+
+`run_knowledge` 是评审面向的三件套事实视图，和 `AnalystOutput` 叙事层分离：
+
+```python
+class RunKnowledgePayload(TypedDict):
+    schema_version: str
+    features: list[Feature]
+    pricings: list[Pricing]
+    personas: list[Persona]
+    coverage: dict[str, dict[str, Literal["complete", "partial", "insufficient_data", "missing"]]]
+```
+
+生成规则：
+
+- 由 `service/knowledge/extractor.py` 负责从 `evidence_briefs + competitors + focus_dimensions + analysis_archetype` 抽取，不再要求 analyst LLM 直接产出三件套字段。
+- `analysis_archetype="comparison"`：必须尝试抽取三件套；研究维度会自动补齐底座 `feature/pricing/user_feedback` 后再执行。
+- `analysis_archetype="landscape"`：不强制逐竞品三件套；允许空三件套并通过 `coverage=insufficient_data` 诚实表达。
+- 所有三件套条目必须引用已有 `evidence_id`；非法 evidence 引用在抽取阶段直接过滤。
+
+QA 路由规则（`rule_knowledge_schema_conformance`）：
+
+- `no_evidence` / `insufficient_evidence` → `reject_to=researcher`
+- `extraction_empty` / `malformed_fields` / `dishonest_coverage` → `reject_to=analyst`
+- `extraction_empty` 在 analyst 首次重试后降级 warning，避免无解循环导致 `degraded`
+
+接口补充：
+
+- `GET /api/runs/{run_id}/knowledge` 返回 `analysis_archetype`，前端据此区分空态文案（`landscape 不适用` vs `comparison 待补采/待抽取`）。
+
 ## 4. AgentMessage 通信协议
 
 > 设计参考：rejection / approval 形态借鉴 `assafelovic/gpt-researcher`（Apache-2.0）的 Reviewer + Revisor 反馈闭环模式，但 GR 用自然语言反馈，我们改造为结构化 JSON + 规则 ID 引用 + 多目标路由，便于 QA 规则引擎机器判断。详见 `docs/5-prior-art-and-leverage.md` 与 `docs/2.5-agent-architecture.md` §7。

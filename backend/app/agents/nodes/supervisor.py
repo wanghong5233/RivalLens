@@ -36,6 +36,11 @@ from utils.logger import bind_step, get_logger
 
 log = get_logger("agents.supervisor")
 from schemas.agent_outputs import SupervisorToolCallOutput
+from schemas.contracts import (
+    ensure_comparison_schema_dimensions,
+    normalize_dimensions,
+    research_focus_dimensions,
+)
 from schemas.ids import make_id
 from schemas.supervisor import (
     Analyze,
@@ -137,21 +142,23 @@ def _state_response_language(state: AgentState, *, user_query: str) -> str:
 def _discovery_search_queries(
     *,
     user_query: str,
+    domain_context: str | None,
     market_scope: str | None,
     response_language: str,
 ) -> list[str]:
+    query_basis = domain_context.strip() if isinstance(domain_context, str) and domain_context.strip() else user_query
     scope_prefix = f"{market_scope} " if market_scope else ""
     if response_language == "zh":
         candidates = [
-            f"{scope_prefix}{user_query} 竞品 替代 产品",
-            f"{scope_prefix}{user_query} 对比 评测 厂商",
-            f"{scope_prefix}{user_query} 市场 解决方案",
+            f"{scope_prefix}{query_basis} 竞品 替代 产品",
+            f"{scope_prefix}{query_basis} 对比 评测 厂商",
+            f"{scope_prefix}{query_basis} 市场 解决方案",
         ]
     else:
         candidates = [
-            f"{scope_prefix}{user_query} competitors alternatives",
-            f"{scope_prefix}{user_query} comparison reviews vendors",
-            f"{scope_prefix}{user_query} market solutions",
+            f"{scope_prefix}{query_basis} competitors alternatives",
+            f"{scope_prefix}{query_basis} comparison reviews vendors",
+            f"{scope_prefix}{query_basis} market solutions",
         ]
     return _stable_unique([item.strip() for item in candidates if item.strip()])[:3]
 
@@ -159,12 +166,14 @@ def _discovery_search_queries(
 def _normalize_focus_dimensions(raw: object) -> list[str]:
     if not isinstance(raw, list):
         return []
-    dimensions = [
+    return normalize_dimensions(
+        [
         item.strip()
         for item in raw
         if isinstance(item, str) and item.strip()
-    ]
-    return _stable_unique(dimensions)[:MAX_FOCUS_DIMENSIONS]
+        ],
+        allow_empty=True,
+    )[:MAX_FOCUS_DIMENSIONS]
 
 
 def _derive_hint_focus_dimensions(*, user_query: str, competitors: list[str]) -> list[str]:
@@ -265,6 +274,11 @@ def _intake_focus_dimensions(intake_draft: object) -> list[str]:
     )
 
 
+def _analysis_archetype_from_intake(intake_draft: object) -> str:
+    raw = _get_object_field(intake_draft, "analysis_archetype")
+    return "landscape" if raw == "landscape" else "comparison"
+
+
 def _resolve_fallback_dimensions(
     *,
     plan_tree: object,
@@ -287,6 +301,7 @@ def _resolve_fallback_dimensions(
     target_competitors = pending_competitors if stage == "research" else []
     if qa_reject_to == "researcher":
         target_competitors = competitors
+    analysis_archetype = _analysis_archetype_from_intake(intake_draft)
 
     plan_dimensions = _plan_task_focus_dimensions(
         plan_tree=plan_tree,
@@ -294,10 +309,26 @@ def _resolve_fallback_dimensions(
         target_competitors=target_competitors,
     )
     if plan_dimensions:
+        if stage == "research":
+            return (
+                research_focus_dimensions(
+                    plan_dimensions,
+                    analysis_archetype=analysis_archetype,
+                ),
+                "upstream_task",
+            )
         return plan_dimensions, "upstream_task"
 
     intake_dimensions = _intake_focus_dimensions(intake_draft)
     if intake_dimensions:
+        if stage == "research":
+            return (
+                research_focus_dimensions(
+                    intake_dimensions,
+                    analysis_archetype=analysis_archetype,
+                ),
+                "intake",
+            )
         return intake_dimensions, "intake"
 
     hint_dimensions = _derive_hint_focus_dimensions(
@@ -305,9 +336,28 @@ def _resolve_fallback_dimensions(
         competitors=competitors,
     )
     if hint_dimensions:
+        if stage == "research":
+            return (
+                research_focus_dimensions(
+                    hint_dimensions,
+                    analysis_archetype=analysis_archetype,
+                ),
+                "hints",
+            )
         return hint_dimensions, "hints"
 
-    return list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS], "default"
+    default_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS]
+    if stage == "research":
+        default_dimensions = research_focus_dimensions(
+            default_dimensions,
+            analysis_archetype=analysis_archetype,
+        )
+    else:
+        default_dimensions = ensure_comparison_schema_dimensions(
+            default_dimensions,
+            analysis_archetype=analysis_archetype,
+        )
+    return default_dimensions, "default"
 
 
 def _derive_write_sections(*, focus_dimensions: list[str]) -> list[str]:
@@ -399,6 +449,7 @@ def _fallback_decision(
     fallback_dimensions: list[str],
     fallback_sections: list[str],
     market_scope: str | None = None,
+    domain_context: str | None = None,
     response_language: str = "en",
 ) -> SupervisorDecision:
     now = _now_iso()
@@ -407,10 +458,11 @@ def _fallback_decision(
         args = DiscoverCompetitors(
             search_queries=_discovery_search_queries(
                 user_query=user_query,
+                domain_context=domain_context,
                 market_scope=market_scope,
                 response_language=response_language,
             ),
-            domain_context=user_query,
+            domain_context=domain_context or user_query,
             max_results=DEFAULT_DISCOVER_MAX_RESULTS,
         ).model_dump()
         return SupervisorDecision(
@@ -760,23 +812,64 @@ def _decision_from_tool_output(
     iteration: int,
     output: SupervisorToolCallOutput,
     triggered_by: TriggerSource,
+    fallback_dimensions: list[str],
+    fallback_sections: list[str],
 ) -> SupervisorDecision:
     now = _now_iso()
     outcome: Literal["dispatched", "succeeded"] = (
         "succeeded" if output.chosen_tool == "Finalize" else "dispatched"
+    )
+    tool_args = _clamp_tool_args_to_canonical_dimensions(
+        chosen_tool=output.chosen_tool,
+        tool_args=output.tool_args,
+        fallback_dimensions=fallback_dimensions,
+        fallback_sections=fallback_sections,
     )
     return SupervisorDecision(
         id=make_id("decision_"),
         run_id=run_id,
         iteration=iteration,
         chosen_tool=output.chosen_tool,
-        tool_args=output.tool_args,
+        tool_args=tool_args,
         reasoning_summary=output.reasoning_summary,
         triggered_by=triggered_by,
         outcome=outcome,
         outcome_recorded_at=now,
         created_at=now,
     )
+
+
+def _clamp_tool_args_to_canonical_dimensions(
+    *,
+    chosen_tool: str,
+    tool_args: dict[str, object],
+    fallback_dimensions: list[str],
+    fallback_sections: list[str],
+) -> dict[str, object]:
+    if chosen_tool not in _DIMENSIONAL_SUPERVISOR_TOOLS:
+        return tool_args
+    canonical_dimensions = normalize_dimensions(fallback_dimensions, allow_empty=True)
+    if not canonical_dimensions:
+        canonical_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS]
+    clamped = dict(tool_args)
+    if chosen_tool == "ConductResearch":
+        clamped["focus_dimensions"] = canonical_dimensions
+    elif chosen_tool == "ConductResearchBatch":
+        topics = clamped.get("topics")
+        if isinstance(topics, list):
+            clamped["topics"] = [
+                {**topic, "focus_dimensions": canonical_dimensions}
+                if isinstance(topic, dict)
+                else topic
+                for topic in topics
+            ]
+    elif chosen_tool == "Analyze":
+        clamped["focus_dimensions"] = canonical_dimensions
+    elif chosen_tool == "Write":
+        clamped["sections"] = _stable_unique(fallback_sections or _derive_write_sections(
+            focus_dimensions=canonical_dimensions
+        ))[:MAX_WRITE_SECTIONS]
+    return clamped
 
 
 async def _persist_iteration(
@@ -1032,6 +1125,10 @@ async def supervisor_node(state: AgentState) -> AgentState:
     user_query_raw = state.get("user_query", "")
     user_query = user_query_raw if isinstance(user_query_raw, str) else ""
     market_scope = _state_or_intake_string(state, "market_scope")
+    domain_context = (
+        _state_or_intake_string(state, "domain_hint")
+        or _state_or_intake_string(state, "analysis_intent")
+    )
     response_language = _state_response_language(state, user_query=user_query)
     competitors = list(state.get("competitors", []))
     researched_competitors = list(state.get("researched_competitors", []))
@@ -1140,6 +1237,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             qa_reject_to=qa_reject_to,
             qa_reasons=qa_reasons,
             market_scope=market_scope,
+            domain_context=domain_context,
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
         )
@@ -1150,6 +1248,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             analysis_done=analysis_done,
             report_draft_done=report_draft_done,
             market_scope=market_scope,
+            domain_context=domain_context,
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
         )
@@ -1176,9 +1275,11 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 iteration=iteration,
                 output=harness_result.value,
                 triggered_by=triggered_by,
+                fallback_dimensions=fallback_dimensions,
+                fallback_sections=fallback_sections,
             )
             if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS:
-                decision_dimension_source = "llm_tool_output"
+                decision_dimension_source = dimension_source
         else:
             decision = _fallback_decision(
                 run_id=run_id,
@@ -1192,6 +1293,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 fallback_dimensions=fallback_dimensions,
                 fallback_sections=fallback_sections,
                 market_scope=market_scope,
+                domain_context=domain_context,
                 response_language=response_language,
             )
             decision_dimension_source = dimension_source

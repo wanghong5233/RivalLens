@@ -79,6 +79,37 @@ _PROMOTED_RULE_REQUIRED_FIELDS = [
 ]
 _RULE_YAML_BLOCK_PATTERN = re.compile(r"```yaml\s*(?P<rule_yaml>.*?)```", re.DOTALL | re.IGNORECASE)
 _RULE_ID_PATTERN = re.compile(r"^\s*id:\s*(?P<rule_id>[a-z0-9_:-]+)\s*$", re.IGNORECASE)
+_KNOWLEDGE_FAILURE_PATTERN = re.compile(r"\[(?P<failure_type>[a-z_]+)\]")
+_KNOWLEDGE_REQUIRED_FIELDS_BY_FAILURE_TYPE: dict[str, list[str]] = {
+    "no_evidence": [
+        "evidence.id",
+        "evidence.span.dimension",
+        "evidence.span.competitor_id",
+        "steps.payload.focus_dimensions",
+    ],
+    "insufficient_evidence": [
+        "evidence.id",
+        "evidence.span.dimension",
+        "evidence.span.competitor_id",
+        "steps.payload.focus_dimensions",
+    ],
+    "extraction_empty": [
+        "run_knowledge.features",
+        "run_knowledge.pricings",
+        "run_knowledge.personas",
+    ],
+    "extraction_empty_retry": [
+        "run_knowledge.features",
+        "run_knowledge.pricings",
+        "run_knowledge.personas",
+    ],
+    "dishonest_coverage": ["run_knowledge.coverage"],
+    "malformed_fields": [
+        "run_knowledge.features",
+        "run_knowledge.pricings",
+        "run_knowledge.personas",
+    ],
+}
 
 
 @dataclass(slots=True)
@@ -125,6 +156,15 @@ def _build_rejection(
     required_fields: set[str] = set()
     for item in failed_rules:
         required_fields.update(_RULE_REQUIRED_FIELDS.get(item.rule_id, []))
+        if item.rule_id == "rule_knowledge_schema_conformance":
+            matched = _KNOWLEDGE_FAILURE_PATTERN.search(item.message)
+            if matched is not None:
+                required_fields.update(
+                    _KNOWLEDGE_REQUIRED_FIELDS_BY_FAILURE_TYPE.get(
+                        matched.group("failure_type"),
+                        [],
+                    )
+                )
         if item.rule_id.startswith("rule_promoted_"):
             required_fields.update(_PROMOTED_RULE_REQUIRED_FIELDS)
 
@@ -541,6 +581,8 @@ async def evaluate_report(
         else {}
     )
     market_scope_raw = intake_draft.get("market_scope")
+    archetype_raw = intake_draft.get("analysis_archetype")
+    require_competitor_schema = archetype_raw != "landscape"
     rule_results = evaluate_fast_path_rules(
         content_markdown=report.content_markdown,
         content_json=report.content_json,
@@ -560,6 +602,9 @@ async def evaluate_report(
         rule_knowledge_schema_conformance(
             knowledge=knowledge,
             expected_competitors=run.competitors if run is not None else None,
+            evidence_item_count=len(evidence_items),
+            qa_rejection_count=qa_rejection_count,
+            require_competitor_schema=require_competitor_schema,
         )
     )
     has_blocking_failures_pre_semantic = any(

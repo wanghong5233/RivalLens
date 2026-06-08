@@ -219,161 +219,6 @@ def test_analyst_output_downgrades_qualified_comparison_without_evidence() -> No
     assert cells[1].stance == "competitive"
 
 
-def test_analyst_output_parses_structured_knowledge_with_server_ids() -> None:
-    output = AnalystOutput.parse_llm_content(
-        {
-            "summary": "Summary with enough analyst context.",
-            "insights": [
-                {
-                    "dimension": "Feature",
-                    "finding": "Cursor has repo-aware coding support.",
-                    "evidence_ids": ["ev_feature"],
-                    "confidence": "high",
-                }
-            ],
-            "features": [
-                {
-                    "id": "llm_parent",
-                    "competitor_id": "Cursor",
-                    "name": "Repository context",
-                    "description": "Understands broader repository context.",
-                    "maturity": "advanced",
-                    "evidence_ids": ["ev_feature"],
-                },
-                {
-                    "id": "llm_child",
-                    "competitor_id": "Cursor",
-                    "name": "Codebase Q&A",
-                    "parent_id": "llm_parent",
-                    "maturity": "basic",
-                    "evidence_ids": ["ev_feature"],
-                },
-            ],
-            "pricings": [
-                {
-                    "id": "llm_price",
-                    "competitor_id": "Cursor",
-                    "model": "unknown",
-                    "tiers": [{"name": "Team"}],
-                    "free_plan": None,
-                    "enterprise_plan": True,
-                    "evidence_ids": ["ev_pricing"],
-                }
-            ],
-            "personas": [
-                {
-                    "id": "llm_persona",
-                    "name": "Engineering manager",
-                    "role": "engineering_manager",
-                    "pain_points": ["Code review load"],
-                    "jobs_to_be_done": ["Improve delivery throughput"],
-                    "evidence_ids": ["ev_feedback"],
-                }
-            ],
-            "coverage": {
-                "Cursor": {
-                    "feature": "partial",
-                    "pricing": "complete",
-                    "feedback": "partial",
-                }
-            },
-        },
-        allowed_evidence_ids={"ev_feature", "ev_pricing", "ev_feedback"},
-        allowed_dimensions={"feature"},
-        competitors={"Cursor"},
-    )
-
-    assert [feature.id.startswith("feat_") for feature in output.features] == [True, True]
-    assert output.features[1].parent_id == output.features[0].id
-    assert output.pricings[0].id.startswith("price_")
-    assert output.pricings[0].model == "unknown"
-    assert output.personas[0].id.startswith("persona_")
-    assert output.coverage["Cursor"]["pricing"] == "complete"
-
-
-def test_analyst_output_filters_invalid_structured_knowledge() -> None:
-    output = AnalystOutput.parse_llm_content(
-        {
-            "summary": "Summary with enough analyst context.",
-            "insights": [
-                {
-                    "dimension": "Pricing",
-                    "finding": "Cursor pricing evidence is available.",
-                    "evidence_ids": ["ev_pricing"],
-                    "confidence": "medium",
-                }
-            ],
-            "features": [
-                {
-                    "competitor_id": "Cursor",
-                    "name": "No grounding",
-                    "evidence_ids": ["ev_missing"],
-                },
-                {
-                    "competitor_id": "Unknown",
-                    "name": "Wrong competitor",
-                    "evidence_ids": ["ev_feature"],
-                },
-            ],
-            "pricings": [
-                {
-                    "competitor_id": "Cursor",
-                    "model": "seat",
-                    "evidence_ids": ["ev_missing"],
-                }
-            ],
-            "personas": [
-                {
-                    "name": "Buyer",
-                    "role": "sales_leader",
-                    "evidence_ids": ["ev_missing"],
-                },
-                {
-                    "name": "Missing role",
-                    "evidence_ids": ["ev_feedback"],
-                },
-            ],
-            "coverage": {
-                "Cursor": {"feature": "insufficient_data", "pricing": "made_up"},
-                "Unknown": {"feature": "complete"},
-            },
-        },
-        allowed_evidence_ids={"ev_feature", "ev_pricing", "ev_feedback"},
-        allowed_dimensions={"pricing"},
-        competitors={"Cursor"},
-    )
-
-    assert output.features == []
-    assert output.pricings == []
-    assert len(output.personas) == 1
-    assert output.personas[0].evidence_ids == []
-    assert output.coverage == {"Cursor": {"feature": "insufficient_data"}}
-
-
-def test_analyst_fallback_marks_structured_knowledge_insufficient() -> None:
-    analyst = AnalystOutput.build_fallback(
-        focus_dimensions=["feature", "pricing"],
-        competitors=["Cursor", "Windsurf"],
-        evidence_briefs=[],
-    )
-
-    assert analyst.features == []
-    assert analyst.pricings == []
-    assert analyst.personas == []
-    assert analyst.coverage == {
-        "Cursor": {
-            "feature": "insufficient_data",
-            "pricing": "insufficient_data",
-            "feedback": "insufficient_data",
-        },
-        "Windsurf": {
-            "feature": "insufficient_data",
-            "pricing": "insufficient_data",
-            "feedback": "insufficient_data",
-        },
-    }
-
-
 def test_analyst_output_skips_out_of_focus_insight_and_audits_reason() -> None:
     dropped: dict[str, int] = {}
 
@@ -448,7 +293,21 @@ def test_intake_patchable_fields_include_optional_scope_contract() -> None:
         "market_scope",
         "time_context",
         "response_language",
+        "analysis_archetype",
     }.issubset(INTAKE_PATCHABLE_FIELDS)
+
+
+def test_intake_turn_parser_preserves_analysis_archetype_patch() -> None:
+    parsed = PipelineIntakeTurnOutput.parse_llm_content(
+        {
+            "action": "complete",
+            "draft_patch": {"analysis_archetype": "landscape"},
+            "clarify_request": None,
+            "reasoning_summary": "done",
+        }
+    )
+
+    assert parsed.draft_patch == {"analysis_archetype": "landscape"}
 
 
 def test_intake_turn_parser_preserves_optional_scope_patch_fields() -> None:
@@ -520,7 +379,12 @@ def test_planner_output_normalizes_or_falls_back_non_contract_dimensions() -> No
     )
 
     task = output.to_plan_tasks()[0]
-    assert task.focus_dimensions == ["enterprise_capabilities"]
+    assert task.focus_dimensions == [
+        "enterprise_capabilities",
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
 
 
 def test_dimension_aliases_share_canonical_namespace() -> None:

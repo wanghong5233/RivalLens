@@ -60,6 +60,31 @@ def test_golden_case_schema_accepts_report_depth() -> None:
     assert case.assertions.warning_rule_ids_includes == ["rule_locale_mismatch"]
 
 
+def test_golden_case_schema_accepts_knowledge_assertions() -> None:
+    case = GoldenCase.model_validate(
+        {
+            "id": "golden_case_schema_knowledge",
+            "description": "schema parse with knowledge assertions",
+            "input": {
+                "user_query": "compare coding tools",
+                "competitors": ["comp_cursor", "comp_windsurf"],
+                "target_roles": ["pm"],
+            },
+            "assertions": {
+                "knowledge_feature_count_gte": 2,
+                "knowledge_pricing_count_gte": 1,
+                "knowledge_persona_count_gte": 1,
+                "knowledge_schema_coverage_rate_gte": 0.5,
+            },
+        }
+    )
+
+    assert case.assertions.knowledge_feature_count_gte == 2
+    assert case.assertions.knowledge_pricing_count_gte == 1
+    assert case.assertions.knowledge_persona_count_gte == 1
+    assert case.assertions.knowledge_schema_coverage_rate_gte == 0.5
+
+
 def test_golden_case_schema_accepts_null_pack() -> None:
     case = GoldenCase.model_validate(
         {
@@ -93,6 +118,10 @@ def test_dump_markdown_report_writes_file(tmp_path: Path) -> None:
         promoted_blocked_rule_ids=[],
         warning_rule_ids=[],
         coverage_rate=1.0,
+        knowledge_feature_count=3,
+        knowledge_pricing_count=1,
+        knowledge_persona_count=1,
+        knowledge_schema_coverage_rate=0.75,
         llm_token_total=42,
         run_wall_clock_seconds=12,
         created_at="2026-05-28T00:00:00+00:00",
@@ -120,6 +149,10 @@ def test_to_dict_rows_returns_serializable_shape() -> None:
                 promoted_blocked_rule_ids=["rule_promoted_demo"],
                 warning_rule_ids=["rule_locale_mismatch"],
                 coverage_rate=0.9,
+                knowledge_feature_count=2,
+                knowledge_pricing_count=1,
+                knowledge_persona_count=1,
+                knowledge_schema_coverage_rate=0.66,
                 llm_token_total=88,
                 run_wall_clock_seconds=24,
                 created_at="2026-05-28T00:00:00+00:00",
@@ -148,3 +181,17 @@ def test_locale_zh_domestic_golden_case_passes_without_locale_warning(
     result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
     assert result.passed is True
 
+
+def test_ai_coding_enterprise_schema_triplet_golden_case_passes(
+    test_client: TestClient,
+) -> None:
+    case_path = (
+        Path(__file__).parent
+        / "golden"
+        / "cases"
+        / "15_ai_coding_enterprise_schema_triplet.yaml"
+    )
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
+    assert result.passed is True

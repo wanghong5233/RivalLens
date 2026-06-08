@@ -1,6 +1,6 @@
 # RivalLens 实现 TODO
 
-最后更新: 2026-06-07
+最后更新: 2026-06-08
 
 对照 `docs/2-architecture-decision.md` / `docs/2.5-agent-architecture.md` / `docs/3-schema-and-protocol.md`，列出尚未实现的功能点。按 P0-P3 排序，完成打勾。新增条目按已有格式：设计引用 + 现状 + 入口 + 验收。
 
@@ -20,6 +20,34 @@
 ---
 
 ## P1（质量 / 联调体验）
+
+### [x] FIT-001 意图分类 → 自适应产出形态（趋势/机会型 query）
+
+- **设计**：docs/0 §1 真实用户问题形态多样；Agent 系统按意图切换产出形态，而非对所有 query 强套「逐竞品对比」三件套 schema
+- **现状**：intake 分类 `analysis_archetype ∈ {comparison, landscape}`（默认 comparison 保持旧行为）；landscape 下 Analyst/Writer prompt 切换为机会地图框架，QA `rule_knowledge_schema_conformance` 不再以空三件套阻断（`require_competitor_schema=False`）；新增 research 产出门——全 run 零证据竞品不占对比单元，避免 discovery 误报（文章轶事）污染对比矩阵
+- **入口**：`backend/app/schemas/intake.py` + `agents/nodes/intake.py` + `service/llm/prompts.py` + `agents/nodes/{analyst,writer}.py` + `service/qa/{engine,rules}.py` + `service/comparison/mapper.py`
+- **验收**：`run_29bb612cf34b`（“AI 时代能赚钱的 OPC 项目”）archetype=landscape、completed、0 重试、QA approved、报告模板 `one_person_company_monetization`（机会地图非对战卡）；2 个零证据 discovery 竞品被产出门挡在对比矩阵外且未泄漏进报告
+
+### [x] ORCH-007 QA 重跑产物去重（latest analyst step 读侧收敛）
+
+- **设计**：reports / run_knowledge 已是 latest-wins（`reports` 按 `created_at desc`、`run_knowledge` 按 `sequence_id desc`）；comparison_cells / conclusions 应同口径
+- **现状**：QA reject→analyst 重跑会新建 step 并累加 comparison_cells / conclusions，而 `load_comparisons_for_run` / `load_conclusions_for_run` 按 run 全量加载，导致 Compare / Conclusions 端点与 writer 表路径吃到两轮合并数据（同竞品重复格、被拒轮结论混入）；writer 的 JSON fallback 路径却只取最新 analyst step，读侧口径自相矛盾。已新增 `service/run_steps.latest_completed_step_id`，两个 loader 收敛到最新 completed analyst step
+- **入口**：`backend/app/service/run_steps.py` + `backend/app/service/comparison/persistence.py` + `backend/app/service/conclusion/persistence.py` + `backend/app/tests/test_comparison_persistence.py`
+- **验收**：`run_3356bf49a0d6`（TRAE 对标，QA 拒绝一次后重跑）单 analyst pass 内 cells/conclusions 不再重复；单 pass run 行为不变；全量 433 passed
+- **备注**：metrics 端用集合并维度 + `_latest_report`，受重复影响有限，本次不动
+
+### [x] SCH-002 三件套结构化知识巩固（evidence-grounded + 诊断路由）
+
+- **设计**：docs/0 §1/§4 三件套（功能树/定价模型/用户画像）是核心能力与评分主轴，不能依赖单次 analyst 叙事顺手填充；应形成「研究证据→结构化抽取→诊断式 QA→可观测回归」闭环
+- **现状**：
+  - 新增 `service/knowledge/extractor.py`，在 analyst 节点后置执行，专职从 `evidence_briefs + competitors + focus_dimensions + analysis_archetype` 抽取 `features/pricings/personas/coverage`
+  - `AnalystOutput` 收敛为 narrative 合同（summary/insights/comparisons/risk_flags/recommended_sections），三件套不再由 analyst LLM 直接产出
+  - comparison 模式研究维度自动补齐底座 `feature/pricing/user_feedback`；landscape 保持不强压三件套
+  - QA `rule_knowledge_schema_conformance` 改为诊断型失败分类并路由：`no_evidence/insufficient_evidence -> researcher`，`extraction_empty/malformed_fields/dishonest_coverage -> analyst`
+  - metrics/golden 增加三件套指标与断言：`knowledge_feature_count` / `knowledge_pricing_count` / `knowledge_persona_count` / `knowledge_schema_coverage_rate`
+  - KnowledgePanel 空态区分 `landscape 不适用` 与 `comparison 证据不足/待补采`，避免评审将空态误判为系统故障
+- **入口**：`backend/app/service/knowledge/extractor.py` + `agents/nodes/analyst.py` + `schemas/contracts.py` + `service/qa/{rules,engine}.py` + `service/metrics/engine.py` + `tests/golden/runner.py` + `frontend/src/components/{knowledge/KnowledgePanel,MetricsPanel}.tsx`
+- **验收**：targeted pytest 与前端 type-check 全通过；新增 golden case `15_ai_coding_enterprise_schema_triplet` 覆盖 AI coding enterprise 对比场景的三件套指标阈值
 
 ### [x] ORCH-002 SSE 进度推送
 

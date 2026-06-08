@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from schemas.contracts import (
+    ensure_comparison_schema_dimensions,
     is_derived_dimension,
     normalize_dimension_or_none,
     research_focus_dimensions,
@@ -64,10 +65,20 @@ def test_research_focus_dimensions_drops_derived_keeps_spelling() -> None:
     assert research_focus_dimensions(focus) == [
         "pricing_strategy",
         "enterprise_capabilities",
+        "feature",
+        "pricing",
+        "user_feedback",
     ]
 
 
 def test_research_focus_dimensions_falls_back_when_all_derived() -> None:
     focus = ["strategic_recommendations", "Investment Recommendation"]
     # A research task must keep at least one target rather than become a no-op.
-    assert research_focus_dimensions(focus) == focus
+    assert research_focus_dimensions(focus) == ["feature", "pricing", "user_feedback"]
+
+
+def test_ensure_comparison_schema_dimensions_skips_landscape_injection() -> None:
+    assert ensure_comparison_schema_dimensions(
+        ["pricing_strategy"],
+        analysis_archetype="landscape",
+    ) == ["pricing_strategy"]

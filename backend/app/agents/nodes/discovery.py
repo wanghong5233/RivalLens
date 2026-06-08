@@ -338,12 +338,22 @@ async def discovery_node(state: AgentState) -> AgentState:
     if discovered and plan is not None:
         intake_draft = state.get("intake_draft")
         focus_dimensions: list[str] | None = None
+        analysis_archetype = "comparison"
         if intake_draft is not None and hasattr(intake_draft, "focus_dimensions"):
             focus_dimensions = list(intake_draft.focus_dimensions)
+        if isinstance(intake_draft, dict):
+            archetype_raw = intake_draft.get("analysis_archetype")
+            if archetype_raw in {"comparison", "landscape"}:
+                analysis_archetype = archetype_raw
+        elif intake_draft is not None and hasattr(intake_draft, "analysis_archetype"):
+            archetype_raw = getattr(intake_draft, "analysis_archetype")
+            if archetype_raw in {"comparison", "landscape"}:
+                analysis_archetype = archetype_raw
         reconciled = reconcile_plan_tree_after_discovery(
             plan_tree=plan,
             discovered_competitors=discovered,
             focus_dimensions=focus_dimensions,
+            analysis_archetype=analysis_archetype,
         )
         reconciled_plan_tree = reconciled.model_dump()
         async with session_factory() as session:

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.comparison import ComparisonCellRecord
 from models.conclusion import ConclusionRecord
 from models.evidence import EvidenceRecord
+from models.knowledge import RunKnowledgeRecord
 from models.llm_call import LLMCall
 from models.report import Report
 from models.run import Run
@@ -43,6 +44,10 @@ class RunMetricsSnapshot:
     report_section_count: int
     report_depth: str
     report_section_coverage_rate: float
+    knowledge_feature_count: int
+    knowledge_pricing_count: int
+    knowledge_persona_count: int
+    knowledge_schema_coverage_rate: float
     source_type_distribution: dict[str, int]
     source_authority_distribution: dict[str, int]
     locale_match_rate: float
@@ -212,6 +217,29 @@ def _latest_report(report_rows: list[Report]) -> Report | None:
     return max(report_rows, key=lambda row: row.created_at)
 
 
+def _latest_knowledge(knowledge_rows: list[RunKnowledgeRecord]) -> RunKnowledgeRecord | None:
+    if not knowledge_rows:
+        return None
+    return max(knowledge_rows, key=lambda row: row.created_at)
+
+
+def _knowledge_schema_coverage_rate(coverage_payload: object) -> float:
+    if not isinstance(coverage_payload, dict):
+        return 0.0
+    covered = 0
+    total = 0
+    for competitor_payload in coverage_payload.values():
+        if not isinstance(competitor_payload, dict):
+            continue
+        for status_raw in competitor_payload.values():
+            if not isinstance(status_raw, str):
+                continue
+            total += 1
+            if status_raw in {"complete", "partial"}:
+                covered += 1
+    return _safe_rate(covered, total)
+
+
 def _section_ids_from_report(report: Report | None) -> set[str]:
     if report is None or not isinstance(report.content_json, dict):
         return set()
@@ -305,6 +333,7 @@ def build_run_metrics_snapshot(
     report_rows: list[Report] | None = None,
     comparison_rows: list[ComparisonCellRecord] | None = None,
     conclusion_rows: list[ConclusionRecord] | None = None,
+    knowledge_rows: list[RunKnowledgeRecord] | None = None,
 ) -> RunMetricsSnapshot:
     run_competitors = [competitor for competitor in run.competitors if isinstance(competitor, str)]
     evidence_count_by_competitor: dict[str, int] = {competitor: 0 for competitor in run_competitors}
@@ -358,6 +387,7 @@ def build_run_metrics_snapshot(
         if count > 0
     }
     latest_report = _latest_report(report_rows or [])
+    latest_knowledge = _latest_knowledge(knowledge_rows or [])
     report_section_ids = _section_ids_from_report(latest_report)
     comparison_dimensions = _dimensions_from_comparisons(comparison_rows or [])
     conclusion_sections = _sections_from_conclusions(conclusion_rows or [])
@@ -402,6 +432,24 @@ def build_run_metrics_snapshot(
 
     desensitized_count = sum(1 for row in evidence_rows if row.desensitized)
     desensitization_coverage = _safe_rate(desensitized_count, len(evidence_rows))
+    knowledge_feature_count = (
+        len(latest_knowledge.features)
+        if latest_knowledge is not None and isinstance(latest_knowledge.features, list)
+        else 0
+    )
+    knowledge_pricing_count = (
+        len(latest_knowledge.pricings)
+        if latest_knowledge is not None and isinstance(latest_knowledge.pricings, list)
+        else 0
+    )
+    knowledge_persona_count = (
+        len(latest_knowledge.personas)
+        if latest_knowledge is not None and isinstance(latest_knowledge.personas, list)
+        else 0
+    )
+    knowledge_schema_coverage_rate = _knowledge_schema_coverage_rate(
+        latest_knowledge.coverage if latest_knowledge is not None else None
+    )
 
     qa_steps = [step for step in step_rows if step.agent_name == "qa"]
     qa_rejected_steps = [
@@ -450,6 +498,10 @@ def build_run_metrics_snapshot(
         report_section_count=_section_count_from_report(latest_report),
         report_depth=_report_depth_from_run(run),
         report_section_coverage_rate=report_section_coverage_rate,
+        knowledge_feature_count=knowledge_feature_count,
+        knowledge_pricing_count=knowledge_pricing_count,
+        knowledge_persona_count=knowledge_persona_count,
+        knowledge_schema_coverage_rate=knowledge_schema_coverage_rate,
         source_type_distribution=source_type_distribution,
         source_authority_distribution=source_authority_distribution,
         locale_match_rate=_safe_rate(locale_matched_count, len(evidence_rows)),
@@ -531,6 +583,13 @@ async def load_run_metrics_snapshot(
             .order_by(ConclusionRecord.created_at.asc(), ConclusionRecord.conclusion_id.asc())
         )
     ).scalars().all()
+    knowledge_rows = (
+        await session.execute(
+            select(RunKnowledgeRecord)
+            .where(RunKnowledgeRecord.run_id == run_id)
+            .order_by(RunKnowledgeRecord.created_at.asc(), RunKnowledgeRecord.sequence_id.asc())
+        )
+    ).scalars().all()
     candidate_rows = (await session.execute(select(SkillCandidateRecord))).scalars().all()
     candidate_rows = [
         row
@@ -548,4 +607,5 @@ async def load_run_metrics_snapshot(
         report_rows=list(report_rows),
         comparison_rows=list(comparison_rows),
         conclusion_rows=list(conclusion_rows),
+        knowledge_rows=list(knowledge_rows),
     )

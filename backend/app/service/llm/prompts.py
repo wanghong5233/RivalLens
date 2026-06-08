@@ -97,7 +97,8 @@ Output JSON schema (return STRICT JSON, no markdown, no commentary):
     "self_product": str | null,
     "market_scope": str | null,
     "time_context": str | null,
-    "response_language": "zh" | "en" | null
+    "response_language": "zh" | "en" | null,
+    "analysis_archetype": "comparison" | "landscape" | null
   },
   "clarify_request": {                       // required iff action="ask", must be null iff action="complete"
     "question": str,
@@ -124,8 +125,25 @@ Rules:
     * "下个月要汇报", "下周给老板方案", "只看近一年的数据" → time_context
     * Explicit output-language requests ("用英文输出", "Please answer in Chinese") → response_language
   Only ask about fields you genuinely cannot infer from the available text.
+- Do NOT guess expansions for highly polysemous acronyms. If the user says "OPC"
+  or another acronym whose meaning changes the market/domain, ask a single
+  disambiguation question before complete. After the user answers, write the
+  resolved meaning into BOTH analysis_intent and domain_hint (e.g. "one person
+  company monetization" vs "open platform communications").
 - response_language defaults to the detected language of user_query. Set it in
   draft_patch ONLY when the user explicitly requests Chinese/English output.
+- ALWAYS classify analysis_archetype into draft_patch (default "comparison"):
+    * "comparison" — the user wants a head-to-head read on a comparable set of
+      products/competitors (named or to-be-discovered) along shared dimensions
+      (features / pricing / personas / positioning). Signals: "对比 X 和 Y",
+      "我们 vs 竞品", "选型", "battlecard", a list of named competitors.
+    * "landscape" — the user wants opportunity / trend / whitespace / market
+      scanning where there is NO fixed comparable product set; the entities found
+      are heterogeneous players or approaches, not apples-to-apples products.
+      Signals: "有哪些能赚钱的 X 项目", "X 赛道的机会", "怎么变现", "trends in X",
+      "where is the opportunity", "市场全景". When in doubt between the two and the
+      user is asking what to BUILD/PURSUE rather than which product to PICK, choose
+      "landscape". This selection changes downstream output form, so do not skip it.
 - Issue ONE question per turn. Never bundle multiple questions into one prompt.
 - Ask the most blocking missing required field first.
 - After ALL THREE required fields are filled, do NOT immediately complete if a HIGH-VALUE
@@ -396,45 +414,6 @@ Output JSON schema:
     }
   ],
   "schema_version": "schema_v0.2",
-  "features": [
-    {
-      "id": str,
-      "competitor_id": str,
-      "name": str,
-      "parent_id": str | null,
-      "description": str | null,
-      "maturity": "unknown" | "basic" | "advanced" | "leading" | null,
-      "evidence_ids": list[str]
-    }
-  ],
-  "pricings": [
-    {
-      "id": str,
-      "competitor_id": str,
-      "model": str,
-      "tiers": list[dict],
-      "free_plan": bool | null,
-      "enterprise_plan": bool | null,
-      "evidence_ids": list[str]
-    }
-  ],
-  "personas": [
-    {
-      "id": str,
-      "name": str,
-      "role": str,
-      "pain_points": list[str],
-      "jobs_to_be_done": list[str],
-      "evidence_ids": list[str]
-    }
-  ],
-  "coverage": {
-    "<competitor_id>": {
-      "feature": "complete" | "partial" | "insufficient_data" | "missing",
-      "pricing": "complete" | "partial" | "insufficient_data" | "missing",
-      "feedback": "complete" | "partial" | "insufficient_data" | "missing"
-    }
-  },
   "risk_flags": list[str],
   "recommended_sections": list[str]
 }
@@ -451,12 +430,8 @@ Rules:
 - For comparisons, create one group per focus dimension when at least two competitors have evidence or can be marked unknown.
 - Each comparison cell must use a competitor_id from the user prompt; stance is qualitative, not numeric.
 - Use evidence_ids to ground each cell when available; if evidence is insufficient, set stance="unknown" and evidence_ids=[].
-- Also synthesize the predefined knowledge schema: features, pricings, personas, and coverage.
-- Feature and pricing items must cite existing evidence_ids. If evidence is missing, omit the item and mark coverage honestly.
-- Build feature hierarchy with parent_id when evidence supports a parent/child relationship; otherwise use null.
-- For pricing, if the pricing model is unclear but pricing evidence exists, set model="unknown".
-- Personas should reflect buyer/user roles, pain points, and jobs-to-be-done only when evidence supports them.
-- For each competitor, mark coverage as complete/partial/insufficient_data/missing. Do not invent data to fill coverage.
+- Keep this step focused on narrative analysis. Structured knowledge
+  (features/pricings/personas/coverage) is extracted downstream from evidence.
 - recommended_sections must use snake_case section ids that match insight dimension values.
 - Do not fabricate competitor facts.
 - Return JSON object only.
@@ -774,6 +749,7 @@ def build_supervisor_user_prompt(
     qa_reject_to: str | None,
     qa_reasons: Sequence[str],
     market_scope: str | None = None,
+    domain_context: str | None = None,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
 ) -> str:
@@ -785,8 +761,9 @@ def build_supervisor_user_prompt(
         constraints = (
             "Hard constraints:\n"
             "1) competitors list is EMPTY — you MUST call DiscoverCompetitors first.\n"
-            "2) Construct 2-4 search queries covering the domain/track from different angles.\n"
+            "2) Construct 2-4 search queries covering resolved_domain_context from different angles.\n"
             "   If market_scope is set, include it in discovery search queries and prefer that region/segment.\n"
+            "   If user_query contains an ambiguous acronym, use resolved_domain_context instead of the raw acronym.\n"
             "3) Do NOT call ConductResearch or ConductResearchBatch until competitors are discovered.\n"
             "4) Return exactly one tool decision in this iteration.\n"
         )
@@ -806,6 +783,7 @@ def build_supervisor_user_prompt(
         "Planning context:\n"
         f"- iteration: {iteration}\n"
         f"- user_query: {user_query}\n"
+        f"- resolved_domain_context: {domain_context}\n"
         f"- market_scope: {market_scope}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- researched_competitors: {_json(list(researched_competitors))}\n"
@@ -830,6 +808,7 @@ def build_supervisor_fallback_user_prompt(
     analysis_done: bool,
     report_draft_done: bool,
     market_scope: str | None = None,
+    domain_context: str | None = None,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
 ) -> str:
@@ -850,6 +829,7 @@ def build_supervisor_fallback_user_prompt(
     return (
         "Fallback planning context:\n"
         f"- user_query: {user_query}\n"
+        f"- resolved_domain_context: {domain_context}\n"
         f"- market_scope: {market_scope}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- pending_competitors: {_json(pending_competitors)}\n"
@@ -859,7 +839,7 @@ def build_supervisor_fallback_user_prompt(
         f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         "Pick exactly one next tool and keep tool_args minimal but valid.\n"
-        "If competitors is empty, you MUST use DiscoverCompetitors and include market_scope in search_queries when present.\n"
+        "If competitors is empty, you MUST use DiscoverCompetitors and search resolved_domain_context, not ambiguous raw acronyms.\n"
         "When pending_competitors has 2+ entries, prefer ConductResearchBatch "
         "with one unique competitor per topic; if any user-pinned research "
         "targets are still unresearched, include them first."
@@ -999,6 +979,19 @@ def build_compression_fallback_user_prompt(
     )
 
 
+_ANALYST_SCHEMA_TASK_COMPARISON = (
+    " Focus on cross-competitor narrative analysis in this step; structured schema extraction runs "
+    "in a dedicated evidence-grounded stage."
+)
+_ANALYST_SCHEMA_TASK_LANDSCAPE = (
+    " This is a LANDSCAPE/opportunity scan: the entities are heterogeneous players or approaches, "
+    "NOT an apples-to-apples product set. Do NOT force per-competitor schema rows; put the value in "
+    "insights and comparisons "
+    "framed as opportunity dimensions (monetization paths, feasibility, segments/whitespace, "
+    "differentiation, risks)."
+)
+
+
 def build_analyst_user_prompt(
     *,
     user_query: str,
@@ -1009,15 +1002,22 @@ def build_analyst_user_prompt(
     analysis_intent: str | None = None,
     market_scope: str | None = None,
     response_language: str | None = None,
+    analysis_archetype: str = "comparison",
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(
         evidence_briefs,
         limit=ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT,
     )
+    schema_task = (
+        _ANALYST_SCHEMA_TASK_LANDSCAPE
+        if analysis_archetype == "landscape"
+        else _ANALYST_SCHEMA_TASK_COMPARISON
+    )
     return (
         "Analysis context:\n"
         f"- user_query: {user_query}\n"
         f"- analysis_intent: {analysis_intent}\n"
+        f"- analysis_archetype: {analysis_archetype}\n"
         f"- market_scope: {market_scope}\n"
         f"- response_language: {response_language}\n"
         f"- competitors: {_json(list(competitors))}\n"
@@ -1027,8 +1027,7 @@ def build_analyst_user_prompt(
         "Produce cross-competitor insights with explicit evidence_ids. "
         "For each focus dimension that has grounded evidence in evidence_briefs, produce at least one insight. "
         "Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids."
-        " Also produce structured features, pricings, personas, and coverage from the same evidence. "
-        "If evidence is insufficient for a competitor, say so in coverage instead of inventing fields."
+        + schema_task
     )
 
 
@@ -1043,8 +1042,7 @@ def build_analyst_fallback_user_prompt(
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
-        "Return minimal valid JSON with at least one insight, empty features/pricings/personas, "
-        "and coverage marked insufficient_data for each competitor."
+        "Return minimal valid JSON with at least one grounded insight and comparisons when possible."
     )
 
 
@@ -1062,8 +1060,7 @@ def build_analyst_repair_user_prompt(
         "Rules:\n"
         "- recommended_sections must be snake_case ids matching insight dimension values.\n"
         "- Every insight must cite only evidence_ids listed above.\n"
-        "- Feature and pricing evidence_ids must cite only evidence_ids listed above.\n"
-        "- If structured knowledge is uncertain, return empty features/pricings/personas and coverage=insufficient_data.\n"
+        "- Keep valid insights/comparisons unchanged; repair only fields named in validation_errors.\n"
         "- Return JSON object only."
     )
 
@@ -1126,12 +1123,22 @@ def build_writer_user_prompt(
     analysis_intent: str | None = None,
     market_scope: str | None = None,
     response_language: str | None = None,
+    analysis_archetype: str = "comparison",
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
+    framing = (
+        "Write an OPPORTUNITY/LANDSCAPE report (not a head-to-head battlecard): map the "
+        "monetization paths, feasibility, market segments/whitespace, differentiation levers, and "
+        "risks for the user's goal, using the discovered players as illustrative evidence rather "
+        "than apples-to-apples comparison rows. "
+        if analysis_archetype == "landscape"
+        else "Write a battlecard with grounded evidence refs. "
+    )
     return (
         "Writer context:\n"
         f"- user_query: {user_query}\n"
         f"- analysis_intent: {analysis_intent}\n"
+        f"- analysis_archetype: {analysis_archetype}\n"
         f"- market_scope: {market_scope}\n"
         f"- response_language: {response_language}\n"
         f"- report_depth: {report_depth}\n"
@@ -1148,8 +1155,8 @@ def build_writer_user_prompt(
         f"- risk_flags: {_json(list(risk_flags))}\n\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
         f"- unsupported_numeric_claims: {_json(list(unsupported_numeric_claims)[:12])}\n\n"
-        "Write a battlecard with grounded evidence refs. "
-        "section_id must exactly match target_sections entries. "
+        + framing
+        + "section_id must exactly match target_sections entries. "
         "Inline citations in content_markdown must use [ev_xxx] only from allowed_evidence_ids; "
         "never output bare ev_xxx or insight_x ids in markdown. "
         "If unsupported_numeric_claims is non-empty, do not repeat those exact numbers unless the "

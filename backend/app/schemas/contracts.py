@@ -28,6 +28,12 @@ _DIMENSION_ALIASES: Final[dict[str, str]] = {
     "strategic_recommendation": "strategic_recommendations",
 }
 
+COMPARISON_SCHEMA_BASE_DIMENSIONS: Final[tuple[str, str, str]] = (
+    "feature",
+    "pricing",
+    "user_feedback",
+)
+
 
 def _validate_contract_token(*, value: str, field_name: str) -> str:
     normalized = value.strip().lower()
@@ -69,6 +75,15 @@ def validate_dimension(value: str) -> str:
     return _DIMENSION_ALIASES.get(normalized, normalized)
 
 
+def normalize_dimensions(values: list[str], *, allow_empty: bool = True) -> list[str]:
+    return validate_token_list(
+        values=values,
+        field_name="focus_dimensions",
+        item_validator=validate_dimension,
+        allow_empty=allow_empty,
+    )
+
+
 # Dimensions the analyst synthesizes from other dimensions' evidence rather than
 # the researcher gathering them as standalone facts. A research task that chases
 # these wastes its turn budget and produces zero on-dimension evidence (R9).
@@ -82,15 +97,41 @@ def is_derived_dimension(value: str) -> bool:
         return False
 
 
-def research_focus_dimensions(focus_dimensions: list[str]) -> list[str]:
+def ensure_comparison_schema_dimensions(
+    focus_dimensions: list[str],
+    *,
+    analysis_archetype: str = "comparison",
+) -> list[str]:
+    normalized = normalize_dimensions(list(focus_dimensions), allow_empty=True)
+    if analysis_archetype != "comparison":
+        return normalized
+    existing = set(normalized)
+    expanded = list(normalized)
+    for dimension in COMPARISON_SCHEMA_BASE_DIMENSIONS:
+        if dimension in existing:
+            continue
+        expanded.append(dimension)
+        existing.add(dimension)
+    return expanded
+
+
+def research_focus_dimensions(
+    focus_dimensions: list[str],
+    *,
+    analysis_archetype: str = "comparison",
+) -> list[str]:
     """Subset of focus dimensions a research task should collect evidence for.
 
     Drops derived dimensions (analyst-synthesized), preserving original spelling.
     Falls back to the full list if every dimension is derived — a research task
     must keep at least one target rather than become a no-op.
     """
-    research = [dim for dim in focus_dimensions if not is_derived_dimension(dim)]
-    return research or list(focus_dimensions)
+    expanded = ensure_comparison_schema_dimensions(
+        focus_dimensions=list(focus_dimensions),
+        analysis_archetype=analysis_archetype,
+    )
+    research = [dim for dim in expanded if not is_derived_dimension(dim)]
+    return research or expanded
 
 
 def normalize_dimension_or_none(

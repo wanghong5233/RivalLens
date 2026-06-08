@@ -490,11 +490,25 @@ def rule_knowledge_schema_conformance(
     *,
     knowledge: dict[str, object],
     expected_competitors: list[str] | None = None,
+    evidence_item_count: int = 0,
+    min_evidence_for_schema_floor: int = 12,
+    qa_rejection_count: int = 0,
+    require_competitor_schema: bool = True,
 ) -> RuleResult:
-    failures: list[str] = []
+    # `require_competitor_schema` is the archetype gate: landscape runs should not
+    # be forced into a per-competitor schema floor. For comparison runs we classify
+    # failures into researcher-side evidence gaps vs analyst-side extraction issues.
+    malformed_failures: list[str] = []
+    coverage_failures: list[str] = []
+    schema_floor_failure_type: str | None = None
+    schema_floor_failures: list[str] = []
+
+    def _typed_message(*, failure_type: str, failures: list[str]) -> str:
+        return f"[{failure_type}] " + "; ".join(sorted(set(failures)))
+
     schema_version = knowledge.get("schema_version")
     if not isinstance(schema_version, str) or not schema_version.strip():
-        failures.append("schema_version missing")
+        malformed_failures.append("schema_version missing")
 
     features_by_competitor = _knowledge_items_by_competitor(knowledge.get("features"))
     pricings_by_competitor = _knowledge_items_by_competitor(knowledge.get("pricings"))
@@ -503,24 +517,50 @@ def rule_knowledge_schema_conformance(
         knowledge=knowledge,
         expected_competitors=expected_competitors,
     )
+    personas = knowledge.get("personas")
+    persona_count = len(personas) if isinstance(personas, list) else 0
+    has_schema_items = (
+        any(features_by_competitor.values())
+        or any(pricings_by_competitor.values())
+        or persona_count > 0
+    )
+    if (
+        require_competitor_schema
+        and competitors
+        and not has_schema_items
+    ):
+        if evidence_item_count <= 0:
+            schema_floor_failure_type = "no_evidence"
+            schema_floor_failures.append(
+                "knowledge schema empty because researcher collected no evidence"
+            )
+        elif evidence_item_count < min_evidence_for_schema_floor:
+            schema_floor_failure_type = "insufficient_evidence"
+            schema_floor_failures.append(
+                "knowledge schema empty with thin evidence; re-research required"
+            )
+        else:
+            schema_floor_failure_type = "extraction_empty"
+            schema_floor_failures.append(
+                "knowledge schema empty despite sufficient evidence; extraction failed"
+            )
 
     for item in [item for items in features_by_competitor.values() for item in items]:
         if not _required_string(item, "id") or not _required_string(item, "name"):
-            failures.append("feature missing id/name")
+            malformed_failures.append("feature missing id/name")
         if not _has_non_empty_evidence_ids(item):
-            failures.append("feature missing evidence_ids")
+            malformed_failures.append("feature missing evidence_ids")
 
     for item in [item for items in pricings_by_competitor.values() for item in items]:
         if not _required_string(item, "id") or not _required_string(item, "model"):
-            failures.append("pricing missing id/model")
+            malformed_failures.append("pricing missing id/model")
         if not _has_non_empty_evidence_ids(item):
-            failures.append("pricing missing evidence_ids")
+            malformed_failures.append("pricing missing evidence_ids")
 
-    personas = knowledge.get("personas")
     if isinstance(personas, list):
         for item in personas:
             if not isinstance(item, dict):
-                failures.append("persona must be object")
+                malformed_failures.append("persona must be object")
                 continue
             pain_points = item.get("pain_points")
             jobs_to_be_done = item.get("jobs_to_be_done")
@@ -532,46 +572,107 @@ def rule_knowledge_schema_conformance(
                 and any(isinstance(value, str) and value.strip() for value in jobs_to_be_done)
             )
             if not _required_string(item, "role") or not has_context:
-                failures.append("persona missing role or buyer context")
+                malformed_failures.append("persona missing role or buyer context")
 
-    for competitor_id in competitors:
-        feature_count = len(features_by_competitor.get(competitor_id, []))
-        feature_status = _coverage_status(
-            coverage=coverage,
-            competitor_id=competitor_id,
-            field_name="feature",
-        )
-        if feature_count < 3 and feature_status not in _HONEST_INCOMPLETE_COVERAGE:
-            failures.append(
-                f"{competitor_id} feature coverage incomplete without honest coverage status"
+    if require_competitor_schema and has_schema_items:
+        for competitor_id in competitors:
+            feature_count = len(features_by_competitor.get(competitor_id, []))
+            feature_status = _coverage_status(
+                coverage=coverage,
+                competitor_id=competitor_id,
+                field_name="feature",
             )
+            if feature_count < 3 and feature_status not in _HONEST_INCOMPLETE_COVERAGE:
+                coverage_failures.append(
+                    f"{competitor_id} feature coverage incomplete without honest coverage status"
+                )
 
-        pricings = pricings_by_competitor.get(competitor_id, [])
-        pricing_status = _coverage_status(
-            coverage=coverage,
-            competitor_id=competitor_id,
-            field_name="pricing",
-        )
-        has_unknown_pricing = any(item.get("model") == "unknown" for item in pricings)
-        if not pricings and pricing_status not in _HONEST_INCOMPLETE_COVERAGE:
-            failures.append(
-                f"{competitor_id} pricing missing without honest coverage status"
+            pricings = pricings_by_competitor.get(competitor_id, [])
+            pricing_status = _coverage_status(
+                coverage=coverage,
+                competitor_id=competitor_id,
+                field_name="pricing",
             )
-        if pricings and not has_unknown_pricing:
-            # Presence of a concrete pricing item is enough; field/evidence checks above
-            # cover malformed rows.
-            pass
+            if not pricings and pricing_status not in _HONEST_INCOMPLETE_COVERAGE:
+                coverage_failures.append(
+                    f"{competitor_id} pricing missing without honest coverage status"
+                )
+
+    if malformed_failures:
+        message = "Knowledge schema is malformed: " + _typed_message(
+            failure_type="malformed_fields",
+            failures=malformed_failures,
+        )
+        if coverage_failures:
+            message += "; " + _typed_message(
+                failure_type="dishonest_coverage",
+                failures=coverage_failures,
+            )
+        return RuleResult(
+            rule_id="rule_knowledge_schema_conformance",
+            passed=False,
+            severity="blocking",
+            reject_to="analyst",
+            message=message,
+        )
+    if coverage_failures:
+        return RuleResult(
+            rule_id="rule_knowledge_schema_conformance",
+            passed=False,
+            severity="blocking",
+            reject_to="analyst",
+            message="Knowledge schema has dishonest coverage: "
+            + _typed_message(
+                failure_type="dishonest_coverage",
+                failures=coverage_failures,
+            ),
+        )
+
+    if schema_floor_failure_type in {"no_evidence", "insufficient_evidence"}:
+        return RuleResult(
+            rule_id="rule_knowledge_schema_conformance",
+            passed=False,
+            severity="blocking",
+            reject_to="researcher",
+            message="Knowledge schema lacks evidence: "
+            + _typed_message(
+                failure_type=schema_floor_failure_type,
+                failures=schema_floor_failures,
+            ),
+        )
+
+    if schema_floor_failure_type == "extraction_empty" and qa_rejection_count == 0:
+        return RuleResult(
+            rule_id="rule_knowledge_schema_conformance",
+            passed=False,
+            severity="blocking",
+            reject_to="analyst",
+            message="Knowledge schema extraction failed: "
+            + _typed_message(
+                failure_type="extraction_empty",
+                failures=schema_floor_failures,
+            ),
+        )
+
+    if schema_floor_failure_type == "extraction_empty":
+        return RuleResult(
+            rule_id="rule_knowledge_schema_conformance",
+            passed=False,
+            severity="warning",
+            reject_to="analyst",
+            message="Knowledge schema still empty after analyst retry; accepted with warning: "
+            + _typed_message(
+                failure_type="extraction_empty_retry",
+                failures=schema_floor_failures,
+            ),
+        )
 
     return RuleResult(
         rule_id="rule_knowledge_schema_conformance",
-        passed=not failures,
+        passed=True,
         severity="blocking",
         reject_to="analyst",
-        message=(
-            "Knowledge schema conforms to feature/pricing/persona minimums."
-            if not failures
-            else "Knowledge schema is incomplete or malformed: " + "; ".join(sorted(set(failures)))
-        ),
+        message="Knowledge schema conforms to feature/pricing/persona minimums.",
     )
 
 

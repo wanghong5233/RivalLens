@@ -270,6 +270,10 @@ export interface RunMetricsResponse {
   report_section_count: number;
   report_depth: "quick" | "deep";
   report_section_coverage_rate: number;
+  knowledge_feature_count: number;
+  knowledge_pricing_count: number;
+  knowledge_persona_count: number;
+  knowledge_schema_coverage_rate: number;
   source_type_distribution: Record<string, number>;
   source_authority_distribution: Record<string, number>;
   locale_match_rate: number;
@@ -347,6 +351,7 @@ export interface KnowledgePersona {
 
 export interface RunKnowledgeResponse {
   run_id: string;
+  analysis_archetype: "comparison" | "landscape" | string;
   schema_version: string;
   features: KnowledgeFeature[];
   pricings: KnowledgePricing[];

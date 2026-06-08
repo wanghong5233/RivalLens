@@ -80,6 +80,30 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
         hint: "研究任务目标维度中有同维度 evidence 的比例",
       },
       {
+        key: "knowledge_schema_coverage",
+        label: "三件套覆盖率",
+        value: formatPercent(metrics.knowledge_schema_coverage_rate),
+        hint: "run_knowledge coverage 中 complete/partial 的占比",
+      },
+      {
+        key: "knowledge_feature_count",
+        label: "Feature 条目",
+        value: formatInteger(metrics.knowledge_feature_count),
+        hint: "最新 run_knowledge.features 条目数",
+      },
+      {
+        key: "knowledge_pricing_count",
+        label: "Pricing 条目",
+        value: formatInteger(metrics.knowledge_pricing_count),
+        hint: "最新 run_knowledge.pricings 条目数",
+      },
+      {
+        key: "knowledge_persona_count",
+        label: "Persona 条目",
+        value: formatInteger(metrics.knowledge_persona_count),
+        hint: "最新 run_knowledge.personas 条目数",
+      },
+      {
         key: "qa_rejection",
         label: "QA 打回率",
         value: formatPercent(metrics.qa_rejection_rate),

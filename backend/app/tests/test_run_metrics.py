@@ -12,6 +12,7 @@ from models.comparison import ComparisonCellRecord
 from models.conclusion import ConclusionRecord
 from core.config import settings
 from models.evidence import EvidenceRecord
+from models.knowledge import RunKnowledgeRecord
 from models.report import Report
 from models.run import Run
 from models.step import Step
@@ -38,6 +39,10 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
         report_section_count=2,
         report_depth="deep",
         report_section_coverage_rate=0.5,
+        knowledge_feature_count=3,
+        knowledge_pricing_count=1,
+        knowledge_persona_count=1,
+        knowledge_schema_coverage_rate=0.75,
         source_type_distribution={"web": 3},
         source_authority_distribution={"official": 2, "third_party": 1},
         locale_match_rate=1.0,
@@ -442,6 +447,81 @@ def test_build_run_metrics_snapshot_counts_top_level_executive_summary_coverage(
     assert "executive_summary" in snapshot.report_section_ids
 
 
+def test_build_run_metrics_snapshot_reports_knowledge_triplet_metrics() -> None:
+    run = Run(
+        run_id="run_knowledge_metrics",
+        user_query="knowledge metrics",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_cursor", "comp_windsurf"],
+    )
+    knowledge = RunKnowledgeRecord(
+        knowledge_id="knowledge_metrics_1",
+        run_id=run.run_id,
+        step_id="step_analyst",
+        schema_version="schema_v0.2",
+        features=[
+            {
+                "id": "feat_1",
+                "competitor_id": "comp_cursor",
+                "name": "Repo context",
+                "evidence_ids": ["ev_1"],
+            },
+            {
+                "id": "feat_2",
+                "competitor_id": "comp_windsurf",
+                "name": "Collaboration",
+                "evidence_ids": ["ev_2"],
+            },
+        ],
+        pricings=[
+            {
+                "id": "price_1",
+                "competitor_id": "comp_cursor",
+                "model": "subscription",
+                "evidence_ids": ["ev_3"],
+            }
+        ],
+        personas=[
+            {
+                "id": "persona_1",
+                "name": "Engineering manager",
+                "role": "engineering_manager",
+                "pain_points": ["review load"],
+                "jobs_to_be_done": ["delivery acceleration"],
+                "evidence_ids": ["ev_4"],
+            }
+        ],
+        coverage={
+            "comp_cursor": {
+                "feature": "complete",
+                "pricing": "complete",
+                "feedback": "partial",
+            },
+            "comp_windsurf": {
+                "feature": "partial",
+                "pricing": "insufficient_data",
+                "feedback": "missing",
+            },
+        },
+    )
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=[],
+        step_rows=[],
+        llm_rows=[],
+        decision_rows=[],
+        candidate_rows=[],
+        knowledge_rows=[knowledge],
+    )
+
+    assert snapshot.knowledge_feature_count == 2
+    assert snapshot.knowledge_pricing_count == 1
+    assert snapshot.knowledge_persona_count == 1
+    assert snapshot.knowledge_schema_coverage_rate == 4 / 6
+
+
 def test_build_run_metrics_snapshot_uses_supervisor_dimensions_without_plan_tree() -> None:
     run = Run(
         run_id="run_decision_dimension_metrics",
@@ -530,6 +610,10 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert payload["report_section_count"] >= 0
     assert payload["report_depth"] in {"quick", "deep"}
     assert 0.0 <= payload["report_section_coverage_rate"] <= 1.0
+    assert payload["knowledge_feature_count"] >= 0
+    assert payload["knowledge_pricing_count"] >= 0
+    assert payload["knowledge_persona_count"] >= 0
+    assert 0.0 <= payload["knowledge_schema_coverage_rate"] <= 1.0
     assert isinstance(payload["source_type_distribution"], dict)
     assert payload["source_type_distribution"]
     assert isinstance(payload["source_authority_distribution"], dict)
@@ -591,6 +675,10 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         assert payload["report_section_count"] == 0
         assert payload["report_depth"] == "quick"
         assert payload["report_section_coverage_rate"] == 0.0
+        assert payload["knowledge_feature_count"] == 0
+        assert payload["knowledge_pricing_count"] == 0
+        assert payload["knowledge_persona_count"] == 0
+        assert payload["knowledge_schema_coverage_rate"] == 0.0
         assert payload["source_type_distribution"] == {}
         assert payload["source_authority_distribution"] == {}
         assert payload["locale_match_rate"] == 0.0

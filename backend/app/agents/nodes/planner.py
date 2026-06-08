@@ -25,7 +25,11 @@ from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
 from schemas.agent_outputs import PlannerOutput
-from schemas.contracts import research_focus_dimensions
+from schemas.contracts import (
+    ensure_comparison_schema_dimensions,
+    normalize_dimensions,
+    research_focus_dimensions,
+)
 from schemas.ids import make_id
 from schemas.intake import RunIntakeDraft
 from schemas.plan import PlanConfirmRequest, PlanTask, PlanTaskStage, PlanTree
@@ -58,14 +62,34 @@ def _coerce_pending_plan(state: AgentState) -> PlanTree:
     return coerce_pending_plan_tree(state)
 
 
+def _canonical_focus_dimensions(
+    values: list[str],
+    *,
+    analysis_archetype: str = "comparison",
+) -> list[str]:
+    normalized = normalize_dimensions(values, allow_empty=True)
+    if not normalized:
+        normalized = list(DEFAULT_FOCUS_DIMENSIONS)
+    return ensure_comparison_schema_dimensions(
+        normalized,
+        analysis_archetype=analysis_archetype,
+    )
+
+
 def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
     """Deterministic plan when the LLM output is unusable.
 
     Mirrors the supervisor's reachable execution path so the visible plan
     never lies about what the executor would do.
     """
-    focus = list(draft.focus_dimensions) or list(DEFAULT_FOCUS_DIMENSIONS)
-    research_focus = research_focus_dimensions(focus)
+    focus = _canonical_focus_dimensions(
+        list(draft.focus_dimensions),
+        analysis_archetype=draft.analysis_archetype,
+    )
+    research_focus = research_focus_dimensions(
+        focus,
+        analysis_archetype=draft.analysis_archetype,
+    )
     tasks: list[PlanTask] = []
     competitors = list(draft.competitors_explicit)
     if draft.competitors_discovery_mode or not competitors:
@@ -128,6 +152,7 @@ def reconcile_plan_tree_after_discovery(
     plan_tree: PlanTree | dict[str, object],
     discovered_competitors: list[str],
     focus_dimensions: list[str] | None = None,
+    analysis_archetype: str = "comparison",
 ) -> PlanTree:
     """Materialize per-competitor research tasks after discovery completes."""
     plan = coerce_plan_tree(plan_tree)
@@ -142,14 +167,18 @@ def reconcile_plan_tree_after_discovery(
         if task.stage == "research" and isinstance(task.competitor_id, str) and task.competitor_id.strip()
     }
 
-    focus = list(focus_dimensions or [])
+    focus = normalize_dimensions(list(focus_dimensions or []), allow_empty=True)
     if not focus:
         for task in plan.tasks:
             if task.focus_dimensions:
-                focus = list(task.focus_dimensions)
+                focus = normalize_dimensions(list(task.focus_dimensions), allow_empty=True)
                 break
     if not focus:
         focus = list(DEFAULT_FOCUS_DIMENSIONS)
+    focus = ensure_comparison_schema_dimensions(
+        focus,
+        analysis_archetype=analysis_archetype,
+    )
 
     insert_at = 0
     for index, task in enumerate(plan.tasks):
@@ -159,7 +188,10 @@ def reconcile_plan_tree_after_discovery(
         if task.stage == "research":
             insert_at = index + 1
 
-    research_focus = research_focus_dimensions(focus)
+    research_focus = research_focus_dimensions(
+        focus,
+        analysis_archetype=analysis_archetype,
+    )
     new_research_tasks: list[PlanTask] = []
     for competitor in discovered_competitors[:MAX_RESEARCH_COMPETITORS]:
         if competitor in existing_research:

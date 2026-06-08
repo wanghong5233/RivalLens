@@ -25,6 +25,10 @@ class GoldenCaseAssertions(BaseModel):
     warning_rule_ids_excludes: list[str] = Field(default_factory=list)
     must_include_promoted_rule_id: str | None = None
     must_include_collector_action: str | None = None
+    knowledge_feature_count_gte: int | None = None
+    knowledge_pricing_count_gte: int | None = None
+    knowledge_persona_count_gte: int | None = None
+    knowledge_schema_coverage_rate_gte: float | None = None
 
 
 class PromotedQARuleFixture(BaseModel):
@@ -66,6 +70,10 @@ class GoldenCaseResult:
     promoted_blocked_rule_ids: list[str]
     warning_rule_ids: list[str]
     coverage_rate: float | None
+    knowledge_feature_count: int | None
+    knowledge_pricing_count: int | None
+    knowledge_persona_count: int | None
+    knowledge_schema_coverage_rate: float | None
     llm_token_total: int | None
     run_wall_clock_seconds: int | None
     created_at: str
@@ -256,6 +264,10 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
             promoted_blocked_rule_ids=[],
             warning_rule_ids=[],
             coverage_rate=None,
+            knowledge_feature_count=None,
+            knowledge_pricing_count=None,
+            knowledge_persona_count=None,
+            knowledge_schema_coverage_rate=None,
             llm_token_total=None,
             run_wall_clock_seconds=None,
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -302,9 +314,33 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
     coverage_rate_raw = run_metrics.get("coverage_rate")
     llm_token_total_raw = run_metrics.get("llm_token_total")
     wall_clock_raw = run_metrics.get("run_wall_clock_seconds")
+    knowledge_feature_count_raw = run_metrics.get("knowledge_feature_count")
+    knowledge_pricing_count_raw = run_metrics.get("knowledge_pricing_count")
+    knowledge_persona_count_raw = run_metrics.get("knowledge_persona_count")
+    knowledge_schema_coverage_rate_raw = run_metrics.get("knowledge_schema_coverage_rate")
     coverage_rate = (
         float(coverage_rate_raw)
         if isinstance(coverage_rate_raw, (int, float))
+        else None
+    )
+    knowledge_feature_count = (
+        int(knowledge_feature_count_raw)
+        if isinstance(knowledge_feature_count_raw, (int, float))
+        else None
+    )
+    knowledge_pricing_count = (
+        int(knowledge_pricing_count_raw)
+        if isinstance(knowledge_pricing_count_raw, (int, float))
+        else None
+    )
+    knowledge_persona_count = (
+        int(knowledge_persona_count_raw)
+        if isinstance(knowledge_persona_count_raw, (int, float))
+        else None
+    )
+    knowledge_schema_coverage_rate = (
+        float(knowledge_schema_coverage_rate_raw)
+        if isinstance(knowledge_schema_coverage_rate_raw, (int, float))
         else None
     )
     llm_token_total = (
@@ -373,6 +409,38 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         )
         if failed is not None:
             failures.append(failed)
+    if case.assertions.knowledge_feature_count_gte is not None:
+        failed = assert_gte(
+            actual=knowledge_feature_count or 0,
+            expected=case.assertions.knowledge_feature_count_gte,
+            field="knowledge_feature_count",
+        )
+        if failed is not None:
+            failures.append(failed)
+    if case.assertions.knowledge_pricing_count_gte is not None:
+        failed = assert_gte(
+            actual=knowledge_pricing_count or 0,
+            expected=case.assertions.knowledge_pricing_count_gte,
+            field="knowledge_pricing_count",
+        )
+        if failed is not None:
+            failures.append(failed)
+    if case.assertions.knowledge_persona_count_gte is not None:
+        failed = assert_gte(
+            actual=knowledge_persona_count or 0,
+            expected=case.assertions.knowledge_persona_count_gte,
+            field="knowledge_persona_count",
+        )
+        if failed is not None:
+            failures.append(failed)
+    if case.assertions.knowledge_schema_coverage_rate_gte is not None:
+        failed = assert_gte(
+            actual=knowledge_schema_coverage_rate or 0.0,
+            expected=case.assertions.knowledge_schema_coverage_rate_gte,
+            field="knowledge_schema_coverage_rate",
+        )
+        if failed is not None:
+            failures.append(failed)
 
     return GoldenCaseResult(
         case_id=case.id,
@@ -385,6 +453,10 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         promoted_blocked_rule_ids=promoted_blocked_rule_ids,
         warning_rule_ids=warning_rule_ids,
         coverage_rate=coverage_rate,
+        knowledge_feature_count=knowledge_feature_count,
+        knowledge_pricing_count=knowledge_pricing_count,
+        knowledge_persona_count=knowledge_persona_count,
+        knowledge_schema_coverage_rate=knowledge_schema_coverage_rate,
         llm_token_total=llm_token_total,
         run_wall_clock_seconds=run_wall_clock_seconds,
         created_at=datetime.now(timezone.utc).isoformat(),
@@ -419,6 +491,10 @@ def dump_markdown_report(*, results: list[GoldenCaseResult], report_path: Path) 
         lines.append(f"- promoted_blocked_rule_ids: {item.promoted_blocked_rule_ids}")
         lines.append(f"- warning_rule_ids: {item.warning_rule_ids}")
         lines.append(f"- coverage_rate: {item.coverage_rate}")
+        lines.append(f"- knowledge_feature_count: {item.knowledge_feature_count}")
+        lines.append(f"- knowledge_pricing_count: {item.knowledge_pricing_count}")
+        lines.append(f"- knowledge_persona_count: {item.knowledge_persona_count}")
+        lines.append(f"- knowledge_schema_coverage_rate: {item.knowledge_schema_coverage_rate}")
         lines.append(f"- llm_token_total: {item.llm_token_total}")
         lines.append(f"- run_wall_clock_seconds: {item.run_wall_clock_seconds}")
         lines.append(f"- collector_actions: {item.collector_actions}")

@@ -32,6 +32,17 @@ def test_reconcile_plan_tree_inserts_research_tasks_after_discover() -> None:
     assert reconciled.version == 2
 
 
+def test_plan_task_normalizes_focus_dimensions_contract_ids() -> None:
+    task = PlanTask(
+        stage="analyze",
+        title="分析",
+        description="analyze",
+        focus_dimensions=["产品定位", "Pricing Strategy", "china_vs_global"],
+    )
+
+    assert task.focus_dimensions == ["pricing_strategy", "market_differences"]
+
+
 def test_reconcile_plan_tree_skips_duplicate_competitors() -> None:
     plan = PlanTree(
         tasks=[
