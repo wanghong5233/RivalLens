@@ -30,8 +30,8 @@ const MATURITY_LABELS: Record<NonNullable<KnowledgeFeature["maturity"]>, string>
 const COVERAGE_LABELS: Record<string, string> = {
   complete: "完整",
   partial: "部分",
-  insufficient_data: "证据不足",
-  missing: "缺失",
+  insufficient_data: "数据不足/未公开",
+  missing: "未采到",
 };
 
 function unique(values: string[]): string[] {
@@ -146,6 +146,24 @@ function CoverageStrip({ knowledge }: { knowledge: RunKnowledgeResponse | null }
   );
 }
 
+function SchemaStat({
+  hint,
+  label,
+  value,
+}: {
+  hint: string;
+  label: string;
+  value: number;
+}): JSX.Element {
+  return (
+    <div className="rounded-lg border border-white/[0.06] bg-surface/70 p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-foreground">{value.toLocaleString()}</p>
+      <p className="mt-1 text-xs text-foreground-subtle">{hint}</p>
+    </div>
+  );
+}
+
 function FeatureTree({
   competitorId,
   features,
@@ -169,7 +187,7 @@ function FeatureTree({
     <section className="rounded-lg border border-border bg-background/50 p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
-        <Badge variant="secondary">{features.length} features</Badge>
+        <Badge variant="secondary">{features.length} 项功能</Badge>
       </div>
       <div className="space-y-2">
         {roots.map((feature) => (
@@ -330,8 +348,11 @@ export function KnowledgePanel({
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
   const analysisArchetype = knowledge?.analysis_archetype ?? "comparison";
   const hasCoverageDeficits = useMemo(() => hasCoverageDeficit(knowledge), [knowledge]);
+  const featureCount = knowledge?.features.length ?? 0;
+  const pricingCount = knowledge?.pricings.length ?? 0;
+  const personaCount = knowledge?.personas.length ?? 0;
   const hasKnowledge =
-    (knowledge?.features.length ?? 0) + (knowledge?.pricings.length ?? 0) + (knowledge?.personas.length ?? 0) > 0;
+    featureCount + pricingCount + personaCount > 0;
 
   if (isLoading) {
     return (
@@ -365,14 +386,18 @@ export function KnowledgePanel({
         <CoverageStrip knowledge={knowledge} />
       </div>
 
+      <div className="grid gap-2 sm:grid-cols-3">
+        <SchemaStat hint="功能树节点" label="功能树" value={featureCount} />
+        <SchemaStat hint="套餐/商业模式" label="定价模型" value={pricingCount} />
+        <SchemaStat hint="目标角色与 JTBD" label="用户画像" value={personaCount} />
+      </div>
+
       {!hasKnowledge ? (
         <EmptyBlock
           text={
-            analysisArchetype === "landscape"
-              ? "当前是 landscape 机会扫描：系统不会强制逐竞品三件套。请重点查看机会洞察与比较结论。"
-              : hasCoverageDeficits
-                ? "当前是 comparison 对比：三件套为空且 coverage 显示证据不足，说明需要补采证据或等待下一轮抽取。"
-                : "当前 run 尚未落库功能树、定价模型或用户画像；可能仍在处理中。"
+            hasCoverageDeficits
+              ? "当前三件套为空且 coverage 显示数据不足/未公开：系统不会编造无证据的功能、定价或用户画像。"
+              : `当前 ${analysisArchetype} run 尚未落库功能树、定价模型或用户画像；可能仍在抽取或等待证据入库。`
           }
         />
       ) : null}
@@ -384,9 +409,7 @@ export function KnowledgePanel({
         </h4>
         {competitorIds.length === 0 || knowledge?.features.length === 0 ? (
           <EmptyBlock
-            text={
-              analysisArchetype === "landscape" ? "landscape 模式不强制输出功能树。" : "暂无功能树条目（待补采/待抽取）。"
-            }
+            text="暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。"
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
@@ -412,9 +435,7 @@ export function KnowledgePanel({
         </h4>
         {competitorIds.length === 0 || knowledge?.pricings.length === 0 ? (
           <EmptyBlock
-            text={
-              analysisArchetype === "landscape" ? "landscape 模式不强制输出定价模型。" : "暂无定价模型条目（待补采/待抽取）。"
-            }
+            text="暂无定价模型条目：可能是价格未公开、证据不足，或抽取仍在处理中。"
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
@@ -424,7 +445,7 @@ export function KnowledgePanel({
                 <section className="rounded-lg border border-border bg-background/50 p-4" key={competitorId}>
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
-                    <Badge variant="secondary">{items.length} models</Badge>
+                    <Badge variant="secondary">{items.length} 个模型</Badge>
                   </div>
                   <div className="space-y-2">
                     {items.map((pricing) => (
@@ -449,9 +470,7 @@ export function KnowledgePanel({
         </h4>
         {knowledge?.personas.length === 0 ? (
           <EmptyBlock
-            text={
-              analysisArchetype === "landscape" ? "landscape 模式不强制输出用户画像。" : "暂无用户画像条目（待补采/待抽取）。"
-            }
+            text="暂无用户画像条目：可能是公开资料未覆盖目标用户，或抽取仍在处理中。"
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
