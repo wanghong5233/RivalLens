@@ -147,3 +147,53 @@ def test_reconcile_plan_tree_logs_actual_research_set_with_existing_tasks(
     assert "Competitor 8" in logged[-1]["actual_research_competitors"]
     assert "Competitor 8" not in logged[-1]["dropped_competitors"]
 
+
+def test_reconcile_plan_tree_allows_existing_competitors_from_state() -> None:
+    plan = PlanTree(
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(
+                stage="research",
+                title="调研 Cursor",
+                description="research",
+                competitor_id="Cursor",
+            ),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    reconciled = reconcile_plan_tree_after_discovery(
+        plan_tree=plan,
+        discovered_competitors=["Windsurf"],
+        existing_competitors=["Cursor"],
+    )
+    research_competitors = [
+        task.competitor_id for task in reconciled.tasks if task.stage == "research"
+    ]
+    assert set(research_competitors) == {"Cursor", "Windsurf"}
+
+
+def test_reconcile_plan_tree_fails_when_research_competitor_escapes_allowed_set() -> None:
+    plan = PlanTree(
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(
+                stage="research",
+                title="调研 Cursor",
+                description="research",
+                competitor_id="Cursor",
+            ),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    with pytest.raises(
+        ValueError,
+        match="unexpected=\\['Cursor'\\]",
+    ):
+        reconcile_plan_tree_after_discovery(
+            plan_tree=plan,
+            discovered_competitors=["Windsurf"],
+            existing_competitors=["Windsurf"],
+        )
+

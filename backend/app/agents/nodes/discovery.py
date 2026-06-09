@@ -544,6 +544,9 @@ async def discovery_node(state: AgentState) -> AgentState:
         reconciled = reconcile_plan_tree_after_discovery(
             plan_tree=plan,
             discovered_competitors=discovered,
+            existing_competitors=[
+                item for item in state.get("competitors", []) if isinstance(item, str)
+            ],
             discovered_competitor_sources=discovered_competitor_sources,
             focus_dimensions=focus_dimensions,
             analysis_archetype=analysis_archetype,

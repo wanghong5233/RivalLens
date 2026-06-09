@@ -278,6 +278,8 @@ Rules:
   * comparison: usually one analyze task.
   * landscape: may keep two analyze tasks (opportunity-map + trend synthesis).
 - Prefer revising unfinished work only. Do not remove already-finished intent unless it is clearly redundant.
+- Never remove or replace existing protected research competitors from current_plan_tree/state_competitors.
+- You may only append newly discovered competitors (from discovered_competitors) within the remaining budget.
 - Keep task count concise; avoid duplicate tasks.
 - Keep focus_dimensions in snake_case contract ids.
 - Return JSON object only.
@@ -797,6 +799,7 @@ def build_replanner_user_prompt(
     intake_draft: dict[str, object],
     current_plan_tree: dict[str, object],
     trigger_reason: str,
+    state_competitors: Sequence[str],
     researched_competitors: Sequence[str],
     discovered_competitors: Sequence[str],
     analysis_done: bool,
@@ -808,6 +811,7 @@ def build_replanner_user_prompt(
         f"- trigger_reason: {trigger_reason}\n"
         f"- intake_draft: {_json(intake_draft)}\n"
         f"- current_plan_tree: {_json(current_plan_tree)}\n"
+        f"- state_competitors: {_json(list(state_competitors))}\n"
         f"- researched_competitors: {_json(list(researched_competitors))}\n"
         f"- discovered_competitors: {_json(list(discovered_competitors))}\n"
         f"- analysis_done: {analysis_done}\n"

@@ -5,7 +5,11 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agents.nodes.planner import _cap_plan_tasks_for_profile
+from agents.nodes.planner import (
+    _assert_research_competitor_subset,
+    _cap_plan_tasks_for_profile,
+    _research_competitors_from_tasks,
+)
 from agents.state import AgentState, spread_without_accumulators
 from agents.state_coercion import coerce_intake_draft_or_default, coerce_plan_tree
 from core.defaults import MAX_TOTAL_PLAN_TASKS
@@ -91,6 +95,8 @@ def _sanitize_revised_pending_tasks(
     *,
     discovered_competitors: list[str],
     researched_competitors: list[str],
+    appendable_research_competitors: set[str],
+    protected_research_competitors: set[str],
 ) -> list[PlanTask]:
     researched_set = set(researched_competitors)
     normalized: list[PlanTask] = []
@@ -103,6 +109,10 @@ def _sanitize_revised_pending_tasks(
         if task.stage == "research":
             if not competitor_id or competitor_id in researched_set:
                 continue
+            if competitor_id in protected_research_competitors:
+                continue
+            if competitor_id not in appendable_research_competitors:
+                continue
             if competitor_id in seen_research_competitors:
                 continue
             seen_research_competitors.add(competitor_id)
@@ -112,6 +122,26 @@ def _sanitize_revised_pending_tasks(
         seen_signatures.add(signature)
         normalized.append(task)
     return normalized
+
+
+def _collect_protected_pending_research_tasks(
+    *,
+    pending_tasks: list[PlanTask],
+    protected_competitors: set[str],
+) -> list[PlanTask]:
+    protected: list[PlanTask] = []
+    seen_competitors: set[str] = set()
+    for task in pending_tasks:
+        if task.stage != "research":
+            continue
+        competitor_id = task.competitor_id.strip() if isinstance(task.competitor_id, str) else ""
+        if not competitor_id or competitor_id not in protected_competitors:
+            continue
+        if competitor_id in seen_competitors:
+            continue
+        seen_competitors.add(competitor_id)
+        protected.append(task)
+    return protected
 
 
 async def _persist_replanner_step(
@@ -192,6 +222,7 @@ async def replanner_node(state: AgentState) -> AgentState:
         }
     next_replan_count = current_replan_count + 1
     trigger_reason = _state_trigger_reason(state)
+    state_competitors = [item for item in state.get("competitors", []) if isinstance(item, str)]
     researched_competitors = [
         item for item in state.get("researched_competitors", []) if isinstance(item, str)
     ]
@@ -224,6 +255,7 @@ async def replanner_node(state: AgentState) -> AgentState:
         intake_draft=intake_dump,
         current_plan_tree=plan_dump,
         trigger_reason=trigger_reason,
+        state_competitors=state_competitors,
         researched_competitors=researched_competitors,
         discovered_competitors=discovered_competitors,
         analysis_done=analysis_done,
@@ -254,6 +286,32 @@ async def replanner_node(state: AgentState) -> AgentState:
     revised_plan = plan
     action = "no_change"
     reasoning_summary = ""
+    protected_competitors = {
+        item.strip()
+        for item in [*state_competitors, *researched_competitors]
+        if isinstance(item, str) and item.strip()
+    }
+    protected_pending_research = _collect_protected_pending_research_tasks(
+        pending_tasks=pending_tasks,
+        protected_competitors=protected_competitors,
+    )
+    protected_pending_research_competitors = {
+        task.competitor_id.strip()
+        for task in protected_pending_research
+        if isinstance(task.competitor_id, str) and task.competitor_id.strip()
+    }
+    appendable_research_competitors = {
+        item.strip()
+        for item in discovered_competitors
+        if isinstance(item, str) and item.strip()
+    }
+    appendable_research_competitors -= protected_pending_research_competitors
+    appendable_research_competitors -= {
+        item.strip()
+        for item in researched_competitors
+        if isinstance(item, str) and item.strip()
+    }
+
     if harness_result.value is not None:
         reasoning_summary = harness_result.value.rationale
         revised_pending = harness_result.value.to_plan_tasks()
@@ -278,9 +336,32 @@ async def replanner_node(state: AgentState) -> AgentState:
             capped_pending,
             discovered_competitors=discovered_competitors,
             researched_competitors=researched_competitors,
+            appendable_research_competitors=appendable_research_competitors,
+            protected_research_competitors=protected_pending_research_competitors,
         )
         remaining_slots = max(MAX_TOTAL_PLAN_TASKS - len(completed_tasks), 0)
-        merged_tasks = [*completed_tasks, *capped_pending[:remaining_slots]]
+        max_task_count = len(completed_tasks) + remaining_slots
+        merged_tasks = list(completed_tasks)
+        seen_signatures = {
+            (
+                item.stage,
+                item.competitor_id or "",
+                item.title.strip().casefold(),
+            )
+            for item in merged_tasks
+        }
+        for task in [*protected_pending_research, *capped_pending]:
+            if len(merged_tasks) >= max_task_count:
+                break
+            signature = (
+                task.stage,
+                task.competitor_id or "",
+                task.title.strip().casefold(),
+            )
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            merged_tasks.append(task)
         if merged_tasks and merged_tasks != list(plan.tasks):
             revised_plan = plan.model_copy(
                 update={
@@ -290,6 +371,21 @@ async def replanner_node(state: AgentState) -> AgentState:
                 }
             )
             action = "revise"
+
+    revised_research_competitors = _research_competitors_from_tasks(list(revised_plan.tasks))
+    _assert_research_competitor_subset(
+        actual_competitors=revised_research_competitors,
+        allowed_competitors=[*state_competitors, *discovered_competitors],
+        context="replanner.output_plan",
+    )
+    state_competitor_set = {
+        item.strip() for item in state_competitors if isinstance(item, str) and item.strip()
+    }
+    competitor_sync_delta = [
+        competitor
+        for competitor in revised_research_competitors
+        if competitor not in state_competitor_set
+    ]
 
     step_id = await _persist_replanner_step(
         session_factory=session_factory,
@@ -338,6 +434,14 @@ async def replanner_node(state: AgentState) -> AgentState:
         "run_id": run_id,
         "replan_count": next_replan_count,
     }
+    if competitor_sync_delta:
+        with bind_step(step_id):
+            log.warning(
+                "replanner.sync.competitors_from_plan",
+                run_id=run_id,
+                synced_competitors=competitor_sync_delta,
+            )
+        result["competitors"] = competitor_sync_delta
     if action == "revise":
         result["plan_tree"] = revised_plan
     return result

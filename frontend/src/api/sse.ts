@@ -152,6 +152,21 @@ interface RunEventEnvelope {
   payload?: unknown;
 }
 
+interface RunEventsSubscriber {
+  options: RunEventsOptions;
+}
+
+interface SharedRunEventsChannel {
+  runId: string;
+  eventSource: EventSource;
+  refCount: number;
+  teardownTimerId: number | null;
+  subscribers: Set<RunEventsSubscriber>;
+}
+
+const RUN_EVENTS_CHANNELS = new Map<string, SharedRunEventsChannel>();
+const RUN_STREAM_TEARDOWN_DELAY_MS = 15_000;
+
 function parseEventPayload(rawData: string): unknown {
   try {
     const envelope = JSON.parse(rawData) as RunEventEnvelope;
@@ -441,6 +456,244 @@ function coercePlanConfirmedPayload(value: unknown): PlanConfirmedPayload | null
   };
 }
 
+function dispatchToSubscribers(
+  channel: SharedRunEventsChannel,
+  invoke: (options: RunEventsOptions) => void,
+): void {
+  for (const subscriber of channel.subscribers) {
+    invoke(subscriber.options);
+  }
+}
+
+function createRunEventsChannel(runId: string): SharedRunEventsChannel {
+  const eventsUrl = `${API_BASE_URL}/api/runs/${runId}/events`;
+  const eventSource = new EventSource(eventsUrl);
+  const channel: SharedRunEventsChannel = {
+    runId,
+    eventSource,
+    refCount: 0,
+    teardownTimerId: null,
+    subscribers: new Set<RunEventsSubscriber>(),
+  };
+
+  const invalidateRunDetail = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ["run-detail", runId] });
+  };
+  const invalidateRunTrace = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ["run-trace", runId] });
+  };
+  const invalidateRunMetrics = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ["run-metrics", runId] });
+  };
+  const invalidateRunReport = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ["run-report", runId] });
+    void queryClient.invalidateQueries({ queryKey: ["run-conclusions", runId] });
+    void queryClient.invalidateQueries({ queryKey: ["run-comparisons", runId] });
+  };
+  const invalidateRunEvidence = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ["run-evidence", runId] });
+  };
+  const onFallbackMessage = (): void => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+  };
+
+  eventSource.onmessage = onFallbackMessage;
+  eventSource.addEventListener("step.start", () => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+  });
+  eventSource.addEventListener("step.finish", (event: MessageEvent<string>) => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+    invalidateRunMetrics();
+    const payload = coerceStepFinishPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onStepFinish?.(payload);
+    });
+  });
+  eventSource.addEventListener("qa.outcome", () => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+    invalidateRunMetrics();
+  });
+  eventSource.addEventListener("supervisor.decision", (event: MessageEvent<string>) => {
+    invalidateRunTrace();
+    const payload = coerceSupervisorDecisionPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onSupervisorDecision?.(payload);
+    });
+  });
+  eventSource.addEventListener("followup.received", (event: MessageEvent<string>) => {
+    const payload = coerceFollowUpReceivedPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onFollowUpReceived?.(payload);
+    });
+  });
+  eventSource.addEventListener("curator.finish", () => {
+    void queryClient.invalidateQueries({ queryKey: ["skill-candidates"] });
+  });
+  eventSource.addEventListener("run.finish", (event: MessageEvent<string>) => {
+    invalidateRunDetail();
+    invalidateRunMetrics();
+    invalidateRunReport();
+    const payload = coerceRunFinishPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onRunFinish?.(payload);
+    });
+  });
+  eventSource.addEventListener("intake.clarify_request", (event: MessageEvent<string>) => {
+    invalidateRunDetail();
+    const payload = coerceIntakeClarifyPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onIntakeClarify?.(payload);
+    });
+  });
+  eventSource.addEventListener("intake.user_reply", (event: MessageEvent<string>) => {
+    const payload = coerceIntakeUserReplyPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onIntakeUserReply?.(payload);
+    });
+  });
+  eventSource.addEventListener("intake.complete", (event: MessageEvent<string>) => {
+    invalidateRunDetail();
+    const payload = coerceIntakeCompletePayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onIntakeComplete?.(payload);
+    });
+  });
+  eventSource.addEventListener("plan.published", (event: MessageEvent<string>) => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+    const payload = coercePlanPublishedPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onPlanPublished?.(payload);
+    });
+  });
+  eventSource.addEventListener("plan.confirmed", (event: MessageEvent<string>) => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+    const payload = coercePlanConfirmedPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onPlanConfirmed?.(payload);
+    });
+  });
+  eventSource.addEventListener("plan.reconciled", () => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+  });
+  eventSource.addEventListener("plan.revised", (event: MessageEvent<string>) => {
+    invalidateRunDetail();
+    invalidateRunTrace();
+    const payload = coercePlanPublishedPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onPlanRevised?.(payload);
+    });
+  });
+  eventSource.addEventListener("tool.start", (event: MessageEvent<string>) => {
+    const payload = coerceToolStartPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onToolStart?.(payload);
+    });
+  });
+  eventSource.addEventListener("tool.finish", (event: MessageEvent<string>) => {
+    const payload = coerceToolFinishPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onToolFinish?.(payload);
+    });
+  });
+  eventSource.addEventListener("evidence.collected", (event: MessageEvent<string>) => {
+    invalidateRunEvidence();
+    const payload = coerceEvidenceCollectedPayload(parseEventPayload(event.data));
+    if (payload === null) {
+      return;
+    }
+    dispatchToSubscribers(channel, (options) => {
+      options.onEvidenceCollected?.(payload);
+    });
+  });
+  eventSource.addEventListener("error", () => {
+    // Browser-side EventSource handles retry; backend hints 15s.
+    const _retryHintMs = RUN_RECONNECT_HINT_MS;
+    void _retryHintMs;
+  });
+
+  return channel;
+}
+
+function getOrCreateRunEventsChannel(runId: string): SharedRunEventsChannel {
+  const existing = RUN_EVENTS_CHANNELS.get(runId);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = createRunEventsChannel(runId);
+  RUN_EVENTS_CHANNELS.set(runId, created);
+  return created;
+}
+
+function subscribeRunEvents(runId: string, options: RunEventsOptions): () => void {
+  const channel = getOrCreateRunEventsChannel(runId);
+  if (channel.teardownTimerId !== null) {
+    window.clearTimeout(channel.teardownTimerId);
+    channel.teardownTimerId = null;
+  }
+  const subscriber: RunEventsSubscriber = { options };
+  channel.subscribers.add(subscriber);
+  channel.refCount += 1;
+
+  return () => {
+    channel.subscribers.delete(subscriber);
+    channel.refCount = Math.max(0, channel.refCount - 1);
+    if (channel.refCount > 0) {
+      return;
+    }
+    channel.teardownTimerId = window.setTimeout(() => {
+      if (channel.refCount > 0) {
+        return;
+      }
+      channel.eventSource.close();
+      RUN_EVENTS_CHANNELS.delete(channel.runId);
+      channel.teardownTimerId = null;
+    }, RUN_STREAM_TEARDOWN_DELAY_MS);
+  };
+}
+
 export function useRunEvents(runId: string, options: RunEventsOptions = {}): void {
   const {
     onIntakeClarify,
@@ -461,193 +714,7 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     if (!runId) {
       return;
     }
-    const eventsUrl = `${API_BASE_URL}/api/runs/${runId}/events`;
-    const eventSource = new EventSource(eventsUrl);
-    const invalidateRunDetail = (): void => {
-      void queryClient.invalidateQueries({ queryKey: ["run-detail", runId] });
-    };
-    const invalidateRunTrace = (): void => {
-      void queryClient.invalidateQueries({ queryKey: ["run-trace", runId] });
-    };
-    const invalidateRunMetrics = (): void => {
-      void queryClient.invalidateQueries({ queryKey: ["run-metrics", runId] });
-    };
-    const invalidateRunReport = (): void => {
-      void queryClient.invalidateQueries({ queryKey: ["run-report", runId] });
-      void queryClient.invalidateQueries({ queryKey: ["run-conclusions", runId] });
-      void queryClient.invalidateQueries({ queryKey: ["run-comparisons", runId] });
-    };
-    const invalidateRunEvidence = (): void => {
-      void queryClient.invalidateQueries({ queryKey: ["run-evidence", runId] });
-    };
-    const onFallbackMessage = (): void => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-    };
-
-    eventSource.onmessage = onFallbackMessage;
-    eventSource.addEventListener("step.start", () => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-    });
-    eventSource.addEventListener("step.finish", (event: MessageEvent<string>) => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-      invalidateRunMetrics();
-      if (onStepFinish === undefined) {
-        return;
-      }
-      const payload = coerceStepFinishPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onStepFinish(payload);
-      }
-    });
-    eventSource.addEventListener("qa.outcome", () => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-      invalidateRunMetrics();
-    });
-    eventSource.addEventListener("supervisor.decision", (event: MessageEvent<string>) => {
-      invalidateRunTrace();
-      if (onSupervisorDecision === undefined) {
-        return;
-      }
-      const payload = coerceSupervisorDecisionPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onSupervisorDecision(payload);
-      }
-    });
-    eventSource.addEventListener("followup.received", (event: MessageEvent<string>) => {
-      if (onFollowUpReceived === undefined) {
-        return;
-      }
-      const payload = coerceFollowUpReceivedPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onFollowUpReceived(payload);
-      }
-    });
-    eventSource.addEventListener("curator.finish", () => {
-      void queryClient.invalidateQueries({ queryKey: ["skill-candidates"] });
-    });
-    eventSource.addEventListener("run.finish", (event: MessageEvent<string>) => {
-      invalidateRunDetail();
-      invalidateRunMetrics();
-      invalidateRunReport();
-      if (onRunFinish === undefined) {
-        return;
-      }
-      const payload = coerceRunFinishPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onRunFinish(payload);
-      }
-    });
-    eventSource.addEventListener("intake.clarify_request", (event: MessageEvent<string>) => {
-      invalidateRunDetail();
-      if (onIntakeClarify === undefined) {
-        return;
-      }
-      const payload = coerceIntakeClarifyPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onIntakeClarify(payload);
-      }
-    });
-    eventSource.addEventListener("intake.user_reply", (event: MessageEvent<string>) => {
-      // Drives the checklist to flip to its post-merge state the moment the
-      // user clicks Send, before the next clarify_request arrives.
-      if (onIntakeUserReply === undefined) {
-        return;
-      }
-      const payload = coerceIntakeUserReplyPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onIntakeUserReply(payload);
-      }
-    });
-    eventSource.addEventListener("intake.complete", (event: MessageEvent<string>) => {
-      invalidateRunDetail();
-      if (onIntakeComplete === undefined) {
-        return;
-      }
-      const payload = coerceIntakeCompletePayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onIntakeComplete(payload);
-      }
-    });
-    eventSource.addEventListener("plan.published", (event: MessageEvent<string>) => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-      if (onPlanPublished === undefined) {
-        return;
-      }
-      const payload = coercePlanPublishedPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onPlanPublished(payload);
-      }
-    });
-    eventSource.addEventListener("plan.confirmed", (event: MessageEvent<string>) => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-      if (onPlanConfirmed === undefined) {
-        return;
-      }
-      const payload = coercePlanConfirmedPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onPlanConfirmed(payload);
-      }
-    });
-    eventSource.addEventListener("plan.reconciled", () => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-    });
-    eventSource.addEventListener("plan.revised", (event: MessageEvent<string>) => {
-      invalidateRunDetail();
-      invalidateRunTrace();
-      if (onPlanRevised === undefined) {
-        return;
-      }
-      const payload = coercePlanPublishedPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onPlanRevised(payload);
-      }
-    });
-    eventSource.addEventListener("tool.start", (event: MessageEvent<string>) => {
-      if (onToolStart === undefined) {
-        return;
-      }
-      const payload = coerceToolStartPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onToolStart(payload);
-      }
-    });
-    eventSource.addEventListener("tool.finish", (event: MessageEvent<string>) => {
-      if (onToolFinish === undefined) {
-        return;
-      }
-      const payload = coerceToolFinishPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onToolFinish(payload);
-      }
-    });
-    eventSource.addEventListener("evidence.collected", (event: MessageEvent<string>) => {
-      // Live evidence feed reads directly from event payload; we still invalidate
-      // the (cheaper) evidence query so the EvidenceDrawer stays in sync if the
-      // user opens it mid-run.
-      invalidateRunEvidence();
-      if (onEvidenceCollected === undefined) {
-        return;
-      }
-      const payload = coerceEvidenceCollectedPayload(parseEventPayload(event.data));
-      if (payload !== null) {
-        onEvidenceCollected(payload);
-      }
-    });
-    eventSource.addEventListener("error", () => {
-      // Browser-side EventSource handles retry; backend hints 15s.
-      const _retryHintMs = RUN_RECONNECT_HINT_MS;
-      void _retryHintMs;
-    });
-    return () => {
-      eventSource.close();
-    };
+    return subscribeRunEvents(runId, options);
   }, [
     runId,
     onIntakeClarify,
@@ -662,5 +729,6 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     onSupervisorDecision,
     onStepFinish,
     onFollowUpReceived,
+    onRunFinish,
   ]);
 }

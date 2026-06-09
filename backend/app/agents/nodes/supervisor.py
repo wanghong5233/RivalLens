@@ -1199,6 +1199,80 @@ def _match_plan_task_ids(
     return matched
 
 
+def _has_enabled_write_task(plan_tree: object) -> bool:
+    tasks_raw: object
+    if isinstance(plan_tree, dict):
+        tasks_raw = plan_tree.get("tasks")
+    else:
+        tasks_raw = getattr(plan_tree, "tasks", None)
+    if not isinstance(tasks_raw, list):
+        return False
+    for task in tasks_raw:
+        if isinstance(task, dict):
+            stage = task.get("stage")
+            enabled = task.get("enabled", True)
+        else:
+            stage = getattr(task, "stage", None)
+            enabled = getattr(task, "enabled", True)
+        if stage == "write" and enabled is not False:
+            return True
+    return False
+
+
+def _enforce_deliverable_before_finalize(
+    *,
+    decision: SupervisorDecision,
+    plan_tree: object,
+    report_draft_done: bool,
+    prior_decisions: list[SupervisorDecision],
+    fallback_sections: list[str],
+) -> SupervisorDecision:
+    if decision.chosen_tool != "Finalize":
+        return decision
+    if report_draft_done:
+        return decision
+
+    has_enabled_write_task = _has_enabled_write_task(plan_tree)
+    has_historical_write = any(item.chosen_tool == "Write" for item in prior_decisions)
+    if has_enabled_write_task and not has_historical_write:
+        now = _now_iso()
+        return SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=decision.run_id,
+            iteration=decision.iteration,
+            chosen_tool="Write",
+            tool_args=Write(
+                template_id=None,
+                sections=fallback_sections,
+            ).model_dump(),
+            reasoning_summary=(
+                "Finalize blocked: no report draft yet; route one writer pass before finalizing."
+            ),
+            triggered_by=decision.triggered_by,
+            outcome="dispatched",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+
+    # No report exists and we cannot/should not reroute writer again.
+    # Force degraded-finalize semantics to keep run status truthful.
+    return decision.model_copy(
+        update={
+            "tool_args": Finalize(
+                completion_reason="fallback_path",
+                notes=(
+                    "Finalize without report draft; writer already attempted or no enabled "
+                    "write task exists."
+                ),
+            ).model_dump(),
+            "reasoning_summary": (
+                "Forced degraded finalize: no report draft and no further writer reroute available."
+            ),
+            "outcome": "succeeded",
+        }
+    )
+
+
 @log_node("supervisor")
 async def supervisor_node(state: AgentState) -> AgentState:
     session_factory = _resolve_session_factory(state)
@@ -1285,65 +1359,30 @@ async def supervisor_node(state: AgentState) -> AgentState:
             decision_dimension_source = dimension_source
     elif iteration > tier_profile.supervisor_max_iterations:
         forced_now = _now_iso()
-        if not report_draft_done and competitors:
-            # Grace write: budget is exhausted but no report exists yet.
-            # Finalizing here would end the run with zero deliverable, so we
-            # force one writer pass and let QA/finalize close the run after.
-            decision = SupervisorDecision(
-                id=make_id("decision_"),
-                run_id=run_id,
-                iteration=iteration,
-                chosen_tool="Write",
-                tool_args=Write(
-                    template_id=None,
-                    sections=fallback_sections,
-                ).model_dump(),
-                reasoning_summary=(
-                    "Iteration budget exhausted without a report draft; forcing one "
-                    f"degraded writer pass (limit={tier_profile.supervisor_max_iterations})."
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="Finalize",
+            tool_args=Finalize(
+                completion_reason="max_iterations_hit",
+                notes=(
+                    "Supervisor reached max iterations and forced finalize "
+                    f"(limit={tier_profile.supervisor_max_iterations})."
                 ),
-                triggered_by="iteration_advance",
-                outcome="dispatched",
-                outcome_recorded_at=forced_now,
-                created_at=forced_now,
-            )
-            decision_dimension_source = dimension_source
-            llm_response = _pseudo_llm_response(
-                provider="guardrail",
-                model_name="guardrail",
-                prompt_preview="max_iterations_grace_write",
-                error="max_iterations_hit",
-            )
-            log.warning(
-                "supervisor.guardrail.grace_write",
-                iteration=iteration,
-                limit=tier_profile.supervisor_max_iterations,
-            )
-        else:
-            decision = SupervisorDecision(
-                id=make_id("decision_"),
-                run_id=run_id,
-                iteration=iteration,
-                chosen_tool="Finalize",
-                tool_args=Finalize(
-                    completion_reason="max_iterations_hit",
-                    notes=(
-                        "Supervisor reached max iterations and forced finalize "
-                        f"(limit={tier_profile.supervisor_max_iterations})."
-                    ),
-                ).model_dump(),
-                reasoning_summary="Forced finalize due to supervisor max iteration guardrail.",
-                triggered_by="iteration_advance",
-                outcome="succeeded",
-                outcome_recorded_at=forced_now,
-                created_at=forced_now,
-            )
-            llm_response = _pseudo_llm_response(
-                provider="guardrail",
-                model_name="guardrail",
-                prompt_preview="max_iterations_hit",
-                error="max_iterations_hit",
-            )
+            ).model_dump(),
+            reasoning_summary="Forced finalize due to supervisor max iteration guardrail.",
+            triggered_by="iteration_advance",
+            outcome="succeeded",
+            outcome_recorded_at=forced_now,
+            created_at=forced_now,
+        )
+        llm_response = _pseudo_llm_response(
+            provider="guardrail",
+            model_name="guardrail",
+            prompt_preview="max_iterations_hit",
+            error="max_iterations_hit",
+        )
     elif _has_pending_plan_discovery(
         plan_tree=state.get("plan_tree"),
         discovered_competitors=discovered_competitors,
@@ -1505,6 +1544,16 @@ async def supervisor_node(state: AgentState) -> AgentState:
             )
             decision_dimension_source = dimension_source
 
+    decision = _enforce_deliverable_before_finalize(
+        decision=decision,
+        plan_tree=state.get("plan_tree"),
+        report_draft_done=report_draft_done,
+        prior_decisions=decisions,
+        fallback_sections=fallback_sections,
+    )
+    if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS and decision_dimension_source is None:
+        decision_dimension_source = dimension_source
+
     persisted_step_id = await _persist_iteration(
         session_factory=session_factory,
         run_id=run_id,
@@ -1575,7 +1624,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
             if isinstance(item, str) and item
         ]
         if (
-            completion_reason == "max_iterations_hit"
+            not report_draft_done
+            or completion_reason in {"max_iterations_hit", "fallback_path"}
             or forced_degraded_by_qa
             or writer_fallback
             or researcher_degraded_competitors

@@ -18,7 +18,7 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { useRunDetail, useSubmitRunFollowUp } from "@/api/hooks";
@@ -44,23 +44,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
 import { formatRunTitle } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import {
+  ensureRunTaskStatuses,
+  recordEvidenceCollected,
+  recordFollowUpReceived,
+  recordRunFinish,
+  recordStepFinish,
+  recordSupervisorDecision,
+  recordToolFinish,
+  recordToolStart,
+  useLiveRunProgress,
+} from "@/stores/liveRunProgress";
+import type { ToolActivityEntry } from "@/stores/liveRunProgress";
 
 type PlanTaskRuntimeStatus = "queued" | "running" | "completed";
-
 type ToolRuntimeStatus = "running" | "done" | "error";
-
-interface ToolActivityEntry {
-  key: string;
-  tool: string;
-  competitorId: string | null;
-  dimension: string | null;
-  argsSummary: Record<string, unknown> | undefined;
-  status: ToolRuntimeStatus;
-  startedAt: number;
-  latencyMs: number | null;
-  snippetCount: number | null;
-  error: string | null;
-}
 
 const STAGE_META: Record<
   PlanTaskStage,
@@ -73,13 +71,6 @@ const STAGE_META: Record<
 };
 
 const STAGE_ORDER: PlanTaskStage[] = ["discover", "research", "analyze", "write"];
-
-const AGENT_NAME_TO_STAGE: Record<string, PlanTaskStage> = {
-  discovery: "discover",
-  researcher: "research",
-  analyst: "analyze",
-  writer: "write",
-};
 
 const TOOL_ICONS: Record<string, typeof Wrench> = {
   search_web: Search,
@@ -101,19 +92,12 @@ const TOOL_LABELS: Record<string, string> = {
 
 const TERMINAL_STATUSES = new Set(["completed", "degraded", "failed", "cancelled"]);
 
-const MAX_TOOL_ENTRIES = 12;
-const MAX_EVIDENCE_ENTRIES = 30;
-
 // Stuck detection: when the run is still "running" but no SSE traffic has been
 // seen for this long, surface a "可能已中断" hint with a one-tap stop. Empirical
 // upper bound: a single research iteration on Doubao + Tavily completes well
 // under 90s; 4 min covers slow batches without false positives.
 const STUCK_HINT_THRESHOLD_MS = 240_000;
 const STUCK_HINT_TICK_MS = 15_000;
-
-function buildToolKey(payload: ToolEventPayload): string {
-  return `${payload.tool}|${payload.competitor_id ?? "-"}|${payload.dimension ?? "-"}|${payload.turn ?? 0}`;
-}
 
 function reportDepthBadgeLabel(depth: unknown): string | null {
   if (depth === "debug") {
@@ -137,186 +121,54 @@ export function LiveRunPage(): JSX.Element {
   const runStatus = runDetail.data?.status ?? null;
   const intakeDraft = runDetail.data?.intake_draft ?? null;
   const reportDepthBadge = reportDepthBadgeLabel(intakeDraft?.report_depth);
+  const progressStore = useLiveRunProgress(runId);
 
-  const [planTaskStatus, setPlanTaskStatus] = useState<Record<string, PlanTaskRuntimeStatus>>(
-    {},
-  );
-  const [toolActivity, setToolActivity] = useState<ToolActivityEntry[]>([]);
-  const [evidenceFeed, setEvidenceFeed] = useState<EvidenceCollectedPayload[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerEvidenceIds, setDrawerEvidenceIds] = useState<string[]>([]);
-  // Phase 4: pending follow-ups the supervisor has not yet consumed. Seeded
-  // by local /follow-up submissions and remote followup.received events;
-  // pruned by consumed_follow_up_ids on supervisor.decision.
-  const [pendingFollowUps, setPendingFollowUps] = useState<FollowUpReceivedPayload[]>([]);
-  // Terminal RUN_FINISH payload carries error_type / error_message which we
-  // surface on the failed / cancelled Alert banner. Keep it in state instead
-  // of synthesizing the banner from run.status alone — the reason text is
-  // what makes the failure actionable.
-  const [finishPayload, setFinishPayload] = useState<RunFinishPayload | null>(null);
-  // Wall-clock of the most recent meaningful SSE traffic; drives stuck
-  // detection. Bumped by every callback below (tool / step / decision /
-  // evidence / follow-up). useRef avoids re-rendering on every event; the
-  // tick timer reads it lazily.
-  const lastActivityAtRef = useRef<number>(Date.now());
   const [now, setNow] = useState<number>(Date.now());
+  const planTaskStatus = progressStore.planTaskStatus;
+  const toolActivity = progressStore.toolActivity;
+  const evidenceFeed = progressStore.evidenceFeed;
+  const pendingFollowUps = progressStore.pendingFollowUps;
+  const finishPayload = progressStore.finishPayload;
 
-  // Reset the per-task runtime status whenever the plan changes (e.g. after a
-  // version bump from a future edit). All tasks start as "queued".
   useEffect(() => {
-    setPlanTaskStatus((prev) => {
-      if (planTree === null) {
-        return {};
-      }
-      // Preserve completed/running marks for tasks that still exist, default
-      // everything else (and new tasks) to queued.
-      const next: Record<string, PlanTaskRuntimeStatus> = {};
-      for (const task of planTree.tasks) {
-        next[task.task_id] = prev[task.task_id] ?? "queued";
-      }
-      return next;
-    });
-  }, [planTree]);
-
-  const bumpActivity = useCallback(() => {
-    lastActivityAtRef.current = Date.now();
-  }, []);
+    ensureRunTaskStatuses(runId, planTree);
+  }, [planTree, runId]);
 
   const handleSupervisorDecision = useCallback(
     (payload: SupervisorDecisionEventPayload) => {
-      bumpActivity();
-      if (payload.plan_task_ids.length > 0) {
-        setPlanTaskStatus((prev) => {
-          const next = { ...prev };
-          for (const taskId of payload.plan_task_ids) {
-            // Don't downgrade a completed tile back to "running" if a later
-            // decision references the same task (defensive).
-            if (next[taskId] !== "completed") {
-              next[taskId] = "running";
-            }
-          }
-          return next;
-        });
-      }
-      const consumed = payload.consumed_follow_up_ids;
-      if (consumed !== undefined && consumed.length > 0) {
-        const consumedSet = new Set(consumed);
-        setPendingFollowUps((prev) => prev.filter((entry) => !consumedSet.has(entry.follow_up_id)));
-      }
+      recordSupervisorDecision(runId, payload);
     },
-    [bumpActivity],
+    [runId],
   );
 
   const handleStepFinish = useCallback(
     (payload: StepFinishEventPayload) => {
-      bumpActivity();
-      const targetStage = AGENT_NAME_TO_STAGE[payload.agent_name];
-      if (!targetStage || planTree === null) {
-        return;
-      }
-      setPlanTaskStatus((prev) => {
-        const next = { ...prev };
-        for (const task of planTree.tasks) {
-          if (task.stage !== targetStage) continue;
-          if (targetStage === "research") {
-            // researcher.step.finish carries a single competitor_id; only flip
-            // the matching task and skip the rest of the research bucket so we
-            // don't mass-mark unfinished competitors as done.
-            if (
-              payload.competitor_id !== null &&
-              task.competitor_id === payload.competitor_id
-            ) {
-              next[task.task_id] = "completed";
-            }
-          } else {
-            next[task.task_id] = "completed";
-          }
-        }
-        return next;
-      });
+      recordStepFinish(runId, payload, planTree);
     },
-    [planTree, bumpActivity],
+    [planTree, runId],
   );
 
   const handleToolStart = useCallback((payload: ToolEventPayload) => {
-    bumpActivity();
-    const key = buildToolKey(payload);
-    setToolActivity((prev) => {
-      const next: ToolActivityEntry = {
-        key,
-        tool: payload.tool,
-        competitorId: payload.competitor_id,
-        dimension: payload.dimension,
-        argsSummary: payload.args_summary,
-        status: "running",
-        startedAt: Date.now(),
-        latencyMs: null,
-        snippetCount: null,
-        error: null,
-      };
-      const without = prev.filter((entry) => entry.key !== key);
-      return [next, ...without].slice(0, MAX_TOOL_ENTRIES);
-    });
-  }, [bumpActivity]);
+    recordToolStart(runId, payload);
+  }, [runId]);
 
   const handleToolFinish = useCallback((payload: ToolFinishEventPayload) => {
-    bumpActivity();
-    const key = buildToolKey(payload);
-    setToolActivity((prev) => {
-      const existingIndex = prev.findIndex((entry) => entry.key === key);
-      const status: ToolRuntimeStatus = payload.success ? "done" : "error";
-      if (existingIndex === -1) {
-        // tool.finish without a paired start (out-of-order or page mounted
-        // mid-call); synthesize a row so the user still sees the outcome.
-        const synthesized: ToolActivityEntry = {
-          key,
-          tool: payload.tool,
-          competitorId: payload.competitor_id,
-          dimension: payload.dimension,
-          argsSummary: payload.args_summary,
-          status,
-          startedAt: Date.now() - payload.latency_ms,
-          latencyMs: payload.latency_ms,
-          snippetCount: payload.snippet_count,
-          error: payload.error,
-        };
-        return [synthesized, ...prev].slice(0, MAX_TOOL_ENTRIES);
-      }
-      const next = [...prev];
-      next[existingIndex] = {
-        ...next[existingIndex],
-        status,
-        latencyMs: payload.latency_ms,
-        snippetCount: payload.snippet_count,
-        error: payload.error,
-      };
-      return next;
-    });
-  }, [bumpActivity]);
+    recordToolFinish(runId, payload);
+  }, [runId]);
 
   const handleEvidenceCollected = useCallback((payload: EvidenceCollectedPayload) => {
-    bumpActivity();
-    setEvidenceFeed((prev) => {
-      if (prev.some((entry) => entry.evidence_id === payload.evidence_id)) {
-        return prev;
-      }
-      return [payload, ...prev].slice(0, MAX_EVIDENCE_ENTRIES);
-    });
-  }, [bumpActivity]);
+    recordEvidenceCollected(runId, payload);
+  }, [runId]);
 
   const handleFollowUpReceived = useCallback((payload: FollowUpReceivedPayload) => {
-    bumpActivity();
-    setPendingFollowUps((prev) => {
-      if (prev.some((entry) => entry.follow_up_id === payload.follow_up_id)) {
-        return prev;
-      }
-      return [...prev, payload];
-    });
-  }, [bumpActivity]);
+    recordFollowUpReceived(runId, payload);
+  }, [runId]);
 
   const handleRunFinish = useCallback((payload: RunFinishPayload) => {
-    setFinishPayload(payload);
-  }, []);
+    recordRunFinish(runId, payload);
+  }, [runId]);
 
   useRunEvents(runId, {
     onSupervisorDecision: handleSupervisorDecision,
@@ -407,7 +259,7 @@ export function LiveRunPage(): JSX.Element {
     ? formatRunTitle(runDetail.data, { max: 50 })
     : userQuery || "正在分析中…";
   const isFailureTerminal = runStatus === "failed" || runStatus === "cancelled";
-  const idleMs = isTerminal ? 0 : now - lastActivityAtRef.current;
+  const idleMs = isTerminal ? 0 : now - progressStore.lastActivityAt;
   const isStuck = !isTerminal && idleMs >= STUCK_HINT_THRESHOLD_MS;
 
   return (

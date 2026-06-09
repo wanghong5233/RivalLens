@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -280,10 +281,43 @@ def _research_competitors_from_tasks(tasks: list[PlanTask]) -> list[str]:
     return competitors
 
 
+def _assert_research_competitor_subset(
+    *,
+    actual_competitors: Sequence[str],
+    allowed_competitors: Sequence[str],
+    context: str,
+) -> None:
+    allowed_set = {
+        item.strip()
+        for item in allowed_competitors
+        if isinstance(item, str) and item.strip()
+    }
+    actual = [
+        item.strip()
+        for item in actual_competitors
+        if isinstance(item, str) and item.strip()
+    ]
+    unexpected = [item for item in actual if item not in allowed_set]
+    if not unexpected:
+        return
+    log.error(
+        "planner.invariant.research_competitor_subset_failed",
+        context=context,
+        unexpected_research_competitors=unexpected,
+        actual_research_competitors=actual,
+        allowed_competitors=sorted(allowed_set),
+    )
+    raise ValueError(
+        "plan research competitors escaped the allowed competitor set "
+        f"(context={context}, unexpected={unexpected})"
+    )
+
+
 def reconcile_plan_tree_after_discovery(
     *,
     plan_tree: PlanTree | dict[str, object],
     discovered_competitors: list[str],
+    existing_competitors: Sequence[str] | None = None,
     discovered_competitor_sources: dict[str, dict[str, str | None]] | None = None,
     focus_dimensions: list[str] | None = None,
     analysis_archetype: str = "comparison",
@@ -296,6 +330,12 @@ def reconcile_plan_tree_after_discovery(
         raise ValueError("plan_tree is required to reconcile after discovery.")
     if not discovered_competitors:
         return plan
+
+    allowed_competitors = [
+        item.strip()
+        for item in [*(list(existing_competitors or [])), *discovered_competitors]
+        if isinstance(item, str) and item.strip()
+    ]
 
     existing_research = {
         task.competitor_id
@@ -371,6 +411,11 @@ def reconcile_plan_tree_after_discovery(
 
     if not new_research_tasks:
         actual_competitors = _research_competitors_from_tasks(list(plan.tasks))
+        _assert_research_competitor_subset(
+            actual_competitors=actual_competitors,
+            allowed_competitors=allowed_competitors,
+            context="reconcile.no_new_research",
+        )
         actual_competitor_set = set(actual_competitors)
         log.info(
             "planner.reconcile.research_competitor_set",
@@ -399,6 +444,11 @@ def reconcile_plan_tree_after_discovery(
     tasks = list(plan.tasks)
     tasks[insert_at:insert_at] = new_research_tasks
     actual_competitors = _research_competitors_from_tasks(tasks)
+    _assert_research_competitor_subset(
+        actual_competitors=actual_competitors,
+        allowed_competitors=allowed_competitors,
+        context="reconcile.insert_new_research",
+    )
     actual_competitor_set = set(actual_competitors)
     log.info(
         "planner.reconcile.research_competitor_set",

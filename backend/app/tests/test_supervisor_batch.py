@@ -721,29 +721,33 @@ async def test_supervisor_blocks_repeated_discovery_with_fallback(
 
 
 @pytest.mark.asyncio
-async def test_supervisor_grace_write_when_budget_exhausted_without_report(
+async def test_supervisor_finalize_without_report_routes_writer_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = SupervisorToolCallOutput.parse_llm_content(
         {
             "chosen_tool": "Finalize",
             "tool_args": {"completion_reason": "all_dimensions_covered", "notes": None},
-            "reasoning_summary": "LLM output is irrelevant; guardrail branch fires first.",
+            "reasoning_summary": "LLM finalize without report.",
         }
     )
     new_state, captured = await _run_supervisor_node_with_output(
         monkeypatch,
         output=output,
-        step_id="step_supervisor_grace_write",
+        step_id="step_supervisor_finalize_writer_once",
         state={
             "run_id": "run_test",
             "user_query": "compare coding assistants",
-            "report_depth": "debug",
             "competitors": ["Cursor", "GitHub Copilot"],
             "researched_competitors": ["Cursor", "GitHub Copilot"],
-            "analysis_done": False,
+            "plan_tree": {
+                "tasks": [
+                    {"stage": "write", "enabled": True},
+                ]
+            },
+            "analysis_done": True,
             "report_draft_done": False,
-            "current_iteration": 6,
+            "current_iteration": 1,
             "decisions": [],
         },
     )
@@ -751,7 +755,47 @@ async def test_supervisor_grace_write_when_budget_exhausted_without_report(
     assert new_state["next_action"] == "writer"
     assert new_state["status"] == "running"
     assert captured[0][2]["chosen_tool"] == "Write"
-    assert captured[0][2]["triggered_by"] == "iteration_advance"
+    assert new_state["pending_tool_args"]["sections"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_finalize_without_report_degrades_after_writer_attempted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Finalize",
+            "tool_args": {"completion_reason": "all_dimensions_covered", "notes": None},
+            "reasoning_summary": "Try finalize again.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_finalize_degraded",
+        state={
+            "run_id": "run_test",
+            "user_query": "compare coding assistants",
+            "competitors": ["Cursor", "GitHub Copilot"],
+            "researched_competitors": ["Cursor", "GitHub Copilot"],
+            "plan_tree": {
+                "tasks": [
+                    {"stage": "write", "enabled": True},
+                ]
+            },
+            "analysis_done": True,
+            "report_draft_done": False,
+            "current_iteration": 2,
+            "decisions": [
+                SimpleNamespace(chosen_tool="Write")
+            ],
+        },
+    )
+
+    assert new_state["next_action"] == "finalize"
+    assert new_state["status"] == "degraded"
+    assert new_state["pending_tool_args"]["completion_reason"] == "fallback_path"
+    assert captured[0][2]["chosen_tool"] == "Finalize"
 
 
 @pytest.mark.asyncio
