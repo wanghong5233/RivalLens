@@ -28,7 +28,7 @@ class RunIntakeDraft(BaseModel):
     competitors_discovery_mode: bool = False
     domain_hint: str | None = None
     focus_dimensions: list[FocusDimension] = Field(default_factory=list)
-    report_depth: Literal["quick", "deep"] = "quick"
+    report_depth: Literal["debug", "quick", "deep"] = "quick"
     reference_urls: list[str] = Field(default_factory=list)
     # Quality-enriching context (optional; never gate completion). These let the
     # Planner/Analyst frame competitors RELATIVE to the requester and scope the

@@ -174,7 +174,7 @@ def _expected_dimensions_from_decisions(
 def _report_depth_from_run(run: Run) -> str:
     if isinstance(run.intake_draft, dict):
         depth_raw = run.intake_draft.get("report_depth")
-        if depth_raw in {"quick", "deep"}:
+        if depth_raw in {"debug", "quick", "deep"}:
             return str(depth_raw)
     return "quick"
 

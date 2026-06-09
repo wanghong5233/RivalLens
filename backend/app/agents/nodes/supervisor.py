@@ -12,11 +12,9 @@ from core.defaults import (
     DEFAULT_DISCOVER_MAX_RESULTS,
     MAX_FOCUS_DIMENSIONS,
     MAX_QA_RERESEARCH_ITERATIONS,
-    MAX_REACT_TURNS,
-    MAX_RESEARCH_COMPETITORS,
-    MAX_SUPERVISOR_ITERATIONS,
     MAX_WRITE_SECTIONS,
 )
+from core.tiers import TierProfile, resolve_tier_profile
 from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
@@ -163,7 +161,7 @@ def _discovery_search_queries(
     return _stable_unique([item.strip() for item in candidates if item.strip()])[:3]
 
 
-def _normalize_focus_dimensions(raw: object) -> list[str]:
+def _normalize_focus_dimensions(raw: object, *, max_dimensions: int) -> list[str]:
     if not isinstance(raw, list):
         return []
     return normalize_dimensions(
@@ -173,10 +171,15 @@ def _normalize_focus_dimensions(raw: object) -> list[str]:
         if isinstance(item, str) and item.strip()
         ],
         allow_empty=True,
-    )[:MAX_FOCUS_DIMENSIONS]
+    )[:max_dimensions]
 
 
-def _derive_hint_focus_dimensions(*, user_query: str, competitors: list[str]) -> list[str]:
+def _derive_hint_focus_dimensions(
+    *,
+    user_query: str,
+    competitors: list[str],
+    max_dimensions: int,
+) -> list[str]:
     normalized_query = user_query.lower()
     derived: list[str] = []
     for dimension, hints in DIMENSION_HINTS:
@@ -189,17 +192,23 @@ def _derive_hint_focus_dimensions(*, user_query: str, competitors: list[str]) ->
         return []
     if len(derived) < 3:
         derived.extend(DEFAULT_FOCUS_DIMENSIONS)
-    return _stable_unique(derived)[:MAX_FOCUS_DIMENSIONS]
+    return _stable_unique(derived)[:max_dimensions]
 
 
-def _derive_focus_dimensions(*, user_query: str, competitors: list[str]) -> list[str]:
+def _derive_focus_dimensions(
+    *,
+    user_query: str,
+    competitors: list[str],
+    max_dimensions: int,
+) -> list[str]:
     hint_dimensions = _derive_hint_focus_dimensions(
         user_query=user_query,
         competitors=competitors,
+        max_dimensions=max_dimensions,
     )
     if hint_dimensions:
         return hint_dimensions
-    return list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS]
+    return list(DEFAULT_FOCUS_DIMENSIONS)[:max_dimensions]
 
 
 def _current_plan_stage(
@@ -233,6 +242,7 @@ def _plan_task_focus_dimensions(
     plan_tree: object,
     stage: PlanTaskStage,
     target_competitors: list[str],
+    max_dimensions: int,
 ) -> list[str]:
     tasks_raw = _get_object_field(plan_tree, "tasks")
     if not isinstance(tasks_raw, list):
@@ -247,7 +257,8 @@ def _plan_task_focus_dimensions(
         if _get_object_field(task, "stage") != stage:
             continue
         dimensions = _normalize_focus_dimensions(
-            _get_object_field(task, "focus_dimensions")
+            _get_object_field(task, "focus_dimensions"),
+            max_dimensions=max_dimensions,
         )
         if not dimensions:
             continue
@@ -265,12 +276,13 @@ def _plan_task_focus_dimensions(
         else:
             matched.extend(dimensions)
 
-    return _stable_unique(matched or stage_fallback)[:MAX_FOCUS_DIMENSIONS]
+    return _stable_unique(matched or stage_fallback)[:max_dimensions]
 
 
-def _intake_focus_dimensions(intake_draft: object) -> list[str]:
+def _intake_focus_dimensions(intake_draft: object, *, max_dimensions: int) -> list[str]:
     return _normalize_focus_dimensions(
-        _get_object_field(intake_draft, "focus_dimensions")
+        _get_object_field(intake_draft, "focus_dimensions"),
+        max_dimensions=max_dimensions,
     )
 
 
@@ -289,6 +301,7 @@ def _resolve_fallback_dimensions(
     analysis_done: bool,
     report_draft_done: bool,
     qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None = None,
+    max_dimensions: int = MAX_FOCUS_DIMENSIONS,
 ) -> tuple[list[str], FocusDimensionSource]:
     stage = _current_plan_stage(
         competitors=competitors,
@@ -307,6 +320,7 @@ def _resolve_fallback_dimensions(
         plan_tree=plan_tree,
         stage=stage,
         target_competitors=target_competitors,
+        max_dimensions=max_dimensions,
     )
     if plan_dimensions:
         if stage == "research":
@@ -319,7 +333,7 @@ def _resolve_fallback_dimensions(
             )
         return plan_dimensions, "upstream_task"
 
-    intake_dimensions = _intake_focus_dimensions(intake_draft)
+    intake_dimensions = _intake_focus_dimensions(intake_draft, max_dimensions=max_dimensions)
     if intake_dimensions:
         if stage == "research":
             return (
@@ -334,6 +348,7 @@ def _resolve_fallback_dimensions(
     hint_dimensions = _derive_hint_focus_dimensions(
         user_query=user_query,
         competitors=competitors,
+        max_dimensions=max_dimensions,
     )
     if hint_dimensions:
         if stage == "research":
@@ -346,7 +361,7 @@ def _resolve_fallback_dimensions(
             )
         return hint_dimensions, "hints"
 
-    default_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS]
+    default_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)[:max_dimensions]
     if stage == "research":
         default_dimensions = research_focus_dimensions(
             default_dimensions,
@@ -448,10 +463,12 @@ def _fallback_decision(
     user_query: str,
     fallback_dimensions: list[str],
     fallback_sections: list[str],
+    profile: TierProfile | None = None,
     market_scope: str | None = None,
     domain_context: str | None = None,
     response_language: str = "en",
 ) -> SupervisorDecision:
+    effective_profile = profile or resolve_tier_profile(None)
     now = _now_iso()
 
     if not competitors:
@@ -487,10 +504,11 @@ def _fallback_decision(
                 research_topic=f"{competitor_id} vs user_query={user_query}",
                 competitor_id=competitor_id,
                 focus_dimensions=fallback_dimensions,
-                max_iterations=MAX_REACT_TURNS,
+                max_iterations=effective_profile.react_turns,
+                search_max_results=effective_profile.search_max_results,
                 fallback_to_offline=True,
             )
-            for competitor_id in pending_competitors[:MAX_RESEARCH_COMPETITORS]
+            for competitor_id in pending_competitors[:effective_profile.max_competitors]
         ]
         args = ConductResearchBatch(
             topics=topics,
@@ -520,7 +538,8 @@ def _fallback_decision(
             research_topic=f"{competitor_id} vs user_query={user_query}",
             competitor_id=competitor_id,
             focus_dimensions=fallback_dimensions,
-            max_iterations=MAX_REACT_TURNS,
+            max_iterations=effective_profile.react_turns,
+            search_max_results=effective_profile.search_max_results,
             fallback_to_offline=True,
         ).model_dump()
         decision = SupervisorDecision(
@@ -610,7 +629,9 @@ async def _decision_from_qa_feedback(
     fallback_dimensions: list[str],
     fallback_sections: list[str],
     pending_review_target_step_id: str | None,
+    profile: TierProfile | None = None,
 ) -> tuple[SupervisorDecision, LLMResponse, bool] | None:
+    effective_profile = profile or resolve_tier_profile(None)
     if qa_outcome is None or qa_outcome == "approved":
         return None
 
@@ -734,10 +755,11 @@ async def _decision_from_qa_feedback(
                 ),
                 competitor_id=competitor_id,
                 focus_dimensions=fallback_dimensions,
-                max_iterations=MAX_QA_RERESEARCH_ITERATIONS,
+                max_iterations=min(MAX_QA_RERESEARCH_ITERATIONS, effective_profile.react_turns),
+                search_max_results=effective_profile.search_max_results,
                 fallback_to_offline=True,
             )
-            for competitor_id in competitors[:MAX_RESEARCH_COMPETITORS]
+            for competitor_id in competitors[:effective_profile.max_competitors]
         ]
         if not topics:
             return None
@@ -814,7 +836,9 @@ def _decision_from_tool_output(
     triggered_by: TriggerSource,
     fallback_dimensions: list[str],
     fallback_sections: list[str],
+    profile: TierProfile | None = None,
 ) -> SupervisorDecision:
+    effective_profile = profile or resolve_tier_profile(None)
     now = _now_iso()
     outcome: Literal["dispatched", "succeeded"] = (
         "succeeded" if output.chosen_tool == "Finalize" else "dispatched"
@@ -824,6 +848,7 @@ def _decision_from_tool_output(
         tool_args=output.tool_args,
         fallback_dimensions=fallback_dimensions,
         fallback_sections=fallback_sections,
+        profile=effective_profile,
     )
     return SupervisorDecision(
         id=make_id("decision_"),
@@ -845,24 +870,51 @@ def _clamp_tool_args_to_canonical_dimensions(
     tool_args: dict[str, object],
     fallback_dimensions: list[str],
     fallback_sections: list[str],
+    profile: TierProfile | None = None,
 ) -> dict[str, object]:
+    effective_profile = profile or resolve_tier_profile(None)
     if chosen_tool not in _DIMENSIONAL_SUPERVISOR_TOOLS:
         return tool_args
     canonical_dimensions = normalize_dimensions(fallback_dimensions, allow_empty=True)
     if not canonical_dimensions:
-        canonical_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)[:MAX_FOCUS_DIMENSIONS]
+        canonical_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)[:effective_profile.max_dimensions]
+    canonical_dimensions = canonical_dimensions[:effective_profile.max_dimensions]
+
+    def clamp_react_turns(value: object) -> int:
+        if isinstance(value, int) and value > 0:
+            return min(value, effective_profile.react_turns)
+        return effective_profile.react_turns
+
+    def clamp_search_max_results(value: object) -> int:
+        if isinstance(value, int) and value > 0:
+            return min(value, effective_profile.search_max_results)
+        return effective_profile.search_max_results
+
     clamped = dict(tool_args)
     if chosen_tool == "ConductResearch":
         clamped["focus_dimensions"] = canonical_dimensions
+        clamped["max_iterations"] = clamp_react_turns(clamped.get("max_iterations"))
+        clamped["search_max_results"] = clamp_search_max_results(
+            clamped.get("search_max_results")
+        )
     elif chosen_tool == "ConductResearchBatch":
         topics = clamped.get("topics")
         if isinstance(topics, list):
-            clamped["topics"] = [
-                {**topic, "focus_dimensions": canonical_dimensions}
-                if isinstance(topic, dict)
-                else topic
-                for topic in topics
-            ]
+            capped_topics: list[dict[str, object]] = []
+            for topic in topics:
+                if not isinstance(topic, dict):
+                    continue
+                capped_topics.append(
+                    {
+                        **topic,
+                        "focus_dimensions": canonical_dimensions,
+                        "max_iterations": clamp_react_turns(topic.get("max_iterations")),
+                        "search_max_results": clamp_search_max_results(
+                            topic.get("search_max_results")
+                        ),
+                    }
+                )
+            clamped["topics"] = capped_topics[:effective_profile.max_competitors]
     elif chosen_tool == "Analyze":
         clamped["focus_dimensions"] = canonical_dimensions
     elif chosen_tool == "Write":
@@ -1161,7 +1213,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
         or _state_or_intake_string(state, "analysis_intent")
     )
     response_language = _state_response_language(state, user_query=user_query)
-    competitors = list(state.get("competitors", []))
+    competitors_raw = list(state.get("competitors", []))
     discovered_competitors = list(state.get("discovered_competitors", []))
     researched_competitors = list(state.get("researched_competitors", []))
     analysis_done = bool(state.get("analysis_done", False))
@@ -1175,6 +1227,9 @@ async def supervisor_node(state: AgentState) -> AgentState:
         for item in state.get("qa_unsupported_numeric_claims", [])
         if isinstance(item, dict)
     ]
+    report_depth = _state_or_intake_string(state, "report_depth")
+    tier_profile = resolve_tier_profile(report_depth)
+    competitors = competitors_raw[:tier_profile.max_competitors]
     iteration = int(state.get("current_iteration", 0)) + 1
     last_completed_node = state.get("last_completed_node")
     triggered_by = _resolve_triggered_by(
@@ -1191,6 +1246,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
         analysis_done=analysis_done,
         report_draft_done=report_draft_done,
         qa_reject_to=qa_reject_to if qa_outcome in {"rejected", "force_degraded"} else None,
+        max_dimensions=tier_profile.max_dimensions,
     )
     fallback_sections = _derive_write_sections(
         focus_dimensions=fallback_dimensions,
@@ -1221,12 +1277,13 @@ async def supervisor_node(state: AgentState) -> AgentState:
             if isinstance(pending_review_target_step_id, str)
             else None
         ),
+        profile=tier_profile,
     )
     if qa_driven_decision is not None:
         decision, llm_response, forced_degraded_by_qa = qa_driven_decision
         if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS:
             decision_dimension_source = dimension_source
-    elif iteration > MAX_SUPERVISOR_ITERATIONS:
+    elif iteration > tier_profile.supervisor_max_iterations:
         forced_now = _now_iso()
         decision = SupervisorDecision(
             id=make_id("decision_"),
@@ -1235,7 +1292,10 @@ async def supervisor_node(state: AgentState) -> AgentState:
             chosen_tool="Finalize",
             tool_args=Finalize(
                 completion_reason="max_iterations_hit",
-                notes="Supervisor reached max iterations and forced finalize.",
+                notes=(
+                    "Supervisor reached max iterations and forced finalize "
+                    f"(limit={tier_profile.supervisor_max_iterations})."
+                ),
             ).model_dump(),
             reasoning_summary="Forced finalize due to supervisor max iteration guardrail.",
             triggered_by="iteration_advance",
@@ -1343,6 +1403,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 triggered_by=triggered_by,
                 fallback_dimensions=fallback_dimensions,
                 fallback_sections=fallback_sections,
+                profile=tier_profile,
             )
             if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS:
                 decision_dimension_source = dimension_source
@@ -1358,6 +1419,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 user_query=user_query,
                 fallback_dimensions=fallback_dimensions,
                 fallback_sections=fallback_sections,
+                profile=tier_profile,
                 market_scope=market_scope,
                 domain_context=domain_context,
                 response_language=response_language,

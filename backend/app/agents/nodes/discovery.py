@@ -16,6 +16,7 @@ from core.defaults import (
     DISCOVERY_SNIPPETS_TO_EXTRACT,
     MAX_DISCOVERY_SEARCH_QUERIES,
 )
+from core.tiers import resolve_tier_profile
 from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
@@ -527,6 +528,7 @@ async def discovery_node(state: AgentState) -> AgentState:
     plan = coerce_plan_tree(state.get("plan_tree"))
     if discovered and plan is not None:
         intake_draft = state.get("intake_draft")
+        tier_profile = resolve_tier_profile(_state_or_intake_string(state, "report_depth"))
         focus_dimensions: list[str] | None = None
         analysis_archetype = "comparison"
         if intake_draft is not None and hasattr(intake_draft, "focus_dimensions"):
@@ -545,6 +547,8 @@ async def discovery_node(state: AgentState) -> AgentState:
             discovered_competitor_sources=discovered_competitor_sources,
             focus_dimensions=focus_dimensions,
             analysis_archetype=analysis_archetype,
+            max_competitors=tier_profile.max_competitors,
+            max_dimensions=tier_profile.max_dimensions,
         )
         reconciled_plan_tree = reconciled.model_dump()
         async with session_factory() as session:

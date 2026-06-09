@@ -115,6 +115,19 @@ function buildToolKey(payload: ToolEventPayload): string {
   return `${payload.tool}|${payload.competitor_id ?? "-"}|${payload.dimension ?? "-"}|${payload.turn ?? 0}`;
 }
 
+function reportDepthBadgeLabel(depth: unknown): string | null {
+  if (depth === "debug") {
+    return "Debug 档";
+  }
+  if (depth === "deep") {
+    return "Deep 档";
+  }
+  if (depth === "quick") {
+    return "Quick 档";
+  }
+  return null;
+}
+
 export function LiveRunPage(): JSX.Element {
   const { runId: rawRunId } = useParams<{ runId: string }>();
   const runId = rawRunId ?? "";
@@ -123,6 +136,7 @@ export function LiveRunPage(): JSX.Element {
   const planTree = runDetail.data?.plan_tree ?? null;
   const runStatus = runDetail.data?.status ?? null;
   const intakeDraft = runDetail.data?.intake_draft ?? null;
+  const reportDepthBadge = reportDepthBadgeLabel(intakeDraft?.report_depth);
 
   const [planTaskStatus, setPlanTaskStatus] = useState<Record<string, PlanTaskRuntimeStatus>>(
     {},
@@ -413,6 +427,7 @@ export function LiveRunPage(): JSX.Element {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {runStatus ? <StatusBadge status={runStatus} /> : null}
+          {reportDepthBadge !== null ? <Badge variant="outline">{reportDepthBadge}</Badge> : null}
           {planTree !== null ? (
             <Badge variant="secondary">
               已完成 {progress.completed}/{progress.total} · 进行中 {progress.running}

@@ -4,6 +4,7 @@ export type RunStatus = "running" | "completed" | "degraded" | "failed" | string
 export type RunPhase = "intake" | "planning" | "executing" | "done";
 
 export type UserRole = "pm" | "founder" | "sales" | "investor";
+export type ReportDepth = "debug" | "quick" | "deep";
 
 export interface RunCreateRequest {
   user_query: string;
@@ -11,6 +12,7 @@ export interface RunCreateRequest {
   domain_hint?: string | null;
   reference_urls?: string[] | null;
   target_roles: string[];
+  report_depth?: ReportDepth;
   self_product?: string | null;
   market_scope?: string | null;
   time_context?: string | null;
@@ -26,7 +28,7 @@ export interface RunIntakeDraft {
   competitors_discovery_mode: boolean;
   domain_hint: string | null;
   focus_dimensions: string[];
-  report_depth: "quick" | "deep";
+  report_depth: ReportDepth;
   reference_urls: string[];
   self_product: string | null;
   market_scope: string | null;
@@ -54,7 +56,7 @@ export interface IntakeCreateRequest {
   competitors_explicit?: string[];
   competitors_discovery_mode?: boolean;
   focus_dimensions?: string[];
-  report_depth?: "quick" | "deep";
+  report_depth?: ReportDepth;
 }
 
 export interface IntakeCreateResponse {
@@ -268,7 +270,7 @@ export interface RunMetricsResponse {
   evidence_dimension_coverage_rate: number;
   report_char_count: number;
   report_section_count: number;
-  report_depth: "quick" | "deep";
+  report_depth: ReportDepth;
   report_section_coverage_rate: number;
   knowledge_feature_count: number;
   knowledge_pricing_count: number;

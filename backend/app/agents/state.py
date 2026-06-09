@@ -49,6 +49,9 @@ class AgentState(TypedDict, total=False):
     # `phase` drives the conditional entry route (Invariant B). Legacy runs omit it
     # and fall through to `supervisor` for backward compatibility.
     phase: RunPhase
+    # True only on the chat-intake handoff path: intake is complete but the user
+    # still needs to pick a depth profile before planner_generate runs.
+    report_depth_selection_pending: bool
     intake_draft: RunIntakeDraft
     intake_history: list[IntakeExchange]
     plan_tree: PlanTree | None

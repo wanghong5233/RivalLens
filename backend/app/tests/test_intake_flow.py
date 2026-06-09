@@ -165,18 +165,30 @@ async def test_intake_flow_real_graph_postgres_resume() -> None:
             }
             assert await _count_intake_steps(run_id) == 3
 
-            # Resume turn 3 → intake completes, graph routes into the planner stage.
+            # Resume turn 3 → intake completes and pauses at depth-selection gate.
             reply_3 = IntakeUserReply(
                 text="Notion, Cursor",
                 selected_options=["已有名单"],
             ).model_dump()
             await app.ainvoke(Command(resume=reply_3), config=cfg)
             snapshot = await app.aget_state(cfg)
-            assert snapshot.next == ("planner_generate",), (
-                "After intake.complete (Phase 2), graph must hand off to planner_generate; "
+            assert snapshot.next == ("planning_profile_wait",), (
+                "After intake.complete the graph must wait for report_depth selection; "
                 f"got next={snapshot.next}"
             )
             assert await _count_intake_steps(run_id) == 4
+
+            # Resume depth selection → graph hands off to planner_generate.
+            depth_reply = IntakeUserReply(
+                text="",
+                selected_options=["quick"],
+            ).model_dump()
+            await app.ainvoke(Command(resume=depth_reply), config=cfg)
+            snapshot = await app.aget_state(cfg)
+            assert snapshot.next == ("planner_generate",), (
+                "After selecting report_depth, graph must hand off to planner_generate; "
+                f"got next={snapshot.next}"
+            )
 
             # Verify final intake_draft on the checkpoint matches what we expect.
             values = snapshot.values

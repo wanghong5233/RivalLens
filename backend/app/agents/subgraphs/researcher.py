@@ -170,6 +170,7 @@ class ResearcherSubState(TypedDict, total=False):
     pending_action_args: dict[str, object]
     turn_count: int
     max_turns: int
+    search_max_results: int
     compression_count: int
     last_compressed_turn: int
     messages: list[dict[str, str]]
@@ -192,6 +193,13 @@ class ResearcherSubState(TypedDict, total=False):
     official_fetch_count: int
     coverage_matrix: dict[str, dict[str, object]]
     rerank_reflected_dimensions: list[FocusDimension]
+
+
+def _state_search_max_results(state: ResearcherSubState) -> int:
+    max_results_raw = state.get("search_max_results")
+    if isinstance(max_results_raw, int) and max_results_raw > 0:
+        return min(max_results_raw, 15)
+    return 5
 
 
 def _approx_chars(messages: list[dict[str, str]]) -> int:
@@ -820,6 +828,7 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
             )
 
     if search_attempt_count == 0:
+        search_max_results = _state_search_max_results(state)
         query_prefix = f"{domain_hint} " if domain_hint else ""
         base_query = f"{query_prefix}{state['competitor_id']} {dimension} {state['research_topic']}"
         query = base_query
@@ -838,7 +847,7 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
             {
                 "query": query,
                 "query_variants": query_variants,
-                "max_results": 5,
+                "max_results": search_max_results,
                 "dimension": dimension,
             },
         )
@@ -1301,7 +1310,7 @@ def _rerank_reflection_search_args(
             primary_query=primary_query,
             base_query=base_query,
         ),
-        "max_results": 5,
+        "max_results": _state_search_max_results(state),
         "dimension": dimension,
     }
 

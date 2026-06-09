@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.tiers import resolve_tier_profile
 from models.evidence import EvidenceRecord
 from models.report import Report
 from models.run import Run
@@ -178,6 +179,7 @@ def _build_rejection(
     target_step_id: str,
     reviewer_step_id: str,
     qa_rejection_count: int,
+    max_retry_budget: int,
     failed_rules: list[RuleResult],
     warning_rule_ids: list[str],
 ) -> Rejection:
@@ -207,7 +209,7 @@ def _build_rejection(
         remediation_hints=build_remediation_hints(failed_rules),
         required_fields=sorted(required_fields),
         retry_policy=RetryPolicy(
-            max_retry=MAX_QA_REJECTIONS,
+            max_retry=max_retry_budget,
             current_retry=qa_rejection_count + 1,
             fallback_action="finalize_degraded",
         ),
@@ -223,6 +225,7 @@ def build_qa_outcome(
     reviewer_step_id: str,
     rule_results: list[RuleResult],
     qa_rejection_count: int,
+    max_retry_budget: int = MAX_QA_REJECTIONS,
     semantic_audit_passed: bool = True,
 ) -> Approval | Rejection:
     failed_blocking_rules = [
@@ -233,6 +236,7 @@ def build_qa_outcome(
             target_step_id=target_step_id,
             reviewer_step_id=reviewer_step_id,
             qa_rejection_count=qa_rejection_count,
+            max_retry_budget=max_retry_budget,
             failed_rules=failed_blocking_rules,
             warning_rule_ids=[
                 item.rule_id
@@ -274,6 +278,14 @@ def _report_depth_from_run(run: Run | None) -> Literal["quick", "deep"]:
         return "quick"
     depth_raw = run.intake_draft.get("report_depth")
     return "deep" if depth_raw == "deep" else "quick"
+
+
+def _qa_reject_budget_from_run(run: Run | None) -> int:
+    if run is None or not isinstance(run.intake_draft, dict):
+        return MAX_QA_REJECTIONS
+    depth_raw = run.intake_draft.get("report_depth")
+    depth = depth_raw if isinstance(depth_raw, str) else None
+    return resolve_tier_profile(depth).qa_reject_budget
 
 
 def _extend_sections_from_values(*, sections: list[str], values: object) -> None:
@@ -632,6 +644,7 @@ async def evaluate_report(
             )
         ).scalars().all()
         knowledge = await load_knowledge_for_run(session=session, run_id=run_id)
+    qa_reject_budget = _qa_reject_budget_from_run(run)
 
     if report is None or report.run_id != run_id:
         missing_report = RuleResult(
@@ -659,6 +672,7 @@ async def evaluate_report(
             reviewer_step_id=reviewer_step_id,
             rule_results=[missing_report],
             qa_rejection_count=qa_rejection_count,
+            max_retry_budget=qa_reject_budget,
         ), None, {
             "qa_semantic_mode": "skipped_missing_report",
             "qa_semantic_audit_passed": False,
@@ -814,6 +828,7 @@ async def evaluate_report(
         reviewer_step_id=reviewer_step_id,
         rule_results=rule_results,
         qa_rejection_count=qa_rejection_count,
+        max_retry_budget=qa_reject_budget,
         semantic_audit_passed=semantic_audit_passed,
     )
     semantic_metadata = {

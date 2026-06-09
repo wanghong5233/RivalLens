@@ -33,6 +33,7 @@ class ConductResearch(BaseModel):
     competitor_id: str
     focus_dimensions: list[FocusDimension] = Field(default_factory=list)
     max_iterations: int = MAX_REACT_TURNS
+    search_max_results: int = Field(default=5, ge=1, le=15)
     fallback_to_offline: bool = True
 
     @field_validator("focus_dimensions")

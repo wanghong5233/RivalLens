@@ -34,11 +34,13 @@ import type {
   IntakeClarifyRequest,
   IntakeCreateRequest,
   IntakeUserReply,
+  ReportDepth,
   RunIntakeDraft,
   UserRole,
 } from "@/api/types";
 import { CancelRunButton } from "@/components/CancelRunButton";
 import { IntakeModeSwitcher } from "@/components/intake/IntakeModeSwitcher";
+import { ReportDepthSelector } from "@/components/intake/ReportDepthSelector";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,6 +68,7 @@ type ChatStatus =
   | "idle"
   | "creating"
   | "awaiting_user"
+  | "awaiting_profile"
   | "replying"
   | "resuming"
   | "complete"
@@ -80,6 +83,26 @@ const POST_COMPLETE_DELAY_MS = 1500;
 // chat lives at the static /runs/new route) so a refresh can restore the current
 // pending question from the server instead of losing the thread.
 const INTAKE_SESSION_KEY = "rivallens.intake.run_id";
+
+function normalizeReportDepth(raw: unknown): ReportDepth {
+  if (raw === "deep" || raw === "quick") {
+    return raw;
+  }
+  if (raw === "debug" && import.meta.env.DEV) {
+    return "debug";
+  }
+  return "quick";
+}
+
+function reportDepthLabel(depth: ReportDepth): string {
+  if (depth === "deep") {
+    return "深度报告";
+  }
+  if (depth === "debug") {
+    return "Debug（仅调试）";
+  }
+  return "速览";
+}
 
 // Raw schema keys (market_scope, domain_hint, …) are debug-grade. Map them to
 // user-facing labels for the clarify bubble; unknown keys are hidden, not shown raw.
@@ -353,6 +376,7 @@ export function NewRunChatPage(): JSX.Element {
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [composerText, setComposerText] = useState("");
   const [composerOptions, setComposerOptions] = useState<string[]>([]);
+  const [reportDepth, setReportDepth] = useState<ReportDepth>("quick");
   const [selectedExampleId, setSelectedExampleId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -387,9 +411,8 @@ export function NewRunChatPage(): JSX.Element {
           return;
         }
         if (
-          session.phase !== "intake" ||
           !session.awaiting_user ||
-          session.pending_clarify === null
+          (session.phase !== "intake" && session.phase !== "planning")
         ) {
           sessionStorage.removeItem(INTAKE_SESSION_KEY);
           return;
@@ -414,11 +437,16 @@ export function NewRunChatPage(): JSX.Element {
             selectedOptions: [...exchange.reply.selected_options],
           });
         }
-        rebuilt.push(clarifyMessageFromPayload(session.pending_clarify));
+        if (session.pending_clarify !== null) {
+          rebuilt.push(clarifyMessageFromPayload(session.pending_clarify));
+        }
         setMessages(rebuilt);
         setDraft(session.intake_draft);
+        if (session.intake_draft !== null) {
+          setReportDepth(normalizeReportDepth(session.intake_draft.report_depth));
+        }
         setRunId(session.run_id);
-        setStatus("awaiting_user");
+        setStatus(session.phase === "planning" ? "awaiting_profile" : "awaiting_user");
       } catch {
         // Stale / deleted run: drop the pointer and let the user start fresh.
         sessionStorage.removeItem(INTAKE_SESSION_KEY);
@@ -508,7 +536,6 @@ export function NewRunChatPage(): JSX.Element {
 
   const handleIntakeComplete = useCallback(
     (payload: IntakeCompletePayload) => {
-      sessionStorage.removeItem(INTAKE_SESSION_KEY);
       const draftFromEvent = payload.draft as Partial<RunIntakeDraft> | undefined;
       if (draftFromEvent) {
         setDraft({
@@ -522,26 +549,20 @@ export function NewRunChatPage(): JSX.Element {
         {
           id: newMessageId(),
           kind: "assistant.complete",
-          text: "需求确认完成，Agent 正在为你拟定一份分析计划，请稍候确认。",
+          text: "需求确认完成。请先选择分析档位，再生成计划。",
         },
       ]);
-      setStatus("complete");
+      if (draftFromEvent?.report_depth !== undefined) {
+        setReportDepth(normalizeReportDepth(draftFromEvent.report_depth));
+      }
+      setStatus("awaiting_profile");
       pushToast({
         title: "需求确认完成",
-        description: "正在跳转到计划确认页…",
+        description: "请选择分析档位后继续。",
         variant: "success",
       });
-      if (runId !== null) {
-        const targetRunId = runId;
-        // Phase 2: hand off to PlanConfirmPage. The planner publishes a plan
-        // shortly after intake completes; PlanConfirmPage either renders the
-        // already-mirrored Run.plan_tree or waits for plan.published over SSE.
-        window.setTimeout(() => {
-          navigate(`/app/runs/${targetRunId}/plan`);
-        }, POST_COMPLETE_DELAY_MS);
-      }
     },
-    [runId, navigate],
+    [],
   );
 
   useRunEvents(runId ?? "", {
@@ -553,7 +574,13 @@ export function NewRunChatPage(): JSX.Element {
   // --- Send handlers --------------------------------------------------------
 
   const canSend = useMemo(() => {
-    if (status === "creating" || status === "replying" || status === "resuming" || status === "complete") {
+    if (
+      status === "creating" ||
+      status === "replying" ||
+      status === "resuming" ||
+      status === "complete" ||
+      status === "awaiting_profile"
+    ) {
       return false;
     }
     if (runId === null) {
@@ -586,7 +613,9 @@ export function NewRunChatPage(): JSX.Element {
     setMessages((prev) => [...prev, userMessage]);
     setComposerText("");
     try {
-      const payload: IntakeCreateRequest = { user_query: userQuery };
+      const payload: IntakeCreateRequest = {
+        user_query: userQuery,
+      };
       const idempotencyKey =
         createIdempotencyKeyRef.current !== null && createIdempotencyQueryRef.current === userQuery
           ? createIdempotencyKeyRef.current
@@ -603,6 +632,7 @@ export function NewRunChatPage(): JSX.Element {
       setRunId(response.run_id);
       sessionStorage.setItem(INTAKE_SESSION_KEY, response.run_id);
       setDraft(response.intake_draft);
+      setReportDepth(normalizeReportDepth(response.intake_draft.report_depth));
       if (response.phase === "done") {
         sessionStorage.removeItem(INTAKE_SESSION_KEY);
         setStatus("complete");
@@ -616,15 +646,7 @@ export function NewRunChatPage(): JSX.Element {
         return;
       }
       if (response.phase === "planning") {
-        sessionStorage.removeItem(INTAKE_SESSION_KEY);
-        setStatus("complete");
-        pushToast({
-          title: "计划已生成",
-          description: "正在跳转到计划确认。",
-          variant: "success",
-        });
-        const targetRunId = response.run_id;
-        window.setTimeout(() => navigate(`/app/runs/${targetRunId}/plan`), POST_COMPLETE_DELAY_MS);
+        setStatus("awaiting_profile");
         return;
       }
       const clarify = response.first_clarify_request;
@@ -679,9 +701,25 @@ export function NewRunChatPage(): JSX.Element {
     setMessages((prev) => [...prev, userMessage]);
     setComposerText("");
     setComposerOptions([]);
+    const isProfileSelectionStep =
+      currentClarify !== null &&
+      currentClarify.kind === "assistant.clarify" &&
+      currentClarify.fieldTargets.includes("report_depth");
     try {
       const reply: IntakeUserReply = { text, selected_options: selectedOptions };
       await replyIntake.mutateAsync({ runId, reply });
+      if (isProfileSelectionStep) {
+        sessionStorage.removeItem(INTAKE_SESSION_KEY);
+        setStatus("complete");
+        pushToast({
+          title: "档位已确认",
+          description: "正在生成计划并跳转到计划确认页…",
+          variant: "success",
+        });
+        const targetRunId = runId;
+        window.setTimeout(() => navigate(`/app/runs/${targetRunId}/plan`), POST_COMPLETE_DELAY_MS);
+        return;
+      }
       setStatus("resuming");
     } catch (error) {
       const message = error instanceof Error ? error.message : "未知错误";
@@ -696,6 +734,54 @@ export function NewRunChatPage(): JSX.Element {
       setStatus("awaiting_user");
       pushToast({
         title: "回复失败",
+        description: message,
+        variant: "danger",
+      });
+    }
+  }
+
+  async function submitProfileSelection(): Promise<void> {
+    if (runId === null || status !== "awaiting_profile") {
+      return;
+    }
+    setStatus("replying");
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: newMessageId(),
+        kind: "user",
+        text: `选择档位：${reportDepthLabel(reportDepth)}`,
+        selectedOptions: [reportDepth],
+      },
+    ]);
+    try {
+      const reply: IntakeUserReply = {
+        text: "",
+        selected_options: [reportDepth],
+      };
+      await replyIntake.mutateAsync({ runId, reply });
+      sessionStorage.removeItem(INTAKE_SESSION_KEY);
+      setStatus("complete");
+      pushToast({
+        title: "档位已确认",
+        description: "正在生成计划并跳转到计划确认页…",
+        variant: "success",
+      });
+      const targetRunId = runId;
+      window.setTimeout(() => navigate(`/app/runs/${targetRunId}/plan`), POST_COMPLETE_DELAY_MS);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: newMessageId(),
+          kind: "assistant.error",
+          text: `确认档位失败：${message}`,
+        },
+      ]);
+      setStatus("awaiting_profile");
+      pushToast({
+        title: "确认档位失败",
         description: message,
         variant: "danger",
       });
@@ -783,6 +869,10 @@ export function NewRunChatPage(): JSX.Element {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    if (status === "awaiting_profile") {
+      await submitProfileSelection();
+      return;
+    }
     await handleSend();
   }
 
@@ -810,7 +900,8 @@ export function NewRunChatPage(): JSX.Element {
   );
   const isBusy =
     status === "creating" || status === "replying" || status === "resuming";
-  const composerDisabled = isBusy || status === "complete";
+  const composerDisabled =
+    isBusy || status === "complete" || status === "awaiting_profile";
   const shouldShowGhostSuggestion =
     activeGhostSuggestion !== null &&
     composerText.length === 0 &&
@@ -818,7 +909,9 @@ export function NewRunChatPage(): JSX.Element {
   const composerPlaceholder =
     runId === null
       ? "描述你想做的竞品分析（角色、要解决的问题、可选竞品名单）"
-      : "回答 Agent 的问题，或补充更多上下文…";
+      : status === "awaiting_profile"
+        ? "请先选择分析档位后继续"
+        : "回答 Agent 的问题，或补充更多上下文…";
 
   useEffect(() => {
     if (runId === null) {
@@ -938,6 +1031,27 @@ export function NewRunChatPage(): JSX.Element {
                     ))}
                   </div>
                 )}
+                {status === "awaiting_profile" && runId !== null && (
+                  <div className="rounded-md border border-primary/30 bg-primary/[0.06] p-3">
+                    <p className="text-xs font-medium text-foreground">
+                      需求已确认，生成计划前请选择分析档位
+                    </p>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                      <ReportDepthSelector value={reportDepth} onChange={setReportDepth} />
+                      <Button
+                        className="shrink-0"
+                        disabled={isBusy}
+                        onClick={() => {
+                          void submitProfileSelection();
+                        }}
+                        size="sm"
+                        type="button"
+                      >
+                        继续生成计划
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                     {runId === null && (
@@ -1049,7 +1163,9 @@ export function NewRunChatPage(): JSX.Element {
                   )}
                   <p>
                     <span className="text-foreground-subtle">报告深度：</span>
-                    {draft.report_depth === "deep" ? "深度报告" : "速览"}
+                    {status === "awaiting_profile"
+                      ? reportDepthLabel(reportDepth)
+                      : reportDepthLabel(normalizeReportDepth(draft.report_depth))}
                   </p>
                 </div>
               )}

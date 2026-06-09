@@ -51,7 +51,7 @@ def _post_intake_reply_when_ready(
     body: dict[str, object],
     timeout_seconds: float = 10.0,
 ) -> None:
-    """Retry intake/reply until graph is paused at intake_wait."""
+    """Retry intake/reply until graph is paused at a reply-compatible gate."""
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         response = test_client.post(f"/api/runs/{run_id}/intake/reply", json=body)
@@ -138,11 +138,11 @@ def test_intake_create_idempotency_conflict_returns_409(test_client: TestClient)
 
 
 def test_intake_reply_completes_and_publishes_plan(test_client: TestClient) -> None:
-    """Phase 2: after the final intake reply the graph hands off to the planner.
+    """Phase 2: after intake completion, depth selection resumes planner publish.
 
-    The run remains `status="running"` paused at planner_wait until Phase 2's
-    /plan/confirm endpoint resumes it. We assert that the planner published a
-    plan_tree onto the Run row so the FE PlanConfirmPage can render it.
+    The run pauses at planning_profile_wait after required intake fields are
+    complete. One more /intake/reply (report_depth choice) resumes to planner,
+    which publishes plan_tree and pauses at planner_wait.
     """
     create = test_client.post(
         "/api/runs/intake",
@@ -182,11 +182,27 @@ def test_intake_reply_completes_and_publishes_plan(test_client: TestClient) -> N
     else:
         pytest.fail("intake_draft.analysis_intent never merged after second reply")
 
-    # Reply 3: completes intake → planner publishes a plan and pauses at planner_wait.
+    # Reply 3: completes required intake fields; graph pauses at profile gate.
     _post_intake_reply_when_ready(
         test_client,
         run_id=run_id,
         body={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
+    )
+
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        detail = test_client.get(f"/api/runs/{run_id}").json()
+        if detail.get("phase") == "planning" and detail.get("plan_tree") is None:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("run never entered planning gate after intake completion")
+
+    # Reply 4: confirm depth profile; planner can now publish and pause at planner_wait.
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "", "selected_options": ["quick"]},
     )
 
     # Poll Run.plan_tree until the planner has published. Run.status stays

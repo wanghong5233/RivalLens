@@ -608,7 +608,7 @@ def test_get_run_metrics_for_completed_run(test_client: TestClient) -> None:
     assert 0.0 <= payload["dimension_coverage_rate"] <= 1.0
     assert payload["report_char_count"] >= 0
     assert payload["report_section_count"] >= 0
-    assert payload["report_depth"] in {"quick", "deep"}
+    assert payload["report_depth"] in {"debug", "quick", "deep"}
     assert 0.0 <= payload["report_section_coverage_rate"] <= 1.0
     assert payload["knowledge_feature_count"] >= 0
     assert payload["knowledge_pricing_count"] >= 0

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from agents.state import AgentState
+from core.tiers import resolve_tier_profile
 from db.engine import get_session_factory
 from models.report import Report
 from models.step import Step
@@ -13,7 +14,7 @@ from schemas.ids import make_id
 from schemas.qa import Approval, Rejection
 from service.event_bus import RunEventType, emit_run_event
 from service.llm.records import build_llm_call_record
-from service.qa.engine import MAX_QA_REJECTIONS, evaluate_report
+from service.qa.engine import evaluate_report
 from utils.log_node import log_node
 from utils.logger import get_logger
 
@@ -115,6 +116,18 @@ def _report_has_writer_fallback_mode(content_json: dict[str, object]) -> bool:
     return "writer_fallback_mode" in risk_callouts_raw
 
 
+def _state_report_depth(state: AgentState) -> str | None:
+    intake_draft_raw = state.get("intake_draft")
+    if isinstance(intake_draft_raw, dict):
+        depth_raw = intake_draft_raw.get("report_depth")
+        if isinstance(depth_raw, str):
+            return depth_raw
+    depth_raw = state.get("report_depth")
+    if isinstance(depth_raw, str):
+        return depth_raw
+    return None
+
+
 @log_node("qa")
 async def qa_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
@@ -124,6 +137,7 @@ async def qa_node(state: AgentState) -> AgentState:
     session_factory = get_session_factory()
     pending_review_target_step_id = state.get("pending_review_target_step_id")
     qa_rejection_count = int(state.get("qa_rejection_count", 0))
+    qa_reject_budget = resolve_tier_profile(_state_report_depth(state)).qa_reject_budget
     qa_step_id = make_id("step_")
 
     writer_step, report = await _load_review_targets(
@@ -161,14 +175,14 @@ async def qa_node(state: AgentState) -> AgentState:
     )
     if approval_blocked_for_fallback:
         updated_rejection_count = qa_rejection_count + 1
-        is_force_degraded = updated_rejection_count > MAX_QA_REJECTIONS
+        is_force_degraded = updated_rejection_count > qa_reject_budget
     else:
         updated_rejection_count = (
             qa_rejection_count + 1 if isinstance(review_result, Rejection) else qa_rejection_count
         )
         is_force_degraded = (
             isinstance(review_result, Rejection)
-            and updated_rejection_count > MAX_QA_REJECTIONS
+            and updated_rejection_count > qa_reject_budget
         )
     qa_payload = _make_qa_payload(
         target_step_id=writer_step.step_id,

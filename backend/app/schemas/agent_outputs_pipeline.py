@@ -61,7 +61,6 @@ INTAKE_PATCHABLE_FIELDS: frozenset[str] = frozenset(
         "competitors_discovery_mode",
         "domain_hint",
         "focus_dimensions",
-        "report_depth",
         "reference_urls",
         "self_product",
         "market_scope",

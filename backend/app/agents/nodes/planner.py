@@ -16,11 +16,13 @@ from agents.state_coercion import (
 from core.defaults import (
     DEFAULT_FOCUS_DIMENSIONS,
     MAX_ADDITIONAL_PLAN_TASKS,
+    MAX_FOCUS_DIMENSIONS,
     PLAN_TASK_DESCRIPTION_MAX_LEN,
     PLAN_TASK_TITLE_MAX_LEN,
     MAX_RESEARCH_COMPETITORS,
     MAX_TOTAL_PLAN_TASKS,
 )
+from core.tiers import resolve_tier_profile
 from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
@@ -31,7 +33,7 @@ from schemas.contracts import (
     research_focus_dimensions,
 )
 from schemas.ids import make_id
-from schemas.intake import RunIntakeDraft
+from schemas.intake import IntakeUserReply, RunIntakeDraft
 from schemas.plan import PlanConfirmRequest, PlanTask, PlanTaskStage, PlanTree
 from service.event_bus import RunEventType, emit_run_event
 from service.llm import (
@@ -52,10 +54,47 @@ log = get_logger("agents.planner")
 # discovery node's exclusive output. Allowing it would let two discoveries
 # compete and would also bypass `_derive_focus_dimensions`.
 _USER_ALLOWED_STAGES: frozenset[str] = frozenset({"research", "analyze", "write"})
+_REPORT_DEPTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("debug", ("debug", "调试", "极速", "超快")),
+    ("quick", ("quick", "速览", "快速", "标准", "平衡")),
+    ("deep", ("deep", "深度", "完整", "详细")),
+)
 
 
 def _resolve_session_factory(state: AgentState) -> async_sessionmaker[AsyncSession]:
     return get_session_factory()
+
+
+def _build_report_depth_selection_interrupt() -> dict[str, object]:
+    return {
+        "kind": "report_depth_select",
+        "question": "需求已明确。开始生成计划前，请选择分析档位。",
+        "field_targets": ["report_depth"],
+        "suggested_options": ["quick", "deep", "debug"],
+        "suggested_answer": "quick",
+    }
+
+
+def _match_report_depth(value: str) -> str | None:
+    needle = value.casefold().strip()
+    if not needle:
+        return None
+    for depth, keywords in _REPORT_DEPTH_KEYWORDS:
+        if any(keyword.casefold() in needle for keyword in keywords):
+            return depth
+    return None
+
+
+def _resolve_report_depth_from_reply(reply: IntakeUserReply) -> str:
+    candidates = [*reply.selected_options, reply.text]
+    for candidate in candidates:
+        depth = _match_report_depth(candidate)
+        if depth is not None:
+            return depth
+    raise RuntimeError(
+        "planning_profile_wait reply does not contain a valid report_depth "
+        f"(selected_options={reply.selected_options}, text={reply.text!r})"
+    )
 
 
 def _coerce_pending_plan(state: AgentState) -> PlanTree:
@@ -66,6 +105,7 @@ def _canonical_focus_dimensions(
     values: list[str],
     *,
     analysis_archetype: str = "comparison",
+    max_dimensions: int,
 ) -> list[str]:
     normalized = normalize_dimensions(values, allow_empty=True)
     if not normalized:
@@ -73,10 +113,15 @@ def _canonical_focus_dimensions(
     return ensure_comparison_schema_dimensions(
         normalized,
         analysis_archetype=analysis_archetype,
-    )
+    )[:max_dimensions]
 
 
-def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
+def _fallback_tasks(
+    draft: RunIntakeDraft,
+    *,
+    max_competitors: int,
+    max_dimensions: int,
+) -> list[PlanTask]:
     """Deterministic plan when the LLM output is unusable.
 
     Mirrors the supervisor's reachable execution path so the visible plan
@@ -85,11 +130,12 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
     focus = _canonical_focus_dimensions(
         list(draft.focus_dimensions),
         analysis_archetype=draft.analysis_archetype,
+        max_dimensions=max_dimensions,
     )
     research_focus = research_focus_dimensions(
         focus,
         analysis_archetype=draft.analysis_archetype,
-    )
+    )[:max_dimensions]
     tasks: list[PlanTask] = []
     competitors = list(draft.competitors_explicit)
     if draft.competitors_discovery_mode or not competitors:
@@ -102,7 +148,7 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
                 focus_dimensions=research_focus,
             )
         )
-    for competitor in competitors[:MAX_RESEARCH_COMPETITORS]:
+    for competitor in competitors[:max_competitors]:
         tasks.append(
             PlanTask(
                 stage="research",
@@ -133,6 +179,52 @@ def _fallback_tasks(draft: RunIntakeDraft) -> list[PlanTask]:
     return tasks[:MAX_TOTAL_PLAN_TASKS]
 
 
+def _cap_plan_tasks_for_profile(
+    tasks: list[PlanTask],
+    *,
+    analysis_archetype: str,
+    max_competitors: int,
+    max_dimensions: int,
+) -> list[PlanTask]:
+    capped: list[PlanTask] = []
+    research_count = 0
+    for task in tasks:
+        competitor_id = (
+            task.competitor_id.strip()
+            if isinstance(task.competitor_id, str) and task.competitor_id.strip()
+            else None
+        )
+        if task.stage == "research":
+            if competitor_id is None:
+                continue
+            if research_count >= max_competitors:
+                continue
+            research_count += 1
+
+        focus_dimensions = _canonical_focus_dimensions(
+            list(task.focus_dimensions),
+            analysis_archetype=analysis_archetype,
+            max_dimensions=max_dimensions,
+        )
+        if task.stage in {"discover", "research"}:
+            focus_dimensions = research_focus_dimensions(
+                focus_dimensions,
+                analysis_archetype=analysis_archetype,
+            )[:max_dimensions]
+
+        capped.append(
+            task.model_copy(
+                update={
+                    "competitor_id": competitor_id if task.stage == "research" else None,
+                    "focus_dimensions": focus_dimensions,
+                }
+            )
+        )
+        if len(capped) >= MAX_TOTAL_PLAN_TASKS:
+            break
+    return capped
+
+
 def _research_competitors_from_tasks(tasks: list[PlanTask]) -> list[str]:
     competitors: list[str] = []
     seen: set[str] = set()
@@ -154,6 +246,8 @@ def reconcile_plan_tree_after_discovery(
     discovered_competitor_sources: dict[str, dict[str, str | None]] | None = None,
     focus_dimensions: list[str] | None = None,
     analysis_archetype: str = "comparison",
+    max_competitors: int = MAX_RESEARCH_COMPETITORS,
+    max_dimensions: int = MAX_FOCUS_DIMENSIONS,
 ) -> PlanTree:
     """Materialize per-competitor research tasks after discovery completes."""
     plan = coerce_plan_tree(plan_tree)
@@ -174,11 +268,10 @@ def reconcile_plan_tree_after_discovery(
             if task.focus_dimensions:
                 focus = normalize_dimensions(list(task.focus_dimensions), allow_empty=True)
                 break
-    if not focus:
-        focus = list(DEFAULT_FOCUS_DIMENSIONS)
-    focus = ensure_comparison_schema_dimensions(
+    focus = _canonical_focus_dimensions(
         focus,
         analysis_archetype=analysis_archetype,
+        max_dimensions=max_dimensions,
     )
 
     insert_at = 0
@@ -192,9 +285,9 @@ def reconcile_plan_tree_after_discovery(
     research_focus = research_focus_dimensions(
         focus,
         analysis_archetype=analysis_archetype,
-    )
+    )[:max_dimensions]
     new_research_tasks: list[PlanTask] = []
-    for competitor in discovered_competitors[:MAX_RESEARCH_COMPETITORS]:
+    for competitor in discovered_competitors[:max_competitors]:
         if competitor in existing_research:
             continue
         new_research_tasks.append(
@@ -240,7 +333,7 @@ def reconcile_plan_tree_after_discovery(
         actual_competitor_set = set(actual_competitors)
         log.info(
             "planner.reconcile.research_competitor_set",
-            cap=MAX_RESEARCH_COMPETITORS,
+            cap=max_competitors,
             discovered_count=len(discovered_competitors),
             existing_research_count=len(existing_research),
             new_research_count=0,
@@ -251,7 +344,7 @@ def reconcile_plan_tree_after_discovery(
                 for competitor in discovered_competitors
                 if competitor not in actual_competitor_set
             ],
-            capped=len(discovered_competitors) > MAX_RESEARCH_COMPETITORS,
+            capped=len(discovered_competitors) > max_competitors,
         )
         if merged_competitor_sources != dict(plan.competitor_sources):
             return plan.model_copy(
@@ -268,7 +361,7 @@ def reconcile_plan_tree_after_discovery(
     actual_competitor_set = set(actual_competitors)
     log.info(
         "planner.reconcile.research_competitor_set",
-        cap=MAX_RESEARCH_COMPETITORS,
+        cap=max_competitors,
         discovered_count=len(discovered_competitors),
         existing_research_count=len(existing_research),
         new_research_count=len(new_research_tasks),
@@ -279,7 +372,7 @@ def reconcile_plan_tree_after_discovery(
             for competitor in discovered_competitors
             if competitor not in actual_competitor_set
         ],
-        capped=len(discovered_competitors) > MAX_RESEARCH_COMPETITORS,
+        capped=len(discovered_competitors) > max_competitors,
     )
     return plan.model_copy(
         update={
@@ -390,6 +483,42 @@ async def _persist_plan_tree_to_run(*, run_id: str, plan: PlanTree) -> None:
         await session.commit()
 
 
+async def _persist_intake_draft_to_run(*, run_id: str, draft: RunIntakeDraft) -> None:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return
+        run.intake_draft = draft.model_dump(exclude={"is_complete"})
+        await session.commit()
+
+
+@log_node("planning_profile_wait")
+async def planning_profile_wait_node(state: AgentState) -> AgentState:
+    raw_reply: Any = interrupt(_build_report_depth_selection_interrupt())
+    try:
+        reply = IntakeUserReply.model_validate(raw_reply)
+    except ValidationError as exc:
+        raise RuntimeError(
+            f"planning_profile_wait resume value failed validation: {exc}"
+        ) from exc
+
+    draft = coerce_intake_draft_or_default(state)
+    report_depth = _resolve_report_depth_from_reply(reply)
+    updated_draft = draft.model_copy(update={"report_depth": report_depth})
+
+    run_id = state.get("run_id") or make_id("run_")
+    await _persist_intake_draft_to_run(run_id=run_id, draft=updated_draft)
+
+    return {
+        **spread_without_accumulators(state),
+        "run_id": run_id,
+        "phase": "planning",
+        "intake_draft": updated_draft,
+        "report_depth_selection_pending": False,
+    }
+
+
 @log_node("planner_generate")
 async def planner_generate_node(state: AgentState) -> AgentState:
     """LLM-driven plan generation. Writes pending_plan_tree + emits plan.published.
@@ -401,6 +530,7 @@ async def planner_generate_node(state: AgentState) -> AgentState:
     session_factory = _resolve_session_factory(state)
     run_id = state.get("run_id") or make_id("run_")
     draft = coerce_intake_draft_or_default(state)
+    tier_profile = resolve_tier_profile(draft.report_depth)
     intake_dump = draft.model_dump(exclude={"is_complete"})
 
     user_prompt = build_planner_user_prompt(intake_draft=intake_dump)
@@ -426,9 +556,20 @@ async def planner_generate_node(state: AgentState) -> AgentState:
         rationale = harness_result.value.rationale
         action = "publish"
     else:
-        tasks = _fallback_tasks(draft)
+        tasks = _fallback_tasks(
+            draft,
+            max_competitors=tier_profile.max_competitors,
+            max_dimensions=tier_profile.max_dimensions,
+        )
         rationale = ""
         action = "publish_fallback"
+
+    tasks = _cap_plan_tasks_for_profile(
+        tasks,
+        analysis_archetype=draft.analysis_archetype,
+        max_competitors=tier_profile.max_competitors,
+        max_dimensions=tier_profile.max_dimensions,
+    )
 
     plan = PlanTree(tasks=tasks, rationale=rationale, version=1, confirmed_at=None)
 
@@ -502,6 +643,8 @@ async def planner_wait_node(state: AgentState) -> AgentState:
     discovery round-trip and target them directly.
     """
     pending = _coerce_pending_plan(state)
+    draft = coerce_intake_draft_or_default(state)
+    tier_profile = resolve_tier_profile(draft.report_depth)
     raw_confirm: Any = interrupt(
         {"kind": "plan_confirm", "plan_tree": pending.model_dump()}
     )
@@ -536,7 +679,12 @@ async def planner_wait_node(state: AgentState) -> AgentState:
         )
 
     kept_tasks = [task for task in pending.tasks if task.task_id not in disabled]
-    merged_tasks = kept_tasks + user_tasks
+    merged_tasks = _cap_plan_tasks_for_profile(
+        kept_tasks + user_tasks,
+        analysis_archetype=draft.analysis_archetype,
+        max_competitors=tier_profile.max_competitors,
+        max_dimensions=tier_profile.max_dimensions,
+    )
     confirmed = PlanTree(
         plan_id=pending.plan_id,
         tasks=merged_tasks,
@@ -555,8 +703,9 @@ async def planner_wait_node(state: AgentState) -> AgentState:
     existing_competitors = set(state.get("competitors", []) or [])
     new_user_competitors = [
         task.competitor_id
-        for task in user_tasks
+        for task in confirmed.tasks
         if task.stage == "research"
+        and task.source == "user"
         and task.competitor_id is not None
         and task.competitor_id not in existing_competitors
     ]

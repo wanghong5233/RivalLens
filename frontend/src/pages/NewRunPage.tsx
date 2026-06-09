@@ -5,7 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { useCompetitorSeeds, useCreateRun, useCreateWatchlistItem } from "@/api/hooks";
+import type { ReportDepth } from "@/api/types";
 import { IntakeModeSwitcher } from "@/components/intake/IntakeModeSwitcher";
+import { ReportDepthSelector } from "@/components/intake/ReportDepthSelector";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -72,6 +74,16 @@ const RUN_TEMPLATES: RunTemplate[] = [
   },
 ];
 
+function normalizeReportDepth(raw: unknown): ReportDepth {
+  if (raw === "deep" || raw === "quick") {
+    return raw;
+  }
+  if (raw === "debug" && import.meta.env.DEV) {
+    return "debug";
+  }
+  return "quick";
+}
+
 export function NewRunPage(): JSX.Element {
   const navigate = useNavigate();
   const competitorSeedsQuery = useCompetitorSeeds();
@@ -89,6 +101,7 @@ export function NewRunPage(): JSX.Element {
   const [referenceUrlInput, setReferenceUrlInput] = useState("");
   const [referenceUrls, setReferenceUrls] = useState<string[]>([]);
   const [targetRoles, setTargetRoles] = useState<string[]>(["pm", "founder"]);
+  const [reportDepth, setReportDepth] = useState<ReportDepth>("quick");
   const [addToWatchlist, setAddToWatchlist] = useState(false);
 
   const competitorSeeds = competitorSeedsQuery.data ?? [];
@@ -128,6 +141,7 @@ export function NewRunPage(): JSX.Element {
         domainHint?: string;
         referenceUrls?: string[];
         targetRoles?: string[];
+        reportDepth?: ReportDepth;
       };
       if (typeof parsed.userQuery === "string" && parsed.userQuery.trim()) {
         setUserQuery(parsed.userQuery.trim());
@@ -144,6 +158,7 @@ export function NewRunPage(): JSX.Element {
       if (Array.isArray(parsed.targetRoles) && parsed.targetRoles.length > 0) {
         setTargetRoles(parsed.targetRoles.filter((item): item is string => typeof item === "string"));
       }
+      setReportDepth(normalizeReportDepth(parsed.reportDepth));
     } catch {
       // Ignore malformed persisted drafts and continue with defaults.
     }
@@ -251,6 +266,7 @@ export function NewRunPage(): JSX.Element {
         domain_hint: domainHint.trim() ? domainHint.trim() : null,
         reference_urls: referenceUrls.length > 0 ? referenceUrls : null,
         target_roles: targetRoles,
+        report_depth: reportDepth,
         self_product: selfProduct.trim() ? selfProduct.trim() : null,
         market_scope: marketScope.trim() ? marketScope.trim() : null,
         time_context: timeContext.trim() ? timeContext.trim() : null,
@@ -286,6 +302,7 @@ export function NewRunPage(): JSX.Element {
           domainHint: payload.domain_hint,
           referenceUrls: payload.reference_urls ?? [],
           targetRoles: payload.target_roles,
+          reportDepth: payload.report_depth,
         }),
       );
       pushToast({
@@ -365,6 +382,13 @@ export function NewRunPage(): JSX.Element {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
+              <div className="space-y-1">
+                <label className="text-sm font-medium">分析档位</label>
+                <ReportDepthSelector value={reportDepth} onChange={setReportDepth} />
+                <p className="text-xs text-muted-foreground">
+                  Quick 适合日常调研；Deep 提升覆盖和深度；Debug 仅在本地开发环境显示。
+                </p>
+              </div>
               <label className="text-sm font-medium" htmlFor="user-query">
                 分析目标
               </label>

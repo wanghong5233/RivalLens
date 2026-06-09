@@ -79,6 +79,7 @@ def _build_initial_substate(
         "pending_action_args": {},
         "turn_count": 0,
         "max_turns": max_turns,
+        "search_max_results": request.search_max_results,
         "compression_count": 0,
         "last_compressed_turn": -1,
         "messages": [],

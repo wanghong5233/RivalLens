@@ -48,11 +48,17 @@ class PlanTree(BaseModel):
     competitor_sources: dict[str, dict[str, str | None]] = Field(default_factory=dict)
 
 
+class PlanDepthSelectRequest(BaseModel):
+    """Resume payload for the depth-selection interrupt before planning."""
+
+    report_depth: Literal["debug", "quick", "deep"]
+
+
 class PlanConfirmRequest(BaseModel):
     """Resume payload for the plan-confirm interrupt."""
 
     disabled_task_ids: list[str] = Field(default_factory=list)
-    # Phase β: user-injected tasks (forced priority="user_pinned" by the planner node).
+    # Phase ?: user-injected tasks (forced priority="user_pinned" by the planner node).
     additional_tasks: list[PlanTask] = Field(default_factory=list)
 
 

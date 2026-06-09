@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 import yaml
 
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
+from core.tiers import resolve_tier_profile
 from db.engine import get_session_factory
 from core.config import settings
 from exceptions.base import APIException
@@ -55,6 +56,23 @@ router = APIRouter()
 log = get_logger("router.run_rt")
 
 _RUN_PROGRESS_INTERVAL_SECONDS = 180
+
+
+def _resolve_run_report_depth(run: Run | None) -> str | None:
+    if run is None or not isinstance(run.intake_draft, dict):
+        return None
+    report_depth_raw = run.intake_draft.get("report_depth")
+    if isinstance(report_depth_raw, str):
+        return report_depth_raw
+    return None
+
+
+def _graph_invoke_config(*, run_id: str, report_depth: str | None) -> dict[str, object]:
+    profile = resolve_tier_profile(report_depth)
+    return {
+        "configurable": {"thread_id": run_id},
+        "recursion_limit": profile.recursion_limit,
+    }
 
 
 async def _run_graph_with_progress_heartbeat(
@@ -118,7 +136,7 @@ class RunCreateRequest(BaseModel):
     domain_hint: str | None = None
     reference_urls: list[str] | None = None
     target_roles: list[str] = Field(default_factory=list)
-    report_depth: Literal["quick", "deep"] = "quick"
+    report_depth: Literal["debug", "quick", "deep"] = "quick"
     self_product: str | None = None
     market_scope: str | None = None
     time_context: str | None = None
@@ -168,7 +186,7 @@ class IntakeCreateRequest(BaseModel):
     competitors_explicit: list[str] = Field(default_factory=list)
     competitors_discovery_mode: bool = False
     focus_dimensions: list[str] = Field(default_factory=list)
-    report_depth: Literal["quick", "deep"] = "quick"
+    report_depth: Literal["debug", "quick", "deep"] = "quick"
     client_request_id: str | None = None
 
     @field_validator("client_request_id")
@@ -1139,6 +1157,7 @@ async def _execute_run_graph(
     graph: Any,
     initial_state: dict[str, object],
     domain_hint: str | None,
+    recursion_limit: int,
     background_tasks: set[asyncio.Task[object]],
 ) -> None:
     """Run the supervisor graph to completion off the request path (Phase 0b async).
@@ -1148,7 +1167,7 @@ async def _execute_run_graph(
     propagate to asyncio so they remain visible instead of being silently hidden.
     """
     session_factory = get_session_factory()
-    config = {"configurable": {"thread_id": run_id}}
+    config = {"configurable": {"thread_id": run_id}, "recursion_limit": recursion_limit}
     with bind_run(run_id):
         try:
             graph_state = await _run_graph_with_progress_heartbeat(
@@ -1365,12 +1384,17 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             "intake_draft": direct_intake_draft,
             "status": "running",
         }
+        execution_config = _graph_invoke_config(
+            run_id=run_id,
+            report_depth=payload.report_depth,
+        )
         task = asyncio.create_task(
             _execute_run_graph(
                 run_id=run_id,
                 graph=graph,
                 initial_state=initial_state,
                 domain_hint=payload.domain_hint,
+                recursion_limit=int(execution_config["recursion_limit"]),
                 background_tasks=background_tasks,
             ),
             name=f"run_graph_{run_id}",
@@ -1470,13 +1494,14 @@ async def _start_intake_graph_in_background(
     graph: Any,
     initial_state: dict[str, object],
     domain_hint: str | None,
+    recursion_limit: int,
     idempotency_key: str,
     background_tasks: set[asyncio.Task[object]],
     accepted_at: datetime,
 ) -> None:
     """Start intake graph from scratch in background for async create contract."""
     session_factory = get_session_factory()
-    config = {"configurable": {"thread_id": run_id}}
+    config = {"configurable": {"thread_id": run_id}, "recursion_limit": recursion_limit}
     with bind_run(run_id):
         try:
             await _run_graph_with_progress_heartbeat(
@@ -1560,6 +1585,7 @@ async def _resume_plan_graph_in_background(
     graph: Any,
     resume_payload: dict[str, object],
     domain_hint: str | None,
+    recursion_limit: int,
     background_tasks: set[asyncio.Task[object]],
 ) -> None:
     """Resume the planner-paused graph after the user confirms the plan.
@@ -1569,7 +1595,7 @@ async def _resume_plan_graph_in_background(
     (status update, RUN_FINISH event, skill curator follow-up).
     """
     session_factory = get_session_factory()
-    config = {"configurable": {"thread_id": run_id}}
+    config = {"configurable": {"thread_id": run_id}, "recursion_limit": recursion_limit}
     with bind_run(run_id):
         try:
             graph_state = await _run_graph_with_progress_heartbeat(
@@ -1624,6 +1650,7 @@ async def _resume_intake_graph_in_background(
     graph: Any,
     resume_payload: dict[str, object],
     domain_hint: str | None,
+    recursion_limit: int,
     background_tasks: set[asyncio.Task[object]],
 ) -> None:
     """Resume the intake-paused graph; either pause again or run to END.
@@ -1636,7 +1663,7 @@ async def _resume_intake_graph_in_background(
         skill curator follow-up).
     """
     session_factory = get_session_factory()
-    config = {"configurable": {"thread_id": run_id}}
+    config = {"configurable": {"thread_id": run_id}, "recursion_limit": recursion_limit}
     with bind_run(run_id):
         try:
             await _run_graph_with_progress_heartbeat(
@@ -1879,16 +1906,22 @@ async def create_run_intake(
             "qa_reasons": [],
             "status": "running",
             "phase": "intake",
+            "report_depth_selection_pending": False,
             "intake_draft": initial_draft,
             "intake_history": [],
             "pending_clarify": None,
         }
+        intake_config = _graph_invoke_config(
+            run_id=run_id,
+            report_depth=payload.report_depth,
+        )
         task = asyncio.create_task(
             _start_intake_graph_in_background(
                 run_id=run_id,
                 graph=graph,
                 initial_state=initial_state,
                 domain_hint=payload.domain_hint,
+                recursion_limit=int(intake_config["recursion_limit"]),
                 idempotency_key=idempotency_key,
                 background_tasks=background_tasks,
                 accepted_at=accepted_at,
@@ -1959,28 +1992,34 @@ async def reply_run_intake(
                     message=f"run status={run.status} is not resumable",
                 )
             domain_hint = run.domain_hint
+            report_depth = _resolve_run_report_depth(run)
 
-        # Verify the graph is actually paused at intake_wait before resuming. Resuming
-        # from a non-intake pause would corrupt state by injecting an IntakeUserReply
-        # into the wrong node's interrupt payload.
+        # Verify the graph is paused at a reply-compatible node. We reuse the
+        # same endpoint for both intake clarify turns and the post-intake
+        # planning-profile selection gate.
         snapshot = await graph.aget_state({"configurable": {"thread_id": run_id}})
-        if snapshot.next != ("intake_wait",):
+        if snapshot.next not in {("intake_wait",), ("planning_profile_wait",)}:
             raise APIException(
                 status_code=409,
                 error_code="INTAKE_NOT_AWAITING_REPLY",
                 message=(
-                    "run is not paused at the intake clarify step; "
+                    "run is not paused at an intake/profile reply step; "
                     f"current next_node={list(snapshot.next)}"
                 ),
             )
 
         resume_payload = payload.model_dump()
+        intake_resume_config = _graph_invoke_config(
+            run_id=run_id,
+            report_depth=report_depth,
+        )
         task = asyncio.create_task(
             _resume_intake_graph_in_background(
                 run_id=run_id,
                 graph=graph,
                 resume_payload=resume_payload,
                 domain_hint=domain_hint,
+                recursion_limit=int(intake_resume_config["recursion_limit"]),
                 background_tasks=background_tasks,
             ),
             name=f"intake_resume_{run_id}",
@@ -2041,6 +2080,7 @@ async def confirm_run_plan(
                     message=f"run status={run.status} is not resumable",
                 )
             domain_hint = run.domain_hint
+            report_depth = _resolve_run_report_depth(run)
 
         # Verify the graph is actually paused at planner_wait. Resuming from a
         # non-plan pause would inject the PlanConfirmRequest into the wrong
@@ -2057,12 +2097,17 @@ async def confirm_run_plan(
             )
 
         resume_payload = payload.model_dump()
+        plan_resume_config = _graph_invoke_config(
+            run_id=run_id,
+            report_depth=report_depth,
+        )
         task = asyncio.create_task(
             _resume_plan_graph_in_background(
                 run_id=run_id,
                 graph=graph,
                 resume_payload=resume_payload,
                 domain_hint=domain_hint,
+                recursion_limit=int(plan_resume_config["recursion_limit"]),
                 background_tasks=background_tasks,
             ),
             name=f"plan_resume_{run_id}",
@@ -2214,6 +2259,7 @@ async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
                     error_code="RUN_NOT_RESUMABLE",
                     message=f"run_id={run_id} status={run.status} cannot resume",
                 )
+            report_depth = _resolve_run_report_depth(run)
 
         graph = getattr(request.app.state, "compiled_graph", None)
         if graph is None:
@@ -2222,7 +2268,8 @@ async def resume_run(run_id: str, request: Request) -> RunCreateResponse:
                 error_code="GRAPH_NOT_INITIALIZED",
                 message="Compiled LangGraph instance is not initialized.",
             )
-        graph_state = await graph.ainvoke(None, config={"configurable": {"thread_id": run_id}})
+        config = _graph_invoke_config(run_id=run_id, report_depth=report_depth)
+        graph_state = await graph.ainvoke(None, config=config)
 
         async with session_factory() as session:
             run = await session.get(Run, run_id)
@@ -2276,6 +2323,7 @@ async def reset_run(run_id: str, payload: RunResetRequest, request: Request) -> 
                     message=f"run_id={run_id} status={run.status} cannot reset",
                 )
             run_domain_hint = run.domain_hint
+            report_depth = _resolve_run_report_depth(run)
 
         graph = getattr(request.app.state, "compiled_graph", None)
         if graph is None:
@@ -2284,7 +2332,7 @@ async def reset_run(run_id: str, payload: RunResetRequest, request: Request) -> 
                 error_code="GRAPH_NOT_INITIALIZED",
                 message="Compiled LangGraph instance is not initialized.",
             )
-        config = {"configurable": {"thread_id": run_id}}
+        config = _graph_invoke_config(run_id=run_id, report_depth=report_depth)
         state_snapshot = await graph.aget_state(config)
         if not _has_checkpoint_state(state_snapshot.values):
             raise APIException(
@@ -2438,7 +2486,7 @@ async def get_run_intake_session(run_id: str, request: Request) -> IntakeSession
         run_id=run_id,
         status=run_status,
         phase=phase,
-        awaiting_user=snapshot.next == ("intake_wait",),
+        awaiting_user=snapshot.next in {("intake_wait",), ("planning_profile_wait",)},
         intake_draft=draft,
         pending_clarify=pending,
         history=history,

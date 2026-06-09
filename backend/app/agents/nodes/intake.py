@@ -67,15 +67,14 @@ _DISCOVERY_OFF_KEYWORDS: tuple[str, ...] = (
     "已知",
     "我自己来",
 )
-_DEPTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("quick", ("quick", "速览", "快速")),
-    ("deep", ("deep", "深度", "完整", "详细")),
-)
+# report_depth is intentionally NOT an intake-inferred field: the analysis tier
+# is an authoritative run-level setting chosen up front in the composer (like
+# ChatGPT/Gemini Deep Research). The clarification conversation is tier-agnostic,
+# so intake never asks about it nor overwrites the user's selection.
 _OPTIONAL_CLARIFY_TARGETS: frozenset[str] = frozenset(
     {
         "domain_hint",
         "focus_dimensions",
-        "report_depth",
         "reference_urls",
         "self_product",
         "market_scope",
@@ -262,9 +261,6 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
         )
         if normalized:
             base["focus_dimensions"] = normalized
-    depth_raw = patch.get("report_depth")
-    if isinstance(depth_raw, str) and depth_raw in {"quick", "deep"}:
-        base["report_depth"] = depth_raw
     urls_raw = patch.get("reference_urls")
     if isinstance(urls_raw, list):
         normalized = [str(u).strip() for u in urls_raw if isinstance(u, str) and u.strip()]
@@ -530,13 +526,6 @@ def _merge_reply_into_draft(
             if not discovery_changed:
                 base["competitors_discovery_mode"] = base.get("competitors_discovery_mode", False)
 
-    if "report_depth" in targets:
-        for candidate in candidates:
-            depth = _match_keyword(candidate, _DEPTH_KEYWORDS)
-            if depth is not None:
-                base["report_depth"] = depth
-                break
-
     option_text = "、".join(option.strip() for option in reply.selected_options if option.strip())
     reply_signal = reply.text.strip() or option_text
 
@@ -774,6 +763,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
             **spread_without_accumulators(state),
             "run_id": run_id,
             "phase": "planning",
+            "report_depth_selection_pending": True,
             "intake_draft": next_draft,
             "domain_hint": next_draft.domain_hint,
             "market_scope": next_draft.market_scope,
@@ -804,6 +794,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         **spread_without_accumulators(state),
         "run_id": run_id,
         "phase": "intake",
+        "report_depth_selection_pending": False,
         "intake_draft": next_draft,
         "domain_hint": next_draft.domain_hint,
         "market_scope": next_draft.market_scope,
