@@ -97,6 +97,11 @@ def _make_qa_payload(
 
 
 def _to_qa_reasons(rejection: Rejection) -> list[str]:
+    # Prefer actionable rewrite hints (curated Chinese instruction, or the
+    # rule's own message as fallback) so the writer's next attempt is targeted.
+    hints = [hint for hint in rejection.remediation_hints.values() if hint]
+    if hints:
+        return hints
     reasons = [item for item in rejection.semantic_findings if item]
     if reasons:
         return reasons

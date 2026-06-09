@@ -18,6 +18,7 @@ class Rejection(BaseModel):
     failed_rule_ids: list[str] = Field(default_factory=list)
     warning_rule_ids: list[str] = Field(default_factory=list)
     semantic_findings: list[str] = Field(default_factory=list)
+    remediation_hints: dict[str, str] = Field(default_factory=dict)
     required_fields: list[str] = Field(default_factory=list)
     retry_policy: RetryPolicy
     severity: Literal["blocking", "warning"]
