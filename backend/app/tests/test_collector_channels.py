@@ -186,14 +186,16 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
     monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
     monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: limiter)
     monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
+    # Non-HTML content_type makes the local httpx path bail out deterministically,
+    # so this exercises the Tavily fallback branch and the per-host limiter.
     monkeypatch.setattr(
         "agents.tools.fetch_url.get_collector_http_client",
         lambda: _FakeHTTPClient(
             FetchResponse(
                 url="https://cursor.com/pricing",
                 status_code=200,
-                text="<html><body>Pricing page content</body></html>",
-                content_type="text/html",
+                text="%PDF-1.7 binary",
+                content_type="application/pdf",
             )
         ),
     )
@@ -225,6 +227,45 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_fetch_url_channel_uses_local_httpx_extract(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FetchUrlChannel()
+    limiter = _FakeLimiter()
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", None)
+    monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: limiter)
+    monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
+    html = (
+        "<html><head><title>Cursor Pricing</title></head><body><article>"
+        "<h1>Cursor Pricing Plans</h1>"
+        "<p>Cursor offers a Hobby free tier, a Pro plan at twenty dollars per month, "
+        "and a Business plan at forty dollars per user per month with centralized billing, "
+        "SSO, and admin controls for engineering teams.</p>"
+        "<p>The Business plan adds enforced privacy mode, SAML SSO, and analytics so "
+        "engineering leaders can audit adoption across the whole organization.</p>"
+        "</article></body></html>"
+    )
+    monkeypatch.setattr(
+        "agents.tools.fetch_url.get_collector_http_client",
+        lambda: _FakeHTTPClient(
+            FetchResponse(
+                url="https://cursor.com/pricing",
+                status_code=200,
+                text=html,
+                content_type="text/html",
+            )
+        ),
+    )
+
+    observation = await channel.invoke(
+        url="https://cursor.com/pricing",
+        competitor_id="comp_cursor",
+    )
+    assert limiter.host == "cursor.com"
+    assert observation.result.snippets[0].metadata["source"] == "httpx_extract"
+    assert observation.result.snippets[0].source_type == "pricing_page"
+    assert "Business plan" in observation.result.snippets[0].quote
+
+
+@pytest.mark.asyncio
 async def test_fetch_url_channel_rejects_low_quality_extract(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FetchUrlChannel()
     monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
@@ -236,8 +277,8 @@ async def test_fetch_url_channel_rejects_low_quality_extract(monkeypatch: pytest
             FetchResponse(
                 url="https://example.com",
                 status_code=200,
-                text="unused",
-                content_type="text/html",
+                text="%PDF-1.7 binary",
+                content_type="application/pdf",
             )
         ),
     )
