@@ -95,6 +95,10 @@ def _base_state() -> ResearcherSubState:
 
 class _FakeSuccessRegistry:
     async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
+        if action == "fetch_url":
+            # The coverage guard may follow a search with a detail fetch; treat it as a
+            # soft failure so the run keeps the evidence it already collected.
+            raise ChannelError("fake registry does not serve fetch_url detail fetches")
         assert action == "search_web"
         assert args.get("query") == "cursor pricing"
         return CollectorObservation(
@@ -192,6 +196,7 @@ async def test_rerank_evidence_drafts_drops_low_scores_and_orders(
     reranked = await _rerank_evidence_drafts(
         evidence_drafts=drafts,
         query="cursor pricing",
+        focus_dimensions=["pricing", "security"],
     )
 
     assert [item["quote"] for item in reranked] == ["strong", "medium"]
@@ -207,8 +212,9 @@ async def test_finalize_reflects_low_high_score_coverage_once(
         *,
         evidence_drafts: list[dict[str, object]],
         query: str,
+        focus_dimensions: list[str],
     ) -> list[dict[str, object]]:
-        del query
+        del query, focus_dimensions
         return evidence_drafts
 
     monkeypatch.setattr("agents.subgraphs.researcher._rerank_evidence_drafts", _identity_rerank)
@@ -248,8 +254,9 @@ async def test_finalize_does_not_reflect_when_high_score_coverage_is_sufficient(
         *,
         evidence_drafts: list[dict[str, object]],
         query: str,
+        focus_dimensions: list[str],
     ) -> list[dict[str, object]]:
-        del query
+        del query, focus_dimensions
         return evidence_drafts
 
     monkeypatch.setattr("agents.subgraphs.researcher._rerank_evidence_drafts", _identity_rerank)
@@ -281,8 +288,9 @@ async def test_finalize_does_not_repeat_rerank_reflection(
         *,
         evidence_drafts: list[dict[str, object]],
         query: str,
+        focus_dimensions: list[str],
     ) -> list[dict[str, object]]:
-        del query
+        del query, focus_dimensions
         return evidence_drafts
 
     monkeypatch.setattr("agents.subgraphs.researcher._rerank_evidence_drafts", _identity_rerank)
