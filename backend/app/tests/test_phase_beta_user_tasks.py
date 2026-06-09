@@ -288,6 +288,23 @@ def _drive_intake_to_planner_pause(test_client: TestClient) -> str:
         body={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
     )
 
+    # Intake complete: the graph pauses at the planning-profile depth gate;
+    # one more reply with the depth choice resumes into planner_generate.
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        detail = test_client.get(f"/api/runs/{run_id}").json()
+        if detail.get("phase") == "planning" and detail.get("plan_tree") is None:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("run never entered planning gate within 30s")
+
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "", "selected_options": ["quick"]},
+    )
+
     deadline = time.time() + 30.0
     while time.time() < deadline:
         detail = test_client.get(f"/api/runs/{run_id}").json()

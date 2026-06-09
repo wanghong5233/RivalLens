@@ -18,6 +18,7 @@ from agents.nodes.planner import planner_generate_node
 from schemas.intake import RunIntakeDraft
 from schemas.agent_outputs import SupervisorToolCallOutput
 from service.event_bus import RunEventType
+from service.llm.prompts import _format_plan_tree_for_supervisor
 from service.llm.response import LLMResponse
 
 
@@ -657,3 +658,134 @@ def test_resolve_fallback_dimensions_defaults_without_upstream_or_hints() -> Non
 
     assert source == "default"
     assert dimensions == ["feature", "pricing", "user_feedback"]
+
+
+def test_format_plan_tree_hides_discover_task_after_discovery_completed() -> None:
+    plan_tree = {
+        "tasks": [
+            {"stage": "discover", "title": "发现新兴竞品", "enabled": True},
+            {"stage": "research", "competitor_id": "Cursor", "title": "研究 Cursor", "enabled": True},
+        ],
+    }
+
+    before = _format_plan_tree_for_supervisor(
+        plan_tree=plan_tree,
+        researched_competitors=[],
+        discovery_completed=False,
+    )
+    after = _format_plan_tree_for_supervisor(
+        plan_tree=plan_tree,
+        researched_competitors=[],
+        discovery_completed=True,
+    )
+
+    assert "stage=discover" in before
+    assert "stage=discover" not in after
+    assert "stage=research" in after
+
+
+@pytest.mark.asyncio
+async def test_supervisor_blocks_repeated_discovery_with_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "DiscoverCompetitors",
+            "tool_args": {
+                "search_queries": ["AI coding assistant alternatives"],
+                "domain_context": "AI coding assistant",
+                "max_results": 5,
+            },
+            "reasoning_summary": "User explicitly requested to discover missing competitors.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_discovery_loop",
+        state={
+            "run_id": "run_test",
+            "user_query": "compare coding assistants",
+            "competitors": ["Cursor", "GitHub Copilot"],
+            "discovered_competitors": ["Cursor", "GitHub Copilot", "Codeium"],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 2,
+            "decisions": [],
+        },
+    )
+
+    assert new_state["next_action"] == "researcher"
+    assert captured[0][2]["chosen_tool"] == "ConductResearchBatch"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_grace_write_when_budget_exhausted_without_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Finalize",
+            "tool_args": {"completion_reason": "all_dimensions_covered", "notes": None},
+            "reasoning_summary": "LLM output is irrelevant; guardrail branch fires first.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_grace_write",
+        state={
+            "run_id": "run_test",
+            "user_query": "compare coding assistants",
+            "report_depth": "debug",
+            "competitors": ["Cursor", "GitHub Copilot"],
+            "researched_competitors": ["Cursor", "GitHub Copilot"],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 6,
+            "decisions": [],
+        },
+    )
+
+    assert new_state["next_action"] == "writer"
+    assert new_state["status"] == "running"
+    assert captured[0][2]["chosen_tool"] == "Write"
+    assert captured[0][2]["triggered_by"] == "iteration_advance"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_forced_finalize_when_budget_exhausted_with_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Analyze",
+            "tool_args": {
+                "focus_dimensions": ["feature"],
+                "parallel_by_dimension": False,
+                "require_cross_competitor": True,
+            },
+            "reasoning_summary": "LLM output is irrelevant; guardrail branch fires first.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_forced_finalize",
+        state={
+            "run_id": "run_test",
+            "user_query": "compare coding assistants",
+            "report_depth": "debug",
+            "competitors": ["Cursor", "GitHub Copilot"],
+            "researched_competitors": ["Cursor", "GitHub Copilot"],
+            "analysis_done": True,
+            "report_draft_done": True,
+            "current_iteration": 6,
+            "decisions": [],
+        },
+    )
+
+    assert new_state["next_action"] == "finalize"
+    assert new_state["status"] == "degraded"
+    assert captured[0][2]["chosen_tool"] == "Finalize"

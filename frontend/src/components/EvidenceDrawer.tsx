@@ -1,5 +1,8 @@
+import { ExternalLink } from "lucide-react";
 import { useMemo } from "react";
+import ReactMarkdown from "react-markdown";
 import { Link } from "react-router-dom";
+import remarkGfm from "remark-gfm";
 
 import { useRunEvidence } from "@/api/hooks";
 import { Badge } from "@/components/ui/badge";
@@ -69,7 +72,7 @@ export function EvidenceDrawer({
           <SheetDescription>run_id: {runId}</SheetDescription>
         </SheetHeader>
 
-        <div className="mt-4 space-y-3 overflow-y-auto">
+        <div className="mt-4 max-h-[calc(100vh-140px)] space-y-3 overflow-y-auto pr-1">
           {evidenceQuery.isLoading ? (
             <>
               <Skeleton className="h-24 w-full" />
@@ -100,6 +103,9 @@ export function EvidenceDrawer({
                   <span>·</span>
                   <span>{formatDateTime(item.collected_at)}</span>
                 </div>
+                {item.source_title ? (
+                  <div className="text-sm font-medium text-foreground">{item.source_title}</div>
+                ) : null}
                 <div className="flex flex-wrap gap-1.5">
                   <Badge variant={sourceAuthority === "official" ? "success" : "secondary"}>
                     {toAuthorityLabel(sourceAuthority)}
@@ -108,27 +114,32 @@ export function EvidenceDrawer({
                     {item.desensitized ? "已脱敏" : "未脱敏"}
                   </Badge>
                 </div>
-                <p className="whitespace-pre-wrap text-sm leading-6">{item.sanitized_text}</p>
+                <div className="prose prose-invert max-w-none text-sm leading-6 prose-headings:mb-1.5 prose-headings:mt-3 prose-headings:text-sm prose-headings:font-semibold prose-headings:text-foreground prose-p:my-1.5 prose-p:text-foreground prose-strong:text-foreground prose-a:text-primary prose-li:my-0.5">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.sanitized_text}</ReactMarkdown>
+                </div>
                 <div className="text-xs text-muted-foreground">
                   <span>competitor: {item.competitor_id ?? "-"}</span>
                 </div>
-                <Link
-                  className="inline-flex rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
-                  onClick={() => onOpenChange(false)}
-                  to={`/app/runs/${runId}/evidence?evidence_id=${encodeURIComponent(item.evidence_id)}`}
-                >
-                  查看完整证据
-                </Link>
-                {item.source_url ? (
-                  <a
-                    className="text-xs text-primary underline-offset-4 hover:underline"
-                    href={item.source_url}
-                    rel="noreferrer"
-                    target="_blank"
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Link
+                    className="inline-flex rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary hover:text-foreground"
+                    onClick={() => onOpenChange(false)}
+                    to={`/app/runs/${runId}/evidence?evidence_id=${encodeURIComponent(item.evidence_id)}`}
                   >
-                    打开原页面
-                  </a>
-                ) : null}
+                    查看完整证据
+                  </Link>
+                  {item.source_url ? (
+                    <a
+                      className="inline-flex items-center gap-1 rounded-md border border-primary/40 px-2 py-1 text-xs text-primary hover:border-primary hover:bg-primary/[0.06]"
+                      href={item.source_url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <ExternalLink className="h-3 w-3" />
+                      打开原页面
+                    </a>
+                  ) : null}
+                </div>
               </article>
             );
           })}

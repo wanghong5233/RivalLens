@@ -1285,30 +1285,65 @@ async def supervisor_node(state: AgentState) -> AgentState:
             decision_dimension_source = dimension_source
     elif iteration > tier_profile.supervisor_max_iterations:
         forced_now = _now_iso()
-        decision = SupervisorDecision(
-            id=make_id("decision_"),
-            run_id=run_id,
-            iteration=iteration,
-            chosen_tool="Finalize",
-            tool_args=Finalize(
-                completion_reason="max_iterations_hit",
-                notes=(
-                    "Supervisor reached max iterations and forced finalize "
-                    f"(limit={tier_profile.supervisor_max_iterations})."
+        if not report_draft_done and competitors:
+            # Grace write: budget is exhausted but no report exists yet.
+            # Finalizing here would end the run with zero deliverable, so we
+            # force one writer pass and let QA/finalize close the run after.
+            decision = SupervisorDecision(
+                id=make_id("decision_"),
+                run_id=run_id,
+                iteration=iteration,
+                chosen_tool="Write",
+                tool_args=Write(
+                    template_id=None,
+                    sections=fallback_sections,
+                ).model_dump(),
+                reasoning_summary=(
+                    "Iteration budget exhausted without a report draft; forcing one "
+                    f"degraded writer pass (limit={tier_profile.supervisor_max_iterations})."
                 ),
-            ).model_dump(),
-            reasoning_summary="Forced finalize due to supervisor max iteration guardrail.",
-            triggered_by="iteration_advance",
-            outcome="succeeded",
-            outcome_recorded_at=forced_now,
-            created_at=forced_now,
-        )
-        llm_response = _pseudo_llm_response(
-            provider="guardrail",
-            model_name="guardrail",
-            prompt_preview="max_iterations_hit",
-            error="max_iterations_hit",
-        )
+                triggered_by="iteration_advance",
+                outcome="dispatched",
+                outcome_recorded_at=forced_now,
+                created_at=forced_now,
+            )
+            decision_dimension_source = dimension_source
+            llm_response = _pseudo_llm_response(
+                provider="guardrail",
+                model_name="guardrail",
+                prompt_preview="max_iterations_grace_write",
+                error="max_iterations_hit",
+            )
+            log.warning(
+                "supervisor.guardrail.grace_write",
+                iteration=iteration,
+                limit=tier_profile.supervisor_max_iterations,
+            )
+        else:
+            decision = SupervisorDecision(
+                id=make_id("decision_"),
+                run_id=run_id,
+                iteration=iteration,
+                chosen_tool="Finalize",
+                tool_args=Finalize(
+                    completion_reason="max_iterations_hit",
+                    notes=(
+                        "Supervisor reached max iterations and forced finalize "
+                        f"(limit={tier_profile.supervisor_max_iterations})."
+                    ),
+                ).model_dump(),
+                reasoning_summary="Forced finalize due to supervisor max iteration guardrail.",
+                triggered_by="iteration_advance",
+                outcome="succeeded",
+                outcome_recorded_at=forced_now,
+                created_at=forced_now,
+            )
+            llm_response = _pseudo_llm_response(
+                provider="guardrail",
+                model_name="guardrail",
+                prompt_preview="max_iterations_hit",
+                error="max_iterations_hit",
+            )
     elif _has_pending_plan_discovery(
         plan_tree=state.get("plan_tree"),
         discovered_competitors=discovered_competitors,
@@ -1359,6 +1394,9 @@ async def supervisor_node(state: AgentState) -> AgentState:
             plan_tree=state.get("plan_tree"),
             researched_competitors=researched_competitors,
         )
+        discovery_completed = bool(discovered_competitors) or any(
+            prior.chosen_tool == "DiscoverCompetitors" for prior in decisions
+        )
         user_prompt = build_supervisor_user_prompt(
             user_query=user_query,
             iteration=iteration,
@@ -1374,6 +1412,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
             plan_tree=plan_tree_for_prompt,
+            discovery_completed=discovery_completed,
         )
         fallback_user_prompt = build_supervisor_fallback_user_prompt(
             user_query=user_query,
@@ -1386,6 +1425,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
             plan_tree=plan_tree_for_prompt,
+            discovery_completed=discovery_completed,
         )
         harness_result = await complete_structured(
             model_slot="research",
@@ -1415,6 +1455,35 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 fallback_sections=fallback_sections,
                 profile=tier_profile,
             )
+            if (
+                decision.chosen_tool == "DiscoverCompetitors"
+                and discovery_completed
+                and competitors
+            ):
+                # Hard stop on discovery loops: the LLM occasionally re-picks
+                # discovery from a stale plan task and burns the whole
+                # iteration budget without ever reaching analyze/write.
+                log.warning(
+                    "supervisor.guardrail.discovery_repeat_blocked",
+                    iteration=iteration,
+                    blocked_reasoning=decision.reasoning_summary[:120],
+                )
+                decision = _fallback_decision(
+                    run_id=run_id,
+                    iteration=iteration,
+                    competitors=competitors,
+                    researched_competitors=researched_competitors,
+                    analysis_done=analysis_done,
+                    report_draft_done=report_draft_done,
+                    triggered_by=triggered_by,
+                    user_query=user_query,
+                    fallback_dimensions=fallback_dimensions,
+                    fallback_sections=fallback_sections,
+                    profile=tier_profile,
+                    market_scope=market_scope,
+                    domain_context=domain_context,
+                    response_language=response_language,
+                )
             if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS:
                 decision_dimension_source = dimension_source
         else:

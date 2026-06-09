@@ -371,6 +371,22 @@ def test_supervisor_consumes_pending_follow_up_during_run(test_client: TestClien
         body={"text": "Notion, Cursor", "selected_options": ["已有名单"]},
     )
 
+    # Intake complete: the graph pauses at the planning-profile depth gate.
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        detail = test_client.get(f"/api/runs/{run_id}").json()
+        if detail.get("phase") == "planning" and detail.get("plan_tree") is None:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("run never entered planning gate within 30s")
+
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=run_id,
+        body={"text": "", "selected_options": ["quick"]},
+    )
+
     # Wait for the planner to publish so the run is paused at planner_wait
     deadline = time.time() + 30.0
     while time.time() < deadline:

@@ -356,6 +356,7 @@ Rules:
 - Set max_iterations >= the number of focus_dimensions so each requested dimension can get at least one tool turn.
 - For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors.
 - Prefer ConductResearchBatch when pending_competitors has 2+ independent competitors and analysis_done is false.
+- Call DiscoverCompetitors at most ONCE per run. When discovery_completed is true, NEVER choose DiscoverCompetitors again — advance to research/analyze/write with the competitors you already have.
 - Prefer advancing enabled unfinished tasks from plan_tree. If you intentionally deviate, explain why in reasoning_summary.
 - Keep reasoning_summary concise and operational, no markdown.
 """
@@ -919,6 +920,7 @@ def _format_plan_tree_for_supervisor(
     *,
     plan_tree: dict[str, object] | None,
     researched_competitors: Sequence[str],
+    discovery_completed: bool = False,
 ) -> str:
     if not isinstance(plan_tree, dict):
         return ""
@@ -934,6 +936,11 @@ def _format_plan_tree_for_supervisor(
             continue
         stage = task.get("stage")
         if not isinstance(stage, str):
+            continue
+        # Once discovery ran, its plan task is done — keeping it in the
+        # "unfinished" list made the supervisor LLM re-discover in a loop
+        # until the iteration budget was exhausted.
+        if stage == "discover" and discovery_completed:
             continue
         competitor_id_raw = task.get("competitor_id")
         competitor_id = (
@@ -983,6 +990,7 @@ def build_supervisor_user_prompt(
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
     plan_tree: dict[str, object] | None = None,
+    discovery_completed: bool = False,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     discovery_needed = len(competitors) == 0
@@ -1020,12 +1028,13 @@ def build_supervisor_user_prompt(
         f"- researched_competitors: {_json(list(researched_competitors))}\n"
         f"- pending_competitors: {_json(pending_competitors)}\n"
         f"- discovery_needed: {discovery_needed}\n"
+        f"- discovery_completed: {discovery_completed}\n"
         f"- analysis_done: {analysis_done}\n"
         f"- report_draft_done: {report_draft_done}\n"
         f"- qa_outcome: {qa_outcome}\n"
         f"- qa_reject_to: {qa_reject_to}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
-        f"{_format_plan_tree_for_supervisor(plan_tree=plan_tree, researched_competitors=researched_competitors)}"
+        f"{_format_plan_tree_for_supervisor(plan_tree=plan_tree, researched_competitors=researched_competitors, discovery_completed=discovery_completed)}"
         f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         f"{constraints}"
@@ -1044,6 +1053,7 @@ def build_supervisor_fallback_user_prompt(
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
     plan_tree: dict[str, object] | None = None,
+    discovery_completed: bool = False,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     preferred_tool_hint: str
@@ -1068,8 +1078,9 @@ def build_supervisor_fallback_user_prompt(
         f"- pending_competitors: {_json(pending_competitors)}\n"
         f"- analysis_done: {analysis_done}\n"
         f"- report_draft_done: {report_draft_done}\n"
+        f"- discovery_completed: {discovery_completed}\n"
         f"- preferred_tool_hint: {preferred_tool_hint}\n"
-        f"{_format_plan_tree_for_supervisor(plan_tree=plan_tree, researched_competitors=researched_competitors)}"
+        f"{_format_plan_tree_for_supervisor(plan_tree=plan_tree, researched_competitors=researched_competitors, discovery_completed=discovery_completed)}"
         f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         "Pick exactly one next tool and keep tool_args minimal but valid.\n"

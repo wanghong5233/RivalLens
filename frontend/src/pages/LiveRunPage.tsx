@@ -473,7 +473,7 @@ export function LiveRunPage(): JSX.Element {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <PlanTreeColumn planTree={planTree} stageTasks={stageTasks} planTaskStatus={planTaskStatus} />
-        <div className="space-y-4">
+        <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
           <ToolActivityCard entries={toolActivity} />
           <EvidenceFeedCard entries={evidenceFeed} onOpen={handleOpenEvidence} />
         </div>
@@ -736,7 +736,7 @@ function ToolActivityCard({ entries }: ToolActivityCardProps): JSX.Element {
             Agent 还未发起任何工具调用。
           </div>
         ) : (
-          <ul className="space-y-2">
+          <ul className="max-h-[320px] space-y-2 overflow-y-auto pr-1">
             {entries.map((entry) => {
               const Icon = TOOL_ICONS[entry.tool] ?? Wrench;
               return (
@@ -925,7 +925,7 @@ function EvidenceFeedCard({ entries, onOpen }: EvidenceFeedCardProps): JSX.Eleme
             等待第一条证据落库…
           </div>
         ) : (
-          <ul className="space-y-2">
+          <ul className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
             {entries.map((entry) => (
               <li key={entry.evidence_id}>
                 <button
