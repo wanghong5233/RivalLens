@@ -5,7 +5,25 @@ from urllib.parse import urlsplit
 from service.collector.base import SourceType
 
 
-REVIEW_HOST_KEYWORDS = ("forum", "reddit", "community", "review", "discuss", "news.ycombinator")
+REVIEW_HOST_KEYWORDS = (
+    "forum",
+    "reddit",
+    "community",
+    "review",
+    "discuss",
+    "news.ycombinator",
+    "g2",
+    "capterra",
+    "trustpilot",
+    "producthunt",
+    "zhihu",
+    "v2ex",
+    "csdn",
+    "juejin",
+    "segmentfault",
+    "stackshare",
+    "sourceforge",
+)
 DOC_PATH_KEYWORDS = ("/docs", "/api", "/reference")
 DOC_HOSTS = {"help.aliyun.com", "docs.github.com"}
 PRICING_PATH_KEYWORDS = ("/pricing", "/plans")
@@ -69,9 +87,6 @@ def official_hosts_for_competitor(competitor_id: str | None) -> set[str]:
         return set(DEFAULT_OFFICIAL_HOSTS)
     key = _normalize_competitor_key(competitor_id)
     hosts = set(OFFICIAL_HOSTS_BY_COMPETITOR.get(key, set()))
-    for known_key, known_hosts in OFFICIAL_HOSTS_BY_COMPETITOR.items():
-        if known_key in key or key in known_key:
-            hosts.update(known_hosts)
     if not hosts:
         # Dynamic competitors outside the curated map: derive conservative candidate
         # official hosts from ASCII name tokens so their own domains can still be
@@ -93,14 +108,6 @@ def source_matches_competitor(
         return None
     official_hosts = {_normalize_host(item) for item in official_hosts_for_competitor(competitor_id)}
     if host in official_hosts or any(host.endswith(f".{official}") for official in official_hosts):
-        return True
-    competitor_key = _normalize_competitor_key(competitor_id)
-    competitor_tokens = {
-        token
-        for token in competitor_key.split("_")
-        if len(token) >= 3 and token not in {"com", "www", "github", "ai"}
-    }
-    if competitor_tokens and any(token in host for token in competitor_tokens):
         return True
     return False
 

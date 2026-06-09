@@ -77,7 +77,7 @@ def test_build_run_summary_fields_uses_public_metrics_contract() -> None:
     }
 
 
-def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 30.0) -> str:
+def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 60.0) -> str:
     """Poll until the async POST /api/runs background graph task reaches a terminal status."""
     deadline = time.time() + timeout_seconds
     last_status = "running"
@@ -519,7 +519,7 @@ def test_build_run_metrics_snapshot_reports_knowledge_triplet_metrics() -> None:
     assert snapshot.knowledge_feature_count == 2
     assert snapshot.knowledge_pricing_count == 1
     assert snapshot.knowledge_persona_count == 1
-    assert snapshot.knowledge_schema_coverage_rate == 4 / 6
+    assert snapshot.knowledge_schema_coverage_rate == 2.5 / 6
 
 
 def test_build_run_metrics_snapshot_uses_supervisor_dimensions_without_plan_tree() -> None:

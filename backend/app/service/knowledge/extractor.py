@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Literal
 
 from pydantic import ValidationError
 
-from schemas.business import Feature, Persona, Pricing
+from schemas.business import Feature, Persona, Pricing, UserFeedback
 from schemas.contracts import validate_dimension
 from schemas.ids import make_id
 
@@ -22,6 +23,7 @@ class KnowledgeExtractionResult:
     features: list[dict[str, object]]
     pricings: list[dict[str, object]]
     personas: list[dict[str, object]]
+    feedback: list[dict[str, object]]
     coverage: KnowledgeCoverage
     extraction_mode: Literal["comparison", "landscape"]
     missing_reasons: dict[str, list[str]]
@@ -180,10 +182,50 @@ def _persona_role(competitor_id: str) -> str:
     return f"{normalized or 'unknown'}_buyer"
 
 
+def _feedback_sentiment_hint(text: str) -> Literal["positive", "neutral", "negative", "mixed"]:
+    lowered = text.lower()
+    positive_terms = (
+        "good",
+        "great",
+        "fast",
+        "helpful",
+        "love",
+        "improve",
+        "稳定",
+        "满意",
+        "高效",
+        "好用",
+    )
+    negative_terms = (
+        "bad",
+        "slow",
+        "issue",
+        "bug",
+        "expensive",
+        "hard",
+        "difficult",
+        "差",
+        "贵",
+        "问题",
+        "不稳定",
+    )
+    has_positive = any(term in lowered for term in positive_terms)
+    has_negative = any(term in lowered for term in negative_terms)
+    if has_positive and has_negative:
+        return "mixed"
+    if has_positive:
+        return "positive"
+    if has_negative:
+        return "negative"
+    return "neutral"
+
+
 def _coverage_for_counts(
     *,
     feature_count: int,
     pricing_count: int,
+    pricing_tier_count: int,
+    feedback_count: int,
     persona_count: int,
 ) -> dict[str, CoverageStatus]:
     feature_status: CoverageStatus
@@ -193,12 +235,29 @@ def _coverage_for_counts(
         feature_status = "partial"
     else:
         feature_status = "insufficient_data"
-    pricing_status: CoverageStatus = "complete" if pricing_count > 0 else "insufficient_data"
-    feedback_status: CoverageStatus = "partial" if persona_count > 0 else "insufficient_data"
+    if pricing_count <= 0:
+        pricing_status: CoverageStatus = "insufficient_data"
+    elif pricing_tier_count >= pricing_count:
+        pricing_status = "complete"
+    else:
+        pricing_status = "partial"
+    if feedback_count >= 2:
+        feedback_status: CoverageStatus = "complete"
+    elif feedback_count > 0:
+        feedback_status = "partial"
+    else:
+        feedback_status = "insufficient_data"
+    if persona_count >= 2:
+        persona_status: CoverageStatus = "complete"
+    elif persona_count > 0:
+        persona_status = "partial"
+    else:
+        persona_status = "insufficient_data"
     return {
         "feature": feature_status,
         "pricing": pricing_status,
         "feedback": feedback_status,
+        "persona": persona_status,
     }
 
 
@@ -208,9 +267,150 @@ def _empty_coverage(competitors: list[str]) -> KnowledgeCoverage:
             "feature": "insufficient_data",
             "pricing": "insufficient_data",
             "feedback": "insufficient_data",
+            "persona": "insufficient_data",
         }
         for competitor_id in competitors
     }
+
+
+def _coerce_competitor_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized if normalized else None
+
+
+_GENERIC_COMPETITOR_TOKENS = frozenset({"com", "www", "ai", "app", "tool", "tools"})
+
+
+def _persona_matches_competitor(
+    *,
+    persona_item: dict[str, object],
+    competitor_id: str,
+    evidence_owner_by_id: dict[str, str],
+) -> bool:
+    direct_competitor = _coerce_competitor_id(persona_item.get("competitor_id"))
+    if direct_competitor == competitor_id:
+        return True
+    evidence_ids_raw = persona_item.get("evidence_ids")
+    if isinstance(evidence_ids_raw, list):
+        for evidence_id in evidence_ids_raw:
+            if (
+                isinstance(evidence_id, str)
+                and evidence_owner_by_id.get(evidence_id) == competitor_id
+            ):
+                return True
+    haystack = f"{_safe_string(persona_item.get('name'))} {_safe_string(persona_item.get('role'))}".lower()
+    competitor_tokens = [
+        token
+        for token in re.split(r"[^a-z0-9]+", competitor_id.lower())
+        if len(token) >= 3 and token not in _GENERIC_COMPETITOR_TOKENS
+    ]
+    return any(token in haystack for token in competitor_tokens)
+
+
+def build_knowledge_schema_result(
+    *,
+    schema_version: str,
+    features: list[dict[str, object]],
+    pricings: list[dict[str, object]],
+    personas: list[dict[str, object]],
+    feedback: list[dict[str, object]],
+    competitors: list[str],
+    analysis_archetype: str,
+) -> KnowledgeExtractionResult:
+    ordered_competitors = _normalize_competitors(competitors)
+    if not ordered_competitors:
+        ordered_competitors = _normalize_competitors(
+            [
+                competitor_id
+                for competitor_id in (
+                    _coerce_competitor_id(item.get("competitor_id"))
+                    for item in [*features, *pricings, *feedback]
+                )
+                if competitor_id is not None
+            ]
+        )
+    coverage: KnowledgeCoverage = _empty_coverage(ordered_competitors)
+    missing_reasons: dict[str, list[str]] = {}
+    evidence_owner_by_id: dict[str, str] = {}
+    for item in [*features, *pricings, *feedback]:
+        competitor_id = _coerce_competitor_id(item.get("competitor_id"))
+        if competitor_id is None:
+            continue
+        evidence_ids_raw = item.get("evidence_ids")
+        if not isinstance(evidence_ids_raw, list):
+            continue
+        for evidence_id in evidence_ids_raw:
+            if isinstance(evidence_id, str) and evidence_id not in evidence_owner_by_id:
+                evidence_owner_by_id[evidence_id] = competitor_id
+    for competitor_id in ordered_competitors:
+        feature_count = sum(
+            1
+            for item in features
+            if _coerce_competitor_id(item.get("competitor_id")) == competitor_id
+        )
+        competitor_pricings = [
+            item
+            for item in pricings
+            if _coerce_competitor_id(item.get("competitor_id")) == competitor_id
+        ]
+        pricing_count = len(competitor_pricings)
+        pricing_tier_count = sum(
+            1
+            for item in competitor_pricings
+            if isinstance(item.get("tiers"), list) and bool(item["tiers"])
+        )
+        feedback_count = sum(
+            1
+            for item in feedback
+            if _coerce_competitor_id(item.get("competitor_id")) == competitor_id
+        )
+        persona_count = sum(
+            1
+            for item in personas
+            if _persona_matches_competitor(
+                persona_item=item,
+                competitor_id=competitor_id,
+                evidence_owner_by_id=evidence_owner_by_id,
+            )
+        )
+        coverage[competitor_id] = _coverage_for_counts(
+            feature_count=feature_count,
+            pricing_count=pricing_count,
+            pricing_tier_count=pricing_tier_count,
+            feedback_count=feedback_count,
+            persona_count=persona_count,
+        )
+        reasons: list[str] = []
+        if feature_count == 0:
+            reasons.append("feature:no_grounded_evidence")
+        elif feature_count < 3:
+            reasons.append("feature:coverage_partial")
+        if pricing_count == 0:
+            reasons.append("pricing:no_grounded_evidence")
+        elif pricing_tier_count == 0:
+            reasons.append("pricing:tier_details_missing")
+        if feedback_count == 0:
+            reasons.append("feedback:no_grounded_evidence")
+        elif feedback_count < 2:
+            reasons.append("feedback:coverage_partial")
+        if persona_count == 0:
+            reasons.append("persona:no_grounded_evidence")
+        elif persona_count < 2:
+            reasons.append("persona:coverage_partial")
+        if reasons:
+            missing_reasons[competitor_id] = reasons
+    return KnowledgeExtractionResult(
+        schema_version=schema_version,
+        features=features,
+        pricings=pricings,
+        personas=personas,
+        feedback=feedback,
+        coverage=coverage,
+        extraction_mode="landscape" if analysis_archetype == "landscape" else "comparison",
+        missing_reasons=missing_reasons,
+    )
 
 
 def extract_knowledge_schema(
@@ -302,7 +502,7 @@ def extract_knowledge_schema(
             continue
 
     personas: list[dict[str, object]] = []
-    persona_count_by_competitor: dict[str, int] = {competitor_id: 0 for competitor_id in ordered_competitors}
+    feedback: list[dict[str, object]] = []
     for competitor_id in ordered_competitors:
         persona_evidence = persona_by_competitor.get(competitor_id, [])
         if not persona_evidence:
@@ -316,60 +516,49 @@ def extract_knowledge_schema(
                         "id": make_id("persona_"),
                         "name": f"{competitor_id} buyer persona",
                         "role": _persona_role(competitor_id),
-                        "pain_points": [pain_point] if pain_point else ["Buyer pain points need more evidence"],
+                        "pain_points": [pain_point] if pain_point else [],
                         "jobs_to_be_done": [],
                         "evidence_ids": [first.evidence_id],
                     }
                 ).model_dump(mode="python")
             )
-            persona_count_by_competitor[competitor_id] += 1
         except ValidationError:
             continue
+        for index, brief in enumerate(persona_evidence[:3], start=1):
+            topic_hint = brief.dimension or "user_feedback"
+            summary = brief.quote_preview[:240] if brief.quote_preview else ""
+            if not summary:
+                continue
+            try:
+                feedback.append(
+                    UserFeedback.model_validate(
+                        {
+                            "id": make_id("feedback_"),
+                            "competitor_id": competitor_id,
+                            "sentiment": _feedback_sentiment_hint(summary),
+                            "topic": f"{topic_hint}_{index}",
+                            "summary": summary,
+                            "evidence_ids": [brief.evidence_id],
+                        }
+                    ).model_dump(mode="python")
+                )
+            except ValidationError:
+                continue
 
-    coverage: KnowledgeCoverage = {}
-    missing_reasons: dict[str, list[str]] = {}
-    for competitor_id in ordered_competitors:
-        feature_count = sum(
-            1
-            for item in features
-            if isinstance(item.get("competitor_id"), str) and item["competitor_id"] == competitor_id
-        )
-        pricing_count = sum(
-            1
-            for item in pricings
-            if isinstance(item.get("competitor_id"), str) and item["competitor_id"] == competitor_id
-        )
-        persona_count = persona_count_by_competitor.get(competitor_id, 0)
-        coverage[competitor_id] = _coverage_for_counts(
-            feature_count=feature_count,
-            pricing_count=pricing_count,
-            persona_count=persona_count,
-        )
-        reasons: list[str] = []
-        if feature_count == 0:
-            reasons.append("feature:no_grounded_evidence")
-        elif feature_count < 3:
-            reasons.append("feature:coverage_partial")
-        if pricing_count == 0:
-            reasons.append("pricing:no_grounded_evidence")
-        if persona_count == 0:
-            reasons.append("persona:no_grounded_evidence")
-        if reasons:
-            missing_reasons[competitor_id] = reasons
-
-    return KnowledgeExtractionResult(
+    return build_knowledge_schema_result(
         schema_version=SCHEMA_VERSION,
         features=features,
         pricings=pricings,
         personas=personas,
-        coverage=coverage,
-        extraction_mode="landscape" if analysis_archetype == "landscape" else "comparison",
-        missing_reasons=missing_reasons,
+        feedback=feedback,
+        competitors=ordered_competitors,
+        analysis_archetype=analysis_archetype,
     )
 
 
 __all__ = [
     "KnowledgeCoverage",
     "KnowledgeExtractionResult",
+    "build_knowledge_schema_result",
     "extract_knowledge_schema",
 ]

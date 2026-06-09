@@ -59,12 +59,14 @@ def test_extract_knowledge_schema_populates_triplet_for_comparison() -> None:
     assert len(result.features) >= 2
     assert len(result.pricings) == 2
     assert len(result.personas) == 2
+    assert len(result.feedback) == 2
     assert set(result.coverage.keys()) == {"Cursor", "Windsurf"}
-    assert result.coverage["Cursor"]["pricing"] == "complete"
+    assert result.coverage["Cursor"]["pricing"] == "partial"
     assert result.coverage["Windsurf"]["feedback"] == "partial"
     assert all(item["evidence_ids"] for item in result.features)
     assert all(item["evidence_ids"] for item in result.pricings)
     assert all(item["evidence_ids"] for item in result.personas)
+    assert all(item["evidence_ids"] for item in result.feedback)
 
 
 def test_extract_knowledge_schema_filters_invalid_and_unknown_competitors() -> None:
@@ -103,12 +105,15 @@ def test_extract_knowledge_schema_filters_invalid_and_unknown_competitors() -> N
     assert result.coverage == {
         "Cursor": {
             "feature": "insufficient_data",
-            "pricing": "complete",
+            "pricing": "partial",
             "feedback": "insufficient_data",
+            "persona": "insufficient_data",
         }
     }
     assert result.missing_reasons["Cursor"] == [
         "feature:no_grounded_evidence",
+        "pricing:tier_details_missing",
+        "feedback:no_grounded_evidence",
         "persona:no_grounded_evidence",
     ]
 
@@ -132,7 +137,7 @@ def test_extract_knowledge_schema_recovers_pricing_from_quote_text() -> None:
     assert result.features == []
     assert len(result.pricings) == 1
     assert result.pricings[0]["competitor_id"] == "Cursor"
-    assert result.coverage["Cursor"]["pricing"] == "complete"
+    assert result.coverage["Cursor"]["pricing"] == "partial"
 
 
 def test_extract_knowledge_schema_generates_schema_in_landscape_mode() -> None:
@@ -156,16 +161,19 @@ def test_extract_knowledge_schema_generates_schema_in_landscape_mode() -> None:
     assert result.features[0]["competitor_id"] == "DeepSeek"
     assert result.pricings == []
     assert result.personas == []
+    assert result.feedback == []
     assert result.coverage == {
         "DeepSeek": {
             "feature": "partial",
             "pricing": "insufficient_data",
             "feedback": "insufficient_data",
+            "persona": "insufficient_data",
         }
     }
     assert result.missing_reasons["DeepSeek"] == [
         "feature:coverage_partial",
         "pricing:no_grounded_evidence",
+        "feedback:no_grounded_evidence",
         "persona:no_grounded_evidence",
     ]
 
@@ -182,15 +190,18 @@ def test_extract_knowledge_schema_keeps_insufficient_status_for_empty_landscape(
     assert result.features == []
     assert result.pricings == []
     assert result.personas == []
+    assert result.feedback == []
     assert result.coverage == {
         "DeepSeek": {
             "feature": "insufficient_data",
             "pricing": "insufficient_data",
             "feedback": "insufficient_data",
+            "persona": "insufficient_data",
         }
     }
     assert result.missing_reasons["DeepSeek"] == [
         "feature:no_grounded_evidence",
         "pricing:no_grounded_evidence",
+        "feedback:no_grounded_evidence",
         "persona:no_grounded_evidence",
     ]

@@ -223,20 +223,152 @@ def _latest_knowledge(knowledge_rows: list[RunKnowledgeRecord]) -> RunKnowledgeR
     return max(knowledge_rows, key=lambda row: row.created_at)
 
 
-def _knowledge_schema_coverage_rate(coverage_payload: object) -> float:
+def _coerce_competitor_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized if normalized else None
+
+
+def _non_empty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _non_empty_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item.strip()]
+
+
+def _knowledge_substantial_lookup(
+    knowledge_row: RunKnowledgeRecord | None,
+) -> dict[str, set[str]]:
+    lookup: dict[str, set[str]] = {}
+    if knowledge_row is None:
+        return lookup
+    features = knowledge_row.features if isinstance(knowledge_row.features, list) else []
+    pricings = knowledge_row.pricings if isinstance(knowledge_row.pricings, list) else []
+    personas = knowledge_row.personas if isinstance(knowledge_row.personas, list) else []
+    feedback = knowledge_row.feedback if isinstance(knowledge_row.feedback, list) else []
+
+    evidence_owner_by_id: dict[str, str] = {}
+    for item in [*features, *pricings, *feedback]:
+        if not isinstance(item, dict):
+            continue
+        competitor_id = _coerce_competitor_id(item.get("competitor_id"))
+        if competitor_id is None:
+            continue
+        evidence_ids = _non_empty_string_list(item.get("evidence_ids"))
+        for evidence_id in evidence_ids:
+            evidence_owner_by_id.setdefault(evidence_id, competitor_id)
+
+    for item in features:
+        if not isinstance(item, dict):
+            continue
+        competitor_id = _coerce_competitor_id(item.get("competitor_id"))
+        if competitor_id is None:
+            continue
+        if _non_empty_string(item.get("name")) and _non_empty_string_list(item.get("evidence_ids")):
+            lookup.setdefault(competitor_id, set()).add("feature")
+
+    for item in pricings:
+        if not isinstance(item, dict):
+            continue
+        competitor_id = _coerce_competitor_id(item.get("competitor_id"))
+        if competitor_id is None:
+            continue
+        tiers_raw = item.get("tiers")
+        tiers = tiers_raw if isinstance(tiers_raw, list) else []
+        has_substantial_pricing = bool(_non_empty_string_list(item.get("evidence_ids"))) and (
+            bool(tiers) or _non_empty_string(item.get("model"))
+        )
+        if has_substantial_pricing:
+            lookup.setdefault(competitor_id, set()).add("pricing")
+
+    for item in feedback:
+        if not isinstance(item, dict):
+            continue
+        competitor_id = _coerce_competitor_id(item.get("competitor_id"))
+        if competitor_id is None:
+            continue
+        has_substantial_feedback = (
+            _non_empty_string(item.get("topic"))
+            and _non_empty_string(item.get("summary"))
+            and bool(_non_empty_string_list(item.get("evidence_ids")))
+        )
+        if has_substantial_feedback:
+            lookup.setdefault(competitor_id, set()).add("feedback")
+
+    for item in personas:
+        if not isinstance(item, dict):
+            continue
+        evidence_ids = _non_empty_string_list(item.get("evidence_ids"))
+        has_substantial_persona = (
+            (_non_empty_string(item.get("name")) or _non_empty_string(item.get("role")))
+            and (
+                bool(_non_empty_string_list(item.get("pain_points")))
+                or bool(_non_empty_string_list(item.get("jobs_to_be_done")))
+                or bool(evidence_ids)
+            )
+        )
+        if not has_substantial_persona:
+            continue
+        owner_competitors = {
+            evidence_owner_by_id[evidence_id]
+            for evidence_id in evidence_ids
+            if evidence_id in evidence_owner_by_id
+        }
+        if not owner_competitors:
+            owner_competitors = {"__global__"}
+        for competitor_id in owner_competitors:
+            lookup.setdefault(competitor_id, set()).add("persona")
+
+    return lookup
+
+
+def _dimension_has_substantial_record(
+    *,
+    competitor_id: str,
+    dimension: str,
+    substantial_lookup: dict[str, set[str]],
+) -> bool:
+    if dimension in substantial_lookup.get(competitor_id, set()):
+        return True
+    if dimension == "persona" and dimension in substantial_lookup.get("__global__", set()):
+        return True
+    return False
+
+
+def _knowledge_schema_coverage_rate(
+    coverage_payload: object,
+    *,
+    substantial_lookup: dict[str, set[str]],
+) -> float:
     if not isinstance(coverage_payload, dict):
         return 0.0
-    covered = 0
+    covered = 0.0
     total = 0
-    for competitor_payload in coverage_payload.values():
+    for competitor_id, competitor_payload in coverage_payload.items():
+        if not isinstance(competitor_id, str):
+            continue
         if not isinstance(competitor_payload, dict):
             continue
-        for status_raw in competitor_payload.values():
+        for dimension, status_raw in competitor_payload.items():
+            if not isinstance(dimension, str):
+                continue
             if not isinstance(status_raw, str):
                 continue
             total += 1
-            if status_raw in {"complete", "partial"}:
-                covered += 1
+            if not _dimension_has_substantial_record(
+                competitor_id=competitor_id,
+                dimension=dimension,
+                substantial_lookup=substantial_lookup,
+            ):
+                continue
+            if status_raw == "complete":
+                covered += 1.0
+            elif status_raw == "partial":
+                covered += 0.5
     return _safe_rate(covered, total)
 
 
@@ -309,7 +441,7 @@ def _latest_writer_target_sections(step_rows: list[Step]) -> set[str]:
     }
 
 
-def _safe_rate(numerator: int, denominator: int) -> float:
+def _safe_rate(numerator: float, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
     return float(numerator / denominator)
@@ -396,7 +528,7 @@ def build_run_metrics_snapshot(
     covered_dimension_count = (
         sum(1 for dimension in expected_dimensions if dimension in downstream_dimensions)
         if expected_dimensions
-        else len(dimension_denominator)
+        else len(downstream_dimensions)
     )
     dimension_coverage_rate = _safe_rate(covered_dimension_count, len(dimension_denominator))
 
@@ -448,7 +580,8 @@ def build_run_metrics_snapshot(
         else 0
     )
     knowledge_schema_coverage_rate = _knowledge_schema_coverage_rate(
-        latest_knowledge.coverage if latest_knowledge is not None else None
+        latest_knowledge.coverage if latest_knowledge is not None else None,
+        substantial_lookup=_knowledge_substantial_lookup(latest_knowledge),
     )
 
     qa_steps = [step for step in step_rows if step.agent_name == "qa"]

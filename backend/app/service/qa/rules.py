@@ -105,16 +105,31 @@ def rule_writer_must_cite_evidence(
     allowed_evidence_ids: set[str],
 ) -> RuleResult:
     sections_raw = content_json.get("sections")
-    referenced_evidence_ids: list[str] = []
     invalid_ref_detected = False
+    sections_missing_valid_refs: list[str] = []
+    seen_missing_sections: set[str] = set()
+
+    def _record_missing_section(section_label: str) -> None:
+        if section_label in seen_missing_sections:
+            return
+        seen_missing_sections.add(section_label)
+        sections_missing_valid_refs.append(section_label)
+
     if isinstance(sections_raw, list):
-        for section in sections_raw:
+        for index, section in enumerate(sections_raw):
+            section_label = f"index:{index}"
             if not isinstance(section, dict):
                 invalid_ref_detected = True
+                _record_missing_section(section_label)
                 continue
+            section_id_raw = section.get("section_id")
+            if isinstance(section_id_raw, str) and section_id_raw.strip():
+                section_label = section_id_raw.strip()
             evidence_refs_raw = section.get("evidence_refs")
             if not isinstance(evidence_refs_raw, list):
+                _record_missing_section(section_label)
                 continue
+            has_valid_ref = False
             for evidence_id in evidence_refs_raw:
                 if not isinstance(evidence_id, str):
                     invalid_ref_detected = True
@@ -122,14 +137,26 @@ def rule_writer_must_cite_evidence(
                 if evidence_id not in allowed_evidence_ids:
                     invalid_ref_detected = True
                     continue
-                referenced_evidence_ids.append(evidence_id)
-    passed = bool(referenced_evidence_ids) and not invalid_ref_detected
+                has_valid_ref = True
+            if not has_valid_ref:
+                _record_missing_section(section_label)
+    else:
+        _record_missing_section("sections")
+    passed = (
+        isinstance(sections_raw, list)
+        and bool(sections_raw)
+        and not invalid_ref_detected
+        and not sections_missing_valid_refs
+    )
     return RuleResult(
         rule_id="rule_writer_must_cite_evidence",
         passed=passed,
         severity="blocking",
         reject_to="writer",
-        message="Writer sections must cite valid collected evidence_ids.",
+        message=(
+            "Each writer section must cite at least one valid collected evidence_id; "
+            f"sections_missing_valid_refs={sections_missing_valid_refs}."
+        ),
     )
 
 
@@ -512,6 +539,7 @@ def rule_knowledge_schema_conformance(
 
     features_by_competitor = _knowledge_items_by_competitor(knowledge.get("features"))
     pricings_by_competitor = _knowledge_items_by_competitor(knowledge.get("pricings"))
+    feedback_by_competitor = _knowledge_items_by_competitor(knowledge.get("feedback"))
     coverage = knowledge.get("coverage")
     competitors = _expected_knowledge_competitors(
         knowledge=knowledge,
@@ -522,6 +550,7 @@ def rule_knowledge_schema_conformance(
     has_schema_items = (
         any(features_by_competitor.values())
         or any(pricings_by_competitor.values())
+        or any(feedback_by_competitor.values())
         or persona_count > 0
     )
     if (
@@ -556,6 +585,17 @@ def rule_knowledge_schema_conformance(
             malformed_failures.append("pricing missing id/model")
         if not _has_non_empty_evidence_ids(item):
             malformed_failures.append("pricing missing evidence_ids")
+
+    for item in [item for items in feedback_by_competitor.values() for item in items]:
+        if (
+            not _required_string(item, "id")
+            or not _required_string(item, "topic")
+            or not _required_string(item, "summary")
+            or not _required_string(item, "sentiment")
+        ):
+            malformed_failures.append("feedback missing required fields")
+        if not _has_non_empty_evidence_ids(item):
+            malformed_failures.append("feedback missing evidence_ids")
 
     if isinstance(personas, list):
         for item in personas:
@@ -596,6 +636,18 @@ def rule_knowledge_schema_conformance(
             if not pricings and pricing_status not in _HONEST_INCOMPLETE_COVERAGE:
                 coverage_failures.append(
                     f"{competitor_id} pricing missing without honest coverage status"
+                )
+            feedbacks = feedback_by_competitor.get(competitor_id, [])
+            feedback_status = _coverage_status(
+                coverage=coverage,
+                competitor_id=competitor_id,
+                field_name="feedback",
+            )
+            if feedback_status is None:
+                continue
+            if not feedbacks and feedback_status not in _HONEST_INCOMPLETE_COVERAGE:
+                coverage_failures.append(
+                    f"{competitor_id} feedback missing without honest coverage status"
                 )
 
     if malformed_failures:

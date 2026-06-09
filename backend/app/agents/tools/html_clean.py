@@ -90,14 +90,20 @@ def _pre_clean_html(html: str) -> str:
     for tag in soup.find_all(_NOISE_TAGS):
         tag.decompose()
     for tag in soup.find_all(True):
-        cls = " ".join(tag.get("class", []))
-        tid = tag.get("id", "")
+        attrs = tag.attrs if isinstance(tag.attrs, dict) else {}
+        class_raw = attrs.get("class", [])
+        cls = " ".join(class_raw) if isinstance(class_raw, list) else str(class_raw)
+        id_raw = attrs.get("id", "")
+        tid = id_raw if isinstance(id_raw, str) else str(id_raw)
         if any(kw in cls or kw in tid for kw in _NOISE_CONTAINER_KEYWORDS):
             tag.decompose()
     for tag in soup.find_all(attrs={"role": True}):
-        if tag.get("role") in _NOISE_ARIA_ROLES:
+        attrs = tag.attrs if isinstance(tag.attrs, dict) else {}
+        if attrs.get("role") in _NOISE_ARIA_ROLES:
             tag.decompose()
     for tag in soup.find_all(True):
+        if not isinstance(tag.attrs, dict):
+            continue
         for attr in list(tag.attrs):
             if attr in _NOISE_ATTRS or attr.startswith("data-track"):
                 del tag[attr]

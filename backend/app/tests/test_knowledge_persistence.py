@@ -73,6 +73,8 @@ async def test_knowledge_persistence_round_trip_and_latest_row() -> None:
                 ],
                 pricings=[],
                 personas=[],
+                feedback=[],
+                missing_reasons={"Cursor": ["feature:coverage_partial"]},
                 coverage={"Cursor": {"feature": "partial"}},
             )
             await session.flush()
@@ -98,6 +100,17 @@ async def test_knowledge_persistence_round_trip_and_latest_row() -> None:
                     }
                 ],
                 personas=[],
+                feedback=[
+                    {
+                        "id": "fb_1",
+                        "competitor_id": "Cursor",
+                        "sentiment": "neutral",
+                        "topic": "onboarding",
+                        "summary": "Users request clearer onboarding docs.",
+                        "evidence_ids": ["ev_fb"],
+                    }
+                ],
+                missing_reasons={"Cursor": ["pricing:tier_details_missing"]},
                 coverage={"Cursor": {"feature": "complete", "pricing": "partial"}},
             )
             await session.flush()
@@ -107,6 +120,8 @@ async def test_knowledge_persistence_round_trip_and_latest_row() -> None:
             assert loaded["schema_version"] == "schema_v0.2"
             assert loaded["features"][0]["id"] == "feat_new"
             assert loaded["pricings"][0]["model"] == "unknown"
+            assert loaded["feedback"][0]["topic"] == "onboarding"
+            assert loaded["missing_reasons"] == {"Cursor": ["pricing:tier_details_missing"]}
             assert loaded["coverage"] == {"Cursor": {"feature": "complete", "pricing": "partial"}}
 
             await session.execute(delete(Run).where(Run.run_id == run_id))
@@ -132,6 +147,8 @@ async def test_load_knowledge_for_run_returns_empty_payload_without_rows() -> No
                 "features": [],
                 "pricings": [],
                 "personas": [],
+                "feedback": [],
+                "missing_reasons": {},
                 "coverage": {},
             }
     finally:

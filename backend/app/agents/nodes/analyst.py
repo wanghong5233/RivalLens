@@ -11,7 +11,7 @@ from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.step import Step
-from schemas.agent_outputs import AnalystOutput
+from schemas.agent_outputs import AnalystOutput, KnowledgeExtractionOutput
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from schemas.contracts import normalize_dimension_or_none, normalize_dimensions
 from schemas.ids import make_id
@@ -19,12 +19,20 @@ from schemas.supervisor import Analyze
 from service.comparison import persist_comparisons_for_step
 from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import persist_comparison_conclusions_for_step, persist_conclusions_for_step
-from service.knowledge import extract_knowledge_schema, persist_knowledge_for_step
+from service.knowledge import (
+    build_knowledge_schema_result,
+    extract_knowledge_schema,
+    persist_knowledge_for_step,
+)
 from service.llm import (
     ANALYST_SYSTEM_PROMPT,
+    KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT,
     build_analyst_fallback_user_prompt,
     build_analyst_repair_user_prompt,
     build_analyst_user_prompt,
+    build_knowledge_extraction_fallback_user_prompt,
+    build_knowledge_extraction_repair_user_prompt,
+    build_knowledge_extraction_user_prompt,
 )
 from service.llm.harness import complete_structured
 from service.llm.records import build_llm_call_record
@@ -82,7 +90,7 @@ def _build_evidence_briefs(
                 "evidence_id": row.id,
                 "dimension": dimension,
                 "competitor_id": competitor_id,
-                "quote_preview": row.sanitized_text[:220],
+                "quote_preview": row.sanitized_text,
                 "source_title": row.source_title or "",
                 "source_url": row.source_url or "",
                 "source_type": row.source_type or "",
@@ -224,22 +232,82 @@ async def analyst_node(state: AgentState) -> AgentState:
         if isinstance(analysis_result.get("comparisons"), list)
         else []
     )
-    knowledge_extraction = extract_knowledge_schema(
-        evidence_briefs=evidence_briefs,
-        competitors=[item for item in competitors if isinstance(item, str)],
+    normalized_competitors = [item for item in competitors if isinstance(item, str) and item]
+    knowledge_user_prompt = build_knowledge_extraction_user_prompt(
+        competitors=normalized_competitors,
         focus_dimensions=focus_dimensions,
+        evidence_briefs=evidence_briefs,
         analysis_archetype=intake_draft.analysis_archetype,
     )
-    analysis_features = list(knowledge_extraction.features)
-    analysis_pricings = list(knowledge_extraction.pricings)
-    analysis_personas = list(knowledge_extraction.personas)
-    analysis_coverage = dict(knowledge_extraction.coverage)
-    analysis_schema_version = knowledge_extraction.schema_version
-    schema_extraction_mode = knowledge_extraction.extraction_mode
-    schema_missing_reasons = dict(knowledge_extraction.missing_reasons)
+    knowledge_fallback_prompt = build_knowledge_extraction_fallback_user_prompt(
+        competitors=normalized_competitors,
+        focus_dimensions=focus_dimensions,
+        evidence_ids=sorted(allowed_evidence_ids),
+    )
+    knowledge_harness_result = await complete_structured(
+        model_slot="summarization",
+        system_prompt=KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT,
+        user_prompt=knowledge_user_prompt,
+        output_model=KnowledgeExtractionOutput,
+        parser=lambda content: KnowledgeExtractionOutput.parse_llm_content(
+            content,
+            allowed_evidence_ids=allowed_evidence_ids,
+            competitors={item for item in normalized_competitors},
+        ),
+        fallback_system_prompt=KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT,
+        fallback_user_prompt=knowledge_fallback_prompt,
+        repair_user_prompt_builder=lambda errors: build_knowledge_extraction_repair_user_prompt(
+            validation_errors=errors,
+            competitors=normalized_competitors,
+            evidence_ids=sorted(allowed_evidence_ids),
+        ),
+        log_event="analyst.knowledge.harness.finish",
+    )
+    knowledge_llm_response = knowledge_harness_result.llm_response
+    schema_extraction_error: str | None = None
+    if knowledge_harness_result.value is not None:
+        schema_extraction_mode = "llm_structured"
+        extracted_knowledge = knowledge_harness_result.value
+    else:
+        schema_extraction_mode = "deterministic_fallback"
+        schema_extraction_error = (
+            knowledge_llm_response.error
+            or knowledge_harness_result.schema_error
+            or "knowledge_extraction_output_invalid"
+        )
+        deterministic_knowledge = extract_knowledge_schema(
+            evidence_briefs=evidence_briefs,
+            competitors=normalized_competitors,
+            focus_dimensions=focus_dimensions,
+            analysis_archetype=intake_draft.analysis_archetype,
+        )
+        extracted_knowledge = KnowledgeExtractionOutput(
+            schema_version=deterministic_knowledge.schema_version,
+            features=list(deterministic_knowledge.features),
+            pricings=list(deterministic_knowledge.pricings),
+            personas=list(deterministic_knowledge.personas),
+            feedback=list(deterministic_knowledge.feedback),
+        )
+    knowledge_result = build_knowledge_schema_result(
+        schema_version=extracted_knowledge.schema_version,
+        features=list(extracted_knowledge.features),
+        pricings=list(extracted_knowledge.pricings),
+        personas=list(extracted_knowledge.personas),
+        feedback=list(extracted_knowledge.feedback),
+        competitors=normalized_competitors,
+        analysis_archetype=intake_draft.analysis_archetype,
+    )
+    analysis_features = list(knowledge_result.features)
+    analysis_pricings = list(knowledge_result.pricings)
+    analysis_personas = list(knowledge_result.personas)
+    analysis_feedback = list(knowledge_result.feedback)
+    analysis_coverage = dict(knowledge_result.coverage)
+    analysis_schema_version = knowledge_result.schema_version
+    schema_missing_reasons = dict(knowledge_result.missing_reasons)
     evidence_lookup = {row.id: row for row in evidence_rows}
 
     llm_call_error = llm_response.error or analysis_schema_error
+    knowledge_llm_call_error = knowledge_llm_response.error or schema_extraction_error
     async with session_factory() as session:
         step_payload: dict[str, object] = {
             **request.model_dump(),
@@ -260,8 +328,12 @@ async def analyst_node(state: AgentState) -> AgentState:
             "llm_prompt_preview": llm_response.prompt_preview,
             "llm_fallback_used": llm_response.fallback_used,
             "llm_fallback_reason": llm_response.fallback_reason,
+            "knowledge_llm_provider": knowledge_llm_response.provider,
+            "knowledge_llm_prompt_preview": knowledge_llm_response.prompt_preview,
+            "knowledge_llm_fallback_used": knowledge_llm_response.fallback_used,
+            "knowledge_llm_fallback_reason": knowledge_llm_response.fallback_reason,
             "schema_extraction_mode": schema_extraction_mode,
-            "schema_extraction_error": None,
+            "schema_extraction_error": schema_extraction_error,
             "schema_coverage_by_competitor": analysis_coverage,
             "schema_missing_reasons": schema_missing_reasons,
         }
@@ -290,6 +362,13 @@ async def analyst_node(state: AgentState) -> AgentState:
                 step_id=step_id,
                 response=llm_response,
                 error=llm_call_error,
+            )
+        )
+        session.add(
+            build_llm_call_record(
+                step_id=step_id,
+                response=knowledge_llm_response,
+                error=knowledge_llm_call_error,
             )
         )
         session.add(
@@ -421,6 +500,8 @@ async def analyst_node(state: AgentState) -> AgentState:
                     features=analysis_features,
                     pricings=analysis_pricings,
                     personas=analysis_personas,
+                    feedback=analysis_feedback,
+                    missing_reasons=schema_missing_reasons,
                     coverage=analysis_coverage,
                 )
                 await session.flush()
@@ -437,6 +518,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             "feature_count": len(analysis_features),
             "pricing_count": len(analysis_pricings),
             "persona_count": len(analysis_personas),
+            "feedback_count": len(analysis_feedback),
         }
         if knowledge_persist_error is not None:
             step.payload = {

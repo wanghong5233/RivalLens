@@ -100,6 +100,8 @@ _DEFAULT_SOURCE_ROUTING_ORDER: tuple[str, ...] = (
 _YAML_BLOCK_PATTERN = re.compile(r"```yaml\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
 _MAX_SOURCE_FIRST_ATTEMPTS_PER_DIMENSION = 2
 _MAX_EXTRACT_ONLY_ATTEMPTS_PER_DIMENSION = 1
+_QUALITY_MIN_EVIDENCE_COUNT_PER_DIMENSION = 1
+_QUALITY_MIN_PREFERRED_SOURCE_HITS = 1
 
 
 @dataclass(frozen=True)
@@ -386,9 +388,19 @@ def _default_source_order_for_dimension(dimension: str | None) -> tuple[str, ...
         return ("docs", "official_site", "pricing_page", "article", "public_review")
     if any(keyword in lowered for keyword in ("security", "compliance", "enterprise")):
         return ("official_site", "docs", "pricing_page", "article", "public_review")
-    if any(keyword in lowered for keyword in ("feedback", "review", "sentiment", "persona")):
+    if _is_feedback_dimension(lowered):
         return ("public_review", "article", "official_site", "docs", "pricing_page")
     return _DEFAULT_SOURCE_ROUTING_ORDER
+
+
+_FEEDBACK_DIMENSION_KEYWORDS: tuple[str, ...] = ("feedback", "review", "sentiment", "persona")
+
+
+def _is_feedback_dimension(dimension: str | None) -> bool:
+    if not isinstance(dimension, str):
+        return False
+    lowered = dimension.casefold()
+    return any(keyword in lowered for keyword in _FEEDBACK_DIMENSION_KEYWORDS)
 
 
 def _rule_matches_dimension(*, rule: _SourceRoutingRule, dimension: str | None) -> bool:
@@ -464,6 +476,9 @@ def _build_coverage_matrix(
     for dimension in focus_dimensions:
         evidence_count = 0
         official_evidence_count = 0
+        public_review_count = 0
+        rerank_scored_count = 0
+        rerank_high_score_count = 0
         preferred_source_types = _ordered_source_types_for_dimension(dimension)[:2]
         preferred_source_hit_count = 0
         for draft in evidence_drafts:
@@ -472,26 +487,62 @@ def _build_coverage_matrix(
             evidence_count += 1
             source_type = _normalize_source_type(draft.get("source_type"))
             source_url_raw = draft.get("source_url")
+            metadata_raw = draft.get("metadata", {})
+            metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+            rerank_score_raw = metadata.get("rerank_score")
             if source_type in preferred_source_types:
                 preferred_source_hit_count += 1
+            if source_type == "public_review":
+                public_review_count += 1
             if source_type in _OFFICIAL_SOURCE_TYPES:
                 official_evidence_count += 1
-                continue
-            if (
+            elif (
                 isinstance(source_url_raw, str)
                 and source_url_raw.strip()
                 and _url_host_matches(source_url_raw.strip(), official_hosts)
             ):
                 official_evidence_count += 1
+            if isinstance(rerank_score_raw, (int, float)):
+                rerank_scored_count += 1
+                if float(rerank_score_raw) >= settings.RERANK_COVERAGE_THRESHOLD:
+                    rerank_high_score_count += 1
         requires_official = _is_official_priority_dimension(dimension)
-        covered = official_evidence_count > 0 if requires_official else evidence_count > 0
+        requires_public_review = _is_feedback_dimension(dimension)
+        evidence_count_pass = evidence_count >= _QUALITY_MIN_EVIDENCE_COUNT_PER_DIMENSION
+        preferred_source_pass = preferred_source_hit_count >= _QUALITY_MIN_PREFERRED_SOURCE_HITS
+        official_pass = official_evidence_count > 0 if requires_official else True
+        public_review_pass = public_review_count > 0 if requires_public_review else True
+        rerank_pass = (
+            rerank_high_score_count >= max(1, settings.RERANK_MIN_HIGH_SCORE_PER_DIM)
+            if rerank_scored_count > 0
+            else True
+        )
+        covered = (
+            evidence_count_pass
+            and preferred_source_pass
+            and official_pass
+            and public_review_pass
+            and rerank_pass
+        )
         matrix[dimension] = {
             "covered": covered,
             "evidence_count": evidence_count,
             "official_evidence_count": official_evidence_count,
             "requires_official": requires_official,
+            "requires_public_review": requires_public_review,
+            "public_review_count": public_review_count,
             "preferred_source_types": preferred_source_types,
             "preferred_source_hit_count": preferred_source_hit_count,
+            "min_evidence_required": _QUALITY_MIN_EVIDENCE_COUNT_PER_DIMENSION,
+            "min_preferred_source_hits_required": _QUALITY_MIN_PREFERRED_SOURCE_HITS,
+            "evidence_count_pass": evidence_count_pass,
+            "preferred_source_pass": preferred_source_pass,
+            "official_pass": official_pass,
+            "public_review_pass": public_review_pass,
+            "rerank_scored_count": rerank_scored_count,
+            "rerank_high_score_count": rerank_high_score_count,
+            "rerank_pass": rerank_pass,
+            "rerank_coverage_threshold": settings.RERANK_COVERAGE_THRESHOLD,
         }
     return matrix
 
@@ -507,6 +558,9 @@ def _pending_dimensions_from_coverage(
     for dimension in focus_dimensions:
         row = coverage_matrix.get(dimension, {})
         covered = bool(row.get("covered"))
+        evidence_count_raw = row.get("evidence_count", 0)
+        evidence_count = evidence_count_raw if isinstance(evidence_count_raw, int) else 0
+        allow_feedback_exhaustion = not _is_feedback_dimension(dimension) or evidence_count > 0
         if not covered and state is not None:
             extract_attempt_count = _dimension_tool_attempt_count(
                 state=state,
@@ -527,6 +581,8 @@ def _pending_dimensions_from_coverage(
             # after one search + configured source-first fetch attempts, mark
             # the dimension exhausted and let downstream QA/reporting decide quality.
             if (
+                allow_feedback_exhaustion
+                and
                 search_attempt_count >= 1
                 and fetch_attempt_count >= _MAX_SOURCE_FIRST_ATTEMPTS_PER_DIMENSION
             ):
@@ -535,6 +591,8 @@ def _pending_dimensions_from_coverage(
             # any fetch/search actions. Stop after repeated identical extraction
             # attempts so the run can progress to remaining dimensions.
             if (
+                allow_feedback_exhaustion
+                and
                 not covered
                 and search_attempt_count == 0
                 and fetch_attempt_count == 0
@@ -858,6 +916,16 @@ def _fallback_query_variants(
     market_scope = market_scope_raw.strip() if isinstance(market_scope_raw, str) else ""
     primary_host = _primary_official_host(state)
     candidates = [primary_query, base_query]
+    feedback_query: str | None = None
+    if _is_feedback_dimension(dimension):
+        if response_language == "zh":
+            scope_prefix = f"{market_scope} " if market_scope else "中文 国内 "
+            feedback_query = f"{scope_prefix}{competitor} 评价 口碑 优缺点 用户反馈"
+        else:
+            scope_prefix = f"{market_scope} " if market_scope else ""
+            feedback_query = f"{scope_prefix}{competitor} reviews pros cons user feedback"
+    if feedback_query is not None:
+        candidates.insert(0, feedback_query)
     if primary_host is not None:
         candidates.append(f"site:{primary_host} {competitor} {dimension}")
     if response_language == "zh":
@@ -1105,12 +1173,32 @@ async def _rerank_evidence_drafts(
             scores_by_index[original_index] = score
 
     if not scores_by_index:
+        routed_fallback = sorted(
+            (
+                (
+                    routing_priority_by_index.get(index, 0),
+                    index,
+                    draft,
+                )
+                for index, draft in enumerate(copied_drafts)
+            ),
+            key=lambda item: (-item[0], item[1]),
+        )
+        degraded_sorted: list[dict[str, object]] = []
+        for _priority, _index, draft in routed_fallback:
+            metadata = draft.get("metadata")
+            if isinstance(metadata, dict):
+                metadata["rerank_degraded"] = True
+                metadata["rerank_degraded_reason"] = "unscored_fallback"
+            degraded_sorted.append(draft)
         log.info(
             "researcher.rerank_skipped",
             evidence_draft_count=len(copied_drafts),
             eligible_count=len(eligible),
+            degraded=True,
+            fallback_order="source_routing",
         )
-        return copied_drafts
+        return degraded_sorted
 
     kept_scored: list[tuple[float, int, int, dict[str, object]]] = []
     kept_unscored: list[tuple[int, int, dict[str, object]]] = []
@@ -1118,13 +1206,16 @@ async def _rerank_evidence_drafts(
     for index, draft in enumerate(copied_drafts):
         score = scores_by_index.get(index)
         routing_priority = routing_priority_by_index.get(index, 0)
+        metadata = draft["metadata"]
         if score is None:
+            if isinstance(metadata, dict):
+                metadata["rerank_degraded"] = True
+                metadata["rerank_degraded_reason"] = "unscored_fallback"
             kept_unscored.append((routing_priority, index, draft))
             continue
         if score < settings.RERANK_DROP_THRESHOLD:
             dropped_count += 1
             continue
-        metadata = draft["metadata"]
         if isinstance(metadata, dict):
             metadata["rerank_score"] = score
         kept_scored.append((score, routing_priority, index, draft))
@@ -1520,11 +1611,20 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     if action_raw == "search_web":
         response_language = state.get("response_language")
         market_scope = state.get("market_scope")
+        competitor_id_raw = state.get("competitor_id")
         if isinstance(response_language, str) and response_language in {"zh", "en"}:
             action_args.setdefault("response_language", response_language)
         if isinstance(market_scope, str) and market_scope.strip():
             action_args.setdefault("market_scope", market_scope.strip())
+        if isinstance(competitor_id_raw, str) and competitor_id_raw.strip():
+            action_args.setdefault("competitor_id", competitor_id_raw.strip())
+        official_hosts = sorted(_state_official_hosts(state))
+        if official_hosts:
+            action_args.setdefault("official_hosts", official_hosts)
     if action_raw == "fetch_url":
+        competitor_id_raw = state.get("competitor_id")
+        if isinstance(competitor_id_raw, str) and competitor_id_raw.strip():
+            action_args.setdefault("competitor_id", competitor_id_raw.strip())
         query_raw = action_args.get("query")
         if not isinstance(query_raw, str) or not query_raw.strip():
             research_topic_raw = state.get("research_topic")

@@ -7,8 +7,10 @@ import pytest
 from agents.subgraphs.researcher import (
     COMPRESS_AFTER_TURNS,
     ResearcherSubState,
+    _build_coverage_matrix,
     _fallback_action,
     _fallback_fetch_url,
+    _fallback_query_variants,
     _is_official_priority_dimension,
     _ordered_source_types_for_dimension,
     _pending_dimensions_from_coverage,
@@ -112,6 +114,80 @@ def test_source_routing_prefers_public_review_for_user_feedback() -> None:
     assert ordered[0] == "public_review"
 
 
+def test_coverage_matrix_feedback_requires_public_review_source() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["user_feedback"],
+        "resolved_official_hosts": ["cursor.com"],
+    }
+    article_only = _build_coverage_matrix(
+        state=state,
+        evidence_drafts=[
+            {
+                "dimension": "user_feedback",
+                "source_type": "article",
+                "source_url": "https://blog.example.com/review",
+                "metadata": {},
+            }
+        ],
+    )
+    assert article_only["user_feedback"]["covered"] is False
+    assert article_only["user_feedback"]["public_review_pass"] is False
+
+    with_public_review = _build_coverage_matrix(
+        state=state,
+        evidence_drafts=[
+            {
+                "dimension": "user_feedback",
+                "source_type": "public_review",
+                "source_url": "https://www.g2.com/products/cursor/reviews",
+                "metadata": {},
+            }
+        ],
+    )
+    assert with_public_review["user_feedback"]["covered"] is True
+    assert with_public_review["user_feedback"]["public_review_pass"] is True
+
+
+def test_coverage_matrix_requires_high_rerank_score_when_scored() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["pricing"],
+        "resolved_official_hosts": ["cursor.com"],
+    }
+    low_score = _build_coverage_matrix(
+        state=state,
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "source_type": "pricing_page",
+                "source_url": "https://cursor.com/pricing",
+                "metadata": {"rerank_score": 0.1},
+            }
+        ],
+    )
+    assert low_score["pricing"]["rerank_pass"] is False
+    assert low_score["pricing"]["covered"] is False
+
+    high_score = _build_coverage_matrix(
+        state=state,
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "source_type": "pricing_page",
+                "source_url": "https://cursor.com/pricing",
+                "metadata": {"rerank_score": 0.8},
+            },
+            {
+                "dimension": "pricing",
+                "source_type": "official_site",
+                "source_url": "https://cursor.com/enterprise",
+                "metadata": {"rerank_score": 0.82},
+            },
+        ],
+    )
+    assert high_score["pricing"]["rerank_pass"] is True
+    assert high_score["pricing"]["covered"] is True
+
+
 def test_pending_dimensions_prioritize_least_attempted_dimension() -> None:
     state: ResearcherSubState = {  # type: ignore[typeddict-item]
         "focus_dimensions": ["feature", "pricing", "user_feedback"],
@@ -146,6 +222,61 @@ def test_pending_dimensions_exhausts_extract_only_loops() -> None:
         state=state,
     )
     assert pending == []
+
+
+def test_pending_dimensions_keep_feedback_when_no_evidence_even_after_attempts() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["user_feedback"],
+        "observations_log": [
+            {"tool": "search_web", "args": {"dimension": "user_feedback"}},
+            {"tool": "fetch_url", "args": {"dimension": "user_feedback"}},
+            {"tool": "fetch_url", "args": {"dimension": "user_feedback"}},
+        ],
+    }
+    pending = _pending_dimensions_from_coverage(
+        focus_dimensions=["user_feedback"],
+        coverage_matrix={
+            "user_feedback": {"covered": False, "evidence_count": 0},
+        },
+        state=state,
+    )
+    assert pending == ["user_feedback"]
+
+
+def test_pending_dimensions_exhaust_feedback_after_evidence_exists() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["user_feedback"],
+        "observations_log": [
+            {"tool": "search_web", "args": {"dimension": "user_feedback"}},
+            {"tool": "fetch_url", "args": {"dimension": "user_feedback"}},
+            {"tool": "fetch_url", "args": {"dimension": "user_feedback"}},
+        ],
+    }
+    pending = _pending_dimensions_from_coverage(
+        focus_dimensions=["user_feedback"],
+        coverage_matrix={
+            "user_feedback": {"covered": False, "evidence_count": 1},
+        },
+        state=state,
+    )
+    assert pending == []
+
+
+def test_fallback_query_variants_adds_feedback_intent_query_for_zh() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "competitor_id": "Cursor",
+        "response_language": "zh",
+        "market_scope": "中国",
+        "resolved_official_hosts": ["cursor.com"],
+    }
+    variants = _fallback_query_variants(
+        state=state,
+        dimension="user_feedback",
+        primary_query="Cursor user_feedback AI coding",
+        base_query="Cursor user_feedback",
+    )
+    assert variants
+    assert "评价 口碑 优缺点 用户反馈" in variants[0]
 
 
 def _llm_response(model_slot: str, content: dict[str, object]) -> LLMResponse:

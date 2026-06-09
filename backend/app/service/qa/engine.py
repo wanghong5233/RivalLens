@@ -39,6 +39,12 @@ from utils.logger import get_logger
 MAX_QA_REJECTIONS = 3
 SEMANTIC_RULE_ID = "rule_qa_semantic_audit"
 log = get_logger("service.qa.engine")
+_QA_SEMANTIC_DIMENSIONS: tuple[str, ...] = (
+    "depth",
+    "citation_coverage",
+    "faithfulness",
+    "instruction_following",
+)
 
 
 def _report_has_writer_fallback_mode(content_json: dict[str, object]) -> bool:
@@ -71,7 +77,26 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
         "run_knowledge.features",
         "run_knowledge.pricings",
         "run_knowledge.personas",
+        "run_knowledge.feedback",
         "run_knowledge.coverage",
+    ],
+    "rule_qa_semantic_audit": [
+        "reports.content_json.sections[].content_markdown",
+        "reports.content_json.sections[].evidence_refs",
+    ],
+    "rule_qa_semantic_depth": [
+        "reports.content_json.sections[].content_markdown",
+    ],
+    "rule_qa_semantic_citation_coverage": [
+        "reports.content_json.sections[].evidence_refs",
+    ],
+    "rule_qa_semantic_faithfulness": [
+        "reports.content_json.sections[].content_markdown",
+        "reports.content_json.sections[].evidence_refs",
+    ],
+    "rule_qa_semantic_instruction_following": [
+        "reports.content_json.sections[].section_id",
+        "reports.content_json.sections[].content_markdown",
     ],
 }
 _PROMOTED_RULE_REQUIRED_FIELDS = [
@@ -98,17 +123,20 @@ _KNOWLEDGE_REQUIRED_FIELDS_BY_FAILURE_TYPE: dict[str, list[str]] = {
         "run_knowledge.features",
         "run_knowledge.pricings",
         "run_knowledge.personas",
+        "run_knowledge.feedback",
     ],
     "extraction_empty_retry": [
         "run_knowledge.features",
         "run_knowledge.pricings",
         "run_knowledge.personas",
+        "run_knowledge.feedback",
     ],
     "dishonest_coverage": ["run_knowledge.coverage"],
     "malformed_fields": [
         "run_knowledge.features",
         "run_knowledge.pricings",
         "run_knowledge.personas",
+        "run_knowledge.feedback",
     ],
 }
 
@@ -348,6 +376,54 @@ def _semantic_rule_result(semantic_output: dict[str, object]) -> RuleResult:
     )
 
 
+def _semantic_dimension_rule_results(semantic_output: dict[str, object]) -> list[RuleResult]:
+    dimension_results_raw = semantic_output.get("dimension_results")
+    dimension_results = dimension_results_raw if isinstance(dimension_results_raw, dict) else {}
+    failed_dimension_rules: list[RuleResult] = []
+    for dimension_key in _QA_SEMANTIC_DIMENSIONS:
+        dimension_passed = dimension_results.get(dimension_key)
+        if dimension_passed is True:
+            continue
+        failure_reason = (
+            f"{dimension_key} failed semantic QA checks."
+            if isinstance(dimension_passed, bool)
+            else f"{dimension_key} result is missing from semantic QA output."
+        )
+        failed_dimension_rules.append(
+            RuleResult(
+                rule_id=f"rule_qa_semantic_{dimension_key}",
+                passed=False,
+                severity="blocking",
+                reject_to="writer",
+                message=failure_reason,
+            )
+        )
+    return failed_dimension_rules
+
+
+def _semantic_fail_closed_rule_result(
+    *,
+    semantic_response: LLMResponse,
+    schema_error: str | None,
+) -> RuleResult:
+    if semantic_response.error is not None:
+        failure_source = f"semantic_llm_error={semantic_response.error}"
+    elif schema_error is not None:
+        failure_source = f"semantic_schema_error={schema_error}"
+    else:
+        failure_source = "semantic_output_missing"
+    return RuleResult(
+        rule_id=SEMANTIC_RULE_ID,
+        passed=False,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            "Semantic QA output is unavailable; fail-closed to prevent advisory-only acceptance "
+            f"({failure_source})."
+        ),
+    )
+
+
 def _unsupported_numeric_claims(semantic_output: dict[str, object]) -> list[dict[str, object]]:
     items_raw = semantic_output.get("unsupported_numeric_claims")
     if not isinstance(items_raw, list):
@@ -496,6 +572,19 @@ def _build_qa_slow_path_log_fields(
     unsupported_numeric_claims = (
         _unsupported_numeric_claims(semantic_output) if semantic_output is not None else []
     )
+    dimension_results_raw = (
+        semantic_output.get("dimension_results")
+        if semantic_output is not None
+        else None
+    )
+    dimension_results = (
+        dimension_results_raw if isinstance(dimension_results_raw, dict) else {}
+    )
+    semantic_dimension_failures = [
+        dimension_key
+        for dimension_key in _QA_SEMANTIC_DIMENSIONS
+        if dimension_results.get(dimension_key) is not True
+    ]
     semantic_audit_passed = (
         bool(semantic_output.get("semantic_audit_passed"))
         if semantic_output is not None
@@ -515,6 +604,8 @@ def _build_qa_slow_path_log_fields(
         "semantic_reject_to": reject_to_raw if isinstance(reject_to_raw, str) else None,
         "semantic_severity": severity_raw if isinstance(severity_raw, str) else None,
         "unsupported_numeric_claim_count": len(unsupported_numeric_claims),
+        "semantic_dimension_failure_count": len(semantic_dimension_failures),
+        "semantic_dimension_failures": semantic_dimension_failures,
         "schema_error": schema_error,
     }
 
@@ -663,6 +754,7 @@ async def evaluate_report(
     )
     semantic_mode: Literal["applied", "degraded_rule_only"] = "degraded_rule_only"
     semantic_audit_passed = False
+    semantic_dimension_rules: list[RuleResult] = []
     if semantic_output is not None:
         semantic_mode = "applied"
         semantic_output = _apply_numeric_claim_gate(
@@ -670,6 +762,7 @@ async def evaluate_report(
             qa_rejection_count=qa_rejection_count,
             has_blocking_failures_pre_semantic=has_blocking_failures_pre_semantic,
         )
+        semantic_dimension_rules = _semantic_dimension_rule_results(semantic_output)
         semantic_reject_to_raw = semantic_output.get("reject_to")
         semantic_audit_passed_raw = semantic_output.get("semantic_audit_passed")
         if (
@@ -691,6 +784,7 @@ async def evaluate_report(
             and not has_blocking_failures_pre_semantic
             and not _report_has_writer_fallback_mode(report.content_json)
             and not _unsupported_numeric_claims(semantic_output)
+            and not semantic_dimension_rules
         ):
             # If deterministic QA already passed and semantic retry still bounces between
             # analyst/researcher, stop the loop and accept with warning-level metadata.
@@ -706,7 +800,14 @@ async def evaluate_report(
             }
         semantic_rule = _semantic_rule_result(semantic_output)
         rule_results.append(semantic_rule)
-        semantic_audit_passed = bool(semantic_output["semantic_audit_passed"])
+        rule_results.extend(semantic_dimension_rules)
+        semantic_audit_passed = semantic_rule.passed and not semantic_dimension_rules
+    else:
+        semantic_rule = _semantic_fail_closed_rule_result(
+            semantic_response=semantic_response,
+            schema_error=harness_result.schema_error,
+        )
+        rule_results.append(semantic_rule)
 
     outcome = build_qa_outcome(
         target_step_id=target_step_id,

@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     LLM_MODEL_QA: str | None = None
     LLM_MODEL_WRITER: str | None = None
 
-    LLM_GLOBAL_CONCURRENCY: int = 4
+    LLM_GLOBAL_CONCURRENCY: int = 8
     LLM_TIMEOUT_SECONDS: int = 30
     LLM_TIMEOUT_SUMMARIZATION: int = 180
     LLM_TIMEOUT_COMPRESSION: int = 120
@@ -118,6 +118,9 @@ class Settings(BaseSettings):
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     )
+    COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED: bool = True
+    COLLECTOR_FETCH_SEARCH_FALLBACK_ENABLED: bool = True
+    COLLECTOR_SEARCH_BREADTH_ENABLED: bool = True
     TAVILY_API_KEY: str | None = None
     SERPER_API_KEY: str | None = None
     BOCHA_API_KEY: str | None = None

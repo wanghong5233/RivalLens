@@ -184,6 +184,7 @@ async def test_fetch_url_channel_records_host_for_qps(monkeypatch: pytest.Monkey
     channel = FetchUrlChannel()
     limiter = _FakeLimiter()
     monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr(settings, "COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED", True)
     monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: limiter)
     monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
     # Non-HTML content_type makes the local httpx path bail out deterministically,
@@ -266,9 +267,40 @@ async def test_fetch_url_channel_uses_local_httpx_extract(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_fetch_url_channel_wraps_local_parser_attribute_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = FetchUrlChannel()
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", None)
+    monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: _FakeLimiter())
+    monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
+    monkeypatch.setattr(
+        "agents.tools.fetch_url.get_collector_http_client",
+        lambda: _FakeHTTPClient(
+            FetchResponse(
+                url="https://github.com/features/copilot",
+                status_code=200,
+                text="<html><body><main>GitHub Copilot feature page</main></body></html>",
+                content_type="text/html",
+            )
+        ),
+    )
+
+    def _raise_attribute_error(html: str) -> str:
+        del html
+        raise AttributeError("'NoneType' object has no attribute 'get'")
+
+    monkeypatch.setattr("agents.tools.fetch_url.extract_main_text", _raise_attribute_error)
+
+    with pytest.raises(ChannelError, match="local HTML extraction failed: AttributeError"):
+        await channel.invoke(url="https://github.com/features/copilot")
+
+
+@pytest.mark.asyncio
 async def test_fetch_url_channel_rejects_low_quality_extract(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FetchUrlChannel()
     monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr(settings, "COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED", True)
     monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: _FakeLimiter())
     monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
     monkeypatch.setattr(
@@ -291,6 +323,109 @@ async def test_fetch_url_channel_rejects_low_quality_extract(monkeypatch: pytest
 
     with pytest.raises(ChannelError, match="too short"):
         await channel.invoke(url="https://example.com")
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_channel_skips_tavily_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FetchUrlChannel()
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr(settings, "COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED", False)
+    monkeypatch.setattr(settings, "COLLECTOR_FETCH_SEARCH_FALLBACK_ENABLED", False)
+    monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: _FakeLimiter())
+    monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
+    monkeypatch.setattr(
+        "agents.tools.fetch_url.get_collector_http_client",
+        lambda: _FakeHTTPClient(
+            FetchResponse(
+                url="https://cursor.com/pricing",
+                status_code=200,
+                text="%PDF-1.7 binary",
+                content_type="application/pdf",
+            )
+        ),
+    )
+
+    tavily_called = False
+
+    async def _fake_tavily_extract(*, url: str, query: str | None) -> dict[str, object]:
+        del url, query
+        nonlocal tavily_called
+        tavily_called = True
+        return {"results": []}
+
+    monkeypatch.setattr("agents.tools.fetch_url._tavily_extract", _fake_tavily_extract)
+
+    with pytest.raises(ChannelError, match="tavily fallback skipped"):
+        await channel.invoke(url="https://cursor.com/pricing")
+    assert tavily_called is False
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_channel_uses_search_snippet_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = FetchUrlChannel()
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr(settings, "COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED", False)
+    monkeypatch.setattr(settings, "COLLECTOR_FETCH_SEARCH_FALLBACK_ENABLED", True)
+    monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: _FakeLimiter())
+    monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
+    monkeypatch.setattr(
+        "agents.tools.fetch_url.get_collector_http_client",
+        lambda: _FakeHTTPClient(
+            FetchResponse(
+                url="https://www.jetbrains.com/ide-services/ai-enterprise/",
+                status_code=200,
+                text="%PDF-1.7 binary",
+                content_type="application/pdf",
+            )
+        ),
+    )
+
+    call_args: dict[str, object] = {}
+
+    class _FakeRegistry:
+        async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
+            call_args["action"] = action
+            call_args["args"] = dict(args)
+            return CollectorObservation(
+                channel="search_web",
+                args=args,
+                result=ToolObservationResult(
+                    snippets=[
+                        CollectorSnippet(
+                            quote="JetBrains AI enterprise users report strong IDE integration and policy controls.",
+                            sanitized_text=(
+                                "JetBrains AI enterprise users report strong IDE integration and policy controls."
+                            ),
+                            source_url="https://www.g2.com/products/jetbrains-ai-assistant/reviews",
+                            source_title="G2 Reviews",
+                            source_type="public_review",
+                            desensitized=True,
+                            metadata={"source": "serper_search"},
+                        )
+                    ],
+                    metadata={"provider": "serper"},
+                ),
+            )
+
+    monkeypatch.setattr("service.collector.registry.get_channel_registry", lambda: _FakeRegistry())
+
+    observation = await channel.invoke(
+        url="https://www.jetbrains.com/ide-services/ai-enterprise/",
+        competitor_id="JetBrains AI",
+        dimension="user_feedback",
+        query="JetBrains AI enterprise capabilities security compliance deployment",
+    )
+
+    assert call_args["action"] == "search_web"
+    args = call_args["args"]
+    assert isinstance(args, dict)
+    assert args["query"] == (
+        "site:www.jetbrains.com JetBrains AI enterprise capabilities security compliance deployment"
+    )
+    assert args["query_variants"] == ["JetBrains AI enterprise capabilities security compliance deployment"]
+    assert observation.result.snippets[0].metadata["source"] == "search_snippet_fallback"
+    assert observation.result.metadata["source"] == "search_snippet_fallback"
+    assert observation.result.snippets[0].source_type == "public_review"
 
 
 def test_collector_http_client_sets_user_agent_header() -> None:
@@ -328,6 +463,10 @@ def test_source_type_mapping_rules() -> None:
         source_url="https://billingplatform.com/blog/pricing",
         competitor_id="Cursor",
     ) is False
+    assert source_matches_competitor(
+        source_url="https://cursoranalytics.com/platform-overview",
+        competitor_id="Cursor",
+    ) is False
     assert (
         infer_source_type(
             source_url="https://community.example.com/thread/1",
@@ -339,6 +478,13 @@ def test_source_type_mapping_rules() -> None:
         infer_source_type(
             source_url="https://forum.cursor.com/t/how-does-the-new-pricing-affect-business-plans/108774",
             official_hosts=official_hosts_for_competitor("Cursor"),
+        )
+        == "public_review"
+    )
+    assert (
+        infer_source_type(
+            source_url="https://www.g2.com/products/cursor/reviews",
+            official_hosts=None,
         )
         == "public_review"
     )
@@ -465,6 +611,40 @@ async def test_bocha_search_channel_requires_key(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(ChannelError, match="BOCHA_API_KEY"):
         await BochaSearchChannel().invoke(query="销售 AI 工具", max_results=3)
+
+
+@pytest.mark.asyncio
+async def test_bocha_search_channel_classifies_official_site_with_competitor_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "BOCHA_API_KEY", "test-bocha-key")
+    monkeypatch.setattr("agents.tools.search_bocha._get_bocha_rate_limiter", lambda: _FakeLimiter())
+    fake_client = _FakeBochaAsyncClient(
+        _FakeBochaResponse(
+            {
+                "code": 200,
+                "data": {
+                    "webPages": {
+                        "value": [
+                            {
+                                "name": "Cursor enterprise",
+                                "url": "https://cursor.com/enterprise",
+                                "summary": "Cursor enterprise deployment page.",
+                            }
+                        ]
+                    }
+                },
+            }
+        )
+    )
+    monkeypatch.setattr("agents.tools.search_bocha.httpx.AsyncClient", lambda **_: fake_client)
+
+    observation = await BochaSearchChannel().invoke(
+        query="cursor enterprise deployment",
+        max_results=3,
+        competitor_id="Cursor",
+    )
+    assert observation.result.snippets[0].source_type == "official_site"
 
 
 @pytest.mark.asyncio
@@ -654,7 +834,7 @@ async def test_search_router_queries_both_providers_with_chinese_emphasis() -> N
     assert observation.args["providers"] == ["bocha", "tavily"]
     assert observation.args["search_languages"] == ["zh", "en"]
     assert len(bocha.calls) == 1
-    assert len(tavily.calls) == 1
+    assert len(tavily.calls) == 2
     # Emphasis: home (bocha) results lead after merge.
     assert len(observation.result.snippets) == 2
     assert observation.result.snippets[0].source_url == "https://example.cn/a"
@@ -715,11 +895,11 @@ async def test_search_router_uses_serper_before_tavily_for_english(
         response_language="en",
     )
 
-    # Serper is the English primary; Tavily stays untouched as last-resort fallback.
-    assert observation.args["providers"] == ["serper"]
+    # Breadth-on mode queries both Serper and Tavily on the same language leg.
+    assert observation.args["providers"] == ["serper", "tavily"]
     assert observation.args["search_languages"] == ["en"]
     assert len(serper.calls) == 1
-    assert len(tavily.calls) == 0
+    assert len(tavily.calls) == 1
     # Router hands Serper the carrier language so it can localize hl/gl.
     assert serper.calls[0]["language"] == "en"
 
@@ -742,6 +922,28 @@ async def test_search_router_degrades_to_tavily_when_serper_fails(
     assert observation.args["providers"] == ["tavily"]
     assert len(serper.calls) == 1
     assert len(tavily.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_router_respects_breadth_toggle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "test-serper-key")
+    monkeypatch.setattr(settings, "COLLECTOR_SEARCH_BREADTH_ENABLED", False)
+    serper = _FakeSearchChannel(provider="serper", source_url="https://example.com/a")
+    tavily = _FakeSearchChannel(provider="tavily", source_url="https://example.com/b")
+    channel = SearchWebRouterChannel(serper_channel=serper, tavily_channel=tavily)
+
+    observation = await channel.invoke(
+        query="cloud IDE competitors",
+        max_results=3,
+        response_language="en",
+    )
+
+    assert observation.args["providers"] == ["serper"]
+    assert observation.args["breadth_enabled"] is False
+    assert len(serper.calls) == 1
+    assert len(tavily.calls) == 0
 
 
 @pytest.mark.asyncio
@@ -784,7 +986,12 @@ async def test_search_router_runs_query_variants_and_dedupes_across_providers() 
     )
 
     assert [call["query"] for call in bocha.calls] == ["销售 AI 工具", "销售 AI 工具 评测"]
-    assert [call["query"] for call in tavily.calls] == ["销售 AI 工具", "销售 AI 工具 评测"]
+    assert [call["query"] for call in tavily.calls] == [
+        "销售 AI 工具",
+        "销售 AI 工具 评测",
+        "销售 AI 工具",
+        "销售 AI 工具 评测",
+    ]
     # Same canonical URL from both providers collapses to one; home (bocha) copy is kept.
     assert len(observation.result.snippets) == 1
     assert observation.result.snippets[0].source_url == "https://example.cn/a?utm=1"
@@ -830,7 +1037,7 @@ async def test_search_router_english_user_china_market_adds_chinese_leg() -> Non
     # en is home (leads); zh is added from market scope. Both engines are queried.
     assert observation.args["providers"] == ["tavily", "bocha"]
     assert len(bocha.calls) == 1
-    assert len(tavily.calls) == 1
+    assert len(tavily.calls) == 2
 
 
 @pytest.mark.asyncio

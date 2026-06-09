@@ -5,12 +5,14 @@ from service.knowledge.persistence import (
 )
 from service.knowledge.extractor import (
     KnowledgeExtractionResult,
+    build_knowledge_schema_result,
     extract_knowledge_schema,
 )
 
 __all__ = [
     "EMPTY_RUN_KNOWLEDGE",
     "KnowledgeExtractionResult",
+    "build_knowledge_schema_result",
     "extract_knowledge_schema",
     "load_knowledge_for_run",
     "persist_knowledge_for_step",

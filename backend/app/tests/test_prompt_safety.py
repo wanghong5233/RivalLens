@@ -74,6 +74,21 @@ def test_focus_dimension_prompts_constrain_name_length() -> None:
     assert "len(focus_dimensions)" in combined
 
 
+def test_researcher_prompt_mentions_feedback_review_sources() -> None:
+    researcher_user_prompt = build_researcher_user_prompt(
+        research_topic="compare ai coding tools",
+        competitor_id="Cursor",
+        focus_dimensions=["user_feedback", "pricing"],
+        pending_dimensions=["user_feedback"],
+        queried_dimensions=[],
+        turn_count=1,
+        max_turns=6,
+        observation_briefs=[],
+    )
+    assert "For user_feedback-like dimensions" in researcher_user_prompt
+    assert "reviews/forums" in researcher_user_prompt
+
+
 def test_discovery_extract_prompt_includes_locale_and_disambiguation_context() -> None:
     prompt = build_discovery_extract_user_prompt(
         search_results="OPC 相关厂商包括 A 和 B。",
@@ -113,6 +128,7 @@ def test_supervisor_prompt_includes_market_scope_for_discovery() -> None:
 async def test_prompt_safety_hits_are_attached_to_snippet_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = FetchUrlChannel()
     monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr(settings, "COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED", True)
     monkeypatch.setattr("agents.tools.fetch_url._get_per_host_limiter", lambda: _FakeLimiter())
     monkeypatch.setattr("agents.tools.fetch_url._get_robots_gate", lambda: _AllowRobotsGate())
     monkeypatch.setattr(

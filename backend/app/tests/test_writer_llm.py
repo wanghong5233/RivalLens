@@ -45,6 +45,20 @@ def test_build_writer_prompts_include_required_context() -> None:
                 "evidence_ids": ["ev_001"],
             }
         ],
+        analyst_comparisons=[
+            {
+                "dimension": "feature",
+                "cells": [
+                    {
+                        "competitor_id": "comp_cursor",
+                        "stance": "leader",
+                        "summary": "Cursor provides stronger repo-level context.",
+                        "confidence": "high",
+                        "evidence_ids": ["ev_001"],
+                    }
+                ],
+            }
+        ],
         risk_flags=["pricing volatility"],
         recommended_sections=["feature", "pricing"],
         qa_reasons=["Unsupported numeric claims."],
@@ -63,6 +77,7 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "Writer context" in user_prompt
     assert "- evidence_briefs:" in user_prompt
     assert "- analyst_insights:" in user_prompt
+    assert "- analyst_comparisons:" in user_prompt
     assert "- allowed_evidence_ids:" in user_prompt
     assert "- target_sections:" in user_prompt
     assert "- analysis_intent: 对比企业版能力和定价" in user_prompt

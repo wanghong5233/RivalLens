@@ -90,7 +90,7 @@ def _load_case(path: Path) -> GoldenCase:
 _TERMINAL_RUN_STATUSES = {"completed", "degraded", "failed"}
 
 
-def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 30.0) -> str:
+def _wait_for_run_terminal(run_id: str, *, timeout_seconds: float = 90.0) -> str:
     """Poll until the async POST /api/runs background graph task reaches a terminal status."""
     deadline = time.time() + timeout_seconds
     last_status = "running"

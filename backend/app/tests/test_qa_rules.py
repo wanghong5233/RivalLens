@@ -12,6 +12,8 @@ from service.qa.engine import (
     _apply_numeric_claim_gate,
     _build_qa_fast_path_log_fields,
     _build_qa_slow_path_log_fields,
+    _semantic_fail_closed_rule_result,
+    _semantic_dimension_rule_results,
     _target_sections_for_report,
     build_qa_outcome,
 )
@@ -263,6 +265,31 @@ def test_rule_writer_must_cite_evidence_pass_and_fail() -> None:
         ).passed
         is False
     )
+
+
+def test_rule_writer_must_cite_evidence_requires_valid_ref_per_section() -> None:
+    partially_cited_content_json = {
+        "sections": [
+            {
+                "section_id": "feature",
+                "title": "Feature Comparison",
+                "content_markdown": "x" * 80,
+                "evidence_refs": ["ev_test_001"],
+            },
+            {
+                "section_id": "pricing",
+                "title": "Pricing Comparison",
+                "content_markdown": "x" * 80,
+                "evidence_refs": [],
+            },
+        ]
+    }
+    result = rule_writer_must_cite_evidence(
+        content_json=partially_cited_content_json,
+        allowed_evidence_ids={"ev_test_001"},
+    )
+    assert result.passed is False
+    assert "pricing" in result.message
 
 
 def test_rule_evidence_must_be_desensitized_pass_and_fail() -> None:
@@ -558,6 +585,51 @@ def test_build_qa_slow_path_log_fields_surfaces_semantic_preview() -> None:
     assert fields["semantic_reject_to"] == "writer"
     assert fields["semantic_severity"] == "blocking"
     assert fields["schema_error"] == "finding is required"
+
+
+def test_semantic_dimension_rule_results_block_on_false_dimension() -> None:
+    semantic_output = {
+        "semantic_audit_passed": True,
+        "reject_to": "writer",
+        "severity": "warning",
+        "finding": "Looks acceptable.",
+        "dimension_results": {
+            "depth": True,
+            "citation_coverage": False,
+            "faithfulness": True,
+            "instruction_following": True,
+        },
+        "unsupported_numeric_claims": [],
+    }
+    rules = _semantic_dimension_rule_results(semantic_output)
+    assert len(rules) == 1
+    assert rules[0].rule_id == "rule_qa_semantic_citation_coverage"
+    assert rules[0].passed is False
+    assert rules[0].severity == "blocking"
+
+
+def test_semantic_fail_closed_rule_result_from_llm_error() -> None:
+    semantic_response = LLMResponse(
+        model_slot="qa",
+        provider="fake",
+        model_name="fake-qa",
+        prompt_preview="preview",
+        prompt_hash="hash",
+        content={},
+        prompt_tokens=1,
+        completion_tokens=1,
+        latency_ms=1,
+        error="provider timeout",
+        fallback_used=False,
+    )
+    rule = _semantic_fail_closed_rule_result(
+        semantic_response=semantic_response,
+        schema_error=None,
+    )
+    assert rule.rule_id == "rule_qa_semantic_audit"
+    assert rule.passed is False
+    assert rule.severity == "blocking"
+    assert "semantic_llm_error=provider timeout" in rule.message
 
 
 def test_engine_aggregation_approves_when_all_rules_pass() -> None:

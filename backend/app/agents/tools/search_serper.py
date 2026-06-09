@@ -4,7 +4,7 @@ from functools import lru_cache
 
 import httpx
 
-from agents.tools.parse_page import infer_source_type
+from agents.tools.parse_page import infer_source_type, official_hosts_for_competitor
 from core.config import settings
 from service.collector.base import BaseChannel, CollectorObservation, ToolObservationResult
 from service.collector.errors import ChannelError, FetchTimeout, RateLimited
@@ -86,6 +86,23 @@ class SerperSearchChannel(BaseChannel):
             raise ChannelError("serper_search max_results must be in range [1, 10].")
         if not settings.SERPER_API_KEY:
             raise ChannelError("SERPER_API_KEY is required for serper_search channel.")
+        competitor_id_raw = kwargs.get("competitor_id")
+        competitor_id = (
+            competitor_id_raw.strip()
+            if isinstance(competitor_id_raw, str) and competitor_id_raw.strip()
+            else None
+        )
+        official_hosts_raw = kwargs.get("official_hosts")
+        if isinstance(official_hosts_raw, (list, tuple, set)):
+            official_hosts = {
+                item.strip()
+                for item in official_hosts_raw
+                if isinstance(item, str) and item.strip()
+            }
+        elif competitor_id is not None:
+            official_hosts = official_hosts_for_competitor(competitor_id)
+        else:
+            official_hosts = set()
 
         country_raw = kwargs.get("country")
         language_raw = kwargs.get("language")
@@ -142,12 +159,16 @@ class SerperSearchChannel(BaseChannel):
             snippets.append(
                 self._build_snippet(
                     raw_text=raw_text,
-                    source_type=infer_source_type(source_url=source_url, official_hosts=None),
+                    source_type=infer_source_type(
+                        source_url=source_url,
+                        official_hosts=official_hosts or None,
+                    ),
                     source_url=source_url,
                     source_title=source_title,
                     metadata={
                         "source": "serper_search",
                         "query": query,
+                        "competitor_id": competitor_id,
                         "date_published": item.get("date")
                         if isinstance(item.get("date"), str)
                         else None,
@@ -173,6 +194,7 @@ class SerperSearchChannel(BaseChannel):
                     "provider": "serper",
                     "gl": gl,
                     "hl": hl,
+                    "competitor_id": competitor_id,
                 },
             ),
         )

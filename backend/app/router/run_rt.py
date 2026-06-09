@@ -440,6 +440,15 @@ class KnowledgePersonaResponse(BaseModel):
     evidence_ids: list[str]
 
 
+class KnowledgeFeedbackResponse(BaseModel):
+    id: str
+    competitor_id: str
+    sentiment: str
+    topic: str
+    summary: str
+    evidence_ids: list[str]
+
+
 class RunKnowledgeResponse(BaseModel):
     run_id: str
     analysis_archetype: str
@@ -447,6 +456,8 @@ class RunKnowledgeResponse(BaseModel):
     features: list[KnowledgeFeatureResponse]
     pricings: list[KnowledgePricingResponse]
     personas: list[KnowledgePersonaResponse]
+    feedback: list[KnowledgeFeedbackResponse]
+    missing_reasons: dict[str, list[str]]
     coverage: dict[str, object]
 
 
@@ -2790,6 +2801,14 @@ async def get_run_knowledge(run_id: str) -> RunKnowledgeResponse:
         features=[KnowledgeFeatureResponse.model_validate(item) for item in knowledge["features"]],
         pricings=[KnowledgePricingResponse.model_validate(item) for item in knowledge["pricings"]],
         personas=[KnowledgePersonaResponse.model_validate(item) for item in knowledge["personas"]],
+        feedback=[KnowledgeFeedbackResponse.model_validate(item) for item in knowledge["feedback"]],
+        missing_reasons={
+            competitor_id: [
+                reason for reason in reasons if isinstance(reason, str)
+            ]
+            for competitor_id, reasons in knowledge["missing_reasons"].items()
+            if isinstance(competitor_id, str) and isinstance(reasons, list)
+        },
         coverage=knowledge["coverage"],
     )
 

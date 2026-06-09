@@ -520,6 +520,125 @@ class _FakeLLMClient:
         }
         return self._build_response(model_slot="summarization", content=content)
 
+    def _build_knowledge_extraction_response(self, user_prompt: str) -> LLMResponse:
+        competitors = self._extract_json_list(user_prompt, "competitors")
+        evidence_briefs_raw = self._extract_json_value(user_prompt, "evidence_briefs")
+        evidence_briefs = (
+            [item for item in evidence_briefs_raw if isinstance(item, dict)]
+            if isinstance(evidence_briefs_raw, list)
+            else []
+        )
+        if not competitors:
+            inferred_competitors: list[str] = []
+            for item in evidence_briefs:
+                competitor_raw = item.get("competitor_id")
+                if not isinstance(competitor_raw, str):
+                    continue
+                competitor_id = competitor_raw.strip()
+                if competitor_id and competitor_id not in inferred_competitors:
+                    inferred_competitors.append(competitor_id)
+            competitors = inferred_competitors
+
+        evidence_by_competitor: dict[str, list[str]] = {}
+        evidence_by_dimension: dict[tuple[str, str], list[str]] = {}
+        for item in evidence_briefs:
+            competitor_raw = item.get("competitor_id")
+            evidence_id_raw = item.get("evidence_id")
+            dimension_raw = item.get("dimension")
+            if not isinstance(competitor_raw, str) or not isinstance(evidence_id_raw, str):
+                continue
+            competitor_id = competitor_raw.strip()
+            evidence_id = evidence_id_raw.strip()
+            if not competitor_id or not evidence_id:
+                continue
+            dimension = (
+                dimension_raw.strip()
+                if isinstance(dimension_raw, str) and dimension_raw.strip()
+                else "feature"
+            )
+            competitor_evidence = evidence_by_competitor.setdefault(competitor_id, [])
+            if evidence_id not in competitor_evidence:
+                competitor_evidence.append(evidence_id)
+            dimension_evidence = evidence_by_dimension.setdefault((competitor_id, dimension), [])
+            if evidence_id not in dimension_evidence:
+                dimension_evidence.append(evidence_id)
+
+        if not competitors:
+            competitors = ["comp_cursor"]
+            evidence_by_competitor.setdefault("comp_cursor", ["ev_fake_001"])
+            evidence_by_dimension.setdefault(("comp_cursor", "feature"), ["ev_fake_001"])
+
+        features: list[dict[str, object]] = []
+        pricings: list[dict[str, object]] = []
+        personas: list[dict[str, object]] = []
+        feedback: list[dict[str, object]] = []
+        for competitor_id in competitors:
+            competitor_evidence = evidence_by_competitor.get(competitor_id, [])
+            feature_evidence = evidence_by_dimension.get((competitor_id, "feature"), []) or competitor_evidence
+            pricing_evidence = evidence_by_dimension.get((competitor_id, "pricing"), []) or competitor_evidence
+            feedback_evidence = (
+                evidence_by_dimension.get((competitor_id, "user_feedback"), []) or competitor_evidence
+            )
+            persona_evidence = feedback_evidence or feature_evidence or pricing_evidence
+
+            for index, evidence_id in enumerate(feature_evidence[:3], start=1):
+                features.append(
+                    {
+                        "id": f"feat_{competitor_id}_{index}",
+                        "competitor_id": competitor_id,
+                        "name": f"{competitor_id} feature {index}",
+                        "description": f"Deterministic feature extraction for {competitor_id}.",
+                        "maturity": "advanced" if index == 1 else "basic",
+                        "evidence_ids": [evidence_id],
+                    }
+                )
+            if pricing_evidence:
+                pricings.append(
+                    {
+                        "id": f"price_{competitor_id}",
+                        "competitor_id": competitor_id,
+                        "model": "subscription",
+                        "tiers": [
+                            {"name": "pro", "price": "$20/mo"},
+                            {"name": "business", "price": "$40/user/mo"},
+                        ],
+                        "free_plan": True,
+                        "enterprise_plan": True,
+                        "evidence_ids": pricing_evidence[:2],
+                    }
+                )
+            if feedback_evidence:
+                feedback.append(
+                    {
+                        "id": f"feedback_{competitor_id}",
+                        "competitor_id": competitor_id,
+                        "sentiment": "neutral",
+                        "topic": "onboarding",
+                        "summary": f"Deterministic feedback signal for {competitor_id}.",
+                        "evidence_ids": feedback_evidence[:1],
+                    }
+                )
+            if persona_evidence:
+                personas.append(
+                    {
+                        "id": f"persona_{competitor_id}",
+                        "name": f"{competitor_id} engineering manager",
+                        "role": "engineering_manager",
+                        "pain_points": ["delivery pressure"],
+                        "jobs_to_be_done": ["improve developer productivity"],
+                        "evidence_ids": persona_evidence[:1],
+                    }
+                )
+
+        content = {
+            "schema_version": "schema_v0.2",
+            "features": features,
+            "pricings": pricings,
+            "personas": personas,
+            "feedback": feedback,
+        }
+        return self._build_response(model_slot="summarization", content=content)
+
     def _build_writer_response(self, user_prompt: str) -> LLMResponse:
         template_id_match = re.search(r"- template_id: ([^\n]+)", user_prompt)
         template_id = (
@@ -645,54 +764,95 @@ class _FakeLLMClient:
         return self._build_response(model_slot="writer", content=content)
 
     def _build_qa_semantic_response(self, user_prompt: str) -> LLMResponse:
-        if "semantic-force-degraded-demo" in user_prompt.casefold():
-            content = {
-                "semantic_audit_passed": False,
-                "reject_to": "writer",
-                "severity": "blocking",
-                "finding": "Semantic force degraded demo keeps rejecting writer output.",
-                "required_fields": ["reports.content_json.sections[].content_markdown"],
+        def _payload(
+            *,
+            semantic_audit_passed: bool,
+            reject_to: str,
+            severity: str,
+            finding: str,
+            required_fields: list[str],
+        ) -> dict[str, object]:
+            if semantic_audit_passed:
+                dimension_results = {
+                    "depth": True,
+                    "citation_coverage": True,
+                    "faithfulness": True,
+                    "instruction_following": True,
+                }
+            else:
+                dimension_results = {
+                    "depth": False,
+                    "citation_coverage": False,
+                    "faithfulness": True,
+                    "instruction_following": True,
+                }
+            return {
+                "semantic_audit_passed": semantic_audit_passed,
+                "reject_to": reject_to,
+                "severity": severity,
+                "finding": finding,
+                "required_fields": required_fields,
+                "unsupported_numeric_claims": [],
+                "dimension_results": dimension_results,
             }
+
+        if "semantic-force-degraded-demo" in user_prompt.casefold():
+            content = _payload(
+                semantic_audit_passed=False,
+                reject_to="writer",
+                severity="blocking",
+                finding="Semantic force degraded demo keeps rejecting writer output.",
+                required_fields=["reports.content_json.sections[].content_markdown"],
+            )
             return self._build_response(model_slot="qa", content=content)
         if "writer-no-evidence-demo" in user_prompt.casefold():
             if not self._qa_writer_no_evidence_demo_served:
                 self._qa_writer_no_evidence_demo_served = True
-                content = {
-                    "semantic_audit_passed": False,
-                    "reject_to": "writer",
-                    "severity": "blocking",
-                    "finding": "Writer no evidence demo requires one rewrite pass.",
-                    "required_fields": ["reports.content_json.sections[].evidence_refs"],
-                }
+                content = _payload(
+                    semantic_audit_passed=False,
+                    reject_to="writer",
+                    severity="blocking",
+                    finding="Writer no evidence demo requires one rewrite pass.",
+                    required_fields=["reports.content_json.sections[].evidence_refs"],
+                )
             else:
-                content = {
-                    "semantic_audit_passed": True,
-                    "reject_to": "writer",
-                    "severity": "warning",
-                    "finding": "Writer no evidence demo passes after rewrite.",
-                    "required_fields": [],
-                }
+                content = _payload(
+                    semantic_audit_passed=True,
+                    reject_to="writer",
+                    severity="warning",
+                    finding="Writer no evidence demo passes after rewrite.",
+                    required_fields=[],
+                )
             return self._build_response(model_slot="qa", content=content)
         if "semantic-reject-demo" in user_prompt.casefold():
             if not self._qa_semantic_retry_demo_served:
                 self._qa_semantic_retry_demo_served = True
-                content = {
-                    "semantic_audit_passed": False,
-                    "reject_to": "writer",
-                    "severity": "blocking",
-                    "finding": "Semantic retry demo requires one writer rewrite pass.",
-                    "required_fields": ["reports.content_json.sections[].content_markdown"],
-                }
+                content = _payload(
+                    semantic_audit_passed=False,
+                    reject_to="writer",
+                    severity="blocking",
+                    finding="Semantic retry demo requires one writer rewrite pass.",
+                    required_fields=["reports.content_json.sections[].content_markdown"],
+                )
             else:
-                content = {
-                    "semantic_audit_passed": True,
-                    "reject_to": "writer",
-                    "severity": "warning",
-                    "finding": "Semantic retry demo passes after writer rewrite.",
-                    "required_fields": [],
-                }
+                content = _payload(
+                    semantic_audit_passed=True,
+                    reject_to="writer",
+                    severity="warning",
+                    finding="Semantic retry demo passes after writer rewrite.",
+                    required_fields=[],
+                )
             return self._build_response(model_slot="qa", content=content)
-        return self._build_response(model_slot="qa", content={})
+        return self._build_response(
+            model_slot="qa",
+            content=_payload(
+                semantic_audit_passed=True,
+                reject_to="writer",
+                severity="warning",
+                finding="QA semantic check passed in deterministic test mode.",
+                required_fields=[],
+            ),
+        )
 
     def _build_skill_curator_response(self, user_prompt: str) -> LLMResponse:
         run_id_match = re.search(r"- run_id: ([^\n]+)", user_prompt)
@@ -859,6 +1019,18 @@ class _FakeLLMClient:
             and "Analysis context" in user_prompt
         ):
             return self._build_analyst_response(user_prompt)
+        if (
+            model_slot == "summarization"
+            and isinstance(system_prompt, str)
+            and "RivalLens structured knowledge extractor" in system_prompt
+            and isinstance(user_prompt, str)
+            and (
+                "Knowledge extraction context" in user_prompt
+                or "Fallback knowledge extraction request" in user_prompt
+                or "Repair knowledge extraction JSON" in user_prompt
+            )
+        ):
+            return self._build_knowledge_extraction_response(user_prompt)
         if (
             model_slot == "writer"
             and isinstance(system_prompt, str)

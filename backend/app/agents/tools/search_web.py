@@ -18,7 +18,7 @@ from service.collector.base import BaseChannel, CollectorObservation, ToolObserv
 from service.collector.errors import ChannelError, FetchTimeout, RateLimited
 from service.collector.rate_limiter import PerHostLimiter
 
-from agents.tools.parse_page import infer_source_type
+from agents.tools.parse_page import infer_source_type, official_hosts_for_competitor
 
 # Tavily SDK exceptions all subclass plain Exception with no common base. Pin
 # them by name so unrelated bugs (e.g. AttributeError from a broken SDK upgrade)
@@ -106,6 +106,23 @@ class TavilySearchChannel(BaseChannel):
             raise ChannelError("search_web max_results must be in range [1, 10].")
         if not settings.TAVILY_API_KEY:
             raise ChannelError("TAVILY_API_KEY is required for search_web channel.")
+        competitor_id_raw = kwargs.get("competitor_id")
+        competitor_id = (
+            competitor_id_raw.strip()
+            if isinstance(competitor_id_raw, str) and competitor_id_raw.strip()
+            else None
+        )
+        official_hosts_raw = kwargs.get("official_hosts")
+        if isinstance(official_hosts_raw, (list, tuple, set)):
+            official_hosts = {
+                item.strip()
+                for item in official_hosts_raw
+                if isinstance(item, str) and item.strip()
+            }
+        elif competitor_id is not None:
+            official_hosts = official_hosts_for_competitor(competitor_id)
+        else:
+            official_hosts = set()
         country_raw = kwargs.get("country")
         country = country_raw.strip() if isinstance(country_raw, str) and country_raw.strip() else None
 
@@ -129,7 +146,7 @@ class TavilySearchChannel(BaseChannel):
             normalized_title = source_title if isinstance(source_title, str) else "tavily_result"
             source_type = infer_source_type(
                 source_url=normalized_url,
-                official_hosts=None,
+                official_hosts=official_hosts or None,
             )
             snippets.append(
                 self._build_snippet(
@@ -141,6 +158,7 @@ class TavilySearchChannel(BaseChannel):
                         "source": "tavily_search",
                         "query": query,
                         "country": country,
+                        "competitor_id": competitor_id,
                     },
                 )
             )
@@ -161,6 +179,7 @@ class TavilySearchChannel(BaseChannel):
                     "result_count": len(snippets),
                     "provider": "tavily",
                     "country": country,
+                    "competitor_id": competitor_id,
                 },
             ),
         )

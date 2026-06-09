@@ -349,6 +349,17 @@ export interface KnowledgePersona {
   evidence_ids: string[];
 }
 
+export type KnowledgeFeedbackSentiment = "positive" | "neutral" | "negative" | "mixed";
+
+export interface KnowledgeFeedback {
+  id: string;
+  competitor_id: string;
+  sentiment: KnowledgeFeedbackSentiment;
+  topic: string;
+  summary: string;
+  evidence_ids: string[];
+}
+
 export interface RunKnowledgeResponse {
   run_id: string;
   analysis_archetype: "comparison" | "landscape" | string;
@@ -356,6 +367,8 @@ export interface RunKnowledgeResponse {
   features: KnowledgeFeature[];
   pricings: KnowledgePricing[];
   personas: KnowledgePersona[];
+  feedback: KnowledgeFeedback[];
+  missing_reasons: Record<string, string[]>;
   coverage: Record<string, Record<string, string>>;
 }
 

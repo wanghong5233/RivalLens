@@ -46,6 +46,16 @@ class RunKnowledgeRecord(Base):
         nullable=False,
         default=list,
     )
+    feedback: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
+    missing_reasons: Mapped[dict[str, list[str]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
     coverage: Mapped[dict[str, object]] = mapped_column(
         JSONB,
         nullable=False,

@@ -40,7 +40,12 @@ def test_insights_to_conclusions_preserves_evidence_order_and_competitors() -> N
         step_id="step_mapper_001",
         insights=insights,
         evidence_lookup=evidence_lookup,
-        risk_flags=["feature_gap", "feature_volatility", "pricing_uncertainty"],
+        risk_flags=[
+            "feature_gap",
+            "feature_volatility",
+            "pricing_uncertainty",
+            "uncovered_dimension:user_feedback",
+        ],
     )
 
     assert len(result) == 3
@@ -55,7 +60,7 @@ def test_insights_to_conclusions_preserves_evidence_order_and_competitors() -> N
 
     assert result[2]["section"] == "user_feedback"
     assert result[2]["competitor_ids"] == ["comp_cursor"]
-    assert result[2]["risk_flags"] == []
+    assert result[2]["risk_flags"] == ["uncovered_dimension:user_feedback"]
 
 
 def test_insights_to_conclusions_skips_invalid_items() -> None:

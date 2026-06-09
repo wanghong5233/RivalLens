@@ -219,6 +219,40 @@ class SearchWebRouterChannel(BaseChannel):
     ) -> tuple[list[CollectorSnippet], dict[str, object], list[str], dict[str, int], list[ProviderName]]:
         errors: list[str] = []
         leg_result_counts: dict[str, int] = {}
+        if settings.COLLECTOR_SEARCH_BREADTH_ENABLED:
+            provider_results = await asyncio.gather(
+                *(
+                    self._collect_provider(
+                        language=language,
+                        provider=provider,
+                        country=country,
+                        queries=queries,
+                        max_results=max_results,
+                        base_kwargs=base_kwargs,
+                    )
+                    for provider, country in providers
+                )
+            )
+            merged: list[CollectorSnippet] = []
+            merged_metadata: dict[str, object] = {}
+            providers_used: list[ProviderName] = []
+            for (provider, _country), (snippets, metadata, provider_errors) in zip(
+                providers, provider_results
+            ):
+                leg_result_counts[f"{language}:{provider}"] = len(snippets)
+                if snippets:
+                    providers_used.append(provider)
+                    merged.extend(snippets)
+                    merged_metadata = {**merged_metadata, **metadata}
+                errors.extend(f"{provider}:{error}" for error in provider_errors)
+            return (
+                _dedupe_snippets(merged),
+                merged_metadata,
+                errors,
+                leg_result_counts,
+                providers_used,
+            )
+
         for provider, country in providers:
             snippets, metadata, provider_errors = await self._collect_provider(
                 language=language,
@@ -261,10 +295,9 @@ class SearchWebRouterChannel(BaseChannel):
         )
         queries = _query_variants(query, kwargs.get("query_variants"))
 
-        # Language-agnostic breadth: fan out one leg per target language in parallel (home
-        # language first for emphasis), each routed to its best engine + country. Merge and
-        # dedupe across legs; S3 rerank picks the best regardless of carrier language. New
-        # languages need only a country mapping — niche-market sources stay reachable.
+        # Language fan-out: one leg per target language in parallel (home language first for
+        # emphasis). Within each leg, provider breadth merge is feature-flagged so we can
+        # quickly revert to first-provider early-return when API quota is constrained.
         collected = await asyncio.gather(
             *(
                 self._collect_leg(
@@ -318,6 +351,7 @@ class SearchWebRouterChannel(BaseChannel):
             )
 
         search_languages = [language for (language, _providers) in legs]
+        breadth_enabled = bool(settings.COLLECTOR_SEARCH_BREADTH_ENABLED)
         log.info(
             "search_web.multilingual",
             search_languages=search_languages,
@@ -326,6 +360,7 @@ class SearchWebRouterChannel(BaseChannel):
             leg_result_counts=leg_result_counts,
             response_language=response_language,
             result_count=len(merged),
+            breadth_enabled=breadth_enabled,
         )
         result = ToolObservationResult(
             snippets=merged,
@@ -338,6 +373,7 @@ class SearchWebRouterChannel(BaseChannel):
                 "response_language": response_language,
                 "queries": queries,
                 "result_count": len(merged),
+                "breadth_enabled": breadth_enabled,
             },
         )
         return CollectorObservation(
@@ -350,6 +386,7 @@ class SearchWebRouterChannel(BaseChannel):
                 "market_scope": market_scope if isinstance(market_scope, str) else None,
                 "search_languages": search_languages,
                 "providers": providers_used,
+                "breadth_enabled": breadth_enabled,
             },
             result=result,
         )

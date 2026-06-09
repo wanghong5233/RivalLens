@@ -445,6 +445,66 @@ Rules:
 - Return JSON object only.
 """
 
+KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT = """You are RivalLens structured knowledge extractor.
+Convert grounded evidence briefs into normalized schema JSON.
+
+Output JSON schema:
+{
+  "schema_version": str,
+  "features": [
+    {
+      "id": str,
+      "competitor_id": str,
+      "name": str,
+      "parent_id": str | null,
+      "description": str | null,
+      "maturity": "unknown" | "basic" | "advanced" | "leading" | null,
+      "evidence_ids": list[str]
+    }
+  ],
+  "pricings": [
+    {
+      "id": str,
+      "competitor_id": str,
+      "model": str,
+      "tiers": list[object],
+      "free_plan": bool | null,
+      "enterprise_plan": bool | null,
+      "evidence_ids": list[str]
+    }
+  ],
+  "personas": [
+    {
+      "id": str,
+      "name": str,
+      "role": str,
+      "pain_points": list[str],
+      "jobs_to_be_done": list[str],
+      "evidence_ids": list[str]
+    }
+  ],
+  "feedback": [
+    {
+      "id": str,
+      "competitor_id": str,
+      "sentiment": "positive" | "neutral" | "negative" | "mixed",
+      "topic": str,
+      "summary": str,
+      "evidence_ids": list[str]
+    }
+  ]
+}
+
+Rules:
+- Use only competitor_id and evidence_ids provided in the user prompt.
+- Every emitted row must have at least one valid evidence_id.
+- If evidence is insufficient, omit the row; do not emit placeholders.
+- For pricing rows, include non-empty tiers when evidence contains concrete package limits or prices.
+- For persona rows, ensure pain_points/jobs_to_be_done are grounded in cited evidence.
+- For feedback rows, use concise topic + summary and a grounded sentiment label.
+- Return JSON object only.
+"""
+
 QA_SEMANTIC_SYSTEM_PROMPT = """You are RivalLens QA semantic auditor.
 You review report quality and evidence consistency in STRICT JSON.
 
@@ -525,6 +585,10 @@ RESEARCHER_SYSTEM_PROMPT = _inject_catalog(
 )
 ANALYST_SYSTEM_PROMPT = _inject_catalog(
     ANALYST_SYSTEM_PROMPT,
+    applies_to_filter=("general",),
+)
+KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT = _inject_catalog(
+    KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT,
     applies_to_filter=("general",),
 )
 WRITER_SYSTEM_PROMPT = _inject_catalog(
@@ -902,6 +966,7 @@ def build_researcher_user_prompt(
         "1) Follow source-first: for each pending dimension, prioritize fetch_url on resolved_official_urls/reference_urls before search_web.\n"
         "2) Use search_web only for uncovered gaps in coverage_matrix after source-first fetch attempts.\n"
         "3) Use fetch_url only with URLs from resolved_official_urls, discovered_urls, or reference_urls; pass current research_topic as query when useful.\n"
+        "3.1) For user_feedback-like dimensions, prioritize third-party reviews/forums with explicit review-oriented queries.\n"
         "4) Use load_skill when domain_hint implies specialized schema or source routing.\n"
         "5) Use finalize only when pending_dimensions is empty or coverage_matrix shows sufficient evidence.\n"
         "6) action_args.dimension must be one exact value from focus_dimensions; never create compound dimensions.\n"
@@ -1082,6 +1147,62 @@ def build_analyst_repair_user_prompt(
     )
 
 
+def build_knowledge_extraction_user_prompt(
+    *,
+    competitors: Sequence[str],
+    focus_dimensions: Sequence[str],
+    evidence_briefs: Sequence[dict[str, object]],
+    analysis_archetype: str = "comparison",
+) -> str:
+    selected_evidence_briefs = select_layered_evidence_briefs(
+        evidence_briefs,
+        limit=max(ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT, 120),
+    )
+    return (
+        "Knowledge extraction context:\n"
+        f"- analysis_archetype: {analysis_archetype}\n"
+        f"- competitors: {_json(list(competitors))}\n"
+        f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
+        "Build grounded features, pricing rows, personas, and feedback rows. "
+        "Only keep rows that can cite valid evidence_ids."
+    )
+
+
+def build_knowledge_extraction_fallback_user_prompt(
+    *,
+    competitors: Sequence[str],
+    focus_dimensions: Sequence[str],
+    evidence_ids: Sequence[str],
+) -> str:
+    return (
+        "Fallback knowledge extraction request:\n"
+        f"- competitors: {_json(list(competitors))}\n"
+        f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
+        "Return minimal valid JSON with grounded rows only; keep arrays empty when evidence is insufficient."
+    )
+
+
+def build_knowledge_extraction_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    competitors: Sequence[str],
+    evidence_ids: Sequence[str],
+) -> str:
+    return (
+        "Repair knowledge extraction JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- competitors: {_json(list(competitors))}\n"
+        f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
+        "Rules:\n"
+        "- Every row must cite only allowed evidence_ids.\n"
+        "- Omit invalid rows instead of fabricating placeholder fields.\n"
+        "- Keep already valid rows unchanged.\n"
+        "- Return JSON object only."
+    )
+
+
 def build_qa_semantic_user_prompt(
     *,
     report_markdown: str,
@@ -1131,6 +1252,7 @@ def build_writer_user_prompt(
     allowed_evidence_ids: Sequence[str],
     analyst_summary: str,
     analyst_insights: Sequence[dict[str, object]],
+    analyst_comparisons: Sequence[dict[str, object]],
     risk_flags: Sequence[str],
     recommended_sections: Sequence[str],
     qa_reasons: Sequence[str] = (),
@@ -1169,6 +1291,7 @@ def build_writer_user_prompt(
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n"
         f"- analyst_summary: {analyst_summary}\n"
         f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
+        f"- analyst_comparisons: {_json(list(analyst_comparisons)[:10])}\n"
         f"- risk_flags: {_json(list(risk_flags))}\n\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
         f"- unsupported_numeric_claims: {_json(list(unsupported_numeric_claims)[:12])}\n\n"

@@ -49,8 +49,20 @@ def _extract_competitor_id(lookup_item: object) -> str | None:
 
 
 def _risk_flags_for_dimension(dimension: str, risk_flags: list[str]) -> list[str]:
-    prefix = f"{dimension}_"
-    return [item for item in risk_flags if item.startswith(prefix)]
+    normalized_dimension = dimension.strip().lower()
+    prefixes = (
+        f"{normalized_dimension}_",
+        f"{normalized_dimension}:",
+        f"{normalized_dimension}-",
+        f"uncovered_dimension:{normalized_dimension}",
+        f"uncovered_section:{normalized_dimension}",
+    )
+    matched = []
+    for item in risk_flags:
+        lowered = item.strip().lower()
+        if lowered == normalized_dimension or lowered.startswith(prefixes):
+            matched.append(item)
+    return _stable_unique(matched)
 
 
 def _confidence_from_comparison_cells(cells: list[MappedComparisonCell]) -> str:

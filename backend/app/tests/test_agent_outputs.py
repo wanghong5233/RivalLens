@@ -7,6 +7,7 @@ from schemas.agent_outputs import (
     AnalystOutput,
     DiscoveryExtractOutput,
     IntakeTurnOutput,
+    KnowledgeExtractionOutput,
     PlannerOutput,
     QASemanticOutput,
     ResearcherDecisionOutput,
@@ -554,11 +555,6 @@ def test_qa_semantic_output_normalizes_dict() -> None:
                     "section_id": "efficiency",
                     "reason": "Cited evidence does not mention 28%.",
                 },
-                {
-                    "claim": "",
-                    "section_id": "pricing",
-                    "reason": "invalid item is filtered",
-                },
             ],
             "dimension_results": {
                 "depth": False,
@@ -584,3 +580,98 @@ def test_qa_semantic_output_normalizes_dict() -> None:
         "faithfulness": True,
         "instruction_following": True,
     }
+
+
+def test_qa_semantic_output_rejects_malformed_numeric_claim_item() -> None:
+    with pytest.raises(ValueError):
+        QASemanticOutput.parse_llm_content(
+            {
+                "semantic_audit_passed": False,
+                "reject_to": "writer",
+                "severity": "blocking",
+                "finding": "Missing pricing evidence",
+                "required_fields": ["reports.content_json.sections"],
+                "unsupported_numeric_claims": [
+                    {
+                        "claim": "",
+                        "section_id": "pricing",
+                        "reason": "invalid item should fail-closed",
+                    }
+                ],
+                "dimension_results": {
+                    "depth": False,
+                    "citation_coverage": False,
+                    "faithfulness": True,
+                    "instruction_following": True,
+                },
+            }
+        )
+
+
+def test_knowledge_extraction_output_filters_non_grounded_rows() -> None:
+    output = KnowledgeExtractionOutput.parse_llm_content(
+        {
+            "schema_version": "schema_v0.2",
+            "features": [
+                {
+                    "id": "feat_input_1",
+                    "competitor_id": "Cursor",
+                    "name": "Repo context",
+                    "evidence_ids": ["ev_1"],
+                },
+                {
+                    "id": "feat_input_2",
+                    "competitor_id": "Unknown",
+                    "name": "Should be dropped",
+                    "evidence_ids": ["ev_2"],
+                },
+            ],
+            "pricings": [
+                {
+                    "id": "price_input_1",
+                    "competitor_id": "Cursor",
+                    "model": "subscription",
+                    "tiers": [{"name": "Pro", "price": "$20"}],
+                    "evidence_ids": ["ev_1"],
+                }
+            ],
+            "personas": [
+                {
+                    "id": "persona_input_1",
+                    "name": "Engineering manager",
+                    "role": "engineering_manager",
+                    "pain_points": ["Review load"],
+                    "jobs_to_be_done": ["Faster release"],
+                    "evidence_ids": ["ev_1"],
+                }
+            ],
+            "feedback": [
+                {
+                    "id": "fb_input_1",
+                    "competitor_id": "Cursor",
+                    "sentiment": "positive",
+                    "topic": "onboarding",
+                    "summary": "Onboarding is improving.",
+                    "evidence_ids": ["ev_1"],
+                },
+                {
+                    "id": "fb_input_2",
+                    "competitor_id": "Cursor",
+                    "sentiment": "positive",
+                    "topic": "invalid",
+                    "summary": "Should be dropped due to invalid evidence id.",
+                    "evidence_ids": ["ev_not_allowed"],
+                },
+            ],
+        },
+        allowed_evidence_ids={"ev_1"},
+        competitors={"Cursor"},
+    )
+
+    assert output.schema_version == "schema_v0.2"
+    assert len(output.features) == 1
+    assert output.features[0]["competitor_id"] == "Cursor"
+    assert len(output.pricings) == 1
+    assert len(output.personas) == 1
+    assert len(output.feedback) == 1
+    assert output.feedback[0]["topic"] == "onboarding"

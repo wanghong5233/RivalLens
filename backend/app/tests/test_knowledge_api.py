@@ -44,10 +44,10 @@ def _insert_run_with_optional_knowledge(*, with_knowledge: bool) -> str:
                 connection.execute(
                     text(
                         "INSERT INTO run_knowledge "
-                        "(knowledge_id, run_id, step_id, schema_version, features, pricings, personas, coverage) "
+                        "(knowledge_id, run_id, step_id, schema_version, features, pricings, personas, feedback, missing_reasons, coverage) "
                         "VALUES (:knowledge_id, :run_id, :step_id, :schema_version, "
                         "CAST(:features AS jsonb), CAST(:pricings AS jsonb), "
-                        "CAST(:personas AS jsonb), CAST(:coverage AS jsonb))"
+                        "CAST(:personas AS jsonb), CAST(:feedback AS jsonb), CAST(:missing_reasons AS jsonb), CAST(:coverage AS jsonb))"
                     ),
                     {
                         "knowledge_id": f"knowledge_{uuid4().hex[:8]}",
@@ -95,8 +95,25 @@ def _insert_run_with_optional_knowledge(*, with_knowledge: bool) -> str:
                             ],
                             ensure_ascii=False,
                         ),
+                        "feedback": json.dumps(
+                            [
+                                {
+                                    "id": "fb_cursor_docs",
+                                    "competitor_id": "Cursor",
+                                    "sentiment": "neutral",
+                                    "topic": "onboarding",
+                                    "summary": "Users asked for clearer onboarding docs.",
+                                    "evidence_ids": ["ev_cursor_feedback"],
+                                }
+                            ],
+                            ensure_ascii=False,
+                        ),
                         "coverage": json.dumps(
                             {"Cursor": {"feature": "partial", "pricing": "complete"}},
+                            ensure_ascii=False,
+                        ),
+                        "missing_reasons": json.dumps(
+                            {"Cursor": ["feature:coverage_partial"]},
                             ensure_ascii=False,
                         ),
                     },
@@ -131,6 +148,8 @@ def test_get_run_knowledge_returns_persisted_schema(test_client: TestClient) -> 
         assert payload["features"][0]["id"] == "feat_cursor_repo"
         assert payload["pricings"][0]["model"] == "unknown"
         assert payload["personas"][0]["role"] == "engineering_manager"
+        assert payload["feedback"][0]["topic"] == "onboarding"
+        assert payload["missing_reasons"] == {"Cursor": ["feature:coverage_partial"]}
         assert payload["coverage"] == {"Cursor": {"feature": "partial", "pricing": "complete"}}
     finally:
         _delete_run(run_id)
@@ -152,6 +171,8 @@ def test_get_run_knowledge_returns_empty_payload_when_no_knowledge_exists(
             "features": [],
             "pricings": [],
             "personas": [],
+            "feedback": [],
+            "missing_reasons": {},
             "coverage": {},
         }
     finally:

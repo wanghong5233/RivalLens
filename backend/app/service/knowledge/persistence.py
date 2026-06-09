@@ -15,6 +15,8 @@ class RunKnowledgePayload(TypedDict):
     features: list[dict[str, object]]
     pricings: list[dict[str, object]]
     personas: list[dict[str, object]]
+    feedback: list[dict[str, object]]
+    missing_reasons: dict[str, list[str]]
     coverage: dict[str, object]
 
 
@@ -23,6 +25,8 @@ EMPTY_RUN_KNOWLEDGE: RunKnowledgePayload = {
     "features": [],
     "pricings": [],
     "personas": [],
+    "feedback": [],
+    "missing_reasons": {},
     "coverage": {},
 }
 
@@ -40,6 +44,8 @@ async def persist_knowledge_for_step(
     features: list[dict[str, object]],
     pricings: list[dict[str, object]],
     personas: list[dict[str, object]],
+    feedback: list[dict[str, object]],
+    missing_reasons: dict[str, list[str]],
     coverage: dict[str, object],
 ) -> RunKnowledgeRecord:
     record = RunKnowledgeRecord(
@@ -50,6 +56,8 @@ async def persist_knowledge_for_step(
         features=features,
         pricings=pricings,
         personas=personas,
+        feedback=feedback,
+        missing_reasons=missing_reasons,
         coverage=coverage,
     )
     session.add(record)
@@ -76,5 +84,7 @@ async def load_knowledge_for_run(
         "features": list(row.features),
         "pricings": list(row.pricings),
         "personas": list(row.personas),
+        "feedback": list(row.feedback),
+        "missing_reasons": dict(row.missing_reasons),
         "coverage": dict(row.coverage),
     }

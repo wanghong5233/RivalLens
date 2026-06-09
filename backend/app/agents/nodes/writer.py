@@ -22,6 +22,7 @@ from schemas.agent_outputs import AnalystOutput, WriterExecutionContext, WriterR
 from schemas.ids import make_id
 from schemas.supervisor import Write
 from schemas.contracts import validate_section_id
+from service.comparison import load_comparisons_for_run
 from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import load_conclusions_for_run
 from service.llm import (
@@ -253,7 +254,11 @@ def _report_depth_from_state(state: AgentState) -> Literal["quick", "deep"]:
     return "deep" if depth_raw == "deep" else "quick"
 
 
-def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> AnalystOutput:
+def _analyst_payload_from_conclusions(
+    conclusions: list[dict[str, object]],
+    *,
+    comparison_rows: list[dict[str, object]] | None = None,
+) -> AnalystOutput:
     insights: list[dict[str, object]] = []
     risk_flags: list[str] = []
     recommended_sections: list[str] = []
@@ -300,6 +305,9 @@ def _analyst_payload_from_conclusions(conclusions: list[dict[str, object]]) -> A
         {
             "summary": summary or "Conclusions loaded from structured storage.",
             "insights": insights,
+            "comparisons": [
+                item for item in (comparison_rows or []) if isinstance(item, dict)
+            ],
             "risk_flags": _stable_unique(risk_flags),
             "recommended_sections": _stable_unique(recommended_sections),
         }
@@ -337,7 +345,23 @@ async def _load_writer_inputs(
                 )
                 conclusion_rows = []
             if conclusion_rows:
-                return evidence_rows, _analyst_payload_from_conclusions(conclusion_rows)
+                try:
+                    comparison_rows = await load_comparisons_for_run(
+                        session=session,
+                        run_id=run_id,
+                    )
+                except SQLAlchemyError as exc:
+                    log.info(
+                        "writer.comparisons.fallback_to_json",
+                        run_id=run_id,
+                        reason="query_error",
+                        error=str(exc)[:500],
+                    )
+                    comparison_rows = []
+                return evidence_rows, _analyst_payload_from_conclusions(
+                    conclusion_rows,
+                    comparison_rows=comparison_rows,
+                )
             log.info(
                 "writer.conclusions.fallback_to_json",
                 run_id=run_id,
@@ -413,6 +437,39 @@ def _build_insight_briefs(
             }
         )
     return insight_briefs
+
+
+def _build_comparison_briefs(
+    *,
+    analyst_output: AnalystOutput,
+    allowed_evidence_ids: set[str],
+) -> list[dict[str, object]]:
+    comparison_briefs: list[dict[str, object]] = []
+    for comparison in analyst_output.comparisons:
+        cells_payload: list[dict[str, object]] = []
+        for cell in comparison.cells:
+            grounded_evidence_ids = [
+                evidence_id
+                for evidence_id in cell.evidence_ids
+                if evidence_id in allowed_evidence_ids
+            ]
+            cells_payload.append(
+                {
+                    "competitor_id": cell.competitor_id,
+                    "stance": cell.stance,
+                    "summary": cell.summary,
+                    "evidence_ids": grounded_evidence_ids,
+                }
+            )
+        if not cells_payload:
+            continue
+        comparison_briefs.append(
+            {
+                "dimension": comparison.dimension,
+                "cells": cells_payload,
+            }
+        )
+    return comparison_briefs
 
 
 def _build_fallback_report(
@@ -698,6 +755,10 @@ async def writer_node(state: AgentState) -> AgentState:
         analyst_output=analyst_output,
         allowed_evidence_ids=allowed_evidence_ids,
     )
+    comparison_briefs = _build_comparison_briefs(
+        analyst_output=analyst_output,
+        allowed_evidence_ids=allowed_evidence_ids,
+    )
     allowed_insight_ids = {
         item["insight_id"]
         for item in insight_briefs
@@ -734,6 +795,7 @@ async def writer_node(state: AgentState) -> AgentState:
             allowed_evidence_ids=sorted(allowed_evidence_ids),
             analyst_summary=analyst_summary,
             analyst_insights=insight_briefs,
+            analyst_comparisons=comparison_briefs,
             risk_flags=risk_flags,
             recommended_sections=analyst_output.recommended_sections,
             qa_reasons=request.qa_reasons,

@@ -90,6 +90,15 @@ const TOOL_ICONS: Record<string, typeof Wrench> = {
   read_skill_file: Wrench,
 };
 
+const TOOL_LABELS: Record<string, string> = {
+  search_web: "联网搜索",
+  fetch_url: "网页抓取",
+  parse_page: "网页解析",
+  extract_structured: "结构化抽取",
+  load_skill: "策略加载",
+  read_skill_file: "策略详情",
+};
+
 const TERMINAL_STATUSES = new Set(["completed", "degraded", "failed", "cancelled"]);
 
 const MAX_TOOL_ENTRIES = 12;
@@ -731,7 +740,9 @@ function ToolActivityCard({ entries }: ToolActivityCardProps): JSX.Element {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 text-xs text-foreground-muted">
                       <Icon className="h-3.5 w-3.5" />
-                      <span className="font-mono text-foreground">{entry.tool}</span>
+                      <span className="font-mono text-foreground">
+                        {TOOL_LABELS[entry.tool] ?? entry.tool}
+                      </span>
                       {entry.competitorId ? <span>· {entry.competitorId}</span> : null}
                       {entry.dimension ? <span>· {entry.dimension}</span> : null}
                     </div>

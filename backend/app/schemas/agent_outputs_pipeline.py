@@ -561,33 +561,53 @@ class QASemanticOutput(BaseModel):
         normalized = dict(content)
         dimension_results_raw = normalized.get("dimension_results")
         if not isinstance(dimension_results_raw, dict):
-            normalized["dimension_results"] = {}
+            raise ValueError("dimension_results must be an object.")
+        required_dimensions = (
+            "depth",
+            "citation_coverage",
+            "faithfulness",
+            "instruction_following",
+        )
+        normalized_dimension_results: dict[str, bool] = {}
+        for dimension_key in required_dimensions:
+            dimension_value = dimension_results_raw.get(dimension_key)
+            if not isinstance(dimension_value, bool):
+                raise ValueError(f"dimension_results.{dimension_key} must be bool.")
+            normalized_dimension_results[dimension_key] = dimension_value
+        normalized["dimension_results"] = normalized_dimension_results
         unsupported_raw = normalized.get("unsupported_numeric_claims")
-        if not isinstance(unsupported_raw, list):
+        if unsupported_raw is None:
             normalized["unsupported_numeric_claims"] = []
+        elif not isinstance(unsupported_raw, list):
+            raise ValueError("unsupported_numeric_claims must be a list.")
         else:
             unsupported_items: list[dict[str, object]] = []
-            for item in unsupported_raw:
+            for index, item in enumerate(unsupported_raw):
                 if not isinstance(item, dict):
-                    continue
+                    raise ValueError(
+                        f"unsupported_numeric_claims[{index}] must be an object."
+                    )
                 claim = item.get("claim")
                 section_id = item.get("section_id")
                 reason = item.get("reason")
                 if (
-                    isinstance(claim, str)
-                    and claim.strip()
-                    and isinstance(section_id, str)
-                    and section_id.strip()
-                    and isinstance(reason, str)
-                    and reason.strip()
+                    not isinstance(claim, str)
+                    or not claim.strip()
+                    or not isinstance(section_id, str)
+                    or not section_id.strip()
+                    or not isinstance(reason, str)
+                    or not reason.strip()
                 ):
-                    unsupported_items.append(
-                        {
-                            "claim": claim.strip(),
-                            "section_id": section_id.strip(),
-                            "reason": reason.strip(),
-                        }
+                    raise ValueError(
+                        f"unsupported_numeric_claims[{index}] must include non-empty claim/section_id/reason."
                     )
+                unsupported_items.append(
+                    {
+                        "claim": claim.strip(),
+                        "section_id": section_id.strip(),
+                        "reason": reason.strip(),
+                    }
+                )
             normalized["unsupported_numeric_claims"] = unsupported_items
         return cls.model_validate(normalized)
 

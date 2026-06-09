@@ -1,7 +1,8 @@
-import { Boxes, ExternalLink, Tags, UserRound } from "lucide-react";
+import { Boxes, ExternalLink, MessageSquareQuote, Tags, UserRound } from "lucide-react";
 import { useMemo } from "react";
 
 import type {
+  KnowledgeFeedback,
   KnowledgeFeature,
   KnowledgePersona,
   KnowledgePricing,
@@ -71,6 +72,7 @@ function getCompetitorIds(knowledge: RunKnowledgeResponse | null): string[] {
   return unique([
     ...knowledge.features.map((item) => item.competitor_id),
     ...knowledge.pricings.map((item) => item.competitor_id),
+    ...knowledge.feedback.map((item) => item.competitor_id),
     ...Object.keys(knowledge.coverage),
   ]);
 }
@@ -91,6 +93,16 @@ function groupPricings(pricings: KnowledgePricing[]): Map<string, KnowledgePrici
     const items = grouped.get(pricing.competitor_id) ?? [];
     items.push(pricing);
     grouped.set(pricing.competitor_id, items);
+  }
+  return grouped;
+}
+
+function groupFeedback(items: KnowledgeFeedback[]): Map<string, KnowledgeFeedback[]> {
+  const grouped = new Map<string, KnowledgeFeedback[]>();
+  for (const item of items) {
+    const rows = grouped.get(item.competitor_id) ?? [];
+    rows.push(item);
+    grouped.set(item.competitor_id, rows);
   }
   return grouped;
 }
@@ -319,6 +331,27 @@ function PersonaBlock({
   );
 }
 
+function FeedbackBlock({
+  feedback,
+  onEvidenceClick,
+}: {
+  feedback: KnowledgeFeedback;
+  onEvidenceClick: (evidenceIds: string[]) => void;
+}): JSX.Element {
+  return (
+    <article className="rounded-md border border-white/[0.06] bg-surface/70 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-foreground">{feedback.topic}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{feedback.sentiment}</p>
+        </div>
+        <EvidenceButton evidenceIds={feedback.evidence_ids} onEvidenceClick={onEvidenceClick} />
+      </div>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">{feedback.summary}</p>
+    </article>
+  );
+}
+
 function ListBlock({ items, title }: { items: string[]; title: string }): JSX.Element {
   return (
     <div>
@@ -345,14 +378,16 @@ export function KnowledgePanel({
 }: KnowledgePanelProps): JSX.Element {
   const featureGroups = useMemo(() => groupFeatures(knowledge?.features ?? []), [knowledge?.features]);
   const pricingGroups = useMemo(() => groupPricings(knowledge?.pricings ?? []), [knowledge?.pricings]);
+  const feedbackGroups = useMemo(() => groupFeedback(knowledge?.feedback ?? []), [knowledge?.feedback]);
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
   const analysisArchetype = knowledge?.analysis_archetype ?? "comparison";
   const hasCoverageDeficits = useMemo(() => hasCoverageDeficit(knowledge), [knowledge]);
   const featureCount = knowledge?.features.length ?? 0;
   const pricingCount = knowledge?.pricings.length ?? 0;
   const personaCount = knowledge?.personas.length ?? 0;
+  const feedbackCount = knowledge?.feedback.length ?? 0;
   const hasKnowledge =
-    featureCount + pricingCount + personaCount > 0;
+    featureCount + pricingCount + personaCount + feedbackCount > 0;
 
   if (isLoading) {
     return (
@@ -386,10 +421,11 @@ export function KnowledgePanel({
         <CoverageStrip knowledge={knowledge} />
       </div>
 
-      <div className="grid gap-2 sm:grid-cols-3">
+      <div className="grid gap-2 sm:grid-cols-4">
         <SchemaStat hint="功能树节点" label="功能树" value={featureCount} />
         <SchemaStat hint="套餐/商业模式" label="定价模型" value={pricingCount} />
         <SchemaStat hint="目标角色与 JTBD" label="用户画像" value={personaCount} />
+        <SchemaStat hint="口碑与体验主题" label="用户反馈" value={feedbackCount} />
       </div>
 
       {!hasKnowledge ? (
@@ -397,7 +433,7 @@ export function KnowledgePanel({
           text={
             hasCoverageDeficits
               ? "当前三件套为空且 coverage 显示数据不足/未公开：系统不会编造无证据的功能、定价或用户画像。"
-              : `当前 ${analysisArchetype} run 尚未落库功能树、定价模型或用户画像；可能仍在抽取或等待证据入库。`
+              : `当前 ${analysisArchetype} run 尚未落库功能树、定价模型、用户画像或用户反馈；可能仍在抽取或等待证据入库。`
           }
         />
       ) : null}
@@ -481,6 +517,41 @@ export function KnowledgePanel({
                 persona={persona}
               />
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <MessageSquareQuote className="h-4 w-4 text-primary" />
+          用户反馈
+        </h4>
+        {competitorIds.length === 0 || knowledge?.feedback.length === 0 ? (
+          <EmptyBlock
+            text="暂无用户反馈条目：可能是公开评论证据不足，或抽取仍在处理中。"
+          />
+        ) : (
+          <div className="grid gap-3 xl:grid-cols-2">
+            {competitorIds.map((competitorId) => {
+              const items = feedbackGroups.get(competitorId) ?? [];
+              return items.length > 0 ? (
+                <section className="rounded-lg border border-border bg-background/50 p-4" key={`${competitorId}-feedback`}>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
+                    <Badge variant="secondary">{items.length} 条反馈</Badge>
+                  </div>
+                  <div className="space-y-2">
+                    {items.map((feedback) => (
+                      <FeedbackBlock
+                        feedback={feedback}
+                        key={feedback.id}
+                        onEvidenceClick={onEvidenceClick}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null;
+            })}
           </div>
         )}
       </section>

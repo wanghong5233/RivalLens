@@ -5,7 +5,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
-from schemas.business import Feature, Persona, Pricing
+from schemas.business import Feature, Persona, Pricing, UserFeedback
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_section_id, validate_template_id
 from schemas.ids import make_id
 
@@ -252,6 +252,43 @@ def _filter_personas(
         }
         try:
             filtered.append(Persona.model_validate(payload).model_dump(mode="python"))
+        except ValidationError:
+            continue
+    return filtered
+
+
+def _filter_feedback(
+    value: object,
+    *,
+    allowed_evidence_ids: set[str],
+    competitors: set[str],
+) -> list[dict[str, object]]:
+    filtered: list[dict[str, object]] = []
+    for item in _list_of_dicts(value):
+        competitor_id = _string_value(item.get("competitor_id"))
+        sentiment = _string_value(item.get("sentiment"))
+        topic = _string_value(item.get("topic"))
+        summary = _string_value(item.get("summary"))
+        evidence_ids = _filter_allowed_evidence_ids(item.get("evidence_ids"), allowed_evidence_ids)
+        if (
+            competitor_id is None
+            or (competitors and competitor_id not in competitors)
+            or sentiment not in {"positive", "neutral", "negative", "mixed"}
+            or topic is None
+            or summary is None
+            or not evidence_ids
+        ):
+            continue
+        payload = {
+            "id": make_id("feedback_"),
+            "competitor_id": competitor_id,
+            "sentiment": sentiment,
+            "topic": topic,
+            "summary": summary,
+            "evidence_ids": evidence_ids,
+        }
+        try:
+            filtered.append(UserFeedback.model_validate(payload).model_dump(mode="python"))
         except ValidationError:
             continue
     return filtered
@@ -547,6 +584,61 @@ class AnalystOutput(BaseModel):
         )
 
 
+class KnowledgeExtractionOutput(BaseModel):
+    """Grounded structured knowledge extracted from analyst evidence briefs."""
+
+    schema_version: str = "schema_v0.2"
+    features: list[dict[str, object]] = Field(default_factory=list)
+    pricings: list[dict[str, object]] = Field(default_factory=list)
+    personas: list[dict[str, object]] = Field(default_factory=list)
+    feedback: list[dict[str, object]] = Field(default_factory=list)
+
+    @classmethod
+    def parse_llm_content(
+        cls,
+        content: dict[str, object],
+        *,
+        allowed_evidence_ids: set[str],
+        competitors: set[str] | None = None,
+    ) -> KnowledgeExtractionOutput:
+        allowed_competitors = _normalize_allowed_competitors(competitors)
+        payload = {
+            "schema_version": _string_value(content.get("schema_version")) or "schema_v0.2",
+            "features": _filter_features(
+                content.get("features"),
+                allowed_evidence_ids=allowed_evidence_ids,
+                competitors=allowed_competitors,
+            ),
+            "pricings": _filter_pricings(
+                content.get("pricings"),
+                allowed_evidence_ids=allowed_evidence_ids,
+                competitors=allowed_competitors,
+            ),
+            "personas": _filter_personas(
+                content.get("personas"),
+                allowed_evidence_ids=allowed_evidence_ids,
+            ),
+            "feedback": _filter_feedback(
+                content.get("feedback"),
+                allowed_evidence_ids=allowed_evidence_ids,
+                competitors=allowed_competitors,
+            ),
+        }
+        return cls.model_validate(payload)
+
+    @classmethod
+    def parse_persisted(cls, payload: object) -> KnowledgeExtractionOutput | None:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            return cls.model_validate(payload)
+        except ValidationError:
+            return None
+
+    def to_persisted_dict(self) -> dict[str, object]:
+        return self.model_dump(mode="python")
+
+
 class WriterSectionOutput(BaseModel):
     section_id: str
     title: str = Field(min_length=1)
@@ -718,6 +810,7 @@ __all__ = [
     "DiscoveryExtractOutput",
     "ExtractStructuredOutput",
     "IntakeTurnOutput",
+    "KnowledgeExtractionOutput",
     "MIN_WRITER_SECTION_CHARS",
     "PlannerOutput",
     "QASemanticOutput",
