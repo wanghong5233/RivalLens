@@ -10,7 +10,7 @@ from agents.tools.fetch_url import FetchUrlChannel
 from agents.tools.parse_page import infer_source_type, official_hosts_for_competitor, source_matches_competitor
 from agents.tools.rerank_bocha import _request_bocha_rerank, rerank
 from agents.tools.search_bocha import BochaSearchChannel
-from agents.tools.search_router import SearchWebRouterChannel
+from agents.tools.search_router import SearchWebRouterChannel, _reset_provider_cooldowns_for_tests
 from agents.tools.search_serper import SerperSearchChannel
 from agents.tools.search_web import TavilySearchChannel, _tavily_search
 from core.config import settings
@@ -26,6 +26,13 @@ def _serper_key_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # test explicitly sets the key, so existing Bocha/Tavily expectations stay unchanged
     # regardless of whether a real SERPER_API_KEY is present in the loaded .env.
     monkeypatch.setattr(settings, "SERPER_API_KEY", None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_search_router_provider_cooldown_state() -> None:
+    _reset_provider_cooldowns_for_tests()
+    yield
+    _reset_provider_cooldowns_for_tests()
 
 
 @dataclass
@@ -1058,6 +1065,57 @@ async def test_search_router_honors_explicit_niche_languages() -> None:
     assert bocha.calls == []
     countries = sorted(str(call.get("country")) for call in tavily.calls)
     assert countries == ["germany", "south korea"]
+
+
+@pytest.mark.asyncio
+async def test_search_router_skips_rate_limited_provider_during_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "COLLECTOR_PROVIDER_COOLDOWN_SECONDS", 600)
+    bocha = _FakeSearchChannel(provider="bocha", exc=RateLimited("bocha quota"))
+    tavily = _FakeSearchChannel(provider="tavily", source_url="https://example.com/a")
+    channel = SearchWebRouterChannel(bocha_channel=bocha, tavily_channel=tavily)
+
+    first = await channel.invoke(
+        query="销售 AI 工具",
+        max_results=3,
+        response_language="zh",
+    )
+    second = await channel.invoke(
+        query="销售 AI 工具",
+        max_results=3,
+        response_language="zh",
+    )
+
+    assert first.args["providers"] == ["tavily"]
+    assert second.args["providers"] == ["tavily"]
+    assert len(bocha.calls) == 1
+    assert len(tavily.calls) == 4
+    assert second.result.metadata["leg_result_counts"]["zh:bocha"] == 0
+
+
+@pytest.mark.asyncio
+async def test_search_router_cooldown_disabled_retries_rate_limited_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "COLLECTOR_PROVIDER_COOLDOWN_SECONDS", 0)
+    bocha = _FakeSearchChannel(provider="bocha", exc=RateLimited("bocha quota"))
+    tavily = _FakeSearchChannel(provider="tavily", source_url="https://example.com/a")
+    channel = SearchWebRouterChannel(bocha_channel=bocha, tavily_channel=tavily)
+
+    await channel.invoke(
+        query="销售 AI 工具",
+        max_results=3,
+        response_language="zh",
+    )
+    await channel.invoke(
+        query="销售 AI 工具",
+        max_results=3,
+        response_language="zh",
+    )
+
+    assert len(bocha.calls) == 2
+    assert len(tavily.calls) == 4
 
 
 @pytest.mark.asyncio

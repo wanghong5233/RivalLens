@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED: bool = True
     COLLECTOR_FETCH_SEARCH_FALLBACK_ENABLED: bool = True
     COLLECTOR_SEARCH_BREADTH_ENABLED: bool = True
+    COLLECTOR_PROVIDER_COOLDOWN_SECONDS: int = 600
     TAVILY_API_KEY: str | None = None
     SERPER_API_KEY: str | None = None
     BOCHA_API_KEY: str | None = None
@@ -248,6 +249,8 @@ class Settings(BaseSettings):
             raise ValueError("COLLECTOR_FETCH_TIMEOUT_S must be positive.")
         if self.COLLECTOR_ROBOTS_CACHE_TTL_S <= 0:
             raise ValueError("COLLECTOR_ROBOTS_CACHE_TTL_S must be positive.")
+        if self.COLLECTOR_PROVIDER_COOLDOWN_SECONDS < 0:
+            raise ValueError("COLLECTOR_PROVIDER_COOLDOWN_SECONDS cannot be negative.")
         if not self.COLLECTOR_USER_AGENT.strip():
             raise ValueError("COLLECTOR_USER_AGENT cannot be empty.")
         if not self.BOCHA_BASE_URL.strip():

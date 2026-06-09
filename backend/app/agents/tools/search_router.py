@@ -24,6 +24,7 @@ log = get_logger("agents.tools.search_router")
 
 ProviderName = Literal["bocha", "serper", "tavily"]
 _MAX_ROUTER_LANGUAGES = 4
+_PROVIDER_COOLDOWN_UNTIL: dict[ProviderName, float] = {}
 
 
 def _normalize_response_language(value: object) -> str | None:
@@ -83,6 +84,39 @@ def _query_variants(primary_query: str, raw_variants: object) -> list[str]:
 
 def _query_hash(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _cooldown_window_seconds() -> int:
+    return max(settings.COLLECTOR_PROVIDER_COOLDOWN_SECONDS, 0)
+
+
+def _provider_cooldown_remaining(provider: ProviderName, *, now: float | None = None) -> int:
+    cooldown_until = _PROVIDER_COOLDOWN_UNTIL.get(provider)
+    if cooldown_until is None:
+        return 0
+    current = time.monotonic() if now is None else now
+    remaining = int(cooldown_until - current)
+    if remaining <= 0:
+        _PROVIDER_COOLDOWN_UNTIL.pop(provider, None)
+        return 0
+    return remaining
+
+
+def _mark_provider_cooldown(provider: ProviderName, *, now: float | None = None) -> int:
+    cooldown_seconds = _cooldown_window_seconds()
+    if cooldown_seconds <= 0:
+        return 0
+    current = time.monotonic() if now is None else now
+    _PROVIDER_COOLDOWN_UNTIL[provider] = current + cooldown_seconds
+    return cooldown_seconds
+
+
+def _is_api_key_error(message: str) -> bool:
+    return "api_key" in message.lower()
+
+
+def _reset_provider_cooldowns_for_tests() -> None:
+    _PROVIDER_COOLDOWN_UNTIL.clear()
 
 
 def _canonical_url(value: str | None) -> str | None:
@@ -190,7 +224,9 @@ class SearchWebRouterChannel(BaseChannel):
                 )
             except (RateLimited, FetchTimeout, ChannelError) as exc:
                 latency_ms = int((time.perf_counter() - started_at) * 1000)
-                errors.append(f"{variant}:{type(exc).__name__}:{str(exc)[:120]}")
+                error_text = str(exc)
+                is_api_key_error = _is_api_key_error(error_text)
+                errors.append(f"{variant}:{type(exc).__name__}:{error_text[:120]}")
                 log.warning(
                     "search_web.provider.fail",
                     provider=provider,
@@ -198,12 +234,22 @@ class SearchWebRouterChannel(BaseChannel):
                     country=country,
                     query_hash=_query_hash(variant),
                     error_class=type(exc).__name__,
-                    error_preview=str(exc)[:240],
+                    error_preview=error_text[:240],
                     latency_ms=latency_ms,
-                    fail_fast=isinstance(exc, (RateLimited, FetchTimeout))
-                    or "api_key" in str(exc).lower(),
+                    fail_fast=isinstance(exc, (RateLimited, FetchTimeout)) or is_api_key_error,
                 )
-                if isinstance(exc, (RateLimited, FetchTimeout)) or "api_key" in str(exc).lower():
+                if isinstance(exc, RateLimited) or is_api_key_error:
+                    cooldown_seconds = _mark_provider_cooldown(provider)
+                    if cooldown_seconds > 0:
+                        log.info(
+                            "search_web.provider.cooldown",
+                            provider=provider,
+                            language=language,
+                            country=country,
+                            reason=type(exc).__name__,
+                            cooldown_seconds=cooldown_seconds,
+                        )
+                if isinstance(exc, (RateLimited, FetchTimeout)) or is_api_key_error:
                     break
                 continue
         return _dedupe_snippets(snippets), metadata, errors
@@ -219,6 +265,27 @@ class SearchWebRouterChannel(BaseChannel):
     ) -> tuple[list[CollectorSnippet], dict[str, object], list[str], dict[str, int], list[ProviderName]]:
         errors: list[str] = []
         leg_result_counts: dict[str, int] = {}
+        current = time.monotonic()
+        provider_state = [
+            (provider, country, _provider_cooldown_remaining(provider, now=current))
+            for provider, country in providers
+        ]
+        active_provider_count = sum(1 for _provider, _country, remaining in provider_state if remaining <= 0)
+        candidate_providers: list[tuple[ProviderName, str | None]] = []
+        for provider, country, remaining in provider_state:
+            if remaining > 0 and active_provider_count > 0:
+                leg_result_counts[f"{language}:{provider}"] = 0
+                errors.append(f"{provider}:cooldown_active:{remaining}s")
+                log.info(
+                    "search_web.provider.cooldown",
+                    provider=provider,
+                    language=language,
+                    country=country,
+                    reason="active",
+                    cooldown_seconds=remaining,
+                )
+                continue
+            candidate_providers.append((provider, country))
         if settings.COLLECTOR_SEARCH_BREADTH_ENABLED:
             provider_results = await asyncio.gather(
                 *(
@@ -230,14 +297,14 @@ class SearchWebRouterChannel(BaseChannel):
                         max_results=max_results,
                         base_kwargs=base_kwargs,
                     )
-                    for provider, country in providers
+                    for provider, country in candidate_providers
                 )
             )
             merged: list[CollectorSnippet] = []
             merged_metadata: dict[str, object] = {}
             providers_used: list[ProviderName] = []
             for (provider, _country), (snippets, metadata, provider_errors) in zip(
-                providers, provider_results
+                candidate_providers, provider_results
             ):
                 leg_result_counts[f"{language}:{provider}"] = len(snippets)
                 if snippets:
@@ -253,7 +320,7 @@ class SearchWebRouterChannel(BaseChannel):
                 providers_used,
             )
 
-        for provider, country in providers:
+        for provider, country in candidate_providers:
             snippets, metadata, provider_errors = await self._collect_provider(
                 language=language,
                 provider=provider,
