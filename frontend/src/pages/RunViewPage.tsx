@@ -1,17 +1,14 @@
 import {
   Activity,
-  Boxes,
   CircleSlash,
   Copy,
-  FileText,
-  GitBranch,
   Download,
   RotateCcw,
   Share2,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
@@ -20,24 +17,16 @@ import { queryClient } from "@/api/queryClient";
 import {
   useResetRun,
   useRunComparisons,
-  useRunConclusions,
   useRunDetail,
   useRunKnowledge,
   useRunMetrics,
   useRunReport,
   useRunTrace,
 } from "@/api/hooks";
-import type {
-  RunKnowledgeResponse,
-  RunMetricsResponse,
-  RunTraceResponse,
-} from "@/api/types";
 import { useRunEvents } from "@/api/sse";
-import { BattlecardGrid } from "@/components/battlecard";
 import { ComparisonMatrix } from "@/components/comparison/ComparisonMatrix";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { KnowledgePanel } from "@/components/knowledge/KnowledgePanel";
-import { MetricsPanel } from "@/components/MetricsPanel";
 import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -51,20 +40,14 @@ import { runPhaseRoute } from "@/lib/runRoute";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 
-type RunViewTab = "battlecard" | "knowledge" | "report" | "trace";
-
-const METHODOLOGY_HEADING = "数据来源与方法论";
+type RunViewTab = "knowledge" | "report" | "trace";
 
 function toHeadingId(value: string): string {
   return value.trim().toLowerCase().replace(/[^\w\u4e00-\u9fa5\s-]/g, "").replace(/\s+/g, "-");
 }
 
 function isRunViewTab(value: string): value is RunViewTab {
-  return value === "battlecard" || value === "knowledge" || value === "report" || value === "trace";
-}
-
-function hasMethodologyHeading(markdown: string): boolean {
-  return /^##\s+数据来源与方法论\s*$/m.test(markdown);
+  return value === "knowledge" || value === "report" || value === "trace";
 }
 
 export function RunViewPage(): JSX.Element {
@@ -88,10 +71,6 @@ export function RunViewPage(): JSX.Element {
   // We collapse them into a single outcome card with the actions that matter.
   const isTerminalFailure = runStatus === "failed" || runStatus === "cancelled";
   const reportQuery = useRunReport(runId, { enabled: isReportReady });
-  const conclusionsQuery = useRunConclusions(runId, {
-    enabled: isReportReady,
-    refetchInterval: isRunActive ? 2_000 : false,
-  });
   const comparisonsQuery = useRunComparisons(runId, {
     enabled: isReportReady,
     refetchInterval: isRunActive ? 2_000 : false,
@@ -112,12 +91,6 @@ export function RunViewPage(): JSX.Element {
 
   const reportMarkdown = reportQuery.data?.content_markdown ?? "";
   const reportWithCitationLinks = useMemo(() => toCitationLinkMarkdown(reportMarkdown), [reportMarkdown]);
-  const hasMethodologySection = useMemo(() => hasMethodologyHeading(reportMarkdown), [reportMarkdown]);
-  const reportEvidenceIds = useMemo(
-    () => Object.keys(reportQuery.data?.evidence_id_to_brief ?? {}),
-    [reportQuery.data?.evidence_id_to_brief],
-  );
-  const conclusions = conclusionsQuery.data?.items ?? [];
   const comparisons = comparisonsQuery.data?.items ?? [];
   const activeRunRoute = detailQuery.data ? runPhaseRoute(detailQuery.data) : null;
 
@@ -133,15 +106,9 @@ export function RunViewPage(): JSX.Element {
     }
   }
 
-  function handleOpenMethodology(): void {
+  useEffect(() => {
     setActiveTab("report");
-    window.requestAnimationFrame(() => {
-      document.getElementById(toHeadingId(METHODOLOGY_HEADING))?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    });
-  }
+  }, [runId]);
 
   async function handleResetRun(resetTo: "analyst" | "writer"): Promise<void> {
     if (!runId) return;
@@ -259,28 +226,12 @@ export function RunViewPage(): JSX.Element {
             />
           </div>
 
-          {isReportReady ? (
-            <RunReadinessPanel
-              hasMethodologySection={hasMethodologySection}
-              knowledge={knowledgeQuery.data}
-              metrics={metricsQuery.data}
-              onOpenEvidence={() => openEvidenceDrawer(reportEvidenceIds)}
-              onOpenMethodology={handleOpenMethodology}
-              onSelectTab={setActiveTab}
-              reportEvidenceCount={reportEvidenceIds.length}
-              trace={traceQuery.data}
-            />
-          ) : null}
-
-          {isReportReady ? <MetricsPanel isRunActive={isRunActive} runId={runId} /> : null}
-
           {/* Tabs */}
           <Tabs value={activeTab} onValueChange={handleTabChange}>
             <div className="flex items-center justify-between gap-3">
               <TabsList>
-                <TabsTrigger value="battlecard">Battlecard</TabsTrigger>
-                <TabsTrigger value="knowledge">竞品知识</TabsTrigger>
                 <TabsTrigger value="report">完整报告</TabsTrigger>
+                <TabsTrigger value="knowledge">竞品知识</TabsTrigger>
                 <TabsTrigger value="trace">决策回放</TabsTrigger>
               </TabsList>
               {/* Toolbar */}
@@ -304,20 +255,6 @@ export function RunViewPage(): JSX.Element {
                 ) : null}
               </div>
             </div>
-
-            {/* Battlecard tab */}
-            <TabsContent value="battlecard" className="space-y-4">
-              {!isReportReady && (
-                <div className="flex items-center gap-2 rounded-lg border border-white/[0.06] bg-surface p-4 text-caption text-foreground-muted">
-                  <Activity className="h-4 w-4 text-primary" />
-                  报告生成中，完成后将展示 Battlecard 网格。
-                </div>
-              )}
-              {isReportReady && conclusionsQuery.isLoading && <Skeleton className="h-60 w-full" />}
-              {isReportReady && !conclusionsQuery.isLoading && (
-                <BattlecardGrid runId={runId} conclusions={conclusions} />
-              )}
-            </TabsContent>
 
             {/* Knowledge tab */}
             <TabsContent value="knowledge" className="space-y-4">
@@ -437,141 +374,6 @@ export function RunViewPage(): JSX.Element {
         runId={runId}
       />
     </section>
-  );
-}
-
-interface RunReadinessPanelProps {
-  hasMethodologySection: boolean;
-  knowledge: RunKnowledgeResponse | undefined;
-  metrics: RunMetricsResponse | undefined;
-  reportEvidenceCount: number;
-  trace: RunTraceResponse | undefined;
-  onOpenEvidence: () => void;
-  onOpenMethodology: () => void;
-  onSelectTab: (tab: RunViewTab) => void;
-}
-
-function formatCompactPercent(value: number | undefined): string {
-  return value === undefined ? "-" : `${(value * 100).toFixed(0)}%`;
-}
-
-function RunReadinessPanel({
-  hasMethodologySection,
-  knowledge,
-  metrics,
-  reportEvidenceCount,
-  trace,
-  onOpenEvidence,
-  onOpenMethodology,
-  onSelectTab,
-}: RunReadinessPanelProps): JSX.Element {
-  const featureCount = knowledge?.features.length ?? 0;
-  const pricingCount = knowledge?.pricings.length ?? 0;
-  const personaCount = knowledge?.personas.length ?? 0;
-  const schemaCount = featureCount + pricingCount + personaCount;
-  const agentCount = trace === undefined ? null : new Set(trace.steps.map((step) => step.agent_name)).size;
-  const qaText =
-    metrics === undefined
-      ? "-"
-      : metrics.qa_rejected_steps === 0
-        ? "QA 已通过"
-        : `QA ${metrics.qa_rejected_steps.toLocaleString()} 次打回`;
-  const sourceAuthorityTotal =
-    metrics === undefined
-      ? 0
-      : Object.values(metrics.source_authority_distribution).reduce((sum, count) => sum + count, 0);
-  const officialSourceRate =
-    metrics !== undefined && sourceAuthorityTotal > 0
-      ? (metrics.source_authority_distribution.official ?? 0) / sourceAuthorityTotal
-      : undefined;
-
-  return (
-    <section className="rounded-xl border border-primary/20 bg-primary/[0.04] p-4">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-foreground">交付速览</h2>
-          <p className="mt-1 text-xs text-foreground-muted">
-            把评分项入口前置：报告、溯源、Schema、Agent 可观测性都能从这里进入。
-          </p>
-        </div>
-        <Button size="sm" variant="secondary" onClick={() => onSelectTab("report")}>
-          查看完整报告
-        </Button>
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-4">
-        <ReadinessCard
-          actionLabel="定位方法论"
-          description={hasMethodologySection ? "报告包含确定性数据来源与方法论段" : "报告暂未检测到方法论段"}
-          disabled={!hasMethodologySection}
-          icon={FileText}
-          onAction={onOpenMethodology}
-          title="报告可用性"
-          value={hasMethodologySection ? "含方法论" : "待检查"}
-        />
-        <ReadinessCard
-          actionLabel="查看引用证据"
-          description={`官方来源占比 ${formatCompactPercent(officialSourceRate)}`}
-          disabled={reportEvidenceCount === 0}
-          icon={ShieldCheck}
-          onAction={onOpenEvidence}
-          title="信息溯源"
-          value={`${reportEvidenceCount.toLocaleString()} 条引用`}
-        />
-        <ReadinessCard
-          actionLabel="打开 Schema"
-          description={`功能 ${featureCount.toLocaleString()} / 定价 ${pricingCount.toLocaleString()} / 用户画像 ${personaCount.toLocaleString()}`}
-          icon={Boxes}
-          onAction={() => onSelectTab("knowledge")}
-          title="知识 Schema"
-          value={`${schemaCount.toLocaleString()} 条结构化记录`}
-        />
-        <ReadinessCard
-          actionLabel="查看回放"
-          description={`${qaText} · LLM ${metrics?.llm_call_count.toLocaleString() ?? "-"} 次调用`}
-          icon={GitBranch}
-          onAction={() => onSelectTab("trace")}
-          title="Agent 可观测"
-          value={agentCount === null ? "-" : `${agentCount.toLocaleString()} 类 Agent`}
-        />
-      </div>
-    </section>
-  );
-}
-
-interface ReadinessCardProps {
-  actionLabel: string;
-  description: string;
-  icon: typeof FileText;
-  title: string;
-  value: string;
-  disabled?: boolean;
-  onAction: () => void;
-}
-
-function ReadinessCard({
-  actionLabel,
-  description,
-  disabled = false,
-  icon: Icon,
-  title,
-  value,
-  onAction,
-}: ReadinessCardProps): JSX.Element {
-  return (
-    <article className="flex min-h-36 flex-col justify-between rounded-lg border border-white/[0.06] bg-surface p-3">
-      <div>
-        <div className="flex items-center gap-2 text-xs font-medium text-foreground-muted">
-          <Icon className="h-3.5 w-3.5 text-primary" />
-          {title}
-        </div>
-        <p className="mt-2 text-lg font-semibold text-foreground">{value}</p>
-        <p className="mt-1 text-xs leading-5 text-foreground-subtle">{description}</p>
-      </div>
-      <Button className="mt-3 w-fit" disabled={disabled} onClick={onAction} size="sm" type="button" variant="outline">
-        {actionLabel}
-      </Button>
-    </article>
   );
 }
 
