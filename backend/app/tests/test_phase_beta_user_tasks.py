@@ -14,7 +14,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 
-from agents.nodes.planner import _normalize_user_tasks
+from agents.nodes.planner import (
+    _cap_plan_tasks_for_profile,
+    _merge_plan_tasks_with_user_priority,
+    _normalize_user_tasks,
+)
 from agents.nodes.supervisor import _extract_user_pinned_research
 from core.config import settings
 from schemas.plan import PlanTask
@@ -88,6 +92,44 @@ def test_normalize_user_tasks_drops_competitor_id_for_non_research_stages() -> N
     )
     [normalized] = _normalize_user_tasks([raw])
     assert normalized.competitor_id is None
+
+
+def test_merge_plan_tasks_prioritizes_user_tasks_under_research_cap() -> None:
+    kept_tasks = [
+        PlanTask(stage="discover", title="discover"),
+        PlanTask(stage="research", title="agent_a", competitor_id="AgentA", source="agent"),
+        PlanTask(stage="research", title="agent_b", competitor_id="AgentB", source="agent"),
+        PlanTask(stage="analyze", title="analyze"),
+        PlanTask(stage="write", title="write"),
+    ]
+    user_tasks = [
+        PlanTask(
+            stage="research",
+            title="user_pinned",
+            competitor_id="UserPinned",
+            source="user",
+            priority="user_pinned",
+        )
+    ]
+
+    merged_candidates = _merge_plan_tasks_with_user_priority(
+        kept_tasks=kept_tasks,
+        user_tasks=user_tasks,
+    )
+    capped = _cap_plan_tasks_for_profile(
+        merged_candidates,
+        analysis_archetype="comparison",
+        max_competitors=2,
+        max_dimensions=3,
+    )
+
+    research_competitors = [
+        task.competitor_id
+        for task in capped
+        if task.stage == "research" and task.competitor_id is not None
+    ]
+    assert "UserPinned" in research_competitors
+    assert len(research_competitors) == 2
 
 
 # ---- _extract_user_pinned_research -------------------------------------------

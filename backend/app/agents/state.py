@@ -42,6 +42,7 @@ class AgentState(TypedDict, total=False):
     researcher_degraded_competitors: Annotated[list[str], operator.add]
     analysis_done: bool
     report_draft_done: bool
+    replan_count: int
     decisions: list[SupervisorDecision]
     status: Annotated[str, _last_write_wins]
 

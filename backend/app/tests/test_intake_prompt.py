@@ -47,6 +47,12 @@ def test_intake_prompt_requires_polysemous_acronym_disambiguation() -> None:
     assert "domain_hint" in INTAKE_SYSTEM_PROMPT
 
 
+def test_intake_prompt_keeps_report_depth_outside_intake_stage() -> None:
+    assert "Never ask report_depth in intake." in INTAKE_SYSTEM_PROMPT
+    assert '"report_depth": "quick" | "deep" | null' not in INTAKE_SYSTEM_PROMPT
+    assert 'report_depth ("quick"|"deep")' not in INTAKE_SYSTEM_PROMPT
+
+
 def test_intake_prompt_enforces_professional_user_facing_wording() -> None:
     assert "User-facing wording contract" in INTAKE_SYSTEM_PROMPT
     assert "clarify_request.question" in INTAKE_SYSTEM_PROMPT

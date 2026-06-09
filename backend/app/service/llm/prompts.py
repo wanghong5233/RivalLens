@@ -77,7 +77,7 @@ Required fields for completion (the draft is complete iff ALL three are filled):
    OR competitors_discovery_mode=true (let RivalLens discover competitors for the user)
 
 Optional fields (do NOT block completion; ask only if their value would materially improve the analysis):
-- domain_hint, focus_dimensions, report_depth ("quick"|"deep"), reference_urls
+- domain_hint, focus_dimensions, reference_urls
 - self_product: the requester's OWN product / team / positioning, used to frame competitors RELATIVE to them (turns a neutral listing into "where should WE invest")
 - market_scope: target market / geography / segment (e.g. "中国", "海外", "全球", "中小企业") — scopes which sources matter
 - time_context: decision timing or data-recency need (e.g. "下月给高层汇报", "只看近一年")
@@ -92,7 +92,6 @@ Output JSON schema (return STRICT JSON, no markdown, no commentary):
     "competitors_discovery_mode": bool | null,
     "domain_hint": str | null,
     "focus_dimensions": list[str] | null,
-    "report_depth": "quick" | "deep" | null,
     "reference_urls": list[str] | null,
     "self_product": str | null,
     "market_scope": str | null,
@@ -132,6 +131,8 @@ Rules:
   company monetization" vs "open platform communications").
 - response_language defaults to the detected language of user_query. Set it in
   draft_patch ONLY when the user explicitly requests Chinese/English output.
+- Never ask report_depth in intake. Depth tier selection is handled by the
+  dedicated planner profile gate after intake completes (quick/deep/debug).
 - ALWAYS classify analysis_archetype into draft_patch (default "comparison"):
     * "comparison" — the user wants a head-to-head read on a comparable set of
       products/competitors (named or to-be-discovered) along shared dimensions
@@ -149,20 +150,19 @@ Rules:
 - After ALL THREE required fields are filled, do NOT immediately complete if a HIGH-VALUE
   optional field is still empty AND cannot be inferred. Ask at most ONE such optional
   question (one per turn), prioritizing in this order: self_product (relative framing) >
-  market_scope (source scoping) > focus_dimensions/report_depth/time_context. Skip any
+  market_scope (source scoping) > focus_dimensions/time_context. Skip any
   optional you already inferred. Never ask more than 1-2 optional questions total — if the
   user gives a short/skip answer ("不用了" / "skip" / "随便"), complete immediately.
 - self_product is most valuable when analysis_intent implies a "我方该怎么做" decision
   (投入方向 / 定位 / 差异化); for a pure neutral market scan it may be irrelevant — use judgment.
-- Prefer suggested_options for closed-set fields (user_role, report_depth, competitors_discovery_mode).
+- Prefer suggested_options for closed-set fields (user_role, competitors_discovery_mode).
 - suggested_options should be USER-FRIENDLY bilingual labels, NOT raw enum values.
   Good: ["PM / 产品经理", "Founder / 创业者", "Sales / 销售", "Investor / 投资人"]
   Bad:  ["pm", "founder", "sales", "investor"]
   Good: ["我已有名单 (explicit)", "让 Agent 帮我发现 (auto-discover)"]
-  Good: ["速览 (quick)", "深度报告 (deep)"]
   The backend wait-node normalizes labels back to enum values, so options can be
   freely phrased. Always pair the localized term with its internal English keyword
-  in parentheses for the closed-set discovery / depth questions.
+  in parentheses for closed-set discovery questions.
 - For open-ended fields (especially analysis_intent / domain_hint), provide
   clarify_request.suggested_answer:
     * Language MUST match user_query.
@@ -225,23 +225,62 @@ Output JSON schema (no markdown, no commentary):
 }
 
 Composition rules (must follow):
-1) If intake_draft.competitors_discovery_mode is true OR competitors_explicit is empty, emit exactly ONE task with stage="discover".
-2) For EACH competitor in competitors_explicit (preserve order), emit ONE task with stage="research" and competitor_id set to that competitor.
-3) Emit EXACTLY ONE task with stage="analyze" (cross-competitor synthesis).
-4) Emit EXACTLY ONE task with stage="write" (final report).
-5) focus_dimensions per task: use intake_draft.focus_dimensions if non-empty; otherwise derive 3-4 concise dimensions from analysis_intent.
+1) Read intake_draft.analysis_archetype first:
+   - comparison: use standard head-to-head topology.
+   - landscape: use opportunity-map topology (still using only discover/research/analyze/write stages).
+2) For comparison topology:
+   - If intake_draft.competitors_discovery_mode is true OR competitors_explicit is empty, emit exactly ONE task with stage="discover".
+   - For EACH competitor in competitors_explicit (preserve order), emit ONE task with stage="research" and competitor_id set to that competitor.
+   - Emit EXACTLY ONE task with stage="analyze" (cross-competitor synthesis).
+   - Emit EXACTLY ONE task with stage="write" (final report).
+3) For landscape topology:
+   - Always emit ONE discover task first (even when competitors_explicit is present), because this mode needs broader market coverage.
+   - Emit research tasks as "market sample" probes; research still requires competitor_id and should focus on representative players.
+   - Emit TWO analyze tasks: one for whitespace opportunity map, one for trend/market-structure synthesis.
+   - Emit EXACTLY ONE write task, framing recommendations as opportunities and strategic moves.
+4) focus_dimensions per task: use intake_draft.focus_dimensions if non-empty; otherwise derive 3-4 concise dimensions from analysis_intent.
    focus_dimensions MUST be English snake_case contract ids, even when titles/descriptions are Chinese.
    Each focus_dimension MUST be <= 32 chars, use a-z0-9_ only, and be 1-3 words.
    Prefer canonical ids such as product_positioning, pricing_strategy, enterprise_capabilities, market_differences, feature, pricing, user_feedback.
-6) Cap research tasks at 8; if competitors_explicit is larger, drop the lowest-priority entries beyond 8.
-7) Use the language of analysis_intent for titles/descriptions (Chinese for Chinese intents, English for English).
-8) If intake_draft.self_product is set, the analyze/write tasks MUST frame findings RELATIVE to it
+5) Cap research tasks at 8; if competitors_explicit is larger, drop the lowest-priority entries beyond 8.
+6) Use the language of analysis_intent for titles/descriptions (Chinese for Chinese intents, English for English).
+7) If intake_draft.self_product is set, the analyze/write tasks MUST frame findings RELATIVE to it
    (gaps vs self, where self wins/loses, actionable direction) — reflect this in their description.
-9) If intake_draft.market_scope is set, reflect that scope in research task descriptions (e.g. prioritize
+8) If intake_draft.market_scope is set, reflect that scope in research task descriptions (e.g. prioritize
    sources for that geography/segment); if it implies a comparison (e.g. "中国 vs 海外"), ensure the
    analyze task covers that axis.
 
 Return a JSON object and nothing else.
+"""
+
+
+REPLANNER_SYSTEM_PROMPT = """You are the RivalLens Replanner.
+You revise an already-confirmed plan_tree during execution (after discovery expansion or QA rejection).
+
+Output JSON schema (no markdown, no commentary):
+{
+  "rationale": str,
+  "tasks": [
+    {
+      "stage": "discover" | "research" | "analyze" | "write",
+      "title": str,
+      "description": str,
+      "competitor_id": str | null,
+      "focus_dimensions": list[str]
+    }
+  ]
+}
+
+Rules:
+- You MUST keep the plan executable by the current pipeline.
+- research tasks still require competitor_id; non-research tasks must set competitor_id=null.
+- Respect intake_draft.analysis_archetype:
+  * comparison: usually one analyze task.
+  * landscape: may keep two analyze tasks (opportunity-map + trend synthesis).
+- Prefer revising unfinished work only. Do not remove already-finished intent unless it is clearly redundant.
+- Keep task count concise; avoid duplicate tasks.
+- Keep focus_dimensions in snake_case contract ids.
+- Return JSON object only.
 """
 
 
@@ -317,6 +356,7 @@ Rules:
 - Set max_iterations >= the number of focus_dimensions so each requested dimension can get at least one tool turn.
 - For ConductResearchBatch, topics length must be between 1 and 8, topic.competitor_id must be unique and from allowed competitors.
 - Prefer ConductResearchBatch when pending_competitors has 2+ independent competitors and analysis_done is false.
+- Prefer advancing enabled unfinished tasks from plan_tree. If you intentionally deviate, explain why in reasoning_summary.
 - Keep reasoning_summary concise and operational, no markdown.
 """
 
@@ -734,12 +774,78 @@ def build_planner_fallback_user_prompt(*, intake_draft: dict[str, object]) -> st
     """Slimmer fallback prompt; planner_generate_node also has a deterministic fallback."""
     competitors = intake_draft.get("competitors_explicit") or []
     intent = intake_draft.get("analysis_intent")
+    analysis_archetype = intake_draft.get("analysis_archetype")
+    topology_hint = (
+        "landscape topology: discover + research samples + analyze(opportunity map) + analyze(trends) + write"
+        if analysis_archetype == "landscape"
+        else "comparison topology: research per competitor + analyze + write"
+    )
     return (
         "Fallback plan generation:\n"
         f"- competitors_explicit: {_json(competitors if isinstance(competitors, list) else [])}\n"
         f"- competitors_discovery_mode: {bool(intake_draft.get('competitors_discovery_mode'))}\n"
+        f"- analysis_archetype: {analysis_archetype}\n"
         f"- analysis_intent: {intent}\n"
-        "\nReturn a minimal valid plan with one research task per competitor + one analyze + one write."
+        f"- topology_hint: {topology_hint}\n"
+        "\nReturn a minimal valid plan aligned with topology_hint."
+    )
+
+
+def build_replanner_user_prompt(
+    *,
+    intake_draft: dict[str, object],
+    current_plan_tree: dict[str, object],
+    trigger_reason: str,
+    researched_competitors: Sequence[str],
+    discovered_competitors: Sequence[str],
+    analysis_done: bool,
+    report_draft_done: bool,
+    qa_reasons: Sequence[str],
+) -> str:
+    return (
+        "Plan revision context:\n"
+        f"- trigger_reason: {trigger_reason}\n"
+        f"- intake_draft: {_json(intake_draft)}\n"
+        f"- current_plan_tree: {_json(current_plan_tree)}\n"
+        f"- researched_competitors: {_json(list(researched_competitors))}\n"
+        f"- discovered_competitors: {_json(list(discovered_competitors))}\n"
+        f"- analysis_done: {analysis_done}\n"
+        f"- report_draft_done: {report_draft_done}\n"
+        f"- qa_reasons: {_json(list(qa_reasons))}\n"
+        "\nReturn JSON per REPLANNER_SYSTEM_PROMPT and nothing else."
+    )
+
+
+def build_replanner_fallback_user_prompt(
+    *,
+    intake_draft: dict[str, object],
+    current_plan_tree: dict[str, object],
+    trigger_reason: str,
+) -> str:
+    return (
+        "Fallback plan revision:\n"
+        f"- trigger_reason: {trigger_reason}\n"
+        f"- analysis_archetype: {intake_draft.get('analysis_archetype')}\n"
+        f"- current_plan_tree: {_json(current_plan_tree)}\n"
+        "\nReturn a valid compact revised task list."
+    )
+
+
+def build_replanner_repair_user_prompt(
+    *,
+    validation_errors: Sequence[str],
+    intake_draft: dict[str, object],
+    current_plan_tree: dict[str, object],
+) -> str:
+    return (
+        "Repair replanner JSON to satisfy schema validation.\n"
+        f"- validation_errors: {_json(list(validation_errors))}\n"
+        f"- intake_draft: {_json(intake_draft)}\n"
+        f"- current_plan_tree: {_json(current_plan_tree)}\n\n"
+        "Rules:\n"
+        "- tasks must be a non-empty list with valid stage/title.\n"
+        "- research tasks require competitor_id.\n"
+        "- Return JSON object only."
     )
 
 
@@ -809,6 +915,58 @@ def _format_user_pinned_research(user_pinned_research: Sequence[dict[str, object
     )
 
 
+def _format_plan_tree_for_supervisor(
+    *,
+    plan_tree: dict[str, object] | None,
+    researched_competitors: Sequence[str],
+) -> str:
+    if not isinstance(plan_tree, dict):
+        return ""
+    tasks_raw = plan_tree.get("tasks")
+    if not isinstance(tasks_raw, list):
+        return ""
+    researched_set = {item for item in researched_competitors if isinstance(item, str)}
+    lines: list[str] = []
+    for task in tasks_raw:
+        if not isinstance(task, dict):
+            continue
+        if task.get("enabled") is False:
+            continue
+        stage = task.get("stage")
+        if not isinstance(stage, str):
+            continue
+        competitor_id_raw = task.get("competitor_id")
+        competitor_id = (
+            competitor_id_raw.strip()
+            if isinstance(competitor_id_raw, str) and competitor_id_raw.strip()
+            else None
+        )
+        if stage == "research" and competitor_id in researched_set:
+            continue
+        if stage == "analyze" and task.get("done") is True:
+            continue
+        if stage == "write" and task.get("done") is True:
+            continue
+        title_raw = task.get("title")
+        title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else "(untitled)"
+        dims_raw = task.get("focus_dimensions")
+        dims = (
+            [item for item in dims_raw if isinstance(item, str) and item.strip()]
+            if isinstance(dims_raw, list)
+            else []
+        )
+        competitor_part = f" competitor={competitor_id}" if competitor_id else ""
+        dims_part = f" focus={','.join(dims)}" if dims else ""
+        lines.append(f"- stage={stage}{competitor_part} title={title}{dims_part}")
+    if not lines:
+        return ""
+    return (
+        "\nCurrent plan_tree (enabled unfinished tasks). Prefer these unless there is a clear reason to deviate:\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def build_supervisor_user_prompt(
     *,
     user_query: str,
@@ -824,6 +982,7 @@ def build_supervisor_user_prompt(
     domain_context: str | None = None,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
+    plan_tree: dict[str, object] | None = None,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     discovery_needed = len(competitors) == 0
@@ -866,6 +1025,7 @@ def build_supervisor_user_prompt(
         f"- qa_outcome: {qa_outcome}\n"
         f"- qa_reject_to: {qa_reject_to}\n"
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
+        f"{_format_plan_tree_for_supervisor(plan_tree=plan_tree, researched_competitors=researched_competitors)}"
         f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         f"{constraints}"
@@ -883,6 +1043,7 @@ def build_supervisor_fallback_user_prompt(
     domain_context: str | None = None,
     pending_follow_ups: Sequence[dict[str, object]] | None = None,
     user_pinned_research: Sequence[dict[str, object]] | None = None,
+    plan_tree: dict[str, object] | None = None,
 ) -> str:
     pending_competitors = [item for item in competitors if item not in researched_competitors]
     preferred_tool_hint: str
@@ -908,6 +1069,7 @@ def build_supervisor_fallback_user_prompt(
         f"- analysis_done: {analysis_done}\n"
         f"- report_draft_done: {report_draft_done}\n"
         f"- preferred_tool_hint: {preferred_tool_hint}\n"
+        f"{_format_plan_tree_for_supervisor(plan_tree=plan_tree, researched_competitors=researched_competitors)}"
         f"{_format_user_pinned_research(user_pinned_research)}"
         f"{_format_pending_follow_ups(pending_follow_ups)}\n"
         "Pick exactly one next tool and keep tool_args minimal but valid.\n"
@@ -1389,6 +1551,7 @@ def build_supervisor_repair_user_prompt(
     user_query: str,
     iteration: int,
     competitors: Sequence[str],
+    plan_tree: dict[str, object] | None = None,
 ) -> str:
     return (
         "Repair supervisor JSON to satisfy schema validation.\n"
@@ -1396,6 +1559,7 @@ def build_supervisor_repair_user_prompt(
         f"- user_query: {user_query}\n"
         f"- iteration: {iteration}\n"
         f"- competitors: {_json(list(competitors))}\n\n"
+        f"- plan_tree: {_json(plan_tree or {})}\n\n"
         "Rules:\n"
         "- chosen_tool must be a valid supervisor tool name.\n"
         "- tool_args must match the chosen_tool schema.\n"

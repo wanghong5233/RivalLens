@@ -44,6 +44,7 @@ export interface PlanPublishedPayload {
 }
 
 export type PlanReconciledPayload = PlanPublishedPayload;
+export type PlanRevisedPayload = PlanPublishedPayload;
 
 export interface PlanConfirmedPayload {
   plan_id: string;
@@ -128,6 +129,7 @@ export interface RunEventsOptions {
   // takes over.
   onPlanPublished?: (payload: PlanPublishedPayload) => void;
   onPlanConfirmed?: (payload: PlanConfirmedPayload) => void;
+  onPlanRevised?: (payload: PlanRevisedPayload) => void;
   // Phase 3: LiveRunPage subscribes to tool / evidence / supervisor.decision /
   // step.finish to drive the right-side evidence feed, the left-side plan
   // tree progress, and the top status bar. Listeners are additive — pages
@@ -446,6 +448,7 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     onIntakeComplete,
     onPlanPublished,
     onPlanConfirmed,
+    onPlanRevised,
     onToolStart,
     onToolFinish,
     onEvidenceCollected,
@@ -595,6 +598,17 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
       invalidateRunDetail();
       invalidateRunTrace();
     });
+    eventSource.addEventListener("plan.revised", (event: MessageEvent<string>) => {
+      invalidateRunDetail();
+      invalidateRunTrace();
+      if (onPlanRevised === undefined) {
+        return;
+      }
+      const payload = coercePlanPublishedPayload(parseEventPayload(event.data));
+      if (payload !== null) {
+        onPlanRevised(payload);
+      }
+    });
     eventSource.addEventListener("tool.start", (event: MessageEvent<string>) => {
       if (onToolStart === undefined) {
         return;
@@ -641,6 +655,7 @@ export function useRunEvents(runId: string, options: RunEventsOptions = {}): voi
     onIntakeComplete,
     onPlanPublished,
     onPlanConfirmed,
+    onPlanRevised,
     onToolStart,
     onToolFinish,
     onEvidenceCollected,

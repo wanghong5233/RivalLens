@@ -35,6 +35,7 @@ class RunEventType(StrEnum):
     PLAN_PUBLISHED = "plan.published"
     PLAN_CONFIRMED = "plan.confirmed"
     PLAN_RECONCILED = "plan.reconciled"
+    PLAN_REVISED = "plan.revised"
     PLAN_TASK_START = "plan.task.start"
     PLAN_TASK_FINISH = "plan.task.finish"
     TOOL_START = "tool.start"

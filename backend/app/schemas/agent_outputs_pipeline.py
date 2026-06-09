@@ -184,6 +184,8 @@ class PlannerOutput(BaseModel):
         )[:MAX_FOCUS_DIMENSIONS]
         parsed_tasks: list[PlannerTaskDraft] = []
         research_count = 0
+        analyze_count = 0
+        max_analyze_tasks = 2 if draft.analysis_archetype == "landscape" else 1
         for item in tasks_raw:
             if not isinstance(item, dict):
                 continue
@@ -207,6 +209,10 @@ class PlannerOutput(BaseModel):
                 if research_count >= MAX_RESEARCH_COMPETITORS:
                     continue
                 research_count += 1
+            if stage_raw == "analyze":
+                if analyze_count >= max_analyze_tasks:
+                    continue
+                analyze_count += 1
             focus_raw = item.get("focus_dimensions")
             if isinstance(focus_raw, list):
                 focus = validate_token_list(
@@ -261,6 +267,18 @@ class PlannerOutput(BaseModel):
             )
             for task in self.tasks
         ]
+
+
+class ReplannerOutput(PlannerOutput):
+    @classmethod
+    def parse_llm_content(
+        cls,
+        content: dict[str, object],
+        *,
+        draft: RunIntakeDraft,
+    ) -> ReplannerOutput:
+        planner_output = PlannerOutput.parse_llm_content(content, draft=draft)
+        return cls(rationale=planner_output.rationale, tasks=planner_output.tasks)
 
 
 class SupervisorToolCallOutput(BaseModel):

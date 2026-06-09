@@ -1348,6 +1348,13 @@ async def supervisor_node(state: AgentState) -> AgentState:
             session_factory=session_factory,
             run_id=run_id,
         )
+        plan_tree_raw = state.get("plan_tree")
+        if isinstance(plan_tree_raw, dict):
+            plan_tree_for_prompt: dict[str, object] | None = plan_tree_raw
+        elif hasattr(plan_tree_raw, "model_dump"):
+            plan_tree_for_prompt = plan_tree_raw.model_dump()
+        else:
+            plan_tree_for_prompt = None
         user_pinned_research = _extract_user_pinned_research(
             plan_tree=state.get("plan_tree"),
             researched_competitors=researched_competitors,
@@ -1366,6 +1373,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             domain_context=domain_context,
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
+            plan_tree=plan_tree_for_prompt,
         )
         fallback_user_prompt = build_supervisor_fallback_user_prompt(
             user_query=user_query,
@@ -1377,6 +1385,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
             domain_context=domain_context,
             pending_follow_ups=pending_follow_ups,
             user_pinned_research=user_pinned_research,
+            plan_tree=plan_tree_for_prompt,
         )
         harness_result = await complete_structured(
             model_slot="research",
@@ -1391,6 +1400,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 user_query=user_query,
                 iteration=iteration,
                 competitors=competitors,
+                plan_tree=plan_tree_for_prompt,
             ),
             log_event="supervisor.harness.finish",
         )

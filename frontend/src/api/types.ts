@@ -103,6 +103,13 @@ export interface PlanTree {
   version: number;
   // ISO timestamp; null until planner_wait resumes from the user's confirmation.
   confirmed_at: string | null;
+  competitor_sources?: Record<
+    string,
+    {
+      official_url: string | null;
+      source_domain: string | null;
+    }
+  >;
 }
 
 export interface PlanConfirmRequest {

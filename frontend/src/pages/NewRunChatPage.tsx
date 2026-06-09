@@ -220,12 +220,22 @@ function clarifyMessageFromPayload(
     suggested_answer: string | null;
   },
 ): ChatMessage {
+  const fieldTargets = [...(payload.field_targets ?? [])];
+  const suggestedOptions = payload.suggested_options ? [...payload.suggested_options] : [];
+  if (import.meta.env.DEV && fieldTargets.includes("report_depth")) {
+    const hasDebugOption = suggestedOptions.some(
+      (option) => option.toLowerCase().includes("debug") || option.includes("调试"),
+    );
+    if (!hasDebugOption) {
+      suggestedOptions.push("调试 (debug)");
+    }
+  }
   return {
     id: newMessageId(),
     kind: "assistant.clarify",
     question: payload.question,
-    fieldTargets: [...(payload.field_targets ?? [])],
-    suggestedOptions: payload.suggested_options ? [...payload.suggested_options] : [],
+    fieldTargets,
+    suggestedOptions,
     suggestedAnswer: payload.suggested_answer,
   };
 }
@@ -898,6 +908,10 @@ export function NewRunChatPage(): JSX.Element {
     () => checklistRows.filter((row) => row.satisfied).length,
     [checklistRows],
   );
+  const hasClarify = useMemo(
+    () => messages.some((message) => message.kind === "assistant.clarify"),
+    [messages],
+  );
   const isBusy =
     status === "creating" || status === "replying" || status === "resuming";
   const composerDisabled =
@@ -911,7 +925,7 @@ export function NewRunChatPage(): JSX.Element {
       ? "描述你想做的竞品分析（角色、要解决的问题、可选竞品名单）"
       : status === "awaiting_profile"
         ? "请先选择分析档位后继续"
-        : "回答 Agent 的问题，或补充更多上下文…";
+        : "回答澄清问题，或补充更多上下文…";
 
   useEffect(() => {
     if (runId === null) {
@@ -983,7 +997,7 @@ export function NewRunChatPage(): JSX.Element {
                     }
                   />
                 ))}
-                {isBusy && <ThinkingBubble status={status} />}
+                {isBusy && <ThinkingBubble status={status} hasClarify={hasClarify} />}
                 <div ref={messagesEndRef} />
               </div>
             </CardContent>
@@ -1118,9 +1132,9 @@ export function NewRunChatPage(): JSX.Element {
           </form>
         </div>
 
-        <aside className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
-          <Card>
-            <CardHeader className="space-y-3 pb-3">
+        <aside className="flex min-h-0 flex-col gap-3 pr-1 lg:h-full">
+          <Card className="flex min-h-0 flex-1 flex-col">
+            <CardHeader className="shrink-0 space-y-3 pb-3">
               <div className="flex items-center justify-between gap-2">
                 <CardTitle className="text-base">需求清单</CardTitle>
                 <span className="inline-flex items-center gap-1.5 text-xs text-foreground-muted">
@@ -1137,7 +1151,7 @@ export function NewRunChatPage(): JSX.Element {
                 total={checklistRows.length}
               />
             </CardHeader>
-            <CardContent className="space-y-3 pt-0">
+            <CardContent className="min-h-0 flex-1 space-y-3 overflow-y-auto pt-0">
               {checklistRows.map((row) => (
                 <ChecklistItem
                   key={row.id}
@@ -1172,7 +1186,7 @@ export function NewRunChatPage(): JSX.Element {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="shrink-0">
             <CardHeader className="pb-3">
               <CardTitle className="text-base">为什么要对话？</CardTitle>
             </CardHeader>
@@ -1303,13 +1317,24 @@ function MessageBubble({
   );
 }
 
-function ThinkingBubble({ status }: { status: ChatStatus }): JSX.Element {
-  const label =
-    status === "creating"
-      ? "正在创建任务…"
-      : status === "replying"
-        ? "已发送，等待 Agent…"
-        : "Agent 正在思考下一个问题…";
+function intakeThinkingLabel(status: ChatStatus, hasClarify: boolean): string {
+  if (status === "creating") {
+    return "正在启动会话…";
+  }
+  if (status === "replying") {
+    return "发送中…";
+  }
+  return hasClarify ? "正在核对需求信息…" : "正在理解你的分析需求…";
+}
+
+function ThinkingBubble({
+  status,
+  hasClarify,
+}: {
+  status: ChatStatus;
+  hasClarify: boolean;
+}): JSX.Element {
+  const label = intakeThinkingLabel(status, hasClarify);
   return (
     <div className="flex items-start gap-2">
       <div className="mt-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/[0.05] text-primary">

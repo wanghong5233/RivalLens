@@ -14,6 +14,7 @@ from agents.nodes.planner import (
     planning_profile_wait_node,
 )
 from agents.nodes.qa import qa_node
+from agents.nodes.replanner import replanner_node
 from agents.nodes.researcher import researcher_node
 from agents.nodes.supervisor import supervisor_node
 from agents.nodes.writer import writer_node
@@ -64,10 +65,12 @@ def _route_after_supervisor(
     return "researcher"
 
 
-def _route_after_qa(state: AgentState) -> Literal["supervisor", "finalize"]:
+def _route_after_qa(state: AgentState) -> Literal["replanner", "supervisor", "finalize"]:
     qa_outcome = state.get("qa_outcome")
     if qa_outcome == "approved":
         return "finalize"
+    if qa_outcome == "rejected":
+        return "replanner"
     return "supervisor"
 
 
@@ -113,6 +116,7 @@ def build_graph_uncompiled() -> StateGraph:
     graph.add_node("analyst", analyst_node)
     graph.add_node("writer", writer_node)
     graph.add_node("qa", qa_node)
+    graph.add_node("replanner", replanner_node)
     graph.add_node("intake_generate", intake_generate_node)
     graph.add_node("intake_wait", intake_wait_node)
     graph.add_node("planning_profile_wait", planning_profile_wait_node)
@@ -156,7 +160,8 @@ def build_graph_uncompiled() -> StateGraph:
             "finalize": END,
         },
     )
-    graph.add_edge("discovery", "supervisor")
+    graph.add_edge("discovery", "replanner")
+    graph.add_edge("replanner", "supervisor")
     graph.add_edge("researcher", "supervisor")
     graph.add_edge("analyst", "supervisor")
     graph.add_edge("writer", "qa")
@@ -164,6 +169,7 @@ def build_graph_uncompiled() -> StateGraph:
         "qa",
         _route_after_qa,
         {
+            "replanner": "replanner",
             "supervisor": "supervisor",
             "finalize": END,
         },

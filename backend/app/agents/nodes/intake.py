@@ -652,6 +652,17 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         reasoning_summary = ""
         title_content = {}
 
+    # report_depth is owned by the dedicated planning profile gate. If the LLM
+    # still asks it here, drop the clarify turn and continue normal routing.
+    if action_raw == "ask" and parsed_clarify is not None:
+        if "report_depth" in parsed_clarify.field_targets:
+            log.info(
+                "intake.generate.ask_blocked_report_depth_target",
+                run_id=run_id,
+                dropped_field_targets=list(parsed_clarify.field_targets),
+            )
+            parsed_clarify = None
+
     # When the merged draft is already complete, redundant required re-asks and
     # repeated optional re-asks are noise. Drop them so intake can hand off to
     # planning instead of trapping the user in clarification loops.

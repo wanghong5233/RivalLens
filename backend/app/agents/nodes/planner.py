@@ -54,6 +54,7 @@ log = get_logger("agents.planner")
 # discovery node's exclusive output. Allowing it would let two discoveries
 # compete and would also bypass `_derive_focus_dimensions`.
 _USER_ALLOWED_STAGES: frozenset[str] = frozenset({"research", "analyze", "write"})
+_PLAN_STAGE_ORDER: tuple[PlanTaskStage, ...] = ("discover", "research", "analyze", "write")
 _REPORT_DEPTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("debug", ("debug", "调试", "极速", "超快")),
     ("quick", ("quick", "速览", "快速", "标准", "平衡")),
@@ -137,8 +138,9 @@ def _fallback_tasks(
         analysis_archetype=draft.analysis_archetype,
     )[:max_dimensions]
     tasks: list[PlanTask] = []
+    is_landscape = draft.analysis_archetype == "landscape"
     competitors = list(draft.competitors_explicit)
-    if draft.competitors_discovery_mode or not competitors:
+    if is_landscape or draft.competitors_discovery_mode or not competitors:
         tasks.append(
             PlanTask(
                 stage="discover",
@@ -158,15 +160,35 @@ def _fallback_tasks(
                 focus_dimensions=research_focus,
             )
         )
-    tasks.append(
-        PlanTask(
-            stage="analyze",
-            title="跨竞品对比分析",
-            description="基于证据生成跨竞品对比与差异化洞察。",
-            competitor_id=None,
-            focus_dimensions=focus,
+    if is_landscape:
+        tasks.append(
+            PlanTask(
+                stage="analyze",
+                title="机会地图分析",
+                description="基于证据梳理赛道机会空白与进入路径。",
+                competitor_id=None,
+                focus_dimensions=focus,
+            )
         )
-    )
+        tasks.append(
+            PlanTask(
+                stage="analyze",
+                title="趋势与格局分析",
+                description="识别赛道演进趋势、竞争格局与关键变量。",
+                competitor_id=None,
+                focus_dimensions=focus,
+            )
+        )
+    else:
+        tasks.append(
+            PlanTask(
+                stage="analyze",
+                title="跨竞品对比分析",
+                description="基于证据生成跨竞品对比与差异化洞察。",
+                competitor_id=None,
+                focus_dimensions=focus,
+            )
+        )
     tasks.append(
         PlanTask(
             stage="write",
@@ -223,6 +245,25 @@ def _cap_plan_tasks_for_profile(
         if len(capped) >= MAX_TOTAL_PLAN_TASKS:
             break
     return capped
+
+
+def _merge_plan_tasks_with_user_priority(
+    *,
+    kept_tasks: list[PlanTask],
+    user_tasks: list[PlanTask],
+) -> list[PlanTask]:
+    """Merge plan tasks while preserving stage order and prioritizing user tasks.
+
+    Why: if we append user tasks after agent tasks and then apply tier caps
+    (especially debug max_competitors=2), user-injected research tasks can be
+    silently dropped. We place user tasks first *within each stage* so caps
+    evict lower-priority agent tasks before user_pinned tasks.
+    """
+    merged: list[PlanTask] = []
+    for stage in _PLAN_STAGE_ORDER:
+        merged.extend(task for task in user_tasks if task.stage == stage)
+        merged.extend(task for task in kept_tasks if task.stage == stage)
+    return merged
 
 
 def _research_competitors_from_tasks(tasks: list[PlanTask]) -> list[str]:
@@ -679,8 +720,12 @@ async def planner_wait_node(state: AgentState) -> AgentState:
         )
 
     kept_tasks = [task for task in pending.tasks if task.task_id not in disabled]
+    merged_candidates = _merge_plan_tasks_with_user_priority(
+        kept_tasks=kept_tasks,
+        user_tasks=user_tasks,
+    )
     merged_tasks = _cap_plan_tasks_for_profile(
-        kept_tasks + user_tasks,
+        merged_candidates,
         analysis_archetype=draft.analysis_archetype,
         max_competitors=tier_profile.max_competitors,
         max_dimensions=tier_profile.max_dimensions,

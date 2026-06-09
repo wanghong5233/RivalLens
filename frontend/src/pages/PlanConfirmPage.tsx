@@ -159,8 +159,7 @@ export function PlanConfirmPage(): JSX.Element {
     });
   };
 
-  async function handleConfirm(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  async function handleConfirm(): Promise<void> {
     if (planTree === null || submitting) {
       return;
     }
@@ -259,12 +258,12 @@ export function PlanConfirmPage(): JSX.Element {
         </p>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid min-h-0 gap-4 lg:grid-cols-3 lg:items-stretch">
         <div className="space-y-3 lg:col-span-2">
           {planTree === null ? (
             <PlanLoadingCard />
           ) : (
-            <form className="space-y-3" onSubmit={handleConfirm}>
+            <div className="space-y-3">
               {planTree.rationale ? (
                 <Card>
                   <CardHeader className="pb-2">
@@ -313,7 +312,14 @@ export function PlanConfirmPage(): JSX.Element {
                       取消勾选的任务不会被执行；确认后无法再编辑。
                     </p>
                   </div>
-                  <Button disabled={submitting || totalEnabled === 0} size="sm" type="submit">
+                  <Button
+                    disabled={submitting || totalEnabled === 0}
+                    size="sm"
+                    type="button"
+                    onClick={() => {
+                      void handleConfirm();
+                    }}
+                  >
                     {submitting ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -325,13 +331,16 @@ export function PlanConfirmPage(): JSX.Element {
                   </Button>
                 </CardContent>
               </Card>
-            </form>
+            </div>
           )}
         </div>
 
-        <aside className="space-y-3">
-          <IntakeSummaryCard draft={runDetail.data?.intake_draft ?? null} />
-          <PlanMetadataCard planTree={planTree} />
+        <aside className="flex min-h-0 flex-col gap-3 lg:h-full">
+          <IntakeSummaryCard
+            draft={runDetail.data?.intake_draft ?? null}
+            className="min-h-0 flex-1"
+          />
+          <PlanMetadataCard planTree={planTree} className="shrink-0" />
         </aside>
       </div>
     </section>
@@ -406,7 +415,7 @@ function TaskRow({ task, disabled, onToggle }: TaskRowProps): JSX.Element {
             <Badge variant="secondary" className="text-xs">{task.competitor_id}</Badge>
           ) : null}
           {task.priority === "user_pinned" ? (
-            <Badge variant="default" className="text-xs">用户置顶</Badge>
+            <Badge variant="default" className="text-xs">补充优先</Badge>
           ) : null}
         </div>
         {task.description ? (
@@ -468,9 +477,14 @@ function AdditionalTasksCard({ tasks, onAdd, onRemove }: AdditionalTasksCardProp
       }
       return;
     }
+    const localTaskId =
+      typeof globalThis.crypto !== "undefined" &&
+      typeof globalThis.crypto.randomUUID === "function"
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const newTask: PlanTask = {
       // Local-only id; the backend regenerates a ptask_ prefix before merging.
-      task_id: `client_${crypto.randomUUID()}`,
+      task_id: `client_${localTaskId}`,
       stage,
       title: titleTrimmed,
       description: description.trim(),
@@ -481,6 +495,11 @@ function AdditionalTasksCard({ tasks, onAdd, onRemove }: AdditionalTasksCardProp
       priority: "user_pinned",
     };
     onAdd(newTask);
+    pushToast({
+      title: "补充任务已加入待确认队列",
+      description: "点击“确认并启动分析”后才会生效。",
+      variant: "success",
+    });
     resetForm();
     setFormOpen(false);
   };
@@ -490,19 +509,19 @@ function AdditionalTasksCard({ tasks, onAdd, onRemove }: AdditionalTasksCardProp
       <CardHeader className="pb-2">
         <CardTitle className="inline-flex items-center gap-2 text-base">
           <Pin className="h-4 w-4 text-warning" />
-          用户置顶任务
+          补充任务（优先）
           <span className="text-caption font-normal text-foreground-muted">
             · {tasks.length}/{MAX_ADDITIONAL_TASKS}
           </span>
         </CardTitle>
         <p className="text-caption text-foreground-muted">
-          额外加入的任务会被标记为 user_pinned，Supervisor 会优先处理。
+          这里新增的是待确认补充任务，点击“确认并启动分析”后才会提交并按高优先级执行。
         </p>
       </CardHeader>
       <CardContent className="space-y-2 pt-0">
         {tasks.length === 0 && !formOpen ? (
           <p className="text-caption text-foreground-muted">
-            还没有添加额外任务。
+            还没有添加补充任务。
           </p>
         ) : null}
         {tasks.map((task) => (
@@ -612,7 +631,7 @@ function AdditionalTasksCard({ tasks, onAdd, onRemove }: AdditionalTasksCardProp
                 取消
               </Button>
               <Button type="submit" size="sm" disabled={!canSubmit}>
-                添加任务
+                添加补充任务
               </Button>
             </div>
           </form>
@@ -626,7 +645,7 @@ function AdditionalTasksCard({ tasks, onAdd, onRemove }: AdditionalTasksCardProp
             className="w-full justify-center border border-dashed border-white/[0.08]"
           >
             <Plus className="h-3.5 w-3.5" />
-            {atCapacity ? `已达上限 (${MAX_ADDITIONAL_TASKS})` : "添加任务"}
+            {atCapacity ? `已达上限 (${MAX_ADDITIONAL_TASKS})` : "添加补充任务"}
           </Button>
         )}
       </CardContent>
@@ -658,16 +677,22 @@ function PlanLoadingCard(): JSX.Element {
   );
 }
 
-function IntakeSummaryCard({ draft }: { draft: RunIntakeDraft | null }): JSX.Element {
+function IntakeSummaryCard({
+  draft,
+  className,
+}: {
+  draft: RunIntakeDraft | null;
+  className?: string;
+}): JSX.Element {
   return (
-    <Card>
-      <CardHeader className="pb-3">
+    <Card className={cn("flex min-h-0 flex-col", className)}>
+      <CardHeader className="shrink-0 pb-3">
         <CardTitle className="inline-flex items-center gap-2 text-base">
           <FileText className="h-4 w-4 text-primary" />
           需求摘要
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2 pt-0 text-xs text-foreground-muted">
+      <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto pt-0 text-xs text-foreground-muted">
         {draft === null ? (
           <p>暂无需求快照。</p>
         ) : (
@@ -695,9 +720,15 @@ function IntakeSummaryCard({ draft }: { draft: RunIntakeDraft | null }): JSX.Ele
   );
 }
 
-function PlanMetadataCard({ planTree }: { planTree: PlanTree | null }): JSX.Element {
+function PlanMetadataCard({
+  planTree,
+  className,
+}: {
+  planTree: PlanTree | null;
+  className?: string;
+}): JSX.Element {
   return (
-    <Card>
+    <Card className={className}>
       <CardHeader className="pb-3">
         <CardTitle className="inline-flex items-center gap-2 text-base">
           <CheckCircle2 className="h-4 w-4 text-primary" />
