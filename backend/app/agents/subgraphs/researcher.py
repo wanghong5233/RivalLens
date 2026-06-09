@@ -3,15 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from dataclasses import dataclass
 from contextlib import nullcontext
 from functools import lru_cache
 import re
 from typing import Any, Literal, TypedDict
+from urllib.parse import urlsplit
+import yaml
 
 from langgraph.graph import END, StateGraph
 
 from agents.tools import get_channel_registry
-from agents.tools.parse_page import official_hosts_for_competitor
+from agents.tools.parse_page import infer_source_type, official_hosts_for_competitor
 from agents.tools.rerank_bocha import rerank as rerank_bocha
 from core.config import settings
 from core.defaults import MAX_REACT_TURNS
@@ -85,6 +88,25 @@ _SAFE_TOOL_ARG_KEYS = (
     "market_scope",
     "country",
 )
+
+_OFFICIAL_SOURCE_TYPES: frozenset[str] = frozenset({"official_site", "docs", "pricing_page"})
+_DEFAULT_SOURCE_ROUTING_ORDER: tuple[str, ...] = (
+    "official_site",
+    "docs",
+    "pricing_page",
+    "article",
+    "public_review",
+)
+_YAML_BLOCK_PATTERN = re.compile(r"```yaml\s*(.*?)```", flags=re.IGNORECASE | re.DOTALL)
+_MAX_SOURCE_FIRST_ATTEMPTS_PER_DIMENSION = 2
+_MAX_EXTRACT_ONLY_ATTEMPTS_PER_DIMENSION = 1
+
+
+@dataclass(frozen=True)
+class _SourceRoutingRule:
+    source_type: str
+    priority_delta: int
+    dimension_keywords: tuple[str, ...]
 
 
 def _safe_tool_args_summary(args: dict[str, object]) -> dict[str, Any]:
@@ -161,6 +183,12 @@ class ResearcherSubState(TypedDict, total=False):
     response_language: str | None
     reference_urls: list[str]
     discovered_urls: list[str]
+    resolved_official_urls: list[str]
+    resolved_official_hosts: list[str]
+    resolved_source_pages: list[dict[str, str]]
+    search_call_count: int
+    official_fetch_count: int
+    coverage_matrix: dict[str, dict[str, object]]
     rerank_reflected_dimensions: list[FocusDimension]
 
 
@@ -269,6 +297,274 @@ def _merge_discovered_urls(existing: list[str], new_urls: list[str]) -> list[str
             merged.append(url)
             seen.add(url)
     return merged
+
+
+def _extract_source_routing_payload(markdown: str) -> dict[str, object] | None:
+    match = _YAML_BLOCK_PATTERN.search(markdown)
+    if match is None:
+        return None
+    try:
+        loaded = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return None
+    if isinstance(loaded, dict):
+        return loaded
+    return None
+
+
+def _normalize_dimension_keywords(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return ()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        lowered = item.strip().casefold()
+        if not lowered or lowered in seen:
+            continue
+        seen.add(lowered)
+        ordered.append(lowered)
+    return tuple(ordered)
+
+
+def _load_source_routing_rules() -> list[_SourceRoutingRule]:
+    store = get_skill_store()
+    rules: list[_SourceRoutingRule] = []
+    for skill_name in store.list_by_applies_to("source_routing"):
+        parsed = store.load(skill_name)
+        if parsed is None:
+            continue
+        payload = _extract_source_routing_payload(parsed.content)
+        if payload is None:
+            continue
+        source_type_raw = payload.get("source_type")
+        if not isinstance(source_type_raw, str) or not source_type_raw.strip():
+            continue
+        try:
+            source_type = validate_source_type(source_type_raw.strip())
+        except ValueError:
+            continue
+        priority_delta_raw = payload.get("priority_delta", 0)
+        priority_delta: int
+        if isinstance(priority_delta_raw, int):
+            priority_delta = priority_delta_raw
+        elif isinstance(priority_delta_raw, float):
+            priority_delta = int(priority_delta_raw)
+        elif (
+            isinstance(priority_delta_raw, str)
+            and priority_delta_raw.strip()
+            and priority_delta_raw.strip().lstrip("-").isdigit()
+        ):
+            priority_delta = int(priority_delta_raw.strip())
+        else:
+            continue
+        dimension_keywords = _normalize_dimension_keywords(
+            payload.get("dimension_keywords", payload.get("dimension_contains"))
+        )
+        if not dimension_keywords:
+            dimension_keywords = _normalize_dimension_keywords(list(parsed.metadata.tags))
+        rules.append(
+            _SourceRoutingRule(
+                source_type=source_type,
+                priority_delta=priority_delta,
+                dimension_keywords=dimension_keywords,
+            )
+        )
+    return rules
+
+
+def _default_source_order_for_dimension(dimension: str | None) -> tuple[str, ...]:
+    if not isinstance(dimension, str):
+        return _DEFAULT_SOURCE_ROUTING_ORDER
+    lowered = dimension.casefold()
+    if any(keyword in lowered for keyword in ("pricing", "plan", "billing")):
+        return ("pricing_page", "official_site", "docs", "article", "public_review")
+    if any(keyword in lowered for keyword in ("feature", "capability", "integration", "tech", "api")):
+        return ("docs", "official_site", "pricing_page", "article", "public_review")
+    if any(keyword in lowered for keyword in ("security", "compliance", "enterprise")):
+        return ("official_site", "docs", "pricing_page", "article", "public_review")
+    if any(keyword in lowered for keyword in ("feedback", "review", "sentiment", "persona")):
+        return ("public_review", "article", "official_site", "docs", "pricing_page")
+    return _DEFAULT_SOURCE_ROUTING_ORDER
+
+
+def _rule_matches_dimension(*, rule: _SourceRoutingRule, dimension: str | None) -> bool:
+    if not rule.dimension_keywords:
+        return True
+    if not isinstance(dimension, str):
+        return False
+    lowered = dimension.casefold()
+    return any(keyword in lowered for keyword in rule.dimension_keywords)
+
+
+def _source_type_priority_table_for_dimension(dimension: str | None) -> dict[str, int]:
+    ordered_defaults = _default_source_order_for_dimension(dimension)
+    total = len(ordered_defaults)
+    priorities: dict[str, int] = {
+        source_type: (total - index) * 10
+        for index, source_type in enumerate(ordered_defaults)
+    }
+    for rule in _load_source_routing_rules():
+        if not _rule_matches_dimension(rule=rule, dimension=dimension):
+            continue
+        priorities[rule.source_type] = priorities.get(rule.source_type, 0) + (rule.priority_delta * 10)
+    return priorities
+
+
+def _ordered_source_types_for_dimension(dimension: str | None) -> list[str]:
+    defaults = _default_source_order_for_dimension(dimension)
+    priorities = _source_type_priority_table_for_dimension(dimension)
+    tie_breaker: dict[str, int] = {
+        source_type: index
+        for index, source_type in enumerate(defaults)
+    }
+    candidates = list(priorities.keys())
+    for source_type in _DEFAULT_SOURCE_ROUTING_ORDER:
+        if source_type not in priorities:
+            candidates.append(source_type)
+    return sorted(
+        candidates,
+        key=lambda source_type: (
+            -priorities.get(source_type, 0),
+            tie_breaker.get(source_type, len(tie_breaker)),
+            source_type,
+        ),
+    )
+
+
+def _normalize_source_type(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "article"
+    try:
+        return validate_source_type(value.strip())
+    except ValueError:
+        return "article"
+
+
+def _routing_priority_for_source(
+    *,
+    dimension: str | None,
+    source_type: str,
+) -> int:
+    priorities = _source_type_priority_table_for_dimension(dimension)
+    return priorities.get(source_type, 0)
+
+
+def _build_coverage_matrix(
+    *,
+    state: ResearcherSubState,
+    evidence_drafts: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    focus_dimensions = list(state.get("focus_dimensions", []))
+    official_hosts = _state_official_hosts(state)
+    matrix: dict[str, dict[str, object]] = {}
+    for dimension in focus_dimensions:
+        evidence_count = 0
+        official_evidence_count = 0
+        preferred_source_types = _ordered_source_types_for_dimension(dimension)[:2]
+        preferred_source_hit_count = 0
+        for draft in evidence_drafts:
+            if _evidence_draft_dimension(draft, allowed=focus_dimensions) != dimension:
+                continue
+            evidence_count += 1
+            source_type = _normalize_source_type(draft.get("source_type"))
+            source_url_raw = draft.get("source_url")
+            if source_type in preferred_source_types:
+                preferred_source_hit_count += 1
+            if source_type in _OFFICIAL_SOURCE_TYPES:
+                official_evidence_count += 1
+                continue
+            if (
+                isinstance(source_url_raw, str)
+                and source_url_raw.strip()
+                and _url_host_matches(source_url_raw.strip(), official_hosts)
+            ):
+                official_evidence_count += 1
+        requires_official = _is_official_priority_dimension(dimension)
+        covered = official_evidence_count > 0 if requires_official else evidence_count > 0
+        matrix[dimension] = {
+            "covered": covered,
+            "evidence_count": evidence_count,
+            "official_evidence_count": official_evidence_count,
+            "requires_official": requires_official,
+            "preferred_source_types": preferred_source_types,
+            "preferred_source_hit_count": preferred_source_hit_count,
+        }
+    return matrix
+
+
+def _pending_dimensions_from_coverage(
+    *,
+    focus_dimensions: list[FocusDimension],
+    coverage_matrix: dict[str, dict[str, object]],
+    state: ResearcherSubState | None = None,
+) -> list[FocusDimension]:
+    pending: list[FocusDimension] = []
+    original_index: dict[str, int] = {dimension: index for index, dimension in enumerate(focus_dimensions)}
+    for dimension in focus_dimensions:
+        row = coverage_matrix.get(dimension, {})
+        covered = bool(row.get("covered"))
+        if not covered and state is not None:
+            extract_attempt_count = _dimension_tool_attempt_count(
+                state=state,
+                tool_name="extract_structured",
+                dimension=dimension,
+            )
+            search_attempt_count = _dimension_tool_attempt_count(
+                state=state,
+                tool_name="search_web",
+                dimension=dimension,
+            )
+            fetch_attempt_count = _dimension_tool_attempt_count(
+                state=state,
+                tool_name="fetch_url",
+                dimension=dimension,
+            )
+            # Avoid endless loops in deterministic test/offline modes:
+            # after one search + configured source-first fetch attempts, mark
+            # the dimension exhausted and let downstream QA/reporting decide quality.
+            if (
+                search_attempt_count >= 1
+                and fetch_attempt_count >= _MAX_SOURCE_FIRST_ATTEMPTS_PER_DIMENSION
+            ):
+                covered = True
+            # Deterministic/offline test mode can emit extract-only traces without
+            # any fetch/search actions. Stop after repeated identical extraction
+            # attempts so the run can progress to remaining dimensions.
+            if (
+                not covered
+                and search_attempt_count == 0
+                and fetch_attempt_count == 0
+                and extract_attempt_count >= _MAX_EXTRACT_ONLY_ATTEMPTS_PER_DIMENSION
+            ):
+                covered = True
+        if not covered:
+            pending.append(dimension)
+    if state is not None:
+        pending.sort(
+            key=lambda dimension: (
+                _dimension_tool_attempt_count(
+                    state=state,
+                    tool_name="extract_structured",
+                    dimension=dimension,
+                )
+                + _dimension_tool_attempt_count(
+                    state=state,
+                    tool_name="search_web",
+                    dimension=dimension,
+                )
+                + _dimension_tool_attempt_count(
+                    state=state,
+                    tool_name="fetch_url",
+                    dimension=dimension,
+                ),
+                original_index.get(dimension, len(original_index)),
+            )
+        )
+    return pending
 
 
 def _archive_observations_log(observations_log: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -400,72 +696,115 @@ def _resolve_bootstrap_skill_id(domain_hint: str | None) -> str | None:
     return skill_names[0] if skill_names else None
 
 
+def _dimension_tool_attempt_count(
+    *,
+    state: ResearcherSubState,
+    tool_name: str,
+    dimension: FocusDimension,
+) -> int:
+    count = 0
+    for item in list(state.get("observations_log", [])):
+        if not isinstance(item, dict):
+            continue
+        if item.get("tool") != tool_name:
+            continue
+        args_raw = item.get("args", {})
+        args = args_raw if isinstance(args_raw, dict) else {}
+        action_dimension = args.get("dimension")
+        normalized_dimension, _ = normalize_dimension_or_none(
+            action_dimension,
+            allowed=list(state.get("focus_dimensions", [])),
+        )
+        if normalized_dimension == dimension:
+            count += 1
+    return count
+
+
 def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
     pending_dimensions = list(state.get("pending_dimensions", []))
-    if pending_dimensions:
-        dimension = pending_dimensions[0]
-        observations_log = list(state.get("observations_log", []))
-        domain_hint_raw = state.get("domain_hint")
-        domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
+    if not pending_dimensions:
+        return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 
-        def _has_attempt(tool_name: str) -> bool:
-            if tool_name == "load_skill":
-                return _has_tool_attempt(state, "load_skill")
-            for item in observations_log:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("tool") != tool_name:
-                    continue
-                args_raw = item.get("args", {})
-                args = args_raw if isinstance(args_raw, dict) else {}
-                if args.get("dimension") == dimension:
-                    return True
-                if tool_name in {"search_web", "fetch_url"} and args.get("dimension") is None:
-                    return True
-            return False
+    dimension = pending_dimensions[0]
+    domain_hint_raw = state.get("domain_hint")
+    domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
+    if domain_hint is not None and not _has_tool_attempt(state, "load_skill"):
+        skill_id = _resolve_bootstrap_skill_id(domain_hint)
+        if skill_id is not None:
+            return ("load_skill", {"skill_id": skill_id})
 
-        if domain_hint is not None and not _has_attempt("load_skill"):
-            skill_id = _resolve_bootstrap_skill_id(domain_hint)
-            if skill_id is not None:
-                return ("load_skill", {"skill_id": skill_id})
-        if not _has_attempt("search_web"):
-            query_prefix = f"{domain_hint} " if domain_hint else ""
-            base_query = f"{query_prefix}{state['competitor_id']} {dimension} {state['research_topic']}"
-            query = base_query
-            # For buyer-critical dimensions, target the vendor's own domain so the
-            # first attempt favors official pricing/security/enterprise pages (R10).
-            if _is_official_priority_dimension(dimension):
-                primary_host = _primary_official_host(state.get("competitor_id"))
-                if primary_host is not None:
-                    query = f"site:{primary_host} {state['competitor_id']} {dimension}"
-            query_variants = _fallback_query_variants(
-                state=state,
-                dimension=dimension,
-                primary_query=query,
-                base_query=base_query,
-            )
+    fetch_attempt_count = _dimension_tool_attempt_count(
+        state=state,
+        tool_name="fetch_url",
+        dimension=dimension,
+    )
+    search_attempt_count = _dimension_tool_attempt_count(
+        state=state,
+        tool_name="search_web",
+        dimension=dimension,
+    )
+
+    # Source-first: always attempt deterministic source fetch before open web search.
+    if fetch_attempt_count == 0:
+        official_fetch_url = _fallback_fetch_url(
+            state=state,
+            dimension=dimension,
+            official_only=True,
+        )
+        if official_fetch_url is not None:
             return (
-                "search_web",
+                "fetch_url",
                 {
-                    "query": query,
-                    "query_variants": query_variants,
-                    "max_results": 5,
+                    "url": official_fetch_url,
+                    "competitor_id": state["competitor_id"],
                     "dimension": dimension,
                 },
             )
-        if not _has_attempt("fetch_url"):
-            fetch_url = _fallback_fetch_url(state=state, dimension=dimension)
-            if fetch_url is not None:
-                return (
-                    "fetch_url",
-                    {
-                        "url": fetch_url,
-                        "competitor_id": state["competitor_id"],
-                        "dimension": dimension,
-                    },
-                )
-        return ("finalize", {"summary": "fallback finalize after online attempts exhausted"})
-    return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
+
+    if search_attempt_count == 0:
+        query_prefix = f"{domain_hint} " if domain_hint else ""
+        base_query = f"{query_prefix}{state['competitor_id']} {dimension} {state['research_topic']}"
+        query = base_query
+        if _is_official_priority_dimension(dimension):
+            primary_host = _primary_official_host(state)
+            if primary_host is not None:
+                query = f"site:{primary_host} {state['competitor_id']} {dimension}"
+        query_variants = _fallback_query_variants(
+            state=state,
+            dimension=dimension,
+            primary_query=query,
+            base_query=base_query,
+        )
+        return (
+            "search_web",
+            {
+                "query": query,
+                "query_variants": query_variants,
+                "max_results": 5,
+                "dimension": dimension,
+            },
+        )
+
+    # After one search round, try one more fetch pass (can use newly discovered URLs).
+    if (
+        fetch_attempt_count <= search_attempt_count
+        and fetch_attempt_count < _MAX_SOURCE_FIRST_ATTEMPTS_PER_DIMENSION
+    ):
+        follow_up_fetch_url = _fallback_fetch_url(
+            state=state,
+            dimension=dimension,
+            official_only=False,
+        )
+        if follow_up_fetch_url is not None:
+            return (
+                "fetch_url",
+                {
+                    "url": follow_up_fetch_url,
+                    "competitor_id": state["competitor_id"],
+                    "dimension": dimension,
+                },
+            )
+    return ("finalize", {"summary": "fallback finalize after online attempts exhausted"})
 
 
 # Dimensions where third-party articles are not trustworthy enough for a buyer:
@@ -484,8 +823,21 @@ def _is_official_priority_dimension(dimension: str) -> bool:
     return any(keyword in lowered for keyword in _OFFICIAL_PRIORITY_DIMENSION_KEYWORDS)
 
 
-def _primary_official_host(competitor_id: str | None) -> str | None:
-    hosts = official_hosts_for_competitor(competitor_id)
+def _state_official_hosts(state: ResearcherSubState) -> set[str]:
+    resolved_hosts_raw = state.get("resolved_official_hosts", [])
+    resolved_hosts = {
+        item.strip()
+        for item in resolved_hosts_raw
+        if isinstance(item, str) and item.strip()
+    }
+    if resolved_hosts:
+        return resolved_hosts
+    competitor_id = state.get("competitor_id")
+    return official_hosts_for_competitor(competitor_id if isinstance(competitor_id, str) else None)
+
+
+def _primary_official_host(state: ResearcherSubState) -> str | None:
+    hosts = _state_official_hosts(state)
     if not hosts:
         return None
     # Shortest host is the most likely apex domain (cursor.com over docs.cursor.com).
@@ -504,7 +856,7 @@ def _fallback_query_variants(
     response_language = state.get("response_language")
     market_scope_raw = state.get("market_scope")
     market_scope = market_scope_raw.strip() if isinstance(market_scope_raw, str) else ""
-    primary_host = _primary_official_host(competitor)
+    primary_host = _primary_official_host(state)
     candidates = [primary_query, base_query]
     if primary_host is not None:
         candidates.append(f"site:{primary_host} {competitor} {dimension}")
@@ -527,8 +879,11 @@ def _fallback_query_variants(
 
 
 def _url_host_matches(url: str, official_hosts: set[str]) -> bool:
-    lowered = url.lower()
-    return any(host.lower() in lowered for host in official_hosts)
+    parsed = re.sub(r"^www\.", "", urlsplit(url).netloc.lower())
+    if not parsed:
+        return False
+    normalized_hosts = {re.sub(r"^www\.", "", item.lower()) for item in official_hosts}
+    return any(parsed == host or parsed.endswith(f".{host}") for host in normalized_hosts)
 
 
 def _pick_url_for_dimension(
@@ -558,32 +913,99 @@ def _pick_url_for_dimension(
     return urls[0]
 
 
-def _fallback_fetch_url(*, state: ResearcherSubState, dimension: FocusDimension) -> str | None:
-    official_hosts = official_hosts_for_competitor(state.get("competitor_id"))
+def _fallback_fetch_url(
+    *,
+    state: ResearcherSubState,
+    dimension: FocusDimension,
+    official_only: bool = False,
+) -> str | None:
+    official_hosts = _state_official_hosts(state)
+
+    candidate_rows: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+
+    def append_candidate(url: str, source_type: str) -> None:
+        cleaned = url.strip()
+        if not cleaned or cleaned in seen_urls:
+            return
+        if official_only and not _url_host_matches(cleaned, official_hosts):
+            return
+        seen_urls.add(cleaned)
+        candidate_rows.append((cleaned, _normalize_source_type(source_type)))
+
+    resolved_source_pages_raw = state.get("resolved_source_pages", [])
+    if isinstance(resolved_source_pages_raw, list):
+        for page in resolved_source_pages_raw:
+            if not isinstance(page, dict):
+                continue
+            url_raw = page.get("url")
+            if not isinstance(url_raw, str) or not url_raw.strip():
+                continue
+            append_candidate(url_raw, str(page.get("source_type", "official_site")))
+
+    resolved_official_urls_raw = state.get("resolved_official_urls", [])
+    if isinstance(resolved_official_urls_raw, list):
+        for url_raw in resolved_official_urls_raw:
+            if not isinstance(url_raw, str) or not url_raw.strip():
+                continue
+            inferred_source_type = infer_source_type(source_url=url_raw, official_hosts=official_hosts)
+            append_candidate(url_raw, inferred_source_type)
+
     reference_urls_raw = state.get("reference_urls", [])
-    reference_urls = (
-        [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
-        if isinstance(reference_urls_raw, list)
-        else []
-    )
-    if reference_urls:
+    if isinstance(reference_urls_raw, list):
+        for url_raw in reference_urls_raw:
+            if not isinstance(url_raw, str) or not url_raw.strip():
+                continue
+            inferred_source_type = infer_source_type(source_url=url_raw, official_hosts=official_hosts)
+            append_candidate(url_raw, inferred_source_type)
+
+    discovered_urls_raw = state.get("discovered_urls", [])
+    if isinstance(discovered_urls_raw, list):
+        for url_raw in discovered_urls_raw:
+            if not isinstance(url_raw, str) or not url_raw.strip():
+                continue
+            inferred_source_type = infer_source_type(source_url=url_raw, official_hosts=official_hosts)
+            append_candidate(url_raw, inferred_source_type)
+
+    if not candidate_rows:
+        return None
+
+    for source_type in _ordered_source_types_for_dimension(dimension):
+        typed_urls = [url for url, candidate_source_type in candidate_rows if candidate_source_type == source_type]
         selected = _pick_url_for_dimension(
-            reference_urls, dimension, official_hosts=official_hosts
+            typed_urls,
+            dimension,
+            official_hosts=official_hosts,
         )
         if selected is not None:
             return selected
 
-    discovered_urls_raw = state.get("discovered_urls", [])
-    discovered_urls = (
-        [item.strip() for item in discovered_urls_raw if isinstance(item, str) and item.strip()]
-        if isinstance(discovered_urls_raw, list)
-        else []
+    return _pick_url_for_dimension(
+        [url for url, _ in candidate_rows],
+        dimension,
+        official_hosts=official_hosts,
     )
-    if discovered_urls:
-        return _pick_url_for_dimension(
-            discovered_urls, dimension, official_hosts=official_hosts
+
+
+def _source_first_fetch_guard_url(
+    *,
+    state: ResearcherSubState,
+    dimension: FocusDimension,
+) -> str | None:
+    if (
+        _dimension_tool_attempt_count(
+            state=state,
+            tool_name="fetch_url",
+            dimension=dimension,
         )
-    return None
+        > 0
+    ):
+        return None
+    return _fallback_fetch_url(
+        state=state,
+        dimension=dimension,
+        official_only=True,
+    )
 
 
 def _needs_compress(state: ResearcherSubState) -> bool:
@@ -639,13 +1061,25 @@ async def _rerank_evidence_drafts(
     *,
     evidence_drafts: list[dict[str, object]],
     query: str,
+    focus_dimensions: list[FocusDimension],
 ) -> list[dict[str, object]]:
     copied_drafts: list[dict[str, object]] = []
     eligible: list[tuple[int, str]] = []
+    routing_priority_by_index: dict[int, int] = {}
     for index, draft in enumerate(evidence_drafts):
         copied = dict(draft)
         metadata_raw = copied.get("metadata", {})
         copied["metadata"] = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+        dimension = _evidence_draft_dimension(copied, allowed=focus_dimensions)
+        source_type = _normalize_source_type(copied.get("source_type"))
+        routing_priority = _routing_priority_for_source(
+            dimension=dimension,
+            source_type=source_type,
+        )
+        routing_priority_by_index[index] = routing_priority
+        metadata = copied["metadata"]
+        if isinstance(metadata, dict):
+            metadata["source_routing_priority"] = routing_priority
         copied_drafts.append(copied)
         document = _evidence_draft_document_text(copied)
         if document is not None:
@@ -678,13 +1112,14 @@ async def _rerank_evidence_drafts(
         )
         return copied_drafts
 
-    kept_scored: list[tuple[float, int, dict[str, object]]] = []
-    kept_unscored: list[tuple[int, dict[str, object]]] = []
+    kept_scored: list[tuple[float, int, int, dict[str, object]]] = []
+    kept_unscored: list[tuple[int, int, dict[str, object]]] = []
     dropped_count = 0
     for index, draft in enumerate(copied_drafts):
         score = scores_by_index.get(index)
+        routing_priority = routing_priority_by_index.get(index, 0)
         if score is None:
-            kept_unscored.append((index, draft))
+            kept_unscored.append((routing_priority, index, draft))
             continue
         if score < settings.RERANK_DROP_THRESHOLD:
             dropped_count += 1
@@ -692,11 +1127,12 @@ async def _rerank_evidence_drafts(
         metadata = draft["metadata"]
         if isinstance(metadata, dict):
             metadata["rerank_score"] = score
-        kept_scored.append((score, index, draft))
+        kept_scored.append((score, routing_priority, index, draft))
 
-    kept_scored.sort(key=lambda item: (-item[0], item[1]))
-    reranked = [draft for _, _, draft in kept_scored]
-    reranked.extend(draft for _, draft in kept_unscored)
+    kept_scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    kept_unscored.sort(key=lambda item: (-item[0], item[1]))
+    reranked = [draft for _, _, _, draft in kept_scored]
+    reranked.extend(draft for _, _, draft in kept_unscored)
     log.info(
         "researcher.rerank",
         evidence_draft_count=len(copied_drafts),
@@ -705,6 +1141,7 @@ async def _rerank_evidence_drafts(
         dropped_count=dropped_count,
         kept_count=len(reranked),
         drop_threshold=settings.RERANK_DROP_THRESHOLD,
+        source_routing_rules=len(_load_source_routing_rules()),
     )
     return reranked
 
@@ -808,6 +1245,14 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         if isinstance(discovered_urls_raw, list)
         else []
     )
+    resolved_official_urls_raw = state.get("resolved_official_urls", [])
+    resolved_official_urls = (
+        [item for item in resolved_official_urls_raw if isinstance(item, str)]
+        if isinstance(resolved_official_urls_raw, list)
+        else []
+    )
+    coverage_matrix_raw = state.get("coverage_matrix", {})
+    coverage_matrix = coverage_matrix_raw if isinstance(coverage_matrix_raw, dict) else {}
     compressed_summary_raw = state.get("compressed_summary", "")
     compressed_summary = compressed_summary_raw if isinstance(compressed_summary_raw, str) else ""
     observation_briefs = list(state.get("observation_briefs", []))
@@ -825,6 +1270,8 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         domain_hint=domain_hint,
         reference_urls=reference_urls,
         discovered_urls=discovered_urls,
+        resolved_official_urls=resolved_official_urls,
+        coverage_matrix=coverage_matrix,
     )
     pending_dimensions = list(state.get("pending_dimensions", []))
     log_context = bind_step(step_id) if step_id is not None else nullcontext()
@@ -873,6 +1320,23 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         action, action_args = action_tuple
     else:
         action, action_args = _fallback_action(state)
+    action_dimension = _effective_action_dimension(
+        state=state,
+        action_args=action_args,
+        action=action,
+    )
+    if action == "search_web" and action_dimension is not None:
+        guarded_fetch_url = _source_first_fetch_guard_url(
+            state=state,
+            dimension=action_dimension,
+        )
+        if guarded_fetch_url is not None:
+            action = "fetch_url"
+            action_args = {
+                "url": guarded_fetch_url,
+                "competitor_id": state["competitor_id"],
+                "dimension": action_dimension,
+            }
     coverage_guard_triggered = False
     if action == "finalize" and pending_dimensions and int(state.get("turn_count", 0)) < max_turns:
         guarded_action, guarded_action_args = _fallback_action(state)
@@ -1161,6 +1625,18 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
             discovered_urls,
             _extract_urls_from_observation(observation_row),
         )
+    search_call_count = int(state.get("search_call_count", 0))
+    if action_raw == "search_web":
+        search_call_count += 1
+    official_fetch_count = int(state.get("official_fetch_count", 0))
+    if action_raw == "fetch_url":
+        url_raw = action_args.get("url")
+        if (
+            isinstance(url_raw, str)
+            and url_raw.strip()
+            and _url_host_matches(url_raw.strip(), _state_official_hosts(state))
+        ):
+            official_fetch_count += 1
 
     result_payload_raw = observation_row.get("result", {}) if isinstance(observation_row, dict) else {}
     if isinstance(result_payload_raw, dict):
@@ -1185,10 +1661,20 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         focus_dimensions=list(state.get("focus_dimensions", [])),
     )
 
-    if dimension is not None:
-        pending_dimensions = [item for item in state.get("pending_dimensions", []) if item != dimension]
-    else:
-        pending_dimensions = list(state.get("pending_dimensions", []))
+    focus_dimensions = list(state.get("focus_dimensions", []))
+    coverage_matrix = _build_coverage_matrix(
+        state=state,
+        evidence_drafts=evidence_drafts,
+    )
+    state_with_latest_observation: ResearcherSubState = {
+        **state,
+        "observations_log": observations_log,
+    }
+    pending_dimensions = _pending_dimensions_from_coverage(
+        focus_dimensions=focus_dimensions,
+        coverage_matrix=coverage_matrix,
+        state=state_with_latest_observation,
+    )
     queried_dimensions = list(state.get("queried_dimensions", []))
     if dimension is not None and dimension not in queried_dimensions:
         queried_dimensions.append(dimension)
@@ -1219,6 +1705,9 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         "observations_log": observations_log,
         "observation_briefs": observation_briefs,
         "discovered_urls": discovered_urls,
+        "search_call_count": search_call_count,
+        "official_fetch_count": official_fetch_count,
+        "coverage_matrix": coverage_matrix,
         "evidence_drafts": evidence_drafts,
         "pending_dimensions": pending_dimensions,
         "queried_dimensions": queried_dimensions,
@@ -1298,6 +1787,10 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
     step_id = _state_step_id(state)
     if state.get("final_summary"):
         final_summary = state.get("final_summary")
+        coverage_matrix = _build_coverage_matrix(
+            state=state,
+            evidence_drafts=list(state.get("evidence_drafts", [])),
+        )
         log_context = bind_step(step_id) if step_id is not None else nullcontext()
         with log_context:
             log.info(
@@ -1307,6 +1800,7 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
             )
         return {
             **state,
+            "coverage_matrix": coverage_matrix,
             "pending_action_args": {},
             "next_action": "finalize",
         }
@@ -1314,6 +1808,11 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
     evidence_drafts = await _rerank_evidence_drafts(
         evidence_drafts=list(state.get("evidence_drafts", [])),
         query=state.get("research_topic", ""),
+        focus_dimensions=list(state.get("focus_dimensions", [])),
+    )
+    coverage_matrix = _build_coverage_matrix(
+        state=state,
+        evidence_drafts=evidence_drafts,
     )
     reflection_dimension = _select_rerank_reflection_dimension(
         state=state,
@@ -1352,6 +1851,7 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
         return {
             **state,
             "evidence_drafts": evidence_drafts,
+            "coverage_matrix": coverage_matrix,
             "pending_dimensions": pending_dimensions,
             "rerank_reflected_dimensions": reflected_dimensions,
             "pending_action_args": {"_action": "search_web", **action_args},
@@ -1370,6 +1870,7 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
     return {
         **state,
         "evidence_drafts": evidence_drafts,
+        "coverage_matrix": coverage_matrix,
         "pending_action_args": {},
         "next_action": "finalize",
         "final_summary": final_summary,

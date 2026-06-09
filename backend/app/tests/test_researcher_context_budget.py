@@ -37,11 +37,15 @@ def test_build_researcher_user_prompt_uses_briefs_not_full_observations() -> Non
         ],
         compressed_summary="prior summary",
         discovered_urls=["https://example.com/pricing"],
+        resolved_official_urls=["https://example.com/pricing"],
+        coverage_matrix={"pricing": {"covered": False}},
     )
     assert len(prompt) < RESEARCH_PROMPT_CHAR_BUDGET
     assert huge_quote not in prompt
     assert "observation_briefs" in prompt
     assert "discovered_urls" in prompt
+    assert "resolved_official_urls" in prompt
+    assert "coverage_matrix" in prompt
 
 
 def test_compression_prompt_uses_refs_not_full_quotes() -> None:

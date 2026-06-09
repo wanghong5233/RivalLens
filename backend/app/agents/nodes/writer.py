@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import re
 from datetime import datetime, timezone
 from typing import Literal
@@ -94,6 +95,127 @@ def _stable_unique(items: list[str]) -> list[str]:
         seen.add(item)
         ordered.append(item)
     return ordered
+
+
+def _normalize_heading(value: str) -> str:
+    collapsed = re.sub(r"[\s:：\-\u2014_]+", "", value.strip().lower())
+    return collapsed
+
+
+def _is_duplicate_executive_summary_section(
+    *,
+    section_title: str,
+    executive_summary_label: str,
+) -> bool:
+    normalized_section = _normalize_heading(section_title)
+    normalized_label = _normalize_heading(executive_summary_label)
+    if not normalized_section or not normalized_label:
+        return False
+    return normalized_section.startswith(normalized_label)
+
+
+def _format_distribution(
+    distribution: Counter[str],
+    *,
+    empty_label: str,
+) -> str:
+    if not distribution:
+        return empty_label
+    ordered = sorted(distribution.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{name}: {count}" for name, count in ordered)
+
+
+def _build_methodology_section_lines(
+    *,
+    evidence_briefs: list[dict[str, object]],
+    labels: dict[str, str],
+) -> list[str]:
+    authority_counts: Counter[str] = Counter()
+    source_type_counts: Counter[str] = Counter()
+    competitor_stats: dict[str, dict[str, bool]] = {}
+
+    for brief in evidence_briefs:
+        authority_raw = brief.get("source_authority")
+        source_type_raw = brief.get("source_type")
+        competitor_raw = brief.get("competitor_id")
+
+        authority = (
+            authority_raw.strip().lower()
+            if isinstance(authority_raw, str) and authority_raw.strip()
+            else "unknown"
+        )
+        source_type = (
+            source_type_raw.strip().lower()
+            if isinstance(source_type_raw, str) and source_type_raw.strip()
+            else "unknown"
+        )
+
+        authority_counts[authority] += 1
+        source_type_counts[source_type] += 1
+
+        if not isinstance(competitor_raw, str):
+            continue
+        competitor_id = competitor_raw.strip()
+        if not competitor_id or competitor_id == "unknown":
+            continue
+        stats = competitor_stats.setdefault(
+            competitor_id,
+            {
+                "has_official": False,
+                "has_pricing_page": False,
+            },
+        )
+        if authority == "official":
+            stats["has_official"] = True
+        if source_type == "pricing_page":
+            stats["has_pricing_page"] = True
+
+    competitor_names = sorted(competitor_stats.keys())
+    competitor_list = (
+        ", ".join(competitor_names)
+        if competitor_names
+        else labels["methodology_no_competitors"]
+    )
+    data_gaps: list[str] = []
+    for competitor_id in competitor_names:
+        stats = competitor_stats[competitor_id]
+        has_official = stats["has_official"]
+        has_pricing_page = stats["has_pricing_page"]
+        if has_official and has_pricing_page:
+            continue
+        if not has_official and not has_pricing_page:
+            data_gaps.append(
+                f"{competitor_id}: {labels['methodology_gap_official_and_pricing']}"
+            )
+            continue
+        if not has_official:
+            data_gaps.append(f"{competitor_id}: {labels['methodology_gap_official_only']}")
+            continue
+        data_gaps.append(f"{competitor_id}: {labels['methodology_gap_pricing_only']}")
+
+    gap_summary = (
+        "; ".join(data_gaps)
+        if data_gaps
+        else labels["methodology_no_data_gaps"]
+    )
+    generated_on = datetime.now(timezone.utc).date().isoformat()
+    return [
+        f"- {labels['methodology_generated_on']}: {generated_on}",
+        (
+            f"- {labels['methodology_competitors']}: "
+            f"{len(competitor_names)} ({competitor_list})"
+        ),
+        f"- {labels['methodology_evidence_total']}: {len(evidence_briefs)}",
+        (
+            f"- {labels['methodology_authority_distribution']}: "
+            f"{_format_distribution(authority_counts, empty_label=labels['methodology_none'])}"
+        ),
+        (
+            f"- {labels['methodology_source_type_distribution']}: "
+            f"{_format_distribution(source_type_counts, empty_label=labels['methodology_none'])}"
+        ),
+        f"- {labels['methodology_data_gaps']}: {gap_summary}",
+    ]
 
 
 def _sanitize_report_markdown_text(
@@ -397,6 +519,7 @@ def _render_report_markdown(
     *,
     allowed_evidence_ids: set[str],
     response_language: str | None = None,
+    evidence_briefs: list[dict[str, object]] | None = None,
 ) -> str:
     labels = (
         {
@@ -407,6 +530,19 @@ def _render_report_markdown(
             "no_content": "暂无内容。",
             "evidence": "证据",
             "risk_callouts": "风险提示",
+            "methodology": "数据来源与方法论",
+            "methodology_generated_on": "生成日期(UTC)",
+            "methodology_competitors": "覆盖竞品",
+            "methodology_evidence_total": "证据总数",
+            "methodology_authority_distribution": "来源等级分布",
+            "methodology_source_type_distribution": "来源类型分布",
+            "methodology_data_gaps": "数据缺口披露",
+            "methodology_no_competitors": "未识别竞品",
+            "methodology_gap_official_and_pricing": "官方来源和定价页均未覆盖（仅第三方资料）",
+            "methodology_gap_official_only": "官方来源未覆盖（仅第三方资料）",
+            "methodology_gap_pricing_only": "定价页未覆盖（定价可能未公开）",
+            "methodology_no_data_gaps": "当前证据未发现明显来源缺口",
+            "methodology_none": "无",
         }
         if response_language == "zh"
         else {
@@ -417,6 +553,22 @@ def _render_report_markdown(
             "no_content": "No content.",
             "evidence": "Evidence",
             "risk_callouts": "Risk Callouts",
+            "methodology": "Data Sources and Methodology",
+            "methodology_generated_on": "Generated on (UTC)",
+            "methodology_competitors": "Covered competitors",
+            "methodology_evidence_total": "Total evidence",
+            "methodology_authority_distribution": "Source authority distribution",
+            "methodology_source_type_distribution": "Source type distribution",
+            "methodology_data_gaps": "Data gap disclosure",
+            "methodology_no_competitors": "No identified competitors",
+            "methodology_gap_official_and_pricing": (
+                "official sources and pricing pages are both missing "
+                "(third-party evidence only)"
+            ),
+            "methodology_gap_official_only": "official sources are missing (third-party evidence only)",
+            "methodology_gap_pricing_only": "pricing pages are missing (pricing may not be public)",
+            "methodology_no_data_gaps": "No obvious source gaps in current evidence",
+            "methodology_none": "none",
         }
     )
     title_raw = report_content.get("title")
@@ -449,6 +601,11 @@ def _render_report_markdown(
                 if isinstance(section_title_raw, str) and section_title_raw.strip()
                 else labels["section"]
             )
+            if _is_duplicate_executive_summary_section(
+                section_title=section_title,
+                executive_summary_label=labels["executive_summary"],
+            ):
+                continue
             section_body_raw = section.get("content_markdown")
             section_body = (
                 section_body_raw.strip()
@@ -496,6 +653,18 @@ def _render_report_markdown(
             if sanitized_item:
                 markdown_lines.append(f"- {sanitized_item}")
         markdown_lines.append("")
+
+    methodology_lines = _build_methodology_section_lines(
+        evidence_briefs=evidence_briefs or [],
+        labels=labels,
+    )
+    markdown_lines.extend(
+        [
+            f"## {labels['methodology']}",
+            *methodology_lines,
+            "",
+        ]
+    )
 
     return "\n".join(markdown_lines).strip() + "\n"
 
@@ -574,6 +743,7 @@ async def writer_node(state: AgentState) -> AgentState:
             analysis_intent=intake_draft.analysis_intent,
             market_scope=intake_draft.market_scope,
             response_language=intake_draft.response_language,
+            analysis_archetype=intake_draft.analysis_archetype,
         ),
         output_model=WriterReportOutput,
         parser=lambda content: WriterReportOutput.parse_llm_content(
@@ -635,6 +805,7 @@ async def writer_node(state: AgentState) -> AgentState:
         report_content,
         allowed_evidence_ids=allowed_evidence_ids,
         response_language=intake_draft.response_language,
+        evidence_briefs=evidence_briefs,
     )
     llm_call_error = llm_response.error or writer_schema_error
     section_count = (

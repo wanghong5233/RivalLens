@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.conclusion import ConclusionEvidenceLink, ConclusionRecord
 from schemas.ids import make_id
 from service.conclusion.mapper import MappedConclusion, comparisons_to_conclusions, insights_to_conclusions
+from service.run_steps import latest_completed_step_id
 
 
 def _add_conclusion_records(
@@ -97,13 +98,19 @@ async def load_conclusions_for_run(
     session: AsyncSession,
     run_id: str,
 ) -> list[dict[str, object]]:
-    conclusion_rows = (
-        await session.execute(
-            select(ConclusionRecord)
-            .where(ConclusionRecord.run_id == run_id)
-            .order_by(ConclusionRecord.created_at.asc(), ConclusionRecord.conclusion_id.asc())
-        )
-    ).scalars().all()
+    latest_analyst_step_id = await latest_completed_step_id(
+        session=session,
+        run_id=run_id,
+        agent_name="analyst",
+    )
+    query = (
+        select(ConclusionRecord)
+        .where(ConclusionRecord.run_id == run_id)
+        .order_by(ConclusionRecord.created_at.asc(), ConclusionRecord.conclusion_id.asc())
+    )
+    if latest_analyst_step_id is not None:
+        query = query.where(ConclusionRecord.step_id == latest_analyst_step_id)
+    conclusion_rows = (await session.execute(query)).scalars().all()
     if not conclusion_rows:
         return []
 

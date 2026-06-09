@@ -973,6 +973,37 @@ def _extract_user_pinned_research(
     return pinned
 
 
+def _has_pending_plan_discovery(
+    *,
+    plan_tree: object,
+    discovered_competitors: list[str],
+    decisions: list[SupervisorDecision],
+) -> bool:
+    if discovered_competitors:
+        return False
+    if any(decision.chosen_tool == "DiscoverCompetitors" for decision in decisions):
+        return False
+
+    tasks_raw: object
+    if isinstance(plan_tree, dict):
+        tasks_raw = plan_tree.get("tasks")
+    else:
+        tasks_raw = getattr(plan_tree, "tasks", None)
+    if not isinstance(tasks_raw, list):
+        return False
+
+    for task in tasks_raw:
+        if isinstance(task, dict):
+            stage = task.get("stage")
+            enabled = task.get("enabled", True)
+        else:
+            stage = getattr(task, "stage", None)
+            enabled = getattr(task, "enabled", True)
+        if stage == "discover" and enabled is not False:
+            return True
+    return False
+
+
 async def _load_pending_follow_ups(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -1131,6 +1162,7 @@ async def supervisor_node(state: AgentState) -> AgentState:
     )
     response_language = _state_response_language(state, user_query=user_query)
     competitors = list(state.get("competitors", []))
+    discovered_competitors = list(state.get("discovered_competitors", []))
     researched_competitors = list(state.get("researched_competitors", []))
     analysis_done = bool(state.get("analysis_done", False))
     report_draft_done = bool(state.get("report_draft_done", False))
@@ -1216,6 +1248,40 @@ async def supervisor_node(state: AgentState) -> AgentState:
             model_name="guardrail",
             prompt_preview="max_iterations_hit",
             error="max_iterations_hit",
+        )
+    elif _has_pending_plan_discovery(
+        plan_tree=state.get("plan_tree"),
+        discovered_competitors=discovered_competitors,
+        decisions=decisions,
+    ):
+        now = _now_iso()
+        domain_for_discovery = domain_context or user_query
+        decision = SupervisorDecision(
+            id=make_id("decision_"),
+            run_id=run_id,
+            iteration=iteration,
+            chosen_tool="DiscoverCompetitors",
+            tool_args=DiscoverCompetitors(
+                search_queries=_discovery_search_queries(
+                    user_query=user_query,
+                    domain_context=domain_context,
+                    market_scope=market_scope,
+                    response_language=response_language,
+                ),
+                domain_context=domain_for_discovery,
+                max_results=DEFAULT_DISCOVER_MAX_RESULTS,
+            ).model_dump(),
+            reasoning_summary="Plan includes a pending discovery task; discover additional competitors before research.",
+            triggered_by=triggered_by,
+            outcome="dispatched",
+            outcome_recorded_at=now,
+            created_at=now,
+        )
+        llm_response = _pseudo_llm_response(
+            provider="guardrail",
+            model_name="guardrail",
+            prompt_preview="plan_pending_discovery",
+            error=None,
         )
     else:
         pending_follow_ups = await _load_pending_follow_ups(

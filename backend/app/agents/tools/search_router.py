@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from hashlib import sha256
+import time
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from agents.tools.search_bocha import BochaSearchChannel
+from agents.tools.search_serper import SerperSearchChannel
 from agents.tools.search_web import TavilySearchChannel
+from core.config import settings
 from service.locale import country_for_language, plan_search_languages
 from service.collector.base import (
     BaseChannel,
@@ -19,7 +22,7 @@ from utils.logger import get_logger
 
 log = get_logger("agents.tools.search_router")
 
-ProviderName = Literal["bocha", "tavily"]
+ProviderName = Literal["bocha", "serper", "tavily"]
 _MAX_ROUTER_LANGUAGES = 4
 
 
@@ -33,9 +36,16 @@ def _provider_chain_for_language(
     explicit_country: str | None,
 ) -> tuple[tuple[ProviderName, str | None], ...]:
     country = explicit_country or country_for_language(language)
+    # Serper (Google SERP) is the resilient primary for non-Chinese legs and a secondary
+    # for Chinese after Bocha; it only enters the chain when its key is configured, so a
+    # missing key leaves the original Bocha/Tavily behavior untouched. Tavily drops to
+    # last resort everywhere once Serper is present.
+    serper_leg: tuple[tuple[ProviderName, str | None], ...] = (
+        (("serper", country),) if settings.SERPER_API_KEY else ()
+    )
     if language == "zh":
-        return (("bocha", None), ("tavily", country))
-    return (("tavily", country),)
+        return (("bocha", None),) + serper_leg + (("tavily", country),)
+    return serper_leg + (("tavily", country),)
 
 
 def _explicit_search_languages(value: object, *, max_languages: int) -> list[str] | None:
@@ -71,6 +81,10 @@ def _query_variants(primary_query: str, raw_variants: object) -> list[str]:
     return out[:3]
 
 
+def _query_hash(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
 def _canonical_url(value: str | None) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -103,9 +117,11 @@ class SearchWebRouterChannel(BaseChannel):
         *,
         bocha_channel: BochaSearchChannel | None = None,
         tavily_channel: TavilySearchChannel | None = None,
+        serper_channel: SerperSearchChannel | None = None,
     ) -> None:
         self._bocha = bocha_channel or BochaSearchChannel()
         self._tavily = tavily_channel or TavilySearchChannel()
+        self._serper = serper_channel or SerperSearchChannel()
 
     def _plan_legs(
         self,
@@ -131,31 +147,62 @@ class SearchWebRouterChannel(BaseChannel):
     async def _collect_provider(
         self,
         *,
+        language: str,
         provider: ProviderName,
         country: str | None,
         queries: list[str],
         max_results: int,
         base_kwargs: dict[str, object],
     ) -> tuple[list[CollectorSnippet], dict[str, object], list[str]]:
-        channel = self._bocha if provider == "bocha" else self._tavily
+        channel = {"bocha": self._bocha, "serper": self._serper, "tavily": self._tavily}[provider]
         snippets: list[CollectorSnippet] = []
         metadata: dict[str, object] = {}
         errors: list[str] = []
         for variant in queries:
             leg_args = dict(base_kwargs)
             leg_args.pop("search_languages", None)
+            leg_args.pop("language", None)
             leg_args["query"] = variant
             leg_args["max_results"] = max_results
             if provider == "tavily":
+                leg_args.pop("country", None)
                 leg_args["country"] = country
+            elif provider == "serper":
+                leg_args.pop("country", None)
+                leg_args["country"] = country
+                leg_args["language"] = language
             else:
                 leg_args.pop("country", None)
             try:
+                started_at = time.perf_counter()
                 observation = await channel.invoke(**leg_args)
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
                 snippets.extend(observation.result.snippets)
                 metadata = {**metadata, **observation.result.metadata}
+                log.info(
+                    "search_web.provider.ok",
+                    provider=provider,
+                    language=language,
+                    country=country,
+                    query_hash=_query_hash(variant),
+                    latency_ms=latency_ms,
+                    snippet_count=len(observation.result.snippets),
+                )
             except (RateLimited, FetchTimeout, ChannelError) as exc:
+                latency_ms = int((time.perf_counter() - started_at) * 1000)
                 errors.append(f"{variant}:{type(exc).__name__}:{str(exc)[:120]}")
+                log.warning(
+                    "search_web.provider.fail",
+                    provider=provider,
+                    language=language,
+                    country=country,
+                    query_hash=_query_hash(variant),
+                    error_class=type(exc).__name__,
+                    error_preview=str(exc)[:240],
+                    latency_ms=latency_ms,
+                    fail_fast=isinstance(exc, (RateLimited, FetchTimeout))
+                    or "api_key" in str(exc).lower(),
+                )
                 if isinstance(exc, (RateLimited, FetchTimeout)) or "api_key" in str(exc).lower():
                     break
                 continue
@@ -174,6 +221,7 @@ class SearchWebRouterChannel(BaseChannel):
         leg_result_counts: dict[str, int] = {}
         for provider, country in providers:
             snippets, metadata, provider_errors = await self._collect_provider(
+                language=language,
                 provider=provider,
                 country=country,
                 queries=queries,
@@ -257,6 +305,14 @@ class SearchWebRouterChannel(BaseChannel):
 
         merged = _dedupe_snippets(merged)
         if not merged:
+            log.warning(
+                "search_web.all_providers_failed",
+                search_languages=[language for (language, _providers) in legs],
+                response_language=response_language,
+                leg_result_counts=leg_result_counts,
+                error_count=len(errors),
+                errors_preview=errors[:6],
+            )
             raise ChannelError(
                 "search_web providers failed: " + (" | ".join(errors) or "no usable snippets")
             )

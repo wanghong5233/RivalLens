@@ -14,6 +14,7 @@ from agents.nodes.supervisor import (
     _resolve_fallback_dimensions,
     supervisor_node,
 )
+from agents.nodes.planner import planner_generate_node
 from schemas.intake import RunIntakeDraft
 from schemas.agent_outputs import SupervisorToolCallOutput
 from service.event_bus import RunEventType
@@ -351,6 +352,106 @@ async def test_supervisor_node_leaves_dimension_source_empty_for_discovery(
     )
 
     assert captured[0][2]["chosen_tool"] == "DiscoverCompetitors"
+    assert captured[0][2]["dimension_source"] is None
+
+
+@pytest.mark.asyncio
+async def test_planner_generate_seeds_explicit_competitors_when_discovery_is_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_complete_structured(**_: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            value=None,
+            llm_response=_fake_supervisor_llm_response(),
+        )
+
+    async def _fake_persist_planner_step(**_: object) -> str:
+        return "step_planner"
+
+    async def _fake_persist_plan_tree_to_run(**_: object) -> None:
+        return None
+
+    async def _fake_emit_run_event(**_: object) -> None:
+        return None
+
+    monkeypatch.setattr("agents.nodes.planner.complete_structured", _fake_complete_structured)
+    monkeypatch.setattr("agents.nodes.planner._persist_planner_step", _fake_persist_planner_step)
+    monkeypatch.setattr(
+        "agents.nodes.planner._persist_plan_tree_to_run",
+        _fake_persist_plan_tree_to_run,
+    )
+    monkeypatch.setattr("agents.nodes.planner.emit_run_event", _fake_emit_run_event)
+    monkeypatch.setattr("agents.nodes.planner._resolve_session_factory", lambda _: object())
+
+    new_state = await planner_generate_node(
+        {
+            "run_id": "run_test",
+            "user_query": "TRAE 对标 Cursor、通义灵码，并主动发现其他竞品",
+            "intake_draft": RunIntakeDraft(
+                user_query="TRAE 对标 Cursor、通义灵码，并主动发现其他竞品",
+                user_role="pm",
+                analysis_intent="AI coding IDE comparison",
+                competitors_explicit=["Cursor", "通义灵码"],
+                competitors_discovery_mode=True,
+                self_product="TRAE",
+            ),
+            "competitors": [],
+        }
+    )
+
+    assert new_state["competitors"] == ["Cursor", "通义灵码"]
+    pending_plan = new_state["pending_plan_tree"]
+    assert pending_plan is not None
+    assert [task.stage for task in pending_plan.tasks][:3] == ["discover", "research", "research"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_runs_plan_discovery_before_researching_seeded_competitors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Analyze",
+            "tool_args": {
+                "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                "parallel_by_dimension": True,
+                "require_cross_competitor": True,
+            },
+            "reasoning_summary": "LLM would analyze too early.",
+        }
+    )
+
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_plan_discovery",
+        state={
+            "run_id": "run_test",
+            "user_query": "TRAE 对标 Cursor、通义灵码，并主动发现其他竞品",
+            "domain_hint": "AI coding IDE",
+            "competitors": ["Cursor", "通义灵码"],
+            "discovered_competitors": [],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "decisions": [],
+            "plan_tree": {
+                "tasks": [
+                    {"stage": "discover", "enabled": True},
+                    {"stage": "research", "competitor_id": "Cursor", "enabled": True},
+                    {"stage": "research", "competitor_id": "通义灵码", "enabled": True},
+                    {"stage": "analyze", "enabled": True},
+                    {"stage": "write", "enabled": True},
+                ],
+            },
+        },
+    )
+
+    assert new_state["next_action"] == "discovery"
+    assert new_state["pending_tool_args"]["domain_context"] == "AI coding IDE"
+    assert captured[0][2]["chosen_tool"] == "DiscoverCompetitors"
+    assert captured[0][2]["plan_task_ids"] == []
     assert captured[0][2]["dimension_source"] is None
 
 

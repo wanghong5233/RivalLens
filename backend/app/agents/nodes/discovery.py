@@ -4,6 +4,7 @@ import re
 import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from agents.nodes.planner import reconcile_plan_tree_after_discovery
 from agents.state import AgentState
@@ -36,6 +37,27 @@ log = get_logger("agents.discovery")
 _DISCOVERY_SNIPPET_SAMPLE_LIMIT = 3
 _DISCOVERY_SNIPPET_PREVIEW_LIMIT = 220
 _DISCOVERY_EVIDENCE_PREVIEW_LIMIT = 220
+_DISCOVERY_OFFICIAL_PATH_KEYWORDS: tuple[str, ...] = (
+    "/pricing",
+    "/docs",
+    "/enterprise",
+    "/changelog",
+    "/product",
+    "/about",
+)
+_DISCOVERY_NON_OFFICIAL_HOST_HINTS: tuple[str, ...] = (
+    "wikipedia.org",
+    "reddit.com",
+    "medium.com",
+    "g2.com",
+    "capterra.com",
+    "youtube.com",
+    "techcrunch.com",
+    "news.ycombinator.com",
+)
+_DISCOVERY_GENERIC_NAME_TOKENS: frozenset[str] = frozenset(
+    {"ai", "app", "tool", "tools", "software", "assistant", "the", "inc", "labs", "lab"}
+)
 
 
 def _clean_optional_string(value: object) -> str | None:
@@ -77,10 +99,138 @@ def _quote_is_grounded(*, evidence_quote: str, snippets: Sequence[str]) -> bool:
     return any(normalized_quote in _normalize_grounding_text(snippet) for snippet in snippets)
 
 
+def _source_domain(source_url: object) -> str | None:
+    if not isinstance(source_url, str):
+        return None
+    stripped = source_url.strip()
+    if not stripped:
+        return None
+    parsed = urlsplit(stripped)
+    host = parsed.netloc.lower().removeprefix("www.")
+    return host or None
+
+
+def _candidate_name_tokens(name: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9\u4e00-\u9fff]+", name.casefold()))
+    return {
+        token
+        for token in tokens
+        if token not in _DISCOVERY_GENERIC_NAME_TOKENS and (len(token) >= 2 or not token.isascii())
+    }
+
+
+def _text_mentions_candidate(*, candidate_name: str, text: str | None) -> bool:
+    if not text:
+        return False
+    normalized_text = text.casefold()
+    if candidate_name.casefold() in normalized_text:
+        return True
+    name_tokens = _candidate_name_tokens(candidate_name)
+    if not name_tokens:
+        return False
+    return any(token in normalized_text for token in name_tokens)
+
+
+def _score_official_source_candidate(
+    *,
+    candidate_name: str,
+    source_url: str | None,
+    source_title: str | None,
+    snippet_text: str,
+) -> int:
+    if source_url is None:
+        return -99
+    parsed = urlsplit(source_url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if not host:
+        return -99
+    if any(host == blocked or host.endswith(f".{blocked}") for blocked in _DISCOVERY_NON_OFFICIAL_HOST_HINTS):
+        return -99
+    score = 0
+    if _text_mentions_candidate(candidate_name=candidate_name, text=source_title):
+        score += 2
+    if _text_mentions_candidate(candidate_name=candidate_name, text=snippet_text):
+        score += 1
+    if any(keyword in parsed.path.lower() for keyword in _DISCOVERY_OFFICIAL_PATH_KEYWORDS):
+        score += 1
+    host_tokens = set(re.findall(r"[a-z0-9]+", host))
+    if host_tokens & _candidate_name_tokens(candidate_name):
+        score += 1
+    return score
+
+
+def _resolve_validated_official_source(
+    *,
+    candidate_name: str,
+    evidence_quote: str,
+    llm_official_url: str | None,
+    llm_source_domain: str | None,
+    snippet_rows: Sequence[dict[str, object]],
+) -> tuple[str | None, str | None]:
+    normalized_quote = _normalize_grounding_text(evidence_quote)
+    best_url: str | None = None
+    best_domain: str | None = None
+    best_score = -99
+
+    for row in snippet_rows:
+        snippet_text_raw = row.get("text")
+        if not isinstance(snippet_text_raw, str) or not snippet_text_raw.strip():
+            continue
+        snippet_text = snippet_text_raw.strip()
+        if normalized_quote and normalized_quote not in _normalize_grounding_text(snippet_text):
+            continue
+        source_url_raw = row.get("source_url")
+        source_url = source_url_raw.strip() if isinstance(source_url_raw, str) and source_url_raw.strip() else None
+        if source_url is None:
+            continue
+        source_title_raw = row.get("source_title")
+        source_title = (
+            source_title_raw.strip()
+            if isinstance(source_title_raw, str) and source_title_raw.strip()
+            else None
+        )
+        score = _score_official_source_candidate(
+            candidate_name=candidate_name,
+            source_url=source_url,
+            source_title=source_title,
+            snippet_text=snippet_text,
+        )
+        if score > best_score:
+            best_score = score
+            best_url = source_url
+            best_domain = _source_domain(source_url)
+
+    if best_score >= 2:
+        return best_url, best_domain
+
+    llm_url = llm_official_url.strip() if isinstance(llm_official_url, str) and llm_official_url.strip() else None
+    if llm_url is None:
+        return None, None
+    llm_domain = _source_domain(llm_url)
+    if llm_domain is None:
+        return None, None
+    for row in snippet_rows:
+        source_url_raw = row.get("source_url")
+        row_url = source_url_raw.strip() if isinstance(source_url_raw, str) and source_url_raw.strip() else None
+        if row_url is None or _source_domain(row_url) != llm_domain:
+            continue
+        row_title_raw = row.get("source_title")
+        row_title = row_title_raw if isinstance(row_title_raw, str) else None
+        row_text_raw = row.get("text")
+        row_text = row_text_raw if isinstance(row_text_raw, str) else ""
+        if _text_mentions_candidate(candidate_name=candidate_name, text=row_title) or _text_mentions_candidate(
+            candidate_name=candidate_name,
+            text=row_text,
+        ):
+            return llm_url, llm_source_domain or llm_domain
+    return None, None
+
+
 def _filter_discovery_candidates(
     *,
     candidates: Sequence[object],
     snippets: Sequence[str],
+    snippet_rows: Sequence[dict[str, object]],
 ) -> tuple[list[str], list[dict[str, object]], list[dict[str, object]]]:
     discovered: list[str] = []
     filtered_out: list[dict[str, object]] = []
@@ -92,6 +242,8 @@ def _filter_discovery_candidates(
         is_competitor = bool(getattr(candidate, "is_competitor", False))
         relevance_reason = str(getattr(candidate, "relevance_reason", "") or "").strip()
         evidence_quote = str(getattr(candidate, "evidence_quote", "") or "").strip()
+        llm_official_url = getattr(candidate, "official_url", None)
+        llm_source_domain = getattr(candidate, "source_domain", None)
         alias_key = _normalize_alias_key(name)
 
         if not name:
@@ -115,13 +267,22 @@ def _filter_discovery_candidates(
 
         seen_aliases.add(alias_key)
         discovered.append(name)
-        relevance.append(
-            {
-                "name": name,
-                "relevance_reason": relevance_reason,
-                "evidence_quote_preview": evidence_quote[:_DISCOVERY_EVIDENCE_PREVIEW_LIMIT],
-            }
+        official_url, source_domain = _resolve_validated_official_source(
+            candidate_name=name,
+            evidence_quote=evidence_quote,
+            llm_official_url=llm_official_url if isinstance(llm_official_url, str) else None,
+            llm_source_domain=llm_source_domain if isinstance(llm_source_domain, str) else None,
+            snippet_rows=snippet_rows,
         )
+        row: dict[str, object] = {
+            "name": name,
+            "relevance_reason": relevance_reason,
+            "evidence_quote_preview": evidence_quote[:_DISCOVERY_EVIDENCE_PREVIEW_LIMIT],
+        }
+        if official_url is not None:
+            row["official_url"] = official_url
+            row["source_domain"] = source_domain or _source_domain(official_url)
+        relevance.append(row)
 
     return discovered, filtered_out, relevance
 
@@ -173,6 +334,7 @@ async def discovery_node(state: AgentState) -> AgentState:
 
     registry = get_channel_registry()
     all_snippets: list[str] = []
+    all_snippet_rows: list[dict[str, object]] = []
     snippet_samples: list[dict[str, object]] = []
 
     for query in search_queries[:MAX_DISCOVERY_SEARCH_QUERIES]:
@@ -209,6 +371,13 @@ async def discovery_node(state: AgentState) -> AgentState:
                 text = snippet.sanitized_text or snippet.quote
                 if text:
                     all_snippets.append(text[:500])
+                    all_snippet_rows.append(
+                        {
+                            "text": text[:500],
+                            "source_url": getattr(snippet, "source_url", None),
+                            "source_title": getattr(snippet, "source_title", None),
+                        }
+                    )
                     snippets_added += 1
                     if len(snippet_samples) < _DISCOVERY_SNIPPET_SAMPLE_LIMIT:
                         sample = _build_snippet_sample(snippet=snippet, query=query)
@@ -283,6 +452,7 @@ async def discovery_node(state: AgentState) -> AgentState:
                 discovered, filtered_out_competitors, relevance = _filter_discovery_candidates(
                     candidates=harness_result.value.candidates,
                     snippets=all_snippets,
+                    snippet_rows=all_snippet_rows,
                 )
             elif harness_result.llm_response.error is not None:
                 extract_error = harness_result.llm_response.error[:300]
@@ -317,6 +487,16 @@ async def discovery_node(state: AgentState) -> AgentState:
             step_record.payload = {
                 **(step_record.payload or {}),
                 "discovered_competitors": discovered,
+                "discovered_competitor_sources": {
+                    str(item["name"]): {
+                        "official_url": item.get("official_url"),
+                        "source_domain": item.get("source_domain"),
+                    }
+                    for item in relevance
+                    if isinstance(item, dict)
+                    and isinstance(item.get("name"), str)
+                    and isinstance(item.get("official_url"), str)
+                },
                 "snippet_count": snippet_count,
                 "snippet_samples": snippet_samples,
                 "filtered_out_competitors": filtered_out_competitors,
@@ -334,6 +514,16 @@ async def discovery_node(state: AgentState) -> AgentState:
     )
 
     reconciled_plan_tree: dict[str, object] | None = None
+    discovered_competitor_sources = {
+        str(item["name"]): {
+            "official_url": item.get("official_url"),
+            "source_domain": item.get("source_domain"),
+        }
+        for item in relevance
+        if isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("official_url"), str)
+    }
     plan = coerce_plan_tree(state.get("plan_tree"))
     if discovered and plan is not None:
         intake_draft = state.get("intake_draft")
@@ -352,6 +542,7 @@ async def discovery_node(state: AgentState) -> AgentState:
         reconciled = reconcile_plan_tree_after_discovery(
             plan_tree=plan,
             discovered_competitors=discovered,
+            discovered_competitor_sources=discovered_competitor_sources,
             focus_dimensions=focus_dimensions,
             analysis_archetype=analysis_archetype,
         )
@@ -370,12 +561,14 @@ async def discovery_node(state: AgentState) -> AgentState:
                 "version": reconciled.version,
                 "plan_tree": reconciled_plan_tree,
                 "discovered_competitors": discovered,
+                "discovered_competitor_sources": discovered_competitor_sources,
             },
         )
 
     result: dict[str, object] = {
         "competitors": discovered,
         "discovered_competitors": discovered,
+        "discovered_competitor_sources": discovered_competitor_sources,
         "last_completed_node": None,
     }
     if reconciled_plan_tree is not None:

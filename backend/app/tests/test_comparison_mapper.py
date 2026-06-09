@@ -87,3 +87,83 @@ def test_comparisons_to_cells_downgrades_qualified_stance_without_evidence() -> 
     assert result[0]["stance"] == "unknown"
     assert result[0]["evidence_ids"] == []
     assert result[1]["stance"] == "competitive"
+
+
+def test_comparisons_to_cells_yield_gate_drops_zero_evidence_competitors() -> None:
+    comparisons = [
+        {
+            "dimension": "Feature",
+            "cells": [
+                {
+                    "competitor_id": "Cursor",
+                    "stance": "leader",
+                    "summary": "Cursor has grounded evidence.",
+                    "evidence_ids": ["ev_1"],
+                },
+                {
+                    "competitor_id": "Windsurf",
+                    "stance": "competitive",
+                    "summary": "Windsurf has grounded evidence.",
+                    "evidence_ids": ["ev_2"],
+                },
+                {
+                    "competitor_id": "GhostTool",
+                    "stance": "unknown",
+                    "summary": "Discovery anecdote with no researched evidence.",
+                    "evidence_ids": [],
+                },
+            ],
+        }
+    ]
+    evidence_lookup = {"ev_1": object(), "ev_2": object()}
+    competitors = ["Cursor", "Windsurf", "GhostTool"]
+
+    gated = comparisons_to_cells(
+        run_id="run_yield_gate",
+        step_id="step_yield_gate",
+        comparisons=comparisons,
+        evidence_lookup=evidence_lookup,
+        competitors=competitors,
+        competitors_with_evidence={"Cursor", "Windsurf"},
+    )
+    assert {cell["competitor_id"] for cell in gated} == {"Cursor", "Windsurf"}
+
+    ungated = comparisons_to_cells(
+        run_id="run_yield_gate",
+        step_id="step_yield_gate",
+        comparisons=comparisons,
+        evidence_lookup=evidence_lookup,
+        competitors=competitors,
+    )
+    assert "GhostTool" in {cell["competitor_id"] for cell in ungated}
+
+
+def test_comparisons_to_cells_yield_gate_drops_dimension_below_two_cells() -> None:
+    comparisons = [
+        {
+            "dimension": "Feature",
+            "cells": [
+                {
+                    "competitor_id": "Cursor",
+                    "stance": "leader",
+                    "summary": "Only grounded competitor left after the yield gate.",
+                    "evidence_ids": ["ev_1"],
+                },
+                {
+                    "competitor_id": "GhostTool",
+                    "stance": "unknown",
+                    "summary": "Zero-evidence discovery anecdote.",
+                    "evidence_ids": [],
+                },
+            ],
+        }
+    ]
+    result = comparisons_to_cells(
+        run_id="run_yield_gate",
+        step_id="step_yield_gate",
+        comparisons=comparisons,
+        evidence_lookup={"ev_1": object()},
+        competitors=["Cursor", "GhostTool"],
+        competitors_with_evidence={"Cursor"},
+    )
+    assert result == []

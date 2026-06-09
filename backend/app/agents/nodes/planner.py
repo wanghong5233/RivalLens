@@ -151,6 +151,7 @@ def reconcile_plan_tree_after_discovery(
     *,
     plan_tree: PlanTree | dict[str, object],
     discovered_competitors: list[str],
+    discovered_competitor_sources: dict[str, dict[str, str | None]] | None = None,
     focus_dimensions: list[str] | None = None,
     analysis_archetype: str = "comparison",
 ) -> PlanTree:
@@ -208,6 +209,32 @@ def reconcile_plan_tree_after_discovery(
             )
         )
 
+    merged_competitor_sources = dict(plan.competitor_sources)
+    if isinstance(discovered_competitor_sources, dict):
+        for competitor_id, source_payload in discovered_competitor_sources.items():
+            if not isinstance(competitor_id, str) or not competitor_id.strip():
+                continue
+            if not isinstance(source_payload, dict):
+                continue
+            official_url_raw = source_payload.get("official_url")
+            source_domain_raw = source_payload.get("source_domain")
+            official_url = (
+                official_url_raw.strip()
+                if isinstance(official_url_raw, str) and official_url_raw.strip()
+                else None
+            )
+            source_domain = (
+                source_domain_raw.strip()
+                if isinstance(source_domain_raw, str) and source_domain_raw.strip()
+                else None
+            )
+            if official_url is None:
+                continue
+            merged_competitor_sources[competitor_id] = {
+                "official_url": official_url,
+                "source_domain": source_domain,
+            }
+
     if not new_research_tasks:
         actual_competitors = _research_competitors_from_tasks(list(plan.tasks))
         actual_competitor_set = set(actual_competitors)
@@ -226,6 +253,13 @@ def reconcile_plan_tree_after_discovery(
             ],
             capped=len(discovered_competitors) > MAX_RESEARCH_COMPETITORS,
         )
+        if merged_competitor_sources != dict(plan.competitor_sources):
+            return plan.model_copy(
+                update={
+                    "competitor_sources": merged_competitor_sources,
+                    "version": plan.version + 1,
+                }
+            )
         return plan
 
     tasks = list(plan.tasks)
@@ -247,7 +281,13 @@ def reconcile_plan_tree_after_discovery(
         ],
         capped=len(discovered_competitors) > MAX_RESEARCH_COMPETITORS,
     )
-    return plan.model_copy(update={"tasks": tasks, "version": plan.version + 1})
+    return plan.model_copy(
+        update={
+            "tasks": tasks,
+            "version": plan.version + 1,
+            "competitor_sources": merged_competitor_sources,
+        }
+    )
 
 
 async def _persist_planner_step(
@@ -424,14 +464,12 @@ async def planner_generate_node(state: AgentState) -> AgentState:
         },
     )
 
-    # Seed state.competitors from the intake's explicit list so the supervisor's
-    # hard-constraint guard (discovery_needed = len(competitors)==0) sees them.
-    # Without this seed the supervisor forces DiscoverCompetitors even when the
-    # user already named the competitors during intake. operator.add appends, so
-    # we filter out anything already present and only return the diff.
+    # Seed state.competitors from the intake's explicit list so the executor
+    # cannot drop user-named targets when discovery also adds candidates.
+    # operator.add appends, so return only the diff.
     existing_competitors = list(state.get("competitors") or [])
     competitors_seed: list[str] = []
-    if not draft.competitors_discovery_mode and draft.competitors_explicit:
+    if draft.competitors_explicit:
         seen = set(existing_competitors)
         for competitor in draft.competitors_explicit:
             if competitor in seen:

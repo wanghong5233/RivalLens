@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from agents.nodes.intake import (
     _apply_patch,
+    _ambiguous_term_clarify,
     _merge_reply_into_draft,
     _clarify_target_satisfied,
     _fallback_clarify,
+    _needs_ambiguous_term_clarify,
     _should_drop_optional_clarify,
     _unsatisfied_clarify_targets,
 )
@@ -39,12 +41,61 @@ def test_intake_prompt_exposes_response_language_contract() -> None:
     assert "response_language defaults to the detected language of user_query" in INTAKE_SYSTEM_PROMPT
 
 
+def test_intake_prompt_requires_polysemous_acronym_disambiguation() -> None:
+    assert "polysemous acronyms" in INTAKE_SYSTEM_PROMPT
+    assert "OPC" in INTAKE_SYSTEM_PROMPT
+    assert "domain_hint" in INTAKE_SYSTEM_PROMPT
+
+
+def test_intake_prompt_enforces_professional_user_facing_wording() -> None:
+    assert "User-facing wording contract" in INTAKE_SYSTEM_PROMPT
+    assert "clarify_request.question" in INTAKE_SYSTEM_PROMPT
+    assert "竞品 / 厂商 / 产品 / 企业 / 参与方" in INTAKE_SYSTEM_PROMPT
+    assert "Avoid colloquial labels such as 玩家、玩具、玩具型." in INTAKE_SYSTEM_PROMPT
+
+
 def test_apply_patch_accepts_response_language_override() -> None:
     draft = RunIntakeDraft(user_query="请用英文输出国内销售工具分析")
 
     next_draft = _apply_patch(draft, {"response_language": "en"})
 
     assert next_draft.response_language == "en"
+
+
+def test_ambiguous_opc_requires_clarify_before_complete() -> None:
+    draft = RunIntakeDraft(
+        user_query="在 AI 时代有哪些能赚钱的 OPC 项目？",
+        user_role="founder",
+        analysis_intent="寻找 OPC 变现项目",
+        competitors_discovery_mode=True,
+    )
+
+    assert draft.is_complete is True
+    assert _needs_ambiguous_term_clarify(draft=draft, history=[]) is True
+    clarify = _ambiguous_term_clarify(draft)
+    assert clarify.field_targets == ["domain_hint", "analysis_intent"]
+    assert any("One Person Company" in option for option in (clarify.suggested_options or []))
+
+
+def test_merge_opc_disambiguation_rewrites_domain_and_intent() -> None:
+    draft = RunIntakeDraft(
+        user_query="OPC 项目怎么变现？",
+        user_role="founder",
+        analysis_intent="寻找 OPC 变现项目",
+        competitors_discovery_mode=True,
+    )
+    clarify = IntakeClarifyRequest(
+        question="OPC 指什么？",
+        field_targets=["domain_hint", "analysis_intent"],
+    )
+    reply = IntakeUserReply(text="我指一人公司/个人可落地变现项目")
+
+    next_draft = _merge_reply_into_draft(draft, clarify, reply)
+
+    assert next_draft.domain_hint == "one person company monetization"
+    assert "一人公司" in str(next_draft.analysis_intent)
+    history = [IntakeExchange(clarify=clarify, reply=reply)]
+    assert _needs_ambiguous_term_clarify(draft=next_draft, history=history) is False
 
 
 def test_fallback_clarify_analysis_intent_is_domain_neutral() -> None:

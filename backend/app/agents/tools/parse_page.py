@@ -120,6 +120,8 @@ def infer_source_type(
         if official_hosts
         else set()
     )
+    if any(keyword in host for keyword in REVIEW_HOST_KEYWORDS):
+        return "public_review"
     if normalized_official_hosts and (
         host in normalized_official_hosts
         or any(host.endswith(f".{official}") for official in normalized_official_hosts)
@@ -129,8 +131,6 @@ def infer_source_type(
         if any(keyword in path for keyword in PRICING_PATH_KEYWORDS):
             return "pricing_page"
         return "official_site"
-    if any(keyword in host for keyword in REVIEW_HOST_KEYWORDS):
-        return "public_review"
     if any(keyword in path for keyword in PRICING_PATH_KEYWORDS):
         return "pricing_page"
     return "article"

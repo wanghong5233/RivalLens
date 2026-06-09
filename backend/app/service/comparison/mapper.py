@@ -33,6 +33,7 @@ def comparisons_to_cells(
     comparisons: list[dict[str, object]],
     evidence_lookup: dict[str, object],
     competitors: list[str],
+    competitors_with_evidence: set[str] | None = None,
 ) -> list[MappedComparisonCell]:
     del run_id, step_id
     allowed_competitors = {item.strip() for item in competitors if item.strip()}
@@ -61,6 +62,15 @@ def comparisons_to_cells(
             if competitor_id in seen_competitors:
                 continue
             if allowed_competitors and competitor_id not in allowed_competitors:
+                continue
+            # Research-yield gate: a competitor that produced zero evidence across the
+            # whole run is a discovery false positive (article anecdote, not a researchable
+            # product). Keep it out of the comparison matrix instead of emitting an empty
+            # "unknown" cell with an ungrounded LLM summary.
+            if (
+                competitors_with_evidence is not None
+                and competitor_id not in competitors_with_evidence
+            ):
                 continue
             if not isinstance(summary_raw, str) or not summary_raw.strip():
                 continue

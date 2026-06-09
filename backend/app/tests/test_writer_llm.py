@@ -73,6 +73,7 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "never output bare ev_xxx or insight_x ids in markdown" in user_prompt
     assert "unsupported_numeric_claims" in user_prompt
     assert "$40/seat" in user_prompt
+    assert "Do not create a section titled Executive Summary or 执行摘要" in user_prompt
     assert "[ev_xxx]" in WRITER_SYSTEM_PROMPT
     assert "Never emit bare ev_xxx ids" in WRITER_SYSTEM_PROMPT
     assert "Write all report output in response_language" in WRITER_SYSTEM_PROMPT
@@ -282,6 +283,74 @@ def test_report_markdown_localizes_fixed_labels_for_chinese_output() -> None:
     assert "## Executive Summary" not in markdown
     assert "Evidence:" not in markdown
     assert "## Risk Callouts" not in markdown
+
+
+def test_report_markdown_deduplicates_executive_summary_sections() -> None:
+    report_content = {
+        "title": "测试报告",
+        "executive_summary": "顶层执行摘要内容。",
+        "sections": [
+            {
+                "title": "执行摘要：赛道机会与核心结论",
+                "content_markdown": "这段应该被跳过。",
+                "evidence_refs": [],
+                "insight_refs": [],
+            },
+            {
+                "title": "核心发现",
+                "content_markdown": "保留的正文内容。",
+                "evidence_refs": ["ev_001"],
+                "insight_refs": [],
+            },
+        ],
+        "risk_callouts": [],
+    }
+
+    markdown = _render_report_markdown(
+        report_content,
+        allowed_evidence_ids={"ev_001"},
+        response_language="zh",
+    )
+
+    assert markdown.count("## 执行摘要") == 1
+    assert "执行摘要：赛道机会与核心结论" not in markdown
+    assert "## 核心发现" in markdown
+
+
+def test_report_markdown_appends_methodology_section() -> None:
+    report_content = {
+        "title": "测试报告",
+        "executive_summary": "摘要。",
+        "sections": [],
+        "risk_callouts": [],
+    }
+
+    markdown = _render_report_markdown(
+        report_content,
+        allowed_evidence_ids={"ev_001", "ev_002"},
+        response_language="zh",
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_001",
+                "competitor_id": "厂商A",
+                "source_authority": "official",
+                "source_type": "pricing_page",
+            },
+            {
+                "evidence_id": "ev_002",
+                "competitor_id": "厂商B",
+                "source_authority": "third_party",
+                "source_type": "article",
+            },
+        ],
+    )
+
+    assert "## 数据来源与方法论" in markdown
+    assert "覆盖竞品: 2 (厂商A, 厂商B)" in markdown
+    assert "证据总数: 2" in markdown
+    assert "来源等级分布: official: 1, third_party: 1" in markdown
+    assert "来源类型分布: article: 1, pricing_page: 1" in markdown
+    assert "数据缺口披露: 厂商B: 官方来源和定价页均未覆盖（仅第三方资料）" in markdown
 
 
 def test_fallback_report_sections_follow_target_sections() -> None:

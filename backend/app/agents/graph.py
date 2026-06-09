@@ -35,6 +35,7 @@ def _route_after_supervisor(
     run_id = state.get("run_id")
     domain_hint = state.get("domain_hint")
     reference_urls = state.get("reference_urls", [])
+    discovered_competitor_sources = state.get("discovered_competitor_sources", {})
     if run_id is None:
         return "researcher"
 
@@ -49,6 +50,7 @@ def _route_after_supervisor(
                     "run_id": run_id,
                     "domain_hint": domain_hint,
                     "reference_urls": reference_urls,
+                    "discovered_competitor_sources": discovered_competitor_sources,
                     "pending_tool_args": topic,
                 },
             )

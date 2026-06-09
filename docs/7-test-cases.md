@@ -263,6 +263,28 @@
 - Live 页右下证据流出现至少 6 个不同 `competitor_id`（首句 6 个）+ ≥ 2 个发现新增
 - 最终 report 章节顺序为：管理层摘要 → 功能 × 定价矩阵 → 中国 vs 海外用户画像 → **TRAE 下一步投入方向建议**（核心可执行输出）→ 附录
 
+### TC-I9 AI 时代 OPC 变现（歧义缩写 + 跨语言检索）
+
+**人设**：创业者，想在 AI 时代找可落地、能赚钱的 OPC（一人公司）方向；**不知道竞品有哪些**，也未指定地域。
+
+**首句**：
+
+```text
+在ai时代，有哪些可以落地的能赚钱的好的OPC项目？
+```
+
+**完整可复制对话脚本、基线 run 快照、SQL 验收**：见 [`docs/e2e-fixture-opc-ai-monetization.md`](e2e-fixture-opc-ai-monetization.md)。
+
+**核心验收**（修复后）：
+
+- Intake **必须先 OPC 消歧**再 `complete`；`domain_hint` 不得误锁 `Open Platform Communications`
+- `focus_dimensions` 非空且 canonical；`dimension_coverage_rate > 0`
+- discovery 竞品同赛道（非 ChatGPT + Nomad List 发散拼凑）
+- evidence ≥ 12 时 `run_knowledge` 三件套不得全空仍 QA 放行
+- 中文报告 + 跨语言 evidence 广度（`market_scope` 为空时不误报 locale）
+
+**基线 run**：`run_69eb754e7db1`（修复前消歧失败、维度漂移、三件套全 `insufficient_data`）。
+
 ### TC-I8 企业 IT 平台选型对标：隐私合规自动化平台（备用 case）
 
 **人设**：大型互联网企业的隐私合规组 PM，集团跨境业务持续扩张（产品线覆盖海外多个市场），现有隐私合规工作流依赖人工台账 + 自研零散脚本，需要评估「自研一套统一的隐私合规自动化平台 vs 引入海外成熟产品」。
@@ -671,3 +693,4 @@ Compare top open-source vector databases (Chroma / Qdrant / Weaviate) for a RAG 
 | 已落地功能盘点 | `docs/1.1-product-features.md` |
 | 合规边界 | `docs/6-compliance-statement.md` |
 | 已知问题 / 待办 | `docs/KNOWN_ISSUES_AND_BACKLOG.md` |
+| OPC 变现 E2E 可复制剧本 | `docs/e2e-fixture-opc-ai-monetization.md` |

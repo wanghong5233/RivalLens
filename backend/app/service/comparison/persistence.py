@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.comparison import ComparisonCellRecord
 from schemas.ids import make_id
 from service.comparison.mapper import comparisons_to_cells
+from service.run_steps import latest_completed_step_id
 
 
 async def persist_comparisons_for_step(
@@ -16,6 +17,7 @@ async def persist_comparisons_for_step(
     comparisons: list[dict[str, object]],
     evidence_lookup: dict[str, object],
     competitors: list[str],
+    competitors_with_evidence: set[str] | None = None,
 ) -> list[ComparisonCellRecord]:
     mapped_items = comparisons_to_cells(
         run_id=run_id,
@@ -23,6 +25,7 @@ async def persist_comparisons_for_step(
         comparisons=comparisons,
         evidence_lookup=evidence_lookup,
         competitors=competitors,
+        competitors_with_evidence=competitors_with_evidence,
     )
     records: list[ComparisonCellRecord] = []
     for mapped in mapped_items:
@@ -46,17 +49,23 @@ async def load_comparisons_for_run(
     session: AsyncSession,
     run_id: str,
 ) -> list[dict[str, object]]:
-    cell_rows = (
-        await session.execute(
-            select(ComparisonCellRecord)
-            .where(ComparisonCellRecord.run_id == run_id)
-            .order_by(
-                ComparisonCellRecord.dimension.asc(),
-                ComparisonCellRecord.competitor_id.asc(),
-                ComparisonCellRecord.created_at.asc(),
-            )
+    latest_analyst_step_id = await latest_completed_step_id(
+        session=session,
+        run_id=run_id,
+        agent_name="analyst",
+    )
+    query = (
+        select(ComparisonCellRecord)
+        .where(ComparisonCellRecord.run_id == run_id)
+        .order_by(
+            ComparisonCellRecord.dimension.asc(),
+            ComparisonCellRecord.competitor_id.asc(),
+            ComparisonCellRecord.created_at.asc(),
         )
-    ).scalars().all()
+    )
+    if latest_analyst_step_id is not None:
+        query = query.where(ComparisonCellRecord.step_id == latest_analyst_step_id)
+    cell_rows = (await session.execute(query)).scalars().all()
     grouped: dict[str, list[dict[str, object]]] = {}
     for row in cell_rows:
         grouped.setdefault(row.dimension, []).append(

@@ -23,7 +23,7 @@ class KnowledgeExtractionResult:
     pricings: list[dict[str, object]]
     personas: list[dict[str, object]]
     coverage: KnowledgeCoverage
-    extraction_mode: Literal["comparison", "landscape_skipped"]
+    extraction_mode: Literal["comparison", "landscape"]
     missing_reasons: dict[str, list[str]]
 
 
@@ -99,6 +99,56 @@ def _schema_bucket_for_dimension(dimension: str | None) -> SchemaBucket:
     ):
         return "persona"
     return "feature"
+
+
+def _schema_bucket_for_brief(brief: _EvidenceBrief) -> SchemaBucket:
+    bucket = _schema_bucket_for_dimension(brief.dimension)
+    text = f"{brief.source_title} {brief.quote_preview}".lower()
+    pricing_terms = (
+        "pricing",
+        "price",
+        "subscription",
+        "monthly",
+        "annual",
+        "per user",
+        "seat",
+        "tier",
+        "free plan",
+        "enterprise plan",
+        "quota",
+        "token",
+        "credit",
+        "定价",
+        "价格",
+        "收费",
+        "套餐",
+        "订阅",
+        "每用户",
+        "席位",
+    )
+    if any(term in text for term in pricing_terms):
+        return "pricing"
+    persona_terms = (
+        "persona",
+        "target user",
+        "user segment",
+        "target segment",
+        "buyer persona",
+        "buyer",
+        "feedback",
+        "review",
+        "目标用户",
+        "用户画像",
+        "用户群体",
+        "用户反馈",
+        "买方",
+        "画像",
+        "评价",
+        "口碑",
+    )
+    if bucket != "pricing" and any(term in text for term in persona_terms):
+        return "persona"
+    return bucket
 
 
 def _feature_name(*, brief: _EvidenceBrief, index: int) -> str:
@@ -182,19 +232,6 @@ def extract_knowledge_schema(
             [item.competitor_id for item in normalized_evidence]
         )
         competitor_set = set(ordered_competitors)
-    if analysis_archetype == "landscape":
-        return KnowledgeExtractionResult(
-            schema_version=SCHEMA_VERSION,
-            features=[],
-            pricings=[],
-            personas=[],
-            coverage=_empty_coverage(ordered_competitors),
-            extraction_mode="landscape_skipped",
-            missing_reasons={
-                competitor_id: ["landscape:competitor_schema_not_required"]
-                for competitor_id in ordered_competitors
-            },
-        )
 
     feature_by_competitor: dict[str, list[_EvidenceBrief]] = {
         competitor_id: [] for competitor_id in ordered_competitors
@@ -208,7 +245,7 @@ def extract_knowledge_schema(
     for brief in normalized_evidence:
         if competitor_set and brief.competitor_id not in competitor_set:
             continue
-        bucket = _schema_bucket_for_dimension(brief.dimension)
+        bucket = _schema_bucket_for_brief(brief)
         if bucket == "pricing":
             pricing_by_competitor.setdefault(brief.competitor_id, []).append(brief)
         elif bucket == "persona":
@@ -326,7 +363,7 @@ def extract_knowledge_schema(
         pricings=pricings,
         personas=personas,
         coverage=coverage,
-        extraction_mode="comparison",
+        extraction_mode="landscape" if analysis_archetype == "landscape" else "comparison",
         missing_reasons=missing_reasons,
     )
 

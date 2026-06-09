@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from schemas.contracts import normalize_dimensions
 from schemas.ids import make_id
 
 PlanTaskStage = Literal["discover", "research", "analyze", "write"]
@@ -24,6 +25,11 @@ class PlanTask(BaseModel):
     enabled: bool = True
     priority: PlanTaskPriority = "normal"
 
+    @field_validator("focus_dimensions")
+    @classmethod
+    def _normalize_focus_dimensions(cls, value: list[str]) -> list[str]:
+        return normalize_dimensions(value, allow_empty=True)
+
 
 class PlanTree(BaseModel):
     """The Agent's full proposed plan; `version` bumps on each user edit.
@@ -39,6 +45,7 @@ class PlanTree(BaseModel):
     rationale: str = ""
     version: int = 1
     confirmed_at: str | None = None
+    competitor_sources: dict[str, dict[str, str | None]] = Field(default_factory=dict)
 
 
 class PlanConfirmRequest(BaseModel):

@@ -309,6 +309,8 @@ class DiscoveryCompetitorCandidate(BaseModel):
     is_competitor: bool = True
     relevance_reason: str = ""
     evidence_quote: str = ""
+    official_url: str | None = None
+    source_domain: str | None = None
 
     @field_validator("name", "relevance_reason", "evidence_quote", mode="before")
     @classmethod
@@ -316,6 +318,14 @@ class DiscoveryCompetitorCandidate(BaseModel):
         if value is None:
             return ""
         return str(value).strip()
+
+    @field_validator("official_url", "source_domain", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
 
 class DiscoveryExtractOutput(BaseModel):
@@ -363,6 +373,8 @@ class DiscoveryExtractOutput(BaseModel):
                     "is_competitor": item.get("is_competitor", True),
                     "relevance_reason": item.get("relevance_reason", ""),
                     "evidence_quote": item.get("evidence_quote", ""),
+                    "official_url": item.get("official_url"),
+                    "source_domain": item.get("source_domain"),
                 }
                 candidates.append(candidate)
                 continue
@@ -374,6 +386,8 @@ class DiscoveryExtractOutput(BaseModel):
                         "is_competitor": True,
                         "relevance_reason": "",
                         "evidence_quote": "",
+                        "official_url": None,
+                        "source_domain": None,
                     }
                 )
         return cls.model_validate({"competitors": names, "candidates": candidates})

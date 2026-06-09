@@ -8,7 +8,10 @@ from agents.subgraphs.researcher import (
     COMPRESS_AFTER_TURNS,
     ResearcherSubState,
     _fallback_action,
+    _fallback_fetch_url,
     _is_official_priority_dimension,
+    _ordered_source_types_for_dimension,
+    _pending_dimensions_from_coverage,
     _pick_url_for_dimension,
     get_researcher_subgraph,
 )
@@ -72,12 +75,77 @@ def test_fallback_action_targets_official_domain_for_pricing() -> None:
         "research_topic": "cursor pricing",
         "competitor_id": "cursor",
         "pending_dimensions": ["pricing_strategy"],
+        "resolved_official_urls": ["https://cursor.com/pricing"],
+        "resolved_official_hosts": ["cursor.com"],
+        "resolved_source_pages": [
+            {
+                "url": "https://cursor.com/pricing",
+                "source_type": "pricing_page",
+            }
+        ],
         "observations_log": [],
     }
     action, args = _fallback_action(state)
-    assert action == "search_web"
-    assert "site:" in str(args["query"])
-    assert "cursor.com" in str(args["query"])
+    assert action == "fetch_url"
+    assert args["url"] == "https://cursor.com/pricing"
+
+
+def test_fallback_fetch_url_prefers_docs_for_feature_dimensions() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "competitor_id": "cursor",
+        "resolved_official_hosts": ["cursor.com"],
+        "resolved_source_pages": [
+            {"url": "https://cursor.com/pricing", "source_type": "pricing_page"},
+            {"url": "https://cursor.com/docs", "source_type": "docs"},
+        ],
+        "resolved_official_urls": ["https://cursor.com/"],
+        "reference_urls": [],
+        "discovered_urls": [],
+    }
+
+    selected = _fallback_fetch_url(state=state, dimension="feature_comparison")
+    assert selected == "https://cursor.com/docs"
+
+
+def test_source_routing_prefers_public_review_for_user_feedback() -> None:
+    ordered = _ordered_source_types_for_dimension("user_feedback")
+    assert ordered[0] == "public_review"
+
+
+def test_pending_dimensions_prioritize_least_attempted_dimension() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+        "observations_log": [
+            {"tool": "extract_structured", "args": {"dimension": "feature"}},
+            {"tool": "extract_structured", "args": {"dimension": "pricing"}},
+            {"tool": "extract_structured", "args": {"dimension": "pricing"}},
+        ],
+    }
+    pending = _pending_dimensions_from_coverage(
+        focus_dimensions=["feature", "pricing", "user_feedback"],
+        coverage_matrix={
+            "feature": {"covered": False},
+            "pricing": {"covered": False},
+            "user_feedback": {"covered": False},
+        },
+        state=state,
+    )
+    assert pending[0] == "user_feedback"
+
+
+def test_pending_dimensions_exhausts_extract_only_loops() -> None:
+    state: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["pricing"],
+        "observations_log": [
+            {"tool": "extract_structured", "args": {"dimension": "pricing"}},
+        ],
+    }
+    pending = _pending_dimensions_from_coverage(
+        focus_dimensions=["pricing"],
+        coverage_matrix={"pricing": {"covered": False}},
+        state=state,
+    )
+    assert pending == []
 
 
 def _llm_response(model_slot: str, content: dict[str, object]) -> LLMResponse:
@@ -119,6 +187,12 @@ def _base_state() -> ResearcherSubState:
         "domain_hint": None,
         "reference_urls": [],
         "discovered_urls": [],
+        "resolved_official_urls": [],
+        "resolved_official_hosts": [],
+        "resolved_source_pages": [],
+        "search_call_count": 0,
+        "official_fetch_count": 0,
+        "coverage_matrix": {},
     }
 
 
@@ -191,6 +265,75 @@ async def test_researcher_subgraph_collects_evidence_from_observation(
     assert drafts[0]["quote"] in known_quotes
     assert drafts[0]["source_url"] == "https://cursor.com/pricing"
     assert output["turn_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_source_first_guard_overrides_llm_search_with_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_researcher_subgraph.cache_clear()
+    fake_client = _FakeSequentialLLMClient(
+        responses_by_slot={
+            "research": [
+                _llm_response(
+                    "research",
+                    {
+                        "action": "search_web",
+                        "action_args": {
+                            "query": "cursor pricing",
+                            "dimension": "pricing",
+                        },
+                        "reasoning_summary": "search first",
+                    },
+                ),
+                _llm_response(
+                    "research",
+                    {
+                        "action": "finalize",
+                        "action_args": {"summary": "done"},
+                        "reasoning_summary": "enough",
+                    },
+                ),
+            ]
+        }
+    )
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
+
+    class _FakeRegistry:
+        async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
+            assert action == "fetch_url"
+            assert args["url"] == "https://cursor.com/pricing"
+            return CollectorObservation(
+                channel="fetch_url",
+                args=args,
+                result=ToolObservationResult(
+                    snippets=[
+                        CollectorSnippet(
+                            quote="Cursor pricing starts at $20 per user/month.",
+                            sanitized_text="Cursor pricing starts at $20 per user/month.",
+                            source_url="https://cursor.com/pricing",
+                            source_title="Cursor Pricing",
+                            source_type="pricing_page",
+                            desensitized=False,
+                            metadata={"dimension": "pricing", "competitor_id": "comp_cursor"},
+                        )
+                    ],
+                    metadata={"dimension": "pricing", "competitor_id": "comp_cursor"},
+                ),
+            )
+
+    monkeypatch.setattr("agents.subgraphs.researcher.get_channel_registry", lambda: _FakeRegistry())
+    state = _base_state()
+    state["resolved_official_urls"] = ["https://cursor.com/pricing"]
+    state["resolved_official_hosts"] = ["cursor.com"]
+    state["resolved_source_pages"] = [
+        {"url": "https://cursor.com/pricing", "source_type": "pricing_page"}
+    ]
+
+    output = await get_researcher_subgraph().ainvoke(state)
+    assert output["search_call_count"] == 0
+    assert output["official_fetch_count"] == 1
+    assert output["coverage_matrix"]["pricing"]["covered"] is True
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ class AgentState(TypedDict, total=False):
     reference_urls: list[str]
     competitors: Annotated[list[str], operator.add]
     discovered_competitors: Annotated[list[str], operator.add]
+    discovered_competitor_sources: Annotated[dict[str, dict[str, str | None]], _last_write_wins]
     current_iteration: int
     pending_tool_args: Annotated[dict[str, object], _last_write_wins]
     next_action: Literal["discovery", "researcher", "analyst", "writer", "finalize"]

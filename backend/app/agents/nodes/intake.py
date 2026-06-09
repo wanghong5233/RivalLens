@@ -13,6 +13,7 @@ from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
 from schemas.agent_outputs import IntakeTurnOutput
+from schemas.contracts import normalize_dimensions
 from schemas.ids import make_id
 from schemas.intake import (
     IntakeClarifyRequest,
@@ -85,6 +86,22 @@ _OPTIONAL_FREE_TEXT_TARGETS: frozenset[str] = frozenset(
     {"domain_hint", "self_product", "market_scope", "time_context"}
 )
 _MAX_OPTIONAL_CLARIFY_TURNS_AFTER_COMPLETE = 2
+_AMBIGUOUS_TERMS: frozenset[str] = frozenset({"opc"})
+_ONE_PERSON_COMPANY_MARKERS: tuple[str, ...] = (
+    "one person company",
+    "one-person company",
+    "one person",
+    "一人公司",
+    "一个人公司",
+    "个人公司",
+    "单人公司",
+)
+_OPEN_PLATFORM_COMMUNICATION_MARKERS: tuple[str, ...] = (
+    "open platform communications",
+    "opc ua",
+    "工业通信",
+    "工业协议",
+)
 
 
 def _ensure_response_language(draft: RunIntakeDraft, user_query: str) -> RunIntakeDraft:
@@ -205,6 +222,7 @@ async def _persist_intake_draft_to_run(*, run_id: str, draft: RunIntakeDraft) ->
         if run is None:
             return
         run.intake_draft = draft.model_dump(exclude={"is_complete"})
+        run.domain_hint = draft.domain_hint
         await session.commit()
 
 
@@ -228,10 +246,20 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
         base["competitors_discovery_mode"] = discovery_raw
     domain_raw = patch.get("domain_hint")
     if isinstance(domain_raw, str) and domain_raw.strip():
-        base["domain_hint"] = domain_raw.strip()
+        canonical_domain = _canonical_domain_hint(domain_raw)
+        base["domain_hint"] = canonical_domain
+        rewritten_intent = _rewrite_ambiguous_intent(
+            current_intent=base.get("analysis_intent"),
+            canonical_domain=canonical_domain,
+        )
+        if rewritten_intent is not None:
+            base["analysis_intent"] = rewritten_intent
     focus_raw = patch.get("focus_dimensions")
     if isinstance(focus_raw, list):
-        normalized = [str(d).strip() for d in focus_raw if isinstance(d, str) and d.strip()]
+        normalized = normalize_dimensions(
+            [str(d).strip() for d in focus_raw if isinstance(d, str) and d.strip()],
+            allow_empty=True,
+        )
         if normalized:
             base["focus_dimensions"] = normalized
     depth_raw = patch.get("report_depth")
@@ -249,6 +277,9 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
     language_raw = patch.get("response_language")
     if isinstance(language_raw, str) and language_raw in {"zh", "en"}:
         base["response_language"] = language_raw
+    archetype_raw = patch.get("analysis_archetype")
+    if isinstance(archetype_raw, str) and archetype_raw in {"comparison", "landscape"}:
+        base["analysis_archetype"] = archetype_raw
     return RunIntakeDraft.model_validate(base)
 
 
@@ -293,6 +324,72 @@ def _answered_optional_turn_count(history: list[IntakeExchange]) -> int:
         1
         for exchange in history
         if any(target in _OPTIONAL_CLARIFY_TARGETS for target in exchange.clarify.field_targets)
+    )
+
+
+def _contains_ambiguous_term(value: str | None) -> bool:
+    if not isinstance(value, str):
+        return False
+    lowered = value.casefold()
+    return any(term in lowered for term in _AMBIGUOUS_TERMS)
+
+
+def _canonical_domain_hint(value: str) -> str:
+    lowered = value.casefold()
+    if any(marker in lowered for marker in _ONE_PERSON_COMPANY_MARKERS):
+        return "one person company monetization"
+    if any(marker in lowered for marker in _OPEN_PLATFORM_COMMUNICATION_MARKERS):
+        return "open platform communications"
+    return value.strip()
+
+
+def _rewrite_ambiguous_intent(*, current_intent: object, canonical_domain: str) -> str | None:
+    if not isinstance(current_intent, str) or not current_intent.strip():
+        return None
+    if "opc" not in current_intent.casefold():
+        return None
+    if canonical_domain == "one person company monetization":
+        return current_intent.replace("OPC", "一人公司（One Person Company）").replace(
+            "opc", "一人公司（One Person Company）"
+        )
+    if canonical_domain == "open platform communications":
+        return current_intent.replace("OPC", "OPC 工业通信协议").replace(
+            "opc", "OPC 工业通信协议"
+        )
+    return None
+
+
+def _history_resolved_ambiguous_domain(history: list[IntakeExchange]) -> bool:
+    for exchange in history:
+        targets = set(exchange.clarify.field_targets)
+        if targets & {"domain_hint", "analysis_intent"}:
+            return True
+    return False
+
+
+def _needs_ambiguous_term_clarify(
+    *,
+    draft: RunIntakeDraft,
+    history: list[IntakeExchange],
+) -> bool:
+    if _history_resolved_ambiguous_domain(history):
+        return False
+    return _contains_ambiguous_term(draft.user_query) or _contains_ambiguous_term(draft.analysis_intent)
+
+
+def _ambiguous_term_clarify(draft: RunIntakeDraft) -> IntakeClarifyRequest:
+    return IntakeClarifyRequest(
+        question=(
+            "这里的 OPC 可能有多种含义。您指的是一人公司/个人可落地变现项目，"
+            "还是工业通信协议 OPC UA，或其他含义？"
+        ),
+        field_targets=["domain_hint", "analysis_intent"],
+        suggested_options=[
+            "一人公司 / One Person Company",
+            "工业通信协议 / Open Platform Communications",
+            "其他含义，我补充说明",
+        ],
+        suggested_answer="我指一人公司/个人可落地变现项目。",
     )
 
 
@@ -444,8 +541,14 @@ def _merge_reply_into_draft(
     reply_signal = reply.text.strip() or option_text
 
     if "domain_hint" in targets and reply_signal:
-        # No closed-set normalization; accept the user's domain phrase verbatim.
-        base["domain_hint"] = reply_signal
+        canonical_domain = _canonical_domain_hint(reply_signal)
+        base["domain_hint"] = canonical_domain
+        rewritten_intent = _rewrite_ambiguous_intent(
+            current_intent=base.get("analysis_intent"),
+            canonical_domain=canonical_domain,
+        )
+        if rewritten_intent is not None:
+            base["analysis_intent"] = rewritten_intent
 
     # Optional free-text enrichment fields: accept the user's phrasing verbatim
     # when the Agent's clarify question targeted one of them.
@@ -566,7 +669,6 @@ async def intake_generate_node(state: AgentState) -> AgentState:
     if (
         action_raw == "ask"
         and parsed_clarify is not None
-        and next_draft.is_complete
     ):
         unsatisfied_targets = _unsatisfied_clarify_targets(parsed_clarify, next_draft)
         drop_reason: str | None = None
@@ -584,6 +686,18 @@ async def intake_generate_node(state: AgentState) -> AgentState:
                 reason=drop_reason,
             )
             parsed_clarify = None
+
+    if next_draft.is_complete and _needs_ambiguous_term_clarify(
+        draft=next_draft,
+        history=history,
+    ):
+        action_raw = "ask"
+        parsed_clarify = _ambiguous_term_clarify(next_draft)
+        log.info(
+            "intake.generate.ambiguous_term_clarify_forced",
+            run_id=run_id,
+            terms=sorted(_AMBIGUOUS_TERMS),
+        )
 
     # Decision order matters. The key invariant: if the merged draft already
     # satisfies all required fields, the run MUST move to `complete` regardless
@@ -661,6 +775,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
             "run_id": run_id,
             "phase": "planning",
             "intake_draft": next_draft,
+            "domain_hint": next_draft.domain_hint,
             "market_scope": next_draft.market_scope,
             "response_language": next_draft.response_language,
             "intake_history": history,
@@ -690,6 +805,7 @@ async def intake_generate_node(state: AgentState) -> AgentState:
         "run_id": run_id,
         "phase": "intake",
         "intake_draft": next_draft,
+        "domain_hint": next_draft.domain_hint,
         "market_scope": next_draft.market_scope,
         "response_language": next_draft.response_language,
         "intake_history": history,

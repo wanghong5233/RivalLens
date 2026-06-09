@@ -39,3 +39,8 @@ DEFAULT_DISCOVER_MAX_RESULTS: int = 8
 # Plan text caps shared by LLM parsing and user-added plan task normalization.
 PLAN_TASK_TITLE_MAX_LEN: int = 60
 PLAN_TASK_DESCRIPTION_MAX_LEN: int = 500
+
+# Source resolver budgets (per competitor).
+SOURCE_RESOLVER_MAX_CANDIDATE_URLS: int = 6
+SOURCE_RESOLVER_MAX_KEY_PAGES: int = 10
+SOURCE_RESOLVER_MAX_SITEMAP_URLS: int = 80

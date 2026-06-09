@@ -59,6 +59,9 @@ def test_initial_researcher_substate_raises_turn_budget_to_cover_focus_dimension
         market_scope="中国市场",
         response_language="zh",
         reference_urls=[],
+        resolved_official_urls=[],
+        resolved_official_hosts=[],
+        resolved_source_pages=[],
     )
 
     assert substate["max_turns"] == 4
@@ -453,6 +456,37 @@ def test_build_evidence_rows_downgrades_cross_vendor_official_source_type() -> N
     assert row.span["source_authority"] == "third_party"
 
 
+def test_build_evidence_rows_uses_runtime_resolved_official_hosts_for_match() -> None:
+    rows, _, _ = _build_evidence_rows(
+        run_id="run_runtime_official_hosts",
+        step_id="step_runtime_official_hosts",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "NewVendor",
+                "quote": "NewVendor pricing page shows paid plans.",
+                "sanitized_text": "NewVendor pricing page shows paid plans.",
+                "source_type": "article",
+                "source_url": "https://newvendor.ai/pricing",
+                "source_title": "NewVendor Pricing",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="NewVendor",
+        resolved_official_hosts={"newvendor.ai"},
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.source_type == "pricing_page"
+    assert row.span["competitor_source_match"] is True
+    assert row.span["source_authority"] == "official"
+
+
 def test_build_evidence_rows_restores_quality_floor_when_gate_filters_all_candidates() -> None:
     rows, ids, dropped_dimensions = _build_evidence_rows(
         run_id="run_source_quality_floor_test",
@@ -526,6 +560,16 @@ async def test_researcher_node_degrades_zero_evidence_without_requeue(
                 "turn_count": 1,
                 "compression_count": 0,
                 "queried_dimensions": ["pricing"],
+                "search_call_count": 1,
+                "official_fetch_count": 2,
+                "coverage_matrix": {
+                    "pricing": {
+                        "covered": False,
+                        "evidence_count": 0,
+                        "official_evidence_count": 0,
+                        "requires_official": True,
+                    }
+                },
                 "final_summary": "No grounded evidence found.",
             }
 
@@ -564,6 +608,10 @@ async def test_researcher_node_degrades_zero_evidence_without_requeue(
     assert step.payload["uncovered"] is True
     assert step.payload["degraded_reason"] == "researcher_zero_evidence"
     assert step.payload["evidence_ids"] == []
+    assert step.payload["search_call_count"] == 1
+    assert step.payload["official_fetch_count"] == 2
+    assert step.payload["coverage_summary"]["total_dimension_count"] == 1
+    assert step.payload["coverage_summary"]["uncovered_dimensions"] == ["pricing"]
     assert result["researched_competitors"] == ["Cursor"]
     assert result["researcher_degraded_competitors"] == ["Cursor"]
     assert captured_events[-1][0] == RunEventType.STEP_FINISH

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import sys
 from uuid import uuid4
 
@@ -151,6 +151,144 @@ async def test_comparison_persistence_and_load_grouping() -> None:
                     ],
                 }
             ]
+
+            await session.execute(delete(Run).where(Run.run_id == run_id))
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_load_comparisons_returns_only_latest_analyst_step() -> None:
+    run_id = f"run_retry_cmp_{uuid4().hex[:8]}"
+    old_step_id = f"step_old_{uuid4().hex[:8]}"
+    new_step_id = f"step_new_{uuid4().hex[:8]}"
+    engine = create_async_engine(settings.DATABASE_URL, pool_pre_ping=True)
+    session_factory = async_sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    now = datetime.now(timezone.utc)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                Run(
+                    run_id=run_id,
+                    user_query="retry comparison scoping test",
+                    domain_hint="ai_coding_tools",
+                    reference_urls=[],
+                    status="running",
+                    target_roles=["pm"],
+                    competitors=["Cursor", "Windsurf"],
+                )
+            )
+            # Rejected analyst pass (older) and the retry pass (newer).
+            session.add(
+                Step(
+                    step_id=old_step_id,
+                    run_id=run_id,
+                    agent_name="analyst",
+                    status="completed",
+                    retry_count=0,
+                    payload={"analysis_payload": {}},
+                    created_at=now - timedelta(minutes=5),
+                )
+            )
+            session.add(
+                Step(
+                    step_id=new_step_id,
+                    run_id=run_id,
+                    agent_name="analyst",
+                    status="completed",
+                    retry_count=1,
+                    payload={"analysis_payload": {}},
+                    created_at=now,
+                )
+            )
+            evidence_rows = [
+                EvidenceRecord(
+                    id=f"ev_retry_{uuid4().hex[:8]}",
+                    run_id=run_id,
+                    source_type="article",
+                    source_url="https://example.com/a",
+                    source_title="a",
+                    quote="Cursor leads.",
+                    sanitized_text="Cursor leads.",
+                    span={"dimension": "feature", "competitor_id": "Cursor"},
+                    collected_by=new_step_id,
+                    collected_at=now,
+                    desensitized=True,
+                ),
+                EvidenceRecord(
+                    id=f"ev_retry_{uuid4().hex[:8]}",
+                    run_id=run_id,
+                    source_type="article",
+                    source_url="https://example.com/b",
+                    source_title="b",
+                    quote="Windsurf competitive.",
+                    sanitized_text="Windsurf competitive.",
+                    span={"dimension": "feature", "competitor_id": "Windsurf"},
+                    collected_by=new_step_id,
+                    collected_at=now,
+                    desensitized=True,
+                ),
+            ]
+            await session.flush()
+            for row in evidence_rows:
+                session.add(row)
+            await session.flush()
+
+            evidence_lookup = {row.id: row for row in evidence_rows}
+            comparisons = [
+                {
+                    "dimension": "feature",
+                    "cells": [
+                        {
+                            "competitor_id": "Cursor",
+                            "stance": "leader",
+                            "summary": "Cursor leads on repo context.",
+                            "evidence_ids": [evidence_rows[0].id],
+                        },
+                        {
+                            "competitor_id": "Windsurf",
+                            "stance": "competitive",
+                            "summary": "Windsurf is competitive.",
+                            "evidence_ids": [evidence_rows[1].id],
+                        },
+                    ],
+                }
+            ]
+            await persist_comparisons_for_step(
+                session=session,
+                run_id=run_id,
+                step_id=old_step_id,
+                comparisons=comparisons,
+                evidence_lookup=evidence_lookup,
+                competitors=["Cursor", "Windsurf"],
+            )
+            await persist_comparisons_for_step(
+                session=session,
+                run_id=run_id,
+                step_id=new_step_id,
+                comparisons=comparisons,
+                evidence_lookup=evidence_lookup,
+                competitors=["Cursor", "Windsurf"],
+            )
+            await session.flush()
+
+            total_cells = int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(ComparisonCellRecord)
+                        .where(ComparisonCellRecord.run_id == run_id)
+                    )
+                ).scalar_one()
+            )
+            assert total_cells == 4
+
+            loaded = await load_comparisons_for_run(session=session, run_id=run_id)
+            loaded_cells = [cell for group in loaded for cell in group["cells"]]
+            assert len(loaded_cells) == 2
+            assert {cell["step_id"] for cell in loaded_cells} == {new_step_id}
 
             await session.execute(delete(Run).where(Run.run_id == run_id))
             await session.commit()

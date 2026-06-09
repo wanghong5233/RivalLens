@@ -2,19 +2,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import httpx
 import pytest
+from tavily.errors import ForbiddenError as TavilyForbiddenError
 
 from agents.tools.fetch_url import FetchUrlChannel
 from agents.tools.parse_page import infer_source_type, official_hosts_for_competitor, source_matches_competitor
 from agents.tools.rerank_bocha import _request_bocha_rerank, rerank
 from agents.tools.search_bocha import BochaSearchChannel
 from agents.tools.search_router import SearchWebRouterChannel
-from agents.tools.search_web import TavilySearchChannel
+from agents.tools.search_serper import SerperSearchChannel
+from agents.tools.search_web import TavilySearchChannel, _tavily_search
 from core.config import settings
 from service.collector.base import CollectorObservation, CollectorSnippet, ToolObservationResult
 from service.collector.errors import ChannelError, RateLimited, RobotsBlocked
 from service.collector.http_client import CollectorHTTPClient, FetchResponse
 from service.collector.registry import ChannelRegistry, _register_builtin_channels
+
+
+@pytest.fixture(autouse=True)
+def _serper_key_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep routing deterministic and env-independent: Serper only enters the chain when a
+    # test explicitly sets the key, so existing Bocha/Tavily expectations stay unchanged
+    # regardless of whether a real SERPER_API_KEY is present in the loaded .env.
+    monkeypatch.setattr(settings, "SERPER_API_KEY", None)
 
 
 @dataclass
@@ -25,6 +36,20 @@ class _FakeLimiter:
     async def acquire(self, host: str, *, timeout_seconds: float | None = None) -> None:
         self.host = host
         self.timeout_seconds = timeout_seconds
+
+
+class _FakeSerperHTTPErrorResponse:
+    def __init__(self, *, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        request = httpx.Request("POST", "https://google.serper.dev/search")
+        response = httpx.Response(self.status_code, text=self.text, request=request)
+        raise httpx.HTTPStatusError(self.text, request=request, response=response)
+
+    def json(self) -> dict[str, object]:
+        return {}
 
 
 class _AllowRobotsGate:
@@ -121,6 +146,15 @@ class _FakeSearchChannel:
                 metadata={"provider": self.provider},
             ),
         )
+
+
+class _FakeTavilyQuotaClient:
+    def __init__(self, api_key: str | None) -> None:
+        self.api_key = api_key
+
+    def search(self, **kwargs: object) -> dict[str, object]:
+        del kwargs
+        raise TavilyForbiddenError("This request exceeds your plan's set usage limit.")
 
 
 @pytest.mark.asyncio
@@ -260,6 +294,13 @@ def test_source_type_mapping_rules() -> None:
         )
         == "public_review"
     )
+    assert (
+        infer_source_type(
+            source_url="https://forum.cursor.com/t/how-does-the-new-pricing-affect-business-plans/108774",
+            official_hosts=official_hosts_for_competitor("Cursor"),
+        )
+        == "public_review"
+    )
 
 
 def test_official_hosts_heuristic_for_dynamic_competitor() -> None:
@@ -383,6 +424,79 @@ async def test_bocha_search_channel_requires_key(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(ChannelError, match="BOCHA_API_KEY"):
         await BochaSearchChannel().invoke(query="销售 AI 工具", max_results=3)
+
+
+@pytest.mark.asyncio
+async def test_tavily_forbidden_usage_limit_is_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setattr("agents.tools.search_web.TavilyClient", _FakeTavilyQuotaClient)
+
+    with pytest.raises(RateLimited, match="usage limit"):
+        await _tavily_search(query="Cursor pricing", max_results=1, country="china")
+
+
+@pytest.mark.asyncio
+async def test_serper_search_channel_with_mocked_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "test-serper-key")
+    limiter = _FakeLimiter()
+    monkeypatch.setattr("agents.tools.search_serper._get_serper_rate_limiter", lambda: limiter)
+    response = _FakeBochaResponse(
+        {
+            "organic": [
+                {
+                    "title": "Cursor pricing",
+                    "link": "https://cursor.com/pricing",
+                    "snippet": "Cursor publishes team and enterprise pricing tiers.",
+                    "date": "2026-06-01",
+                }
+            ]
+        }
+    )
+    fake_client = _FakeBochaAsyncClient(response)
+    monkeypatch.setattr("agents.tools.search_serper.httpx.AsyncClient", lambda **_: fake_client)
+
+    observation = await SerperSearchChannel().invoke(
+        query="cursor pricing", max_results=3, country="china", language="zh"
+    )
+
+    assert limiter.host == "google.serper.dev"
+    assert fake_client.post_kwargs is not None
+    assert fake_client.post_kwargs["url"] == "https://google.serper.dev/search"
+    # Tavily-style country name + carrier language are translated to Serper gl/hl codes.
+    assert fake_client.post_kwargs["json"]["gl"] == "cn"
+    assert fake_client.post_kwargs["json"]["hl"] == "zh-cn"
+    assert observation.result.metadata["provider"] == "serper"
+    assert observation.result.snippets[0].sanitized_text == (
+        "Cursor publishes team and enterprise pricing tiers."
+    )
+    assert observation.result.snippets[0].metadata["source"] == "serper_search"
+
+
+@pytest.mark.asyncio
+async def test_serper_search_channel_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "SERPER_API_KEY", None)
+
+    with pytest.raises(ChannelError, match="SERPER_API_KEY"):
+        await SerperSearchChannel().invoke(query="cursor pricing", max_results=3)
+
+
+@pytest.mark.asyncio
+async def test_serper_search_channel_classifies_quota_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "test-serper-key")
+    monkeypatch.setattr(
+        "agents.tools.search_serper._get_serper_rate_limiter", lambda: _FakeLimiter()
+    )
+    fake_client = _FakeBochaAsyncClient(
+        _FakeSerperHTTPErrorResponse(status_code=403, text="Not enough credits")
+    )
+    monkeypatch.setattr("agents.tools.search_serper.httpx.AsyncClient", lambda **_: fake_client)
+
+    with pytest.raises(RateLimited):
+        await SerperSearchChannel().invoke(query="cursor pricing", max_results=3)
 
 
 @pytest.mark.asyncio
@@ -523,6 +637,70 @@ async def test_search_router_degrades_to_tavily_when_bocha_fails() -> None:
     assert len(bocha.calls) == 1
     assert len(tavily.calls) == 2
     assert {call.get("country") for call in tavily.calls} == {"china", None}
+
+
+@pytest.mark.asyncio
+async def test_search_router_fails_loud_and_fast_when_all_providers_are_rate_limited() -> None:
+    bocha = _FakeSearchChannel(provider="bocha", exc=RateLimited("bocha quota"))
+    tavily = _FakeSearchChannel(provider="tavily", exc=RateLimited("tavily quota"))
+    channel = SearchWebRouterChannel(bocha_channel=bocha, tavily_channel=tavily)
+
+    with pytest.raises(ChannelError, match="search_web providers failed"):
+        await channel.invoke(
+            query="销售 AI 工具",
+            query_variants=["销售 AI 工具 定价", "销售 AI 工具 口碑"],
+            max_results=3,
+            response_language="zh",
+            market_scope="中国市场",
+        )
+
+    assert len(bocha.calls) == 1
+    assert len(tavily.calls) == 2
+    assert {call.get("country") for call in tavily.calls} == {"china", None}
+
+
+@pytest.mark.asyncio
+async def test_search_router_uses_serper_before_tavily_for_english(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "test-serper-key")
+    serper = _FakeSearchChannel(provider="serper", source_url="https://example.com/a")
+    tavily = _FakeSearchChannel(provider="tavily", source_url="https://example.com/b")
+    channel = SearchWebRouterChannel(serper_channel=serper, tavily_channel=tavily)
+
+    observation = await channel.invoke(
+        query="cloud IDE competitors",
+        max_results=3,
+        response_language="en",
+    )
+
+    # Serper is the English primary; Tavily stays untouched as last-resort fallback.
+    assert observation.args["providers"] == ["serper"]
+    assert observation.args["search_languages"] == ["en"]
+    assert len(serper.calls) == 1
+    assert len(tavily.calls) == 0
+    # Router hands Serper the carrier language so it can localize hl/gl.
+    assert serper.calls[0]["language"] == "en"
+
+
+@pytest.mark.asyncio
+async def test_search_router_degrades_to_tavily_when_serper_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "test-serper-key")
+    serper = _FakeSearchChannel(provider="serper", exc=RateLimited("serper quota"))
+    tavily = _FakeSearchChannel(provider="tavily", source_url="https://example.com/b")
+    channel = SearchWebRouterChannel(serper_channel=serper, tavily_channel=tavily)
+
+    observation = await channel.invoke(
+        query="cloud IDE competitors",
+        max_results=3,
+        response_language="en",
+    )
+
+    assert observation.args["providers"] == ["tavily"]
+    assert len(serper.calls) == 1
+    assert len(tavily.calls) == 1
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     COLLECTOR_PER_HOST_QPS: int = 1
     COLLECTOR_USER_AGENT: str = "RivalLens-Researcher/0.1"
     TAVILY_API_KEY: str | None = None
+    SERPER_API_KEY: str | None = None
     BOCHA_API_KEY: str | None = None
     BOCHA_BASE_URL: str = "https://api.bochaai.com/v1"
     BOCHA_RERANK_MODEL: str = "gte-rerank"

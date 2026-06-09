@@ -113,14 +113,36 @@ def test_extract_knowledge_schema_filters_invalid_and_unknown_competitors() -> N
     ]
 
 
-def test_extract_knowledge_schema_skips_triplet_in_landscape_mode() -> None:
+def test_extract_knowledge_schema_recovers_pricing_from_quote_text() -> None:
+    result = extract_knowledge_schema(
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_cursor_pricing_text",
+                "competitor_id": "Cursor",
+                "dimension": "feature",
+                "quote_preview": "Cursor Pro is priced at $20/month, with Business and Enterprise tiers.",
+                "source_title": "Cursor pricing details",
+            }
+        ],
+        competitors=["Cursor"],
+        focus_dimensions=["feature", "pricing", "user_feedback"],
+        analysis_archetype="comparison",
+    )
+
+    assert result.features == []
+    assert len(result.pricings) == 1
+    assert result.pricings[0]["competitor_id"] == "Cursor"
+    assert result.coverage["Cursor"]["pricing"] == "complete"
+
+
+def test_extract_knowledge_schema_generates_schema_in_landscape_mode() -> None:
     result = extract_knowledge_schema(
         evidence_briefs=[
             {
                 "evidence_id": "ev_landscape",
                 "competitor_id": "DeepSeek",
                 "dimension": "monetization_paths",
-                "quote_preview": "landscape signal",
+                "quote_preview": "landscape signal with monetization context",
                 "source_title": "landscape",
             }
         ],
@@ -129,7 +151,34 @@ def test_extract_knowledge_schema_skips_triplet_in_landscape_mode() -> None:
         analysis_archetype="landscape",
     )
 
-    assert result.extraction_mode == "landscape_skipped"
+    assert result.extraction_mode == "landscape"
+    assert len(result.features) == 1
+    assert result.features[0]["competitor_id"] == "DeepSeek"
+    assert result.pricings == []
+    assert result.personas == []
+    assert result.coverage == {
+        "DeepSeek": {
+            "feature": "partial",
+            "pricing": "insufficient_data",
+            "feedback": "insufficient_data",
+        }
+    }
+    assert result.missing_reasons["DeepSeek"] == [
+        "feature:coverage_partial",
+        "pricing:no_grounded_evidence",
+        "persona:no_grounded_evidence",
+    ]
+
+
+def test_extract_knowledge_schema_keeps_insufficient_status_for_empty_landscape() -> None:
+    result = extract_knowledge_schema(
+        evidence_briefs=[],
+        competitors=["DeepSeek"],
+        focus_dimensions=["monetization_paths"],
+        analysis_archetype="landscape",
+    )
+
+    assert result.extraction_mode == "landscape"
     assert result.features == []
     assert result.pricings == []
     assert result.personas == []
@@ -141,5 +190,7 @@ def test_extract_knowledge_schema_skips_triplet_in_landscape_mode() -> None:
         }
     }
     assert result.missing_reasons["DeepSeek"] == [
-        "landscape:competitor_schema_not_required"
+        "feature:no_grounded_evidence",
+        "pricing:no_grounded_evidence",
+        "persona:no_grounded_evidence",
     ]

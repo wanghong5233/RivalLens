@@ -6,6 +6,11 @@ from pydantic import BaseModel, Field, computed_field, model_validator
 
 UserRole = Literal["pm", "founder", "sales", "investor"]
 FocusDimension = str
+# Output archetype (intent classification → adaptive output form). `comparison`:
+# head-to-head over a comparable competitor set (per-competitor feature/pricing/
+# persona schema applies). `landscape`: opportunity / trend / whitespace scan with
+# no fixed comparable set (per-competitor schema is optional, framing is a map).
+AnalysisArchetype = Literal["comparison", "landscape"]
 
 
 class RunIntakeDraft(BaseModel):
@@ -35,6 +40,8 @@ class RunIntakeDraft(BaseModel):
     market_scope: str | None = None
     time_context: str | None = None
     response_language: Literal["zh", "en"] | None = None
+    # Defaults to comparison to preserve legacy behavior; never gates completion.
+    analysis_archetype: AnalysisArchetype = "comparison"
 
     @computed_field
     @property

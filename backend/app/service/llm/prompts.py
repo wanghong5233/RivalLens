@@ -118,7 +118,7 @@ Rules:
     * "我们是做工业自动化设备销售的" / "我是销售运营" → user_role="sales"
     * "我们是初创公司创始人" / "I'm a co-founder" → user_role="founder"
     * "我们想对标 X、Y、Z" → competitors_explicit=["X","Y","Z"]
-    * "想了解 X 赛道有哪些玩家" with no names → competitors_discovery_mode=true
+    * "想了解 X 赛道有哪些竞品/厂商" with no names → competitors_discovery_mode=true
     * Industry phrases ("AI 编程"/"AI coding", "供应链"/"supply chain", "ERP"/"CRM") → domain_hint
     * "我们是某大厂 AI 工具团队" / "我们做的是一款 AI 简历工具" → self_product
     * "中国 vs 海外", "面向中小企业", "国内市场" → market_scope
@@ -139,7 +139,7 @@ Rules:
       "我们 vs 竞品", "选型", "battlecard", a list of named competitors.
     * "landscape" — the user wants opportunity / trend / whitespace / market
       scanning where there is NO fixed comparable product set; the entities found
-      are heterogeneous players or approaches, not apples-to-apples products.
+      are heterogeneous companies/products or approaches, not apples-to-apples products.
       Signals: "有哪些能赚钱的 X 项目", "X 赛道的机会", "怎么变现", "trends in X",
       "where is the opportunity", "市场全景". When in doubt between the two and the
       user is asking what to BUILD/PURSUE rather than which product to PICK, choose
@@ -193,6 +193,14 @@ Rules:
       (e.g. "[产品A] vs [产品B] · 企业版"); otherwise capture the domain
       (e.g. "智能制造 ERP 调研").
     * No quotation marks, no trailing punctuation.
+- User-facing wording contract (applies to clarify_request.question /
+  clarify_request.suggested_options / clarify_request.suggested_answer /
+  summary_title):
+    * Use professional product and business language.
+    * In Chinese, prefer terms such as 竞品 / 厂商 / 产品 / 企业 / 参与方.
+    * Avoid colloquial labels such as 玩家、玩具、玩具型.
+    * Keep statements neutral and decision-oriented; avoid slang, hype, and
+      emotional wording.
 - When action="ask", summary_title MUST be null.
 - Answer the user in the language of user_query (Chinese for Chinese queries, English for English).
 - Return a JSON object and nothing else.
@@ -860,9 +868,15 @@ def build_researcher_user_prompt(
     domain_hint: str | None = None,
     reference_urls: Sequence[str] | None = None,
     discovered_urls: Sequence[str] | None = None,
+    resolved_official_urls: Sequence[str] | None = None,
+    coverage_matrix: dict[str, object] | None = None,
 ) -> str:
     reference_urls_row = list(reference_urls) if reference_urls is not None else []
     discovered_urls_row = list(discovered_urls) if discovered_urls is not None else []
+    resolved_official_urls_row = (
+        list(resolved_official_urls) if resolved_official_urls is not None else []
+    )
+    coverage_matrix_row = coverage_matrix if isinstance(coverage_matrix, dict) else {}
     summary_block = compressed_summary.strip() if compressed_summary.strip() else "(none)"
     briefs_payload = truncate_for_prompt(
         list(observation_briefs)[-6:],
@@ -880,15 +894,18 @@ def build_researcher_user_prompt(
         f"- domain_hint: {domain_hint}\n"
         f"- reference_urls: {_json(reference_urls_row)}\n"
         f"- discovered_urls: {_json(discovered_urls_row)}\n"
+        f"- resolved_official_urls: {_json(resolved_official_urls_row)}\n"
+        f"- coverage_matrix: {_json(coverage_matrix_row)}\n"
         f"- compressed_summary: {summary_block}\n"
         f"- observation_briefs: {briefs_payload}\n\n"
         "Action guidance:\n"
-        "1) Prefer search_web -> fetch_url -> extract_structured for online collection.\n"
-        "2) Use fetch_url only with URLs from discovered_urls or reference_urls; pass the current research_topic as query when useful.\n"
-        "3) Use load_skill when domain_hint implies specialized schema or source routing.\n"
-        "4) Use finalize when pending_dimensions is empty or evidence is sufficient.\n"
-        "5) action_args.dimension must be one exact value from focus_dimensions; never create compound dimensions.\n"
-        "6) If proposing future focus_dimensions in summaries or tool context, keep each concise snake_case <= 32 chars.\n"
+        "1) Follow source-first: for each pending dimension, prioritize fetch_url on resolved_official_urls/reference_urls before search_web.\n"
+        "2) Use search_web only for uncovered gaps in coverage_matrix after source-first fetch attempts.\n"
+        "3) Use fetch_url only with URLs from resolved_official_urls, discovered_urls, or reference_urls; pass current research_topic as query when useful.\n"
+        "4) Use load_skill when domain_hint implies specialized schema or source routing.\n"
+        "5) Use finalize only when pending_dimensions is empty or coverage_matrix shows sufficient evidence.\n"
+        "6) action_args.dimension must be one exact value from focus_dimensions; never create compound dimensions.\n"
+        "7) If proposing future focus_dimensions in summaries or tool context, keep each concise snake_case <= 32 chars.\n"
     )
 
 
@@ -984,7 +1001,7 @@ _ANALYST_SCHEMA_TASK_COMPARISON = (
     "in a dedicated evidence-grounded stage."
 )
 _ANALYST_SCHEMA_TASK_LANDSCAPE = (
-    " This is a LANDSCAPE/opportunity scan: the entities are heterogeneous players or approaches, "
+    " This is a LANDSCAPE/opportunity scan: the entities are heterogeneous companies, products, or approaches, "
     "NOT an apples-to-apples product set. Do NOT force per-competitor schema rows; put the value in "
     "insights and comparisons "
     "framed as opportunity dimensions (monetization paths, feasibility, segments/whitespace, "
@@ -1129,7 +1146,7 @@ def build_writer_user_prompt(
     framing = (
         "Write an OPPORTUNITY/LANDSCAPE report (not a head-to-head battlecard): map the "
         "monetization paths, feasibility, market segments/whitespace, differentiation levers, and "
-        "risks for the user's goal, using the discovered players as illustrative evidence rather "
+        "risks for the user's goal, using the discovered companies/products as illustrative evidence rather "
         "than apples-to-apples comparison rows. "
         if analysis_archetype == "landscape"
         else "Write a battlecard with grounded evidence refs. "
@@ -1162,6 +1179,8 @@ def build_writer_user_prompt(
         "If unsupported_numeric_claims is non-empty, do not repeat those exact numbers unless the "
         "current evidence_briefs directly support them; use qualitative wording or mark strategic "
         "estimates as proposals. "
+        "Use business-report wording; in Chinese output, prefer 竞品/厂商/产品/企业 and avoid colloquial labels such as 玩家、玩具、玩具型; use neutral terms like 轻量级工具 or 非生产级工具 when needed. "
+        "Do not create a section titled Executive Summary or 执行摘要; use the top-level executive_summary field only. "
         "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates."
     )
 
@@ -1293,7 +1312,9 @@ def build_discovery_extract_user_prompt(
         "- Return ONLY a JSON object with this schema:\n"
         '  {"candidates":[{"name":"Product","is_competitor":true,'
         '"relevance_reason":"Why it competes in this market",'
-        '"evidence_quote":"Exact short quote copied from search_results"}]}\n'
+        '"evidence_quote":"Exact short quote copied from search_results",'
+        '"official_url":"Optional official website/product URL from search_results or null",'
+        '"source_domain":"Optional domain of official_url or null"}]}\n'
         "- Include only products or companies mentioned in search_results.\n"
         "- Set is_competitor=false when a mentioned entity is adjacent, media-only, or not a direct competitor.\n"
         "- evidence_quote must be an exact short substring copied from search_results.\n"
@@ -1336,6 +1357,7 @@ def build_discovery_extract_repair_user_prompt(
         "Rules:\n"
         "- Return ONLY a JSON object with a candidates list.\n"
         "- Each candidate must include name, is_competitor, relevance_reason, and evidence_quote.\n"
+        "- official_url/source_domain are optional, but when provided they must come from search results.\n"
         "- evidence_quote must be copied from the provided search results; if unavailable, return an empty candidates list.\n"
         "- Do not invent competitor names or quotes.\n"
         "- Return JSON object only."

@@ -110,9 +110,9 @@ function buildIdempotencyKey(): string {
 // Curated example prompts the user can one-click into the composer. Three
 // scenarios chosen to be mutually orthogonal on (industry × user role ×
 // requirement clarity), so a stranger to the system sees the full coverage:
-//   - trae_full       → TC-I7  PM     × AI Coding   × 高密度规格（端到端示范）
-//   - b2b_sales_ai    → TC-I1  Sales  × 工业 B2B    × 完全模糊（演示 Agent 引导圈外人）
-//   - ai_resume_track → TC-I2  Founder× HR Tech     × 半模糊（创业者给投资人讲故事）
+//   - trae_full       → TC-I7  PM     × AI Coding IDE × discovery + dense spec
+//   - hr_saas_ai      → TC-I1  PM     × HR SaaS       × discovery-first（竞品范围未知）
+//   - ai_resume_track → TC-I2  Founder× HR Tech       × 半模糊（创业者给投资人讲故事）
 interface ExamplePrompt {
   id: string;
   title: string;
@@ -145,25 +145,25 @@ const ANALYSIS_PIPELINE_STEPS: Array<{ title: string; text: string }> = [
 const EXAMPLE_PROMPTS: ExamplePrompt[] = [
   {
     id: "trae_full",
-    title: "TRAE 对标全球 AI 编程工具",
-    subtitle: "产品战略 · 多竞品 · 投入方向建议",
+    title: "TRAE 对标全球 AI 编程 IDE",
+    subtitle: "产品战略 · 发现未知竞品 · 投入方向建议",
     recommended: true,
     query:
-      "我们是字节 AIGC 创新孵化团队，TRAE 已在集团内部上线，下个月要给高层做汇报。请对标海外的 Cursor、GitHub Copilot、Windsurf 与国内的通义灵码、文心 Comate、豆包 AI 编程助手，重点看产品定位、定价、企业版能力，以及中国 vs 海外市场差异，最终回答 TRAE 下一步应该往哪个方向加大投入。",
+      "我们是字节 AIGC 创新孵化团队，TRAE 已在集团内部上线，下个月要给高层做汇报。目前我知道的外部对手有 Cursor、GitHub Copilot、Windsurf，国内有通义灵码、文心 Comate，但这个赛道迭代太快，我不确定还漏了哪些值得关注的竞品或厂商，请你主动发现补全。重点对比：产品定位与目标开发者画像、定价与商业化模型（个人版 vs 企业版）、AI Agent 化程度、代码库级上下文能力，以及中国 vs 海外的市场策略差异。最终结论要能直接回答：TRAE 下一步在哪几个方向有差异化机会，哪几个战场已经过于拥挤。",
   },
   {
-    id: "b2b_sales_ai",
-    title: "B2B 销售团队选 AI 提效工具",
-    subtitle: "圈外人 · 模糊需求 · Agent 主动澄清",
+    id: "hr_saas_ai",
+    title: "企业 HR SaaS 的 AI 能力竞调",
+    subtitle: "产品经理 · 竞品范围未知 · 让 Agent 主动摸底",
     query:
-      "我们是做工业自动化设备销售的，30 人销售团队，主要走线下拜访 + 邮件跟单，平均成交周期 3-6 个月。最近老板一直说要用 AI 提效，让我下周拿个方案出来，但我对 AI 工具完全不了解，市面上现在都有哪些适合 B2B 销售场景的？我们该看哪一类？",
+      "我们公司做企业 HR SaaS，现有简历筛选和入职管理两个模块，已在 200 多家中小企业上线。CTO 上周说竞品都在上 AI，让我做一次全面竞调，看看行业里 AI 都接了哪些功能、哪家做得最深。我对这块不太了解，国内只听说过北森、Moka，国外知道 Workday、SAP SuccessFactors，但 AI 能力这块完全不清楚谁是真的在做还是在堆概念。麻烦帮我把这个赛道的 AI 能力格局摸清楚，不要只分析我提到的这几家，如果有我不知道的新兴竞品或垂直厂商也一起带进来。",
   },
   {
     id: "ai_resume_track",
-    title: "AI 简历产品的赛道地图",
-    subtitle: "创业者 · 早期对标 · 给投资人讲故事",
+    title: "AI 求职工具的赛道全图",
+    subtitle: "创业者 · 早期对标 · 给种子轮投资人讲故事",
     query:
-      "我们三人团队在做「AI 简历优化 + 求职流程跟踪」工具，目标用户是国内应届生和 1-3 年工作经验的年轻人，MVP 已上线小红书内测。下个月要见种子轮投资人，需要搞清楚：海外像 Teal、Rezi 这种 AI 简历优化，LinkedIn 在做 AI 求职助手，国内也有公众号在卷类似产品，整个赛道到底有哪些玩家、各自切什么人群和功能、我们这个「简历 + 跟踪」的组合点位是不是已经被覆盖了？",
+      "我们三人团队在做「AI 简历优化 + 求职进度追踪」工具，目标用户是国内应届生和 1-3 年经验的年轻人，MVP 刚在小红书内测，反馈还不错。下个月要见种子轮投资人，需要把赛道讲清楚。海外我知道有 Teal、Rezi 做简历，LinkedIn 在推 AI 求职助手；国内感觉很乱，不知道谁是真正的竞品、谁只是个单点功能。请帮我把这个赛道的主要产品和公司找出来，梳理各自的用户定位、核心功能和商业模式，然后帮我判断「简历优化 + 求职追踪」的组合切入点还有没有空间。",
   },
 ];
 

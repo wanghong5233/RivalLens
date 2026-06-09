@@ -100,6 +100,7 @@ def test_filter_discovery_candidates_keeps_grounded_competitor() -> None:
     discovered, filtered_out, relevance = _filter_discovery_candidates(
         candidates=[candidate],
         snippets=[f"Article summary: {quote}"],
+        snippet_rows=[],
     )
 
     assert discovered == ["Cursor"]
@@ -124,6 +125,7 @@ def test_filter_discovery_candidates_filters_non_competitor() -> None:
     discovered, filtered_out, relevance = _filter_discovery_candidates(
         candidates=[candidate],
         snippets=["TechCrunch reported on AI coding tools."],
+        snippet_rows=[],
     )
 
     assert discovered == []
@@ -151,6 +153,7 @@ def test_filter_discovery_candidates_dedupes_alias_key() -> None:
     discovered, filtered_out, relevance = _filter_discovery_candidates(
         candidates=candidates,
         snippets=[quote],
+        snippet_rows=[],
     )
 
     assert discovered == ["OpenAI Codex"]
@@ -169,11 +172,48 @@ def test_filter_discovery_candidates_filters_grounding_miss() -> None:
     discovered, filtered_out, relevance = _filter_discovery_candidates(
         candidates=[candidate],
         snippets=["The page only mentions Cursor."],
+        snippet_rows=[],
     )
 
     assert discovered == []
     assert relevance == []
     assert filtered_out == [{"name": "Windsurf", "reason": "grounding_miss"}]
+
+
+def test_filter_discovery_candidates_backfills_validated_official_source() -> None:
+    quote = "Cursor is an AI code editor used by software teams."
+    candidate = SimpleNamespace(
+        name="Cursor",
+        is_competitor=True,
+        relevance_reason="AI coding product in the target market.",
+        evidence_quote=quote,
+        official_url=None,
+        source_domain=None,
+    )
+
+    discovered, filtered_out, relevance = _filter_discovery_candidates(
+        candidates=[candidate],
+        snippets=[f"Article summary: {quote}"],
+        snippet_rows=[
+            {
+                "text": quote,
+                "source_url": "https://cursor.com/pricing",
+                "source_title": "Cursor Pricing",
+            }
+        ],
+    )
+
+    assert discovered == ["Cursor"]
+    assert filtered_out == []
+    assert relevance == [
+        {
+            "name": "Cursor",
+            "relevance_reason": "AI coding product in the target market.",
+            "evidence_quote_preview": quote,
+            "official_url": "https://cursor.com/pricing",
+            "source_domain": "cursor.com",
+        }
+    ]
 
 
 @pytest.mark.asyncio

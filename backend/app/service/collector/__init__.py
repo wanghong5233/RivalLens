@@ -10,6 +10,11 @@ from service.collector.http_client import CollectorHTTPClient, FetchResponse, ge
 from service.collector.rate_limiter import PerHostLimiter
 from service.collector.registry import ChannelRegistry, get_channel_registry
 from service.collector.robots import RobotsDecision, RobotsGate
+from service.collector.source_resolver import (
+    SourcePage,
+    SourceResolutionResult,
+    resolve_official_sources,
+)
 
 __all__ = [
     "BaseChannel",
@@ -26,7 +31,10 @@ __all__ = [
     "RobotsBlocked",
     "RobotsDecision",
     "RobotsGate",
+    "SourcePage",
+    "SourceResolutionResult",
     "SourceType",
     "get_channel_registry",
     "get_collector_http_client",
+    "resolve_official_sources",
 ]

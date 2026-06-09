@@ -33,6 +33,19 @@ _TAVILY_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
+def _is_tavily_quota_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "usage limit",
+            "quota",
+            "exceeds your plan",
+            "upgrade your plan",
+        )
+    )
+
+
 @lru_cache
 def _get_tavily_rate_limiter() -> PerHostLimiter:
     return PerHostLimiter(qps=settings.COLLECTOR_PER_HOST_QPS)
@@ -68,6 +81,10 @@ async def _tavily_search(
         raise FetchTimeout(f"tavily search timed out: {exc}") from exc
     except TavilyUsageLimitExceededError as exc:
         raise RateLimited(f"tavily usage limit exceeded: {exc}") from exc
+    except TavilyForbiddenError as exc:
+        if _is_tavily_quota_error(exc):
+            raise RateLimited(f"tavily usage limit exceeded: {exc}") from exc
+        raise ChannelError(f"tavily search failed ({type(exc).__name__}): {exc}") from exc
     except _TAVILY_ERRORS as exc:
         # The remaining tavily errors are all auth/parameter failures from the
         # provider — translate to ChannelError so callers can keep treating

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from agents.state import AgentState
 from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph
@@ -19,6 +20,7 @@ from models.step import Step
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_source_type
 from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
+from service.collector.source_resolver import resolve_official_sources
 from service.event_bus import RunEventType, emit_run_event
 from service.desensitize import normalize_text_for_storage
 from service.llm.records import build_llm_call_record_from_mapping
@@ -61,6 +63,9 @@ def _build_initial_substate(
     market_scope: str | None,
     response_language: str | None,
     reference_urls: list[str],
+    resolved_official_urls: list[str],
+    resolved_official_hosts: list[str],
+    resolved_source_pages: list[dict[str, str]],
 ) -> ResearcherSubState:
     max_turns = max(request.max_iterations or MAX_REACT_TURNS, len(focus_dimensions))
     return {
@@ -89,7 +94,48 @@ def _build_initial_substate(
         "response_language": response_language,
         "reference_urls": reference_urls,
         "discovered_urls": [],
+        "resolved_official_urls": resolved_official_urls,
+        "resolved_official_hosts": resolved_official_hosts,
+        "resolved_source_pages": resolved_source_pages,
+        "search_call_count": 0,
+        "official_fetch_count": 0,
+        "coverage_matrix": {},
     }
+
+
+def _candidate_source_urls_for_competitor(
+    *,
+    state: AgentState,
+    competitor_id: str,
+    reference_urls: list[str],
+) -> list[str]:
+    urls: list[str] = []
+    discovered_sources_raw = state.get("discovered_competitor_sources")
+    if isinstance(discovered_sources_raw, dict):
+        payload = discovered_sources_raw.get(competitor_id)
+        if isinstance(payload, dict):
+            official_url_raw = payload.get("official_url")
+            if isinstance(official_url_raw, str) and official_url_raw.strip():
+                urls.append(official_url_raw.strip())
+    plan_tree_raw = state.get("plan_tree")
+    if isinstance(plan_tree_raw, dict):
+        plan_sources_raw = plan_tree_raw.get("competitor_sources")
+        if isinstance(plan_sources_raw, dict):
+            plan_payload = plan_sources_raw.get(competitor_id)
+            if isinstance(plan_payload, dict):
+                plan_url_raw = plan_payload.get("official_url")
+                if isinstance(plan_url_raw, str) and plan_url_raw.strip():
+                    urls.append(plan_url_raw.strip())
+    urls.extend(reference_urls)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in urls:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(item)
+    return ordered
 
 
 def _build_evidence_rows(
@@ -101,6 +147,7 @@ def _build_evidence_rows(
     evidence_drafts: list[dict[str, object]],
     observations_log: list[dict[str, object]],
     default_competitor_id: str,
+    resolved_official_hosts: set[str] | None = None,
 ) -> tuple[list[EvidenceRecord], list[str], dict[str, object]]:
     dropped_reasons: dict[str, int] = {}
 
@@ -124,6 +171,34 @@ def _build_evidence_rows(
             normalize_text_for_storage(source_url or ""),
             quote_hash,
         )
+
+    normalized_runtime_official_hosts = {
+        host.lower().removeprefix("www.").strip()
+        for host in (resolved_official_hosts or set())
+        if isinstance(host, str) and host.strip()
+    }
+
+    def official_hosts_for(competitor_id: str) -> set[str]:
+        if competitor_id == default_competitor_id and normalized_runtime_official_hosts:
+            return set(normalized_runtime_official_hosts)
+        return official_hosts_for_competitor(competitor_id)
+
+    def source_matches_hosts(
+        *,
+        source_url: str | None,
+        hosts: set[str],
+    ) -> bool | None:
+        if not source_url or not hosts:
+            return None
+        host = urlsplit(source_url).netloc.lower().removeprefix("www.")
+        if not host:
+            return None
+        normalized_hosts = {item.lower().removeprefix("www.") for item in hosts}
+        if host in normalized_hosts:
+            return True
+        if any(host.endswith(f".{item}") for item in normalized_hosts):
+            return True
+        return False
 
     effective_drafts: list[dict[str, object]] = []
     seen_keys: set[tuple[str, str | None, str, str]] = set()
@@ -309,14 +384,20 @@ def _build_evidence_rows(
             source_url = normalize_text_for_storage(source_url)
         if source_title is not None:
             source_title = normalize_text_for_storage(source_title)
+        competitor_official_hosts = official_hosts_for(competitor_id_raw)
         inferred_source_type = infer_source_type(
             source_url=source_url,
-            official_hosts=official_hosts_for_competitor(competitor_id_raw),
+            official_hosts=competitor_official_hosts,
         )
-        competitor_source_match = source_matches_competitor(
+        competitor_source_match = source_matches_hosts(
             source_url=source_url,
-            competitor_id=competitor_id_raw,
+            hosts=competitor_official_hosts,
         )
+        if competitor_source_match is None:
+            competitor_source_match = source_matches_competitor(
+                source_url=source_url,
+                competitor_id=competitor_id_raw,
+            )
         official_source_types = {"official_site", "docs", "pricing_page"}
         if normalized_source_type == "article" and inferred_source_type != "article":
             normalized_source_type = inferred_source_type
@@ -440,6 +521,16 @@ async def researcher_node(state: AgentState) -> AgentState:
         if isinstance(reference_urls_raw, list)
         else []
     )
+    source_candidate_urls = _candidate_source_urls_for_competitor(
+        state=state,
+        competitor_id=request.competitor_id,
+        reference_urls=reference_urls,
+    )
+    resolved_sources = await resolve_official_sources(
+        competitor_id=request.competitor_id,
+        competitor_name=request.competitor_id,
+        candidate_urls=source_candidate_urls,
+    )
 
     focus_dimensions = _resolve_focus_dimensions(request=request)
     step_id = make_id("step_")
@@ -462,6 +553,16 @@ async def researcher_node(state: AgentState) -> AgentState:
         market_scope=market_scope,
         response_language=response_language,
         reference_urls=reference_urls,
+        resolved_official_urls=list(resolved_sources.official_urls),
+        resolved_official_hosts=list(resolved_sources.official_hosts),
+        resolved_source_pages=[
+            {
+                "url": page.url,
+                "source_type": page.source_type,
+                "signal": page.signal,
+            }
+            for page in resolved_sources.key_pages
+        ],
     )
     subgraph_output = await subgraph.ainvoke(subgraph_input)
 
@@ -474,11 +575,21 @@ async def researcher_node(state: AgentState) -> AgentState:
         evidence_drafts=list(subgraph_output.get("evidence_drafts", [])),
         observations_log=list(subgraph_output.get("observations_log", [])),
         default_competitor_id=request.competitor_id,
+        resolved_official_hosts=set(resolved_sources.official_hosts),
     )
     llm_call_rows = _build_llm_call_rows(
         step_id=step_id,
         llm_calls=list(subgraph_output.get("llm_calls", [])),
     )
+    coverage_matrix_raw = subgraph_output.get("coverage_matrix", {})
+    coverage_matrix = coverage_matrix_raw if isinstance(coverage_matrix_raw, dict) else {}
+    uncovered_dimensions = [
+        dimension
+        for dimension, row in coverage_matrix.items()
+        if isinstance(dimension, str)
+        and isinstance(row, dict)
+        and not bool(row.get("covered"))
+    ]
     step_payload = {
         **request.model_dump(),
         "domain_hint": domain_hint,
@@ -488,6 +599,28 @@ async def researcher_node(state: AgentState) -> AgentState:
         "react_turn_count": int(subgraph_output.get("turn_count", 0)),
         "compression_count": int(subgraph_output.get("compression_count", 0)),
         "queried_dimensions": list(subgraph_output.get("queried_dimensions", [])),
+        "search_call_count": int(subgraph_output.get("search_call_count", 0)),
+        "official_fetch_count": int(subgraph_output.get("official_fetch_count", 0)),
+        "coverage_matrix": coverage_matrix,
+        "coverage_summary": {
+            "covered_dimension_count": len(coverage_matrix) - len(uncovered_dimensions),
+            "total_dimension_count": len(coverage_matrix),
+            "uncovered_dimensions": uncovered_dimensions,
+        },
+        "source_resolution": {
+            "attempted_candidate_count": resolved_sources.attempted_candidate_count,
+            "validated_candidate_count": resolved_sources.validated_candidate_count,
+            "official_hosts": list(resolved_sources.official_hosts),
+            "official_urls": list(resolved_sources.official_urls),
+            "resolved_key_pages": [
+                {
+                    "url": page.url,
+                    "source_type": page.source_type,
+                    "signal": page.signal,
+                }
+                for page in resolved_sources.key_pages
+            ],
+        },
         "final_summary": str(subgraph_output.get("final_summary", "")),
         "dropped_dimensions": dropped_dimensions,
     }
