@@ -1,23 +1,19 @@
-import { useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import { Link, useParams } from "react-router-dom";
-import remarkGfm from "remark-gfm";
+import { useEffect, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useRunReport } from "@/api/hooks";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { Logo } from "@/components/Logo";
+import { ReportArticle } from "@/components/report/ReportArticle";
 import { Skeleton } from "@/components/ui/skeleton";
-import { toCitationLinkMarkdown, transformEvidenceMarkdownUrl } from "@/lib/evidenceLinks";
 
 export function SharedReportPage(): JSX.Element {
   const { runId } = useParams<{ runId: string }>();
+  const [searchParams] = useSearchParams();
+  const isPrintMode = searchParams.get("print") === "1";
   const [isEvidenceDrawerOpen, setIsEvidenceDrawerOpen] = useState(false);
   const [activeEvidenceIds, setActiveEvidenceIds] = useState<string[]>([]);
   const reportQuery = useRunReport(runId ?? "", { enabled: Boolean(runId) });
-  const reportWithCitationLinks = useMemo(
-    () => toCitationLinkMarkdown(reportQuery.data?.content_markdown ?? ""),
-    [reportQuery.data?.content_markdown],
-  );
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0 || !runId) {
@@ -27,13 +23,22 @@ export function SharedReportPage(): JSX.Element {
     setIsEvidenceDrawerOpen(true);
   }
 
+  useEffect(() => {
+    if (!isPrintMode || reportQuery.isLoading || reportQuery.isError || reportQuery.data === undefined) {
+      return;
+    }
+    window.setTimeout(() => window.print(), 150);
+  }, [isPrintMode, reportQuery.data, reportQuery.isError, reportQuery.isLoading]);
+
   return (
-    <section className="space-y-6 py-8">
-      <div className="flex items-center justify-between">
+    <section className={isPrintMode ? "space-y-4 py-6" : "space-y-6 py-8"}>
+      <div className="no-print flex items-center justify-between">
         <Logo size="sm" />
-        <Link to="/app" className="text-micro text-primary hover:underline">
-          进入工作区
-        </Link>
+        {isPrintMode ? null : (
+          <Link to="/app" className="text-micro text-primary hover:underline">
+            进入工作区
+          </Link>
+        )}
       </div>
 
       {reportQuery.isLoading && <Skeleton className="h-60 w-full" />}
@@ -45,31 +50,10 @@ export function SharedReportPage(): JSX.Element {
       )}
 
       {reportQuery.data && (
-        <article className="prose prose-invert max-w-none rounded-lg border border-white/[0.06] bg-surface p-8 text-caption leading-7 prose-headings:text-foreground prose-p:text-foreground-muted prose-strong:text-foreground prose-a:text-primary">
-          <ReactMarkdown
-            components={{
-              a: ({ href, children }) => {
-                if (href?.startsWith("evidence://")) {
-                  const evidenceId = href.replace("evidence://", "");
-                  return (
-                    <button
-                      className="rounded bg-primary/10 px-1.5 py-0.5 text-micro text-primary ring-1 ring-inset ring-primary/20 hover:bg-primary/20"
-                      onClick={() => openEvidenceDrawer([evidenceId])}
-                      type="button"
-                    >
-                      {children}
-                    </button>
-                  );
-                }
-                return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
-              },
-            }}
-            remarkPlugins={[remarkGfm]}
-            urlTransform={transformEvidenceMarkdownUrl}
-          >
-            {reportWithCitationLinks}
-          </ReactMarkdown>
-        </article>
+        <ReportArticle
+          markdown={reportQuery.data.content_markdown}
+          onEvidenceClick={openEvidenceDrawer}
+        />
       )}
 
       <p className="text-center text-micro text-foreground-subtle">

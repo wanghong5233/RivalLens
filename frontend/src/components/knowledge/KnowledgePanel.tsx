@@ -28,41 +28,8 @@ const MATURITY_LABELS: Record<NonNullable<KnowledgeFeature["maturity"]>, string>
   leading: "领先",
 };
 
-const COVERAGE_LABELS: Record<string, string> = {
-  complete: "完整",
-  partial: "部分",
-  insufficient_data: "数据不足/未公开",
-  missing: "未采到",
-};
-
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
-}
-
-function getCoverageRows(knowledge: RunKnowledgeResponse | null): Array<{
-  competitorId: string;
-  dimension: string;
-  status: string;
-}> {
-  if (knowledge === null) {
-    return [];
-  }
-  return Object.entries(knowledge.coverage).flatMap(([competitorId, dimensions]) =>
-    Object.entries(dimensions).map(([dimension, status]) => ({
-      competitorId,
-      dimension,
-      status,
-    })),
-  );
-}
-
-function hasCoverageDeficit(knowledge: RunKnowledgeResponse | null): boolean {
-  if (knowledge === null) {
-    return false;
-  }
-  return Object.values(knowledge.coverage).some((dimensions) =>
-    Object.values(dimensions).some((status) => status === "insufficient_data" || status === "missing"),
-  );
 }
 
 function getCompetitorIds(knowledge: RunKnowledgeResponse | null): string[] {
@@ -135,25 +102,6 @@ function EmptyBlock({ text }: { text: string }): JSX.Element {
   return (
     <div className="rounded-md border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
       {text}
-    </div>
-  );
-}
-
-function CoverageStrip({ knowledge }: { knowledge: RunKnowledgeResponse | null }): JSX.Element | null {
-  const rows = getCoverageRows(knowledge);
-  if (rows.length === 0) {
-    return null;
-  }
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {rows.map((row) => (
-        <Badge
-          key={`${row.competitorId}-${row.dimension}`}
-          variant={row.status === "complete" ? "success" : "secondary"}
-        >
-          {row.competitorId}/{row.dimension}: {COVERAGE_LABELS[row.status] ?? row.status}
-        </Badge>
-      ))}
     </div>
   );
 }
@@ -380,8 +328,6 @@ export function KnowledgePanel({
   const pricingGroups = useMemo(() => groupPricings(knowledge?.pricings ?? []), [knowledge?.pricings]);
   const feedbackGroups = useMemo(() => groupFeedback(knowledge?.feedback ?? []), [knowledge?.feedback]);
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
-  const analysisArchetype = knowledge?.analysis_archetype ?? "comparison";
-  const hasCoverageDeficits = useMemo(() => hasCoverageDeficit(knowledge), [knowledge]);
   const featureCount = knowledge?.features.length ?? 0;
   const pricingCount = knowledge?.pricings.length ?? 0;
   const personaCount = knowledge?.personas.length ?? 0;
@@ -408,17 +354,16 @@ export function KnowledgePanel({
 
   return (
     <div className={cn("space-y-5", compact && "space-y-4")}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
         <div>
           <h3 className="flex items-center gap-2 text-base font-semibold text-foreground">
             <Boxes className="h-4 w-4 text-primary" />
-            Schema 三件套
+            竞品知识总览
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            schema_version: {knowledge?.schema_version ?? "-"} · archetype: {analysisArchetype}
+            基于已采集公开证据抽取的功能、定价、用户画像与用户反馈。
           </p>
         </div>
-        <CoverageStrip knowledge={knowledge} />
       </div>
 
       <div className="grid gap-2 sm:grid-cols-4">
@@ -430,11 +375,7 @@ export function KnowledgePanel({
 
       {!hasKnowledge ? (
         <EmptyBlock
-          text={
-            hasCoverageDeficits
-              ? "当前三件套为空且 coverage 显示数据不足/未公开：系统不会编造无证据的功能、定价或用户画像。"
-              : `当前 ${analysisArchetype} run 尚未落库功能树、定价模型、用户画像或用户反馈；可能仍在抽取或等待证据入库。`
-          }
+          text="当前暂无可展示的竞品知识。通常是公开证据不足、目标信息未公开，或抽取仍在处理中。"
         />
       ) : null}
 

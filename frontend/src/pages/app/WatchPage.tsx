@@ -1,15 +1,32 @@
-import { Plus, Trash2 } from "lucide-react";
+import { ArrowUpRight, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
-import { useCreateWatchlistItem, useDeleteWatchlistItem, useWatchlist } from "@/api/hooks";
+import { useCreateWatchlistItem, useDeleteWatchlistItem, useWatchlistDigest } from "@/api/hooks";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
+import { formatDateTime, formatRelativeTime } from "@/lib/format";
+
+function toConfidenceVariant(confidence: string): "success" | "warning" | "danger" | "secondary" {
+  const normalized = confidence.trim().toLowerCase();
+  if (normalized === "high") {
+    return "success";
+  }
+  if (normalized === "medium") {
+    return "warning";
+  }
+  if (normalized === "low") {
+    return "danger";
+  }
+  return "secondary";
+}
 
 export function WatchPage(): JSX.Element {
   const [newCompetitor, setNewCompetitor] = useState("");
-  const watchlistQuery = useWatchlist();
+  const watchlistDigestQuery = useWatchlistDigest();
   const createMutation = useCreateWatchlistItem();
   const deleteMutation = useDeleteWatchlistItem();
 
@@ -38,7 +55,9 @@ export function WatchPage(): JSX.Element {
     <section className="space-y-6">
       <header>
         <h1 className="text-h1 text-foreground">竞品追踪</h1>
-        <p className="mt-1 text-caption text-foreground-muted">添加竞品到追踪列表，持续监控更新动态。</p>
+        <p className="mt-1 text-caption text-foreground-muted">
+          添加竞品到追踪列表，自动汇总历史分析里的最新结论动态。
+        </p>
       </header>
 
       <div className="flex gap-2">
@@ -54,25 +73,101 @@ export function WatchPage(): JSX.Element {
         </Button>
       </div>
 
-      {watchlistQuery.isLoading && <Skeleton className="h-32 w-full" />}
+      {watchlistDigestQuery.isLoading && (
+        <div className="space-y-3">
+          <Skeleton className="h-36 w-full" />
+          <Skeleton className="h-36 w-full" />
+        </div>
+      )}
 
-      {watchlistQuery.data && watchlistQuery.data.length === 0 && (
+      {watchlistDigestQuery.data && watchlistDigestQuery.data.length === 0 && (
         <div className="rounded-lg border border-white/[0.06] bg-surface p-8 text-center text-caption text-foreground-muted">
           追踪列表为空，添加竞品开始持续监控。
         </div>
       )}
 
-      <div className="space-y-1">
-        {(watchlistQuery.data ?? []).map((item) => (
-          <div key={item.watch_id} className="flex items-center justify-between rounded-md px-3 py-2.5 hover:bg-white/[0.03]">
-            <div>
-              <p className="text-caption font-medium text-foreground">{item.competitor_id}</p>
-              {item.note && <p className="text-micro text-foreground-subtle">{item.note}</p>}
+      <div className="space-y-4">
+        {(watchlistDigestQuery.data ?? []).map((item) => (
+          <article
+            key={item.watch_id}
+            className="overflow-hidden rounded-lg border border-white/[0.06] bg-surface"
+          >
+            <div className="flex items-start justify-between gap-3 px-4 py-3">
+              <div>
+                <h2 className="text-caption font-semibold text-foreground">{item.competitor_id}</h2>
+                {item.note ? (
+                  <p className="mt-0.5 text-micro text-foreground-subtle">{item.note}</p>
+                ) : null}
+                <p className="mt-1 text-micro text-foreground-subtle">
+                  追踪自 {formatDateTime(item.created_at)}
+                </p>
+              </div>
+              <div className="flex items-start gap-2">
+                <div className="flex flex-wrap justify-end gap-1.5">
+                  <Badge variant="secondary">{item.insight_count} 条洞察</Badge>
+                  <Badge variant="secondary">{item.run_count} 次分析</Badge>
+                  <Badge variant="outline">
+                    最近 {item.last_updated_at ? formatRelativeTime(item.last_updated_at) : "-"}
+                  </Badge>
+                </div>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => void handleDelete(item.watch_id)}
+                  aria-label="移除"
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-foreground-muted" />
+                </Button>
+              </div>
             </div>
-            <Button size="icon" variant="ghost" onClick={() => void handleDelete(item.watch_id)} aria-label="移除">
-              <Trash2 className="h-3.5 w-3.5 text-foreground-muted" />
-            </Button>
-          </div>
+
+            <div className="border-t border-white/[0.04] px-4 py-3">
+              {item.items.length === 0 ? (
+                <div className="rounded-md border border-dashed border-white/[0.1] bg-black/10 px-3 py-4 text-micro text-foreground-subtle">
+                  暂无分析洞察，先做一次分析后这里会自动出现最新动态。
+                </div>
+              ) : (
+                <ul className="space-y-2.5">
+                  {item.items.map((insight) => (
+                    <li key={insight.conclusion_id} className="rounded-md border border-white/[0.05] bg-black/10 p-3">
+                      <div className="flex flex-wrap items-center gap-1.5 text-micro">
+                        <Badge variant="outline" className="capitalize">
+                          {insight.section}
+                        </Badge>
+                        <Badge variant={toConfidenceVariant(insight.confidence)}>
+                          {insight.confidence}
+                        </Badge>
+                        <span className="text-foreground-subtle">
+                          {formatRelativeTime(insight.created_at)}
+                        </span>
+                      </div>
+                      <p className="mt-1.5 line-clamp-2 text-caption text-foreground-muted">
+                        {insight.claim}
+                      </p>
+                      <Link
+                        className="mt-1.5 inline-flex items-center gap-1 text-micro text-primary hover:underline"
+                        to={`/app/runs/${insight.run_id}`}
+                      >
+                        来源：{insight.run_title}
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 border-t border-white/[0.04] px-4 py-3">
+              {item.latest_run_id ? (
+                <Button asChild size="sm" variant="outline">
+                  <Link to={`/app/runs/${item.latest_run_id}`}>查看最近分析</Link>
+                </Button>
+              ) : null}
+              <Button asChild size="sm" variant="ghost">
+                <Link to="/app/runs/new">去分析</Link>
+              </Button>
+            </div>
+          </article>
         ))}
       </div>
     </section>

@@ -413,6 +413,29 @@ export interface WatchlistItemResponse {
   created_at: string;
 }
 
+export interface WatchInsightItemResponse {
+  conclusion_id: string;
+  run_id: string;
+  run_title: string;
+  section: string;
+  claim: string;
+  confidence: string;
+  evidence_ids: string[];
+  created_at: string;
+}
+
+export interface WatchlistDigestItemResponse {
+  watch_id: string;
+  competitor_id: string;
+  note: string | null;
+  created_at: string;
+  insight_count: number;
+  run_count: number;
+  last_updated_at: string | null;
+  latest_run_id: string | null;
+  items: WatchInsightItemResponse[];
+}
+
 export interface WatchlistCreateRequest {
   competitor_id: string;
   note?: string | null;

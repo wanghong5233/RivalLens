@@ -18,7 +18,7 @@ const STANCE_VARIANT: Record<string, "success" | "warning" | "danger" | "seconda
 };
 
 const STANCE_LABEL: Record<string, string> = {
-  leader: "领先",
+  leader: "相对领先",
   competitive: "可竞争",
   laggard: "落后",
   unknown: "未知",
@@ -39,6 +39,11 @@ export function ComparisonMatrix({
   const competitors = Array.from(
     new Set(comparisons.flatMap((comparison) => comparison.cells.map((cell) => cell.competitor_id))),
   ).sort();
+  const allCells = comparisons.flatMap((comparison) => comparison.cells);
+  const qualifiedCells = allCells.filter((cell) => cell.stance !== "unknown");
+  const leaderCellCount = qualifiedCells.filter((cell) => cell.stance === "leader").length;
+  const leaderDominant =
+    qualifiedCells.length > 0 && leaderCellCount / qualifiedCells.length >= 0.8;
 
   if (competitors.length === 0) {
     return null;
@@ -51,6 +56,14 @@ export function ComparisonMatrix({
         <p className="mt-0.5 text-micro text-foreground-subtle">
           {comparisons.length} 个维度 · {competitors.length} 个竞品
         </p>
+        <p className="mt-1 text-micro text-foreground-subtle">
+          标签含义：相对领先=该维度证据更完整或优势更明确；可竞争=差距不显著；落后=存在明显短板；未知=证据不足。
+        </p>
+        {leaderDominant ? (
+          <p className="mt-1 text-micro text-amber-300">
+            当前矩阵「相对领先」占比偏高，区分度不足；建议结合完整报告与证据细节判读。
+          </p>
+        ) : null}
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-full table-fixed border-collapse">

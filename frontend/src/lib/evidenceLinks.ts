@@ -1,6 +1,6 @@
 import { defaultUrlTransform } from "react-markdown";
 
-const CITATION_REGEX = /\[(ev_[a-zA-Z0-9_]+)\]/g;
+const CITATION_REGEX = /\[(ev_[a-zA-Z0-9_]+)\](?!\()/g;
 const EVIDENCE_URL_PREFIX = "evidence://";
 
 function asNonEmptyString(value: unknown): string | null {
@@ -25,9 +25,20 @@ function buildEvidenceLink(runId: string, evidenceId: string): string {
 }
 
 export function toCitationLinkMarkdown(markdown: string): string {
+  const citationIndexByEvidenceId = new Map<string, number>();
+  let nextIndex = 1;
   return markdown.replace(
     CITATION_REGEX,
-    (_match, evidenceId: string) => `[${evidenceId}](${EVIDENCE_URL_PREFIX}${evidenceId})`,
+    (_match, evidenceId: string) => {
+      const knownIndex = citationIndexByEvidenceId.get(evidenceId);
+      if (knownIndex !== undefined) {
+        return `[E${knownIndex}](${EVIDENCE_URL_PREFIX}${evidenceId})`;
+      }
+      const currentIndex = nextIndex;
+      citationIndexByEvidenceId.set(evidenceId, currentIndex);
+      nextIndex += 1;
+      return `[E${currentIndex}](${EVIDENCE_URL_PREFIX}${evidenceId})`;
+    },
   );
 }
 

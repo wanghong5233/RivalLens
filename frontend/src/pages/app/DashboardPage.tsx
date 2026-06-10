@@ -66,7 +66,7 @@ export function DashboardPage(): JSX.Element {
 
   const latestRuns = latestRunsQuery.data?.items ?? [];
   const continueRun = latestRuns.find((i) => i.status === "running" || i.status === "failed");
-  const hasActiveHistoryFilter = statusFilter !== "all" || searchKeyword.trim().length > 0;
+  const hasAnyHistoryTasks = (runsQuery.data?.total ?? 0) > 0;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
   const totalPages = Math.max(1, Math.ceil((runsQuery.data?.total ?? 0) / PAGE_SIZE));
 
@@ -169,8 +169,8 @@ export function DashboardPage(): JSX.Element {
   }
 
   async function handleClearCurrentFilter(): Promise<void> {
-    if (!hasActiveHistoryFilter) {
-      pushToast({ title: "请先选择筛选条件", description: "清空全部历史请使用危险操作区。", variant: "warning" });
+    if (!hasAnyHistoryTasks) {
+      pushToast({ title: "暂无可清空任务", variant: "warning" });
       return;
     }
     if (!window.confirm("将清空当前筛选下的历史任务（运行中任务不会删除）。此操作不可恢复，确定继续吗？")) {
@@ -329,7 +329,7 @@ export function DashboardPage(): JSX.Element {
             <Button
               size="sm"
               variant="ghost"
-              disabled={clearRunsMutation.isPending || !hasActiveHistoryFilter}
+              disabled={clearRunsMutation.isPending || !hasAnyHistoryTasks}
               onClick={() => void handleClearCurrentFilter()}
             >
               清空当前筛选

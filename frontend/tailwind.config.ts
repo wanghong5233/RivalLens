@@ -1,3 +1,4 @@
+import typography from "@tailwindcss/typography";
 import type { Config } from "tailwindcss";
 
 export default {
@@ -82,7 +83,32 @@ export default {
         raised: "0 4px 16px -4px rgb(0 0 0 / 0.5), 0 0 0 1px rgb(255 255 255 / 0.05)",
         glow: "0 0 20px -5px hsl(200 90% 52% / 0.3)",
       },
+      typography: {
+        // Map the report `prose` theme onto our design tokens so Markdown
+        // documents render with the same dark palette as the rest of the app.
+        DEFAULT: {
+          css: {
+            maxWidth: "none",
+            "--tw-prose-body": "hsl(var(--foreground-muted))",
+            "--tw-prose-headings": "hsl(var(--foreground))",
+            "--tw-prose-lead": "hsl(var(--foreground-muted))",
+            "--tw-prose-links": "hsl(var(--primary))",
+            "--tw-prose-bold": "hsl(var(--foreground))",
+            "--tw-prose-counters": "hsl(var(--foreground-subtle))",
+            "--tw-prose-bullets": "hsl(var(--primary) / 0.5)",
+            "--tw-prose-hr": "hsl(var(--border))",
+            "--tw-prose-quotes": "hsl(var(--foreground))",
+            "--tw-prose-quote-borders": "hsl(var(--primary) / 0.5)",
+            "--tw-prose-captions": "hsl(var(--foreground-subtle))",
+            "--tw-prose-code": "hsl(var(--foreground))",
+            "--tw-prose-pre-code": "hsl(var(--foreground))",
+            "--tw-prose-pre-bg": "hsl(var(--color-raised))",
+            "--tw-prose-th-borders": "hsl(var(--border))",
+            "--tw-prose-td-borders": "hsl(var(--border))",
+          },
+        },
+      },
     },
   },
-  plugins: [],
+  plugins: [typography],
 } satisfies Config;

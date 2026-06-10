@@ -74,13 +74,6 @@ const WORKSPACE_CHILDREN = [
     },
   },
   {
-    path: "compare",
-    lazy: async () => {
-      const module = await import("@/pages/app/ComparePage");
-      return { Component: module.ComparePage };
-    },
-  },
-  {
     path: "watch",
     lazy: async () => {
       const module = await import("@/pages/app/WatchPage");

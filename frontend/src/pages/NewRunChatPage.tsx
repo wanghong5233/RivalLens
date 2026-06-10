@@ -16,7 +16,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import {
   fetchRunIntakeSession,
@@ -375,6 +375,7 @@ function checklistPhaseLabel(phase: ChecklistPhase): string {
 
 export function NewRunChatPage(): JSX.Element {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const createIntake = useCreateRunIntake();
   const replyIntake = useReplyRunIntake();
 
@@ -394,6 +395,30 @@ export function NewRunChatPage(): JSX.Element {
   const ghostShownMessageIdsRef = useRef<Set<string>>(new Set());
   const createIdempotencyKeyRef = useRef<string | null>(null);
   const createIdempotencyQueryRef = useRef<string | null>(null);
+  const freshStartToken = searchParams.get("fresh");
+
+  const resetIntakeSession = useCallback(() => {
+    sessionStorage.removeItem(INTAKE_SESSION_KEY);
+    setRunId(null);
+    setDraft(null);
+    setMessages([{ id: "welcome", kind: "assistant.welcome", text: WELCOME_TEXT }]);
+    setStatus("idle");
+    setComposerText("");
+    setComposerOptions([]);
+    setReportDepth("quick");
+    setSelectedExampleId(null);
+    ghostShownMessageIdsRef.current.clear();
+    createIdempotencyKeyRef.current = null;
+    createIdempotencyQueryRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (freshStartToken === null) {
+      return;
+    }
+    resetIntakeSession();
+    navigate("/app/runs/new", { replace: true });
+  }, [freshStartToken, navigate, resetIntakeSession]);
 
   // Auto-scroll the chat thread to the latest message.
   useEffect(() => {
@@ -405,6 +430,10 @@ export function NewRunChatPage(): JSX.Element {
   // thread from history + pending_clarify so a refresh resumes the current question.
   const restoredRef = useRef(false);
   useEffect(() => {
+    if (freshStartToken !== null) {
+      sessionStorage.removeItem(INTAKE_SESSION_KEY);
+      return;
+    }
     if (restoredRef.current) {
       return;
     }
@@ -465,7 +494,7 @@ export function NewRunChatPage(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [freshStartToken]);
 
   const currentClarify = useMemo<ChatMessage | null>(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {

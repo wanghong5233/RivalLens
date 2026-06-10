@@ -2,6 +2,7 @@ import {
   useMutation,
   type UseMutationResult,
   useQuery,
+  useQueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query";
 
@@ -33,6 +34,7 @@ import type {
   SkillCandidateReviewRequest,
   SkillCandidateReviewResponse,
   WatchlistCreateRequest,
+  WatchlistDigestItemResponse,
   WatchlistItemResponse,
 } from "@/api/types";
 
@@ -115,6 +117,11 @@ async function fetchRunComparisons(runId: string): Promise<RunComparisonsRespons
 
 async function fetchWatchlist(): Promise<WatchlistItemResponse[]> {
   const { data } = await apiClient.get<WatchlistItemResponse[]>("/api/watchlist");
+  return data;
+}
+
+async function fetchWatchlistDigest(): Promise<WatchlistDigestItemResponse[]> {
+  const { data } = await apiClient.get<WatchlistDigestItemResponse[]>("/api/watchlist/digest");
   return data;
 }
 
@@ -402,6 +409,13 @@ export function useWatchlist(): UseQueryResult<WatchlistItemResponse[], Error> {
   });
 }
 
+export function useWatchlistDigest(): UseQueryResult<WatchlistDigestItemResponse[], Error> {
+  return useQuery({
+    queryKey: ["watchlist-digest"],
+    queryFn: fetchWatchlistDigest,
+  });
+}
+
 export function useRunEvidence(
   runId: string,
   query: RunEvidenceQuery = {},
@@ -502,14 +516,28 @@ export function useCreateWatchlistItem(): UseMutationResult<
   Error,
   WatchlistCreateRequest
 > {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: createWatchlistItem,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["watchlist"] }),
+        queryClient.invalidateQueries({ queryKey: ["watchlist-digest"] }),
+      ]);
+    },
   });
 }
 
 export function useDeleteWatchlistItem(): UseMutationResult<WatchlistItemResponse, Error, string> {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: deleteWatchlistItem,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["watchlist"] }),
+        queryClient.invalidateQueries({ queryKey: ["watchlist-digest"] }),
+      ]);
+    },
   });
 }
 

@@ -397,11 +397,17 @@ export function buildRunTraceDag(trace: RunTraceResponse): DagBuildResult {
   }
 
   const edges: DagEdge[] = [];
+  const seenEdges = new Set<string>();
   let edgeIndex = 0;
   const addEdge = (source: string, target: string, options: AddEdgeOptions = {}): void => {
     if (!knownNodeIds.has(source) || !knownNodeIds.has(target) || source === target) {
       return;
     }
+    const dedupeKey = `${source}->${target}`;
+    if (seenEdges.has(dedupeKey)) {
+      return;
+    }
+    seenEdges.add(dedupeKey);
     const sourceStatus = options.sourceStatus ?? nodeStatusById.get(source) ?? "pending";
     const strokeColor = statusToStrokeColor(sourceStatus);
     edges.push({
@@ -431,6 +437,44 @@ export function buildRunTraceDag(trace: RunTraceResponse): DagBuildResult {
     edgeIndex += 1;
   };
 
+  // Supervisor owns every routing decision; when it has run we anchor all
+  // decision diamonds to it so the graph reads as a hub (worker -> supervisor ->
+  // decision -> worker) instead of two competing paths for one transition.
+  const supervisorNodeId = knownNodeIds.has(`agent:${SUPERVISOR_AGENT_NAME}`)
+    ? `agent:${SUPERVISOR_AGENT_NAME}`
+    : null;
+
+  const decisionRoutes = sortedDecisions.map((decision) => {
+    const decisionTimestamp = toTimestamp(decision.created_at);
+    const fallbackTargetAgentName = mapToolToAgent(decision.chosen_tool);
+    const nextAgentName =
+      findNextAgentName(sortedSteps, decisionTimestamp) ?? fallbackTargetAgentName;
+    const previousAgentName = findPreviousAgentName(sortedSteps, decisionTimestamp);
+    const sourceNodeId =
+      supervisorNodeId ??
+      (previousAgentName !== null && knownNodeIds.has(`agent:${previousAgentName}`)
+        ? `agent:${previousAgentName}`
+        : "start");
+    const targetNodeId =
+      nextAgentName !== null && knownNodeIds.has(`agent:${nextAgentName}`)
+        ? `agent:${nextAgentName}`
+        : "end";
+    return {
+      decision,
+      decisionNodeId: `decision:${decision.id}`,
+      sourceNodeId,
+      targetNodeId,
+      action: normalizeDecisionAction(decision),
+    };
+  });
+
+  // Directed agent pairs already bridged by a decision diamond; the raw
+  // step-order edge between them would duplicate that routing.
+  const decisionCoveredPairs = new Set<string>();
+  for (const route of decisionRoutes) {
+    decisionCoveredPairs.add(`${route.sourceNodeId}->${route.targetNodeId}`);
+  }
+
   const firstStep = sortedSteps[0];
   const lastStep = sortedSteps[sortedSteps.length - 1];
 
@@ -441,7 +485,7 @@ export function buildRunTraceDag(trace: RunTraceResponse): DagBuildResult {
       const current = sortedSteps[index];
       const source = `agent:${previous.agent_name}`;
       const target = `agent:${current.agent_name}`;
-      if (source === target) {
+      if (source === target || decisionCoveredPairs.has(`${source}->${target}`)) {
         continue;
       }
       addEdge(source, target);
@@ -453,31 +497,17 @@ export function buildRunTraceDag(trace: RunTraceResponse): DagBuildResult {
     addEdge("start", "end");
   }
 
-  for (const decision of sortedDecisions) {
-    const decisionNodeId = `decision:${decision.id}`;
-    const decisionTimestamp = toTimestamp(decision.created_at);
-    const sourceAgentName = findPreviousAgentName(sortedSteps, decisionTimestamp);
-    const fallbackTargetAgentName = mapToolToAgent(decision.chosen_tool);
-    const nextAgentName =
-      findNextAgentName(sortedSteps, decisionTimestamp) ?? fallbackTargetAgentName;
-    const sourceNodeId =
-      sourceAgentName !== null && knownNodeIds.has(`agent:${sourceAgentName}`)
-        ? `agent:${sourceAgentName}`
-        : "start";
-    const targetNodeId =
-      nextAgentName !== null && knownNodeIds.has(`agent:${nextAgentName}`)
-        ? `agent:${nextAgentName}`
-        : "end";
-    const action = normalizeDecisionAction(decision);
-    const isDashed = action === "regenerate" || action === "fallback" || action === "rejected";
+  for (const route of decisionRoutes) {
+    const isDashed =
+      route.action === "regenerate" || route.action === "fallback" || route.action === "rejected";
 
-    addEdge(sourceNodeId, decisionNodeId, {
-      label: `iter ${decision.iteration.toString(10)}`,
+    addEdge(route.sourceNodeId, route.decisionNodeId, {
+      label: `iter ${route.decision.iteration.toString(10)}`,
     });
-    addEdge(decisionNodeId, targetNodeId, {
-      sourceStatus: decisionActionToStatus(action),
+    addEdge(route.decisionNodeId, route.targetNodeId, {
+      sourceStatus: decisionActionToStatus(route.action),
       dashed: isDashed,
-      label: decision.chosen_tool,
+      label: route.decision.chosen_tool,
     });
   }
 

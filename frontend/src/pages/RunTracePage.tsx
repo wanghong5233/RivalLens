@@ -23,10 +23,10 @@ export function RunTracePage(): JSX.Element {
       <header className="space-y-2">
         <RunBreadcrumb
           run={detailQuery.data}
-          current="决策回放"
+          current="执行过程"
           className="text-gray-400 [&_a:hover]:text-gray-100 [&_span]:text-gray-100 [&_svg]:text-gray-500"
         />
-        <h1 className="text-xl font-semibold">开发者视图 / Trace</h1>
+        <h1 className="text-xl font-semibold">开发者视图 / 执行追踪</h1>
         <div className="text-xs text-gray-400">run_id: {runId}</div>
       </header>
 

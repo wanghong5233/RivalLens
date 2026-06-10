@@ -1,21 +1,17 @@
 import {
   Activity,
   CircleSlash,
-  Copy,
   Download,
+  FileDown,
   RotateCcw,
   Share2,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import remarkGfm from "remark-gfm";
 
-import { queryClient } from "@/api/queryClient";
 import {
-  useResetRun,
   useRunComparisons,
   useRunDetail,
   useRunKnowledge,
@@ -25,15 +21,18 @@ import {
 } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import { ComparisonMatrix } from "@/components/comparison/ComparisonMatrix";
+import { RunTraceDag } from "@/components/dag/RunTraceDag";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { KnowledgePanel } from "@/components/knowledge/KnowledgePanel";
+import { ReportArticle } from "@/components/report/ReportArticle";
 import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
+import { LlmCallsTable } from "@/components/trace/LlmCallsTable";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { toCitationLinkMarkdown, transformEvidenceMarkdownUrl } from "@/lib/evidenceLinks";
+import { buildEvidenceLinkFromToolArgs } from "@/lib/evidenceLinks";
 import { formatDateTime, formatDuration, formatRunTitle } from "@/lib/format";
 import { SHOW_DEBUG_PANELS } from "@/lib/debugFlags";
 import { runPhaseRoute } from "@/lib/runRoute";
@@ -41,10 +40,6 @@ import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 
 type RunViewTab = "knowledge" | "report" | "trace";
-
-function toHeadingId(value: string): string {
-  return value.trim().toLowerCase().replace(/[^\w\u4e00-\u9fa5\s-]/g, "").replace(/\s+/g, "-");
-}
 
 function isRunViewTab(value: string): value is RunViewTab {
   return value === "knowledge" || value === "report" || value === "trace";
@@ -61,7 +56,6 @@ export function RunViewPage(): JSX.Element {
 
   const detailQuery = useRunDetail(runId);
   const traceQuery = useRunTrace(runId);
-  const resetRunMutation = useResetRun();
 
   const runStatus = detailQuery.data?.status ?? "running";
   const isRunActive = runStatus === "running";
@@ -84,13 +78,7 @@ export function RunViewPage(): JSX.Element {
     refetchInterval: isRunActive ? 2_000 : false,
   });
 
-  const recentDecisions = useMemo(
-    () => traceQuery.data?.supervisor_decisions.slice(-5).reverse() ?? [],
-    [traceQuery.data?.supervisor_decisions],
-  );
-
   const reportMarkdown = reportQuery.data?.content_markdown ?? "";
-  const reportWithCitationLinks = useMemo(() => toCitationLinkMarkdown(reportMarkdown), [reportMarkdown]);
   const comparisons = comparisonsQuery.data?.items ?? [];
   const activeRunRoute = detailQuery.data ? runPhaseRoute(detailQuery.data) : null;
 
@@ -110,14 +98,6 @@ export function RunViewPage(): JSX.Element {
     setActiveTab("report");
   }, [runId]);
 
-  async function handleResetRun(resetTo: "analyst" | "writer"): Promise<void> {
-    if (!runId) return;
-    await resetRunMutation.mutateAsync({ runId, resetTo });
-    await queryClient.invalidateQueries({ queryKey: ["run-detail", runId] });
-    await queryClient.invalidateQueries({ queryKey: ["run-trace", runId] });
-    await queryClient.invalidateQueries({ queryKey: ["run-report", runId] });
-  }
-
   function handleExportMarkdown(): void {
     if (!reportMarkdown) {
       pushToast({ title: "暂无报告内容", variant: "warning" });
@@ -131,6 +111,12 @@ export function RunViewPage(): JSX.Element {
     a.click();
     URL.revokeObjectURL(url);
     track("run_view.export_markdown", { run_id: runId });
+  }
+
+  function handleExportPdf(): void {
+    const sharedUrl = `${window.location.origin}/share/${runId}?print=1`;
+    window.open(sharedUrl, "_blank", "noopener,noreferrer");
+    track("run_view.export_pdf", { run_id: runId });
   }
 
   async function handleCopyShareLink(): Promise<void> {
@@ -232,7 +218,7 @@ export function RunViewPage(): JSX.Element {
               <TabsList>
                 <TabsTrigger value="report">完整报告</TabsTrigger>
                 <TabsTrigger value="knowledge">竞品知识</TabsTrigger>
-                <TabsTrigger value="trace">决策回放</TabsTrigger>
+                <TabsTrigger value="trace">执行回放</TabsTrigger>
               </TabsList>
               {/* Toolbar */}
               <div className="flex items-center gap-1.5">
@@ -242,11 +228,11 @@ export function RunViewPage(): JSX.Element {
                 <Button size="sm" variant="ghost" onClick={handleExportMarkdown} aria-label="导出 Markdown">
                   <Download className="h-3.5 w-3.5" />
                 </Button>
+                <Button size="sm" variant="ghost" onClick={handleExportPdf} aria-label="导出 PDF">
+                  <FileDown className="h-3.5 w-3.5" />
+                </Button>
                 <Button size="sm" variant="ghost" onClick={() => navigate(`/app/runs/new?from=${runId}`)} aria-label="再分析一版">
                   <RotateCcw className="h-3.5 w-3.5" />
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => navigate(`/app/compare?run_ids=${runId}`)} aria-label="对比矩阵">
-                  <Copy className="h-3.5 w-3.5" />
                 </Button>
                 {SHOW_DEBUG_PANELS && isReportReady ? (
                   <Button size="sm" variant="ghost" onClick={() => navigate(`/app/runs/${runId}/audit`)} aria-label="运行诊断">
@@ -288,80 +274,95 @@ export function RunViewPage(): JSX.Element {
               )}
               {isReportReady && !reportQuery.isLoading && !reportQuery.isError && (
                 <>
+                  <ReportArticle markdown={reportMarkdown} onEvidenceClick={openEvidenceDrawer} />
                   <ComparisonMatrix comparisons={comparisons} onEvidenceClick={openEvidenceDrawer} />
-                  <article className="prose prose-invert max-w-none rounded-lg border border-white/[0.06] bg-surface p-6 text-caption leading-7 prose-headings:text-foreground prose-p:text-foreground-muted prose-strong:text-foreground prose-a:text-primary">
-                    <ReactMarkdown
-                      components={{
-                        a: ({ href, children }) => {
-                          if (href?.startsWith("evidence://")) {
-                            const evidenceId = href.replace("evidence://", "");
-                            return (
-                              <button
-                                className="cursor-pointer rounded bg-primary/10 px-1.5 py-0.5 text-micro text-primary ring-1 ring-inset ring-primary/20 hover:bg-primary/20"
-                                onClick={() => openEvidenceDrawer([evidenceId])}
-                                type="button"
-                              >
-                                {children}
-                              </button>
-                            );
-                          }
-                          return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
-                        },
-                        h2: ({ children }) => {
-                          const text = Array.isArray(children)
-                            ? children.map((c) => (typeof c === "string" ? c : "")).join(" ").trim()
-                            : typeof children === "string" ? children.trim() : "";
-                          return <h2 id={toHeadingId(text)}>{children}</h2>;
-                        },
-                      }}
-                      remarkPlugins={[remarkGfm]}
-                      urlTransform={transformEvidenceMarkdownUrl}
-                    >
-                      {reportWithCitationLinks}
-                    </ReactMarkdown>
-                  </article>
                 </>
               )}
             </TabsContent>
 
             {/* Trace tab */}
             <TabsContent value="trace" className="space-y-4">
-              {isReportReady && (
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={resetRunMutation.isPending}
-                    onClick={() => void handleResetRun("writer")}
-                  >
-                    重写报告
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    disabled={resetRunMutation.isPending}
-                    onClick={() => void handleResetRun("analyst")}
-                  >
-                    重做分析
-                  </Button>
+              {traceQuery.isLoading ? (
+                <div className="space-y-3">
+                  <Skeleton className="h-20 w-full" />
+                  <Skeleton className="h-60 w-full" />
                 </div>
-              )}
-              <div className="space-y-2">
-                {recentDecisions.length === 0 && (
-                  <p className="text-caption text-foreground-muted">暂无决策记录。</p>
-                )}
-                {recentDecisions.map((d) => (
-                  <div key={d.id} className="rounded-lg border border-white/[0.06] bg-surface p-3">
-                    <p className="text-caption font-medium text-foreground">
-                      iter {d.iteration} · {d.chosen_tool}
-                    </p>
-                    <p className="mt-1 text-micro text-foreground-muted">{d.reasoning_summary}</p>
-                  </div>
-                ))}
-              </div>
-              <Button asChild size="sm" variant="outline">
-                <Link to={`/app/runs/${runId}/trace`}>打开完整回放</Link>
-              </Button>
+              ) : null}
+
+              {traceQuery.isError ? (
+                <div className="rounded-lg border border-danger/30 bg-danger/5 p-4 text-caption text-danger">
+                  执行回放读取失败：{traceQuery.error.message}
+                </div>
+              ) : null}
+
+              {traceQuery.data ? (
+                <div className="rounded-lg border border-white/[0.06] bg-surface p-4">
+                  <Tabs defaultValue="dag">
+                    <TabsList>
+                      <TabsTrigger value="dag">DAG</TabsTrigger>
+                      <TabsTrigger value="steps">执行步骤</TabsTrigger>
+                      <TabsTrigger value="decisions">调度决策</TabsTrigger>
+                      <TabsTrigger value="llm">LLM 调用</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="dag" className="mt-3">
+                      <RunTraceDag trace={traceQuery.data} />
+                    </TabsContent>
+
+                    <TabsContent value="steps" className="mt-3 space-y-2">
+                      {traceQuery.data.steps.length === 0 ? (
+                        <p className="text-caption text-foreground-muted">暂无执行步骤。</p>
+                      ) : (
+                        traceQuery.data.steps.map((step) => (
+                          <div key={step.step_id} className="rounded-lg border border-white/[0.06] bg-background/40 p-3">
+                            <p className="text-caption font-medium text-foreground">
+                              {step.agent_name} · {step.status}
+                            </p>
+                            <p className="mt-1 text-micro text-foreground-subtle">
+                              {formatDateTime(step.created_at)} · {step.step_id}
+                            </p>
+                          </div>
+                        ))
+                      )}
+                    </TabsContent>
+
+                    <TabsContent value="decisions" className="mt-3 space-y-2">
+                      {traceQuery.data.supervisor_decisions.length === 0 ? (
+                        <p className="text-caption text-foreground-muted">暂无调度决策记录。</p>
+                      ) : (
+                        traceQuery.data.supervisor_decisions.map((decision) => {
+                          const evidenceLink = buildEvidenceLinkFromToolArgs(runId, decision.tool_args);
+                          return (
+                            <div key={decision.id} className="rounded-lg border border-white/[0.06] bg-background/40 p-3">
+                              <p className="text-caption font-medium text-foreground">
+                                iter {decision.iteration} · {decision.chosen_tool}
+                              </p>
+                              <p className="mt-1 text-micro text-foreground-subtle">
+                                {formatDateTime(decision.created_at)}
+                              </p>
+                              <p className="mt-2 text-caption text-foreground-muted">
+                                {decision.reasoning_summary}
+                              </p>
+                              {evidenceLink !== null ? (
+                                <Button asChild className="mt-2" size="sm" variant="outline">
+                                  <Link to={evidenceLink}>查看相关证据</Link>
+                                </Button>
+                              ) : null}
+                            </div>
+                          );
+                        })
+                      )}
+                    </TabsContent>
+
+                    <TabsContent value="llm" className="mt-3">
+                      <LlmCallsTable
+                        calls={traceQuery.data.llm_calls}
+                        steps={traceQuery.data.steps}
+                      />
+                    </TabsContent>
+                  </Tabs>
+                </div>
+              ) : null}
             </TabsContent>
           </Tabs>
         </>
@@ -439,7 +440,7 @@ function RunOutcomeCard({
             </h2>
             <p className="mt-1 text-caption text-foreground-muted">
               {isFailed
-                ? "运行过程中发生错误，可在「决策回放」查看 Agent 最后操作以定位原因，或直接基于此重新发起一次。"
+                ? "运行过程中发生错误，可在「执行回放」查看 Agent 最后操作以定位原因，或直接基于此重新发起一次。"
                 : "你在分析进行中点击了停止；可以基于同一需求重新发起一次。"}
             </p>
           </div>
@@ -467,7 +468,7 @@ function RunOutcomeCard({
               基于此重新分析
             </Button>
             <Button asChild size="sm" variant="outline">
-              <Link to={`/app/runs/${runId}/trace`}>查看决策回放</Link>
+              <Link to={`/app/runs/${runId}/trace`}>查看执行回放</Link>
             </Button>
           </div>
         </div>

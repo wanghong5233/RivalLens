@@ -159,6 +159,96 @@ body::before {
   animation: skeleton-shimmer 2s infinite;
 }
 
+/* Print / PDF export: render the report as a clean light-on-white document. */
+@media print {
+  body {
+    background: #ffffff;
+    color: #111111;
+  }
+
+  body::before {
+    display: none;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .report-article {
+    border: none !important;
+    border-radius: 0 !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    color: #111111 !important;
+    --tw-prose-body: #1f2933;
+    --tw-prose-headings: #0b1220;
+    --tw-prose-bold: #0b1220;
+    --tw-prose-links: #0b57d0;
+    --tw-prose-bullets: #6b7280;
+    --tw-prose-counters: #6b7280;
+    --tw-prose-quotes: #1f2933;
+    --tw-prose-quote-borders: #0b57d0;
+    --tw-prose-hr: #d1d5db;
+    --tw-prose-th-borders: #d1d5db;
+    --tw-prose-td-borders: #e5e7eb;
+  }
+
+  .report-article button {
+    color: #0b57d0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+}
+
+/* React Flow (DAG trace) dark theme: the upstream stylesheet ships white
+   controls/minimap that clash with our dark canvas. */
+.react-flow__controls {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.4);
+}
+
+.react-flow__controls-button {
+  width: 26px;
+  height: 26px;
+  background: hsl(var(--color-raised));
+  border: none;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.react-flow__controls-button:hover {
+  background: hsl(var(--secondary));
+}
+
+.react-flow__controls-button svg {
+  fill: hsl(var(--foreground-muted));
+}
+
+.react-flow__controls-button:hover svg {
+  fill: hsl(var(--foreground));
+}
+
+.react-flow__minimap {
+  border-radius: var(--radius);
+}
+
+.react-flow__minimap-mask {
+  fill: hsl(var(--color-page) / 0.6);
+}
+
+.react-flow__attribution {
+  background: transparent;
+}
+
+.react-flow__attribution a {
+  color: hsl(var(--foreground-subtle));
+}
+
 /* Scrollbar styling for dark theme */
 ::-webkit-scrollbar {
   width: 6px;

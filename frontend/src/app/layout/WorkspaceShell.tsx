@@ -1,17 +1,18 @@
 import {
-  BarChart3,
   FolderClock,
   FolderKanban,
   Plus,
   Settings2,
   Shapes,
 } from "lucide-react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { useSkillCandidates } from "@/api/hooks";
 import { Badge } from "@/components/ui/badge";
 import { Logo } from "@/components/Logo";
 import { cn } from "@/lib/utils";
+
+const INTAKE_SESSION_KEY = "rivallens.intake.run_id";
 
 interface NavItem {
   to: string;
@@ -39,7 +40,6 @@ const NAV_ITEMS: readonly NavItem[] = [
       pathname.startsWith("/app/runs/") && !pathname.startsWith("/app/runs/new"),
   },
   { to: "/app/runs/new", icon: Plus, label: "新建分析", end: false },
-  { to: "/app/compare", icon: BarChart3, label: "对比矩阵", end: false },
   { to: "/app/watch", icon: FolderClock, label: "竞品追踪", end: false },
   { to: "/app/templates", icon: Shapes, label: "模板库", end: false },
 ];
@@ -55,6 +55,7 @@ export function WorkspaceShell(): JSX.Element {
   );
   const pendingCount = pendingCandidatesQuery.data?.total ?? 0;
   const location = useLocation();
+  const navigate = useNavigate();
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
@@ -71,6 +72,8 @@ export function WorkspaceShell(): JSX.Element {
         <nav className="flex-1 space-y-0.5 px-2 py-2">
           {NAV_ITEMS.map((item) => {
             const matchedExternally = item.matchPath?.(location.pathname) ?? false;
+            const isNewRunEntry = item.to === "/app/runs/new";
+            const isOnNewRunFlow = location.pathname.startsWith("/app/runs/new");
             return (
               <NavLink
                 key={item.to}
@@ -83,6 +86,27 @@ export function WorkspaceShell(): JSX.Element {
                   )
                 }
                 to={item.to}
+                onClick={(event) => {
+                  if (!isNewRunEntry) {
+                    return;
+                  }
+                  const savedRunId = sessionStorage.getItem(INTAKE_SESSION_KEY);
+                  const hasPendingIntake = typeof savedRunId === "string" && savedRunId.length > 0;
+                  if (!hasPendingIntake) {
+                    return;
+                  }
+                  const wantsFreshSession = window.confirm(
+                    "检测到你有一个未完成的新建分析会话。确定要放弃当前会话并新开任务吗？\n\n点击「取消」将继续当前会话。",
+                  );
+                  if (!wantsFreshSession) {
+                    if (isOnNewRunFlow) {
+                      event.preventDefault();
+                    }
+                    return;
+                  }
+                  event.preventDefault();
+                  navigate(`/app/runs/new?fresh=${Date.now().toString(10)}`);
+                }}
               >
                 <item.icon className="h-4 w-4 shrink-0" />
                 {item.label}

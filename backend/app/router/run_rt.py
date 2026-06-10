@@ -17,6 +17,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import selectinload
 import yaml
 
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
@@ -531,6 +532,29 @@ class WatchlistItemResponse(BaseModel):
     created_at: str
 
 
+class WatchInsightItemResponse(BaseModel):
+    conclusion_id: str
+    run_id: str
+    run_title: str
+    section: str
+    claim: str
+    confidence: str
+    evidence_ids: list[str]
+    created_at: str
+
+
+class WatchlistDigestItemResponse(BaseModel):
+    watch_id: str
+    competitor_id: str
+    note: str | None
+    created_at: str
+    insight_count: int
+    run_count: int
+    last_updated_at: str | None
+    latest_run_id: str | None
+    items: list[WatchInsightItemResponse]
+
+
 def _to_sse_chunk(*, event: str, data: dict[str, object]) -> str:
     serialized = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {serialized}\n\n"
@@ -1017,6 +1041,18 @@ def _to_watchlist_item(item: WatchlistItem) -> WatchlistItemResponse:
         next_refresh_at=_to_iso(item.next_refresh_at),
         created_at=item.created_at.isoformat(),
     )
+
+
+def _normalize_competitor_key(value: str) -> str:
+    return value.strip().casefold()
+
+
+def _resolve_run_title(*, title: str | None, user_query: str) -> str:
+    if isinstance(title, str):
+        normalized = title.strip()
+        if normalized:
+            return normalized
+    return user_query
 
 
 def _extract_competitor_id(span: dict[str, object] | None) -> str | None:
@@ -2892,6 +2928,79 @@ async def list_watchlist() -> list[WatchlistItemResponse]:
             )
         ).scalars().all()
     return [_to_watchlist_item(item) for item in rows]
+
+
+@router.get("/api/watchlist/digest", response_model=list[WatchlistDigestItemResponse])
+async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        watchlist_items = (
+            await session.execute(
+                select(WatchlistItem).order_by(
+                    WatchlistItem.created_at.desc(),
+                    WatchlistItem.competitor_id.asc(),
+                )
+            )
+        ).scalars().all()
+        if not watchlist_items:
+            return []
+
+        conclusion_rows = await session.execute(
+            select(ConclusionRecord, Run.title, Run.user_query)
+            .join(Run, Run.run_id == ConclusionRecord.run_id)
+            .options(selectinload(ConclusionRecord.evidence_links))
+            .order_by(ConclusionRecord.created_at.desc(), ConclusionRecord.conclusion_id.asc())
+        )
+        raw_rows = conclusion_rows.all()
+
+    insights_by_competitor: dict[str, list[WatchInsightItemResponse]] = {}
+    run_ids_by_competitor: dict[str, set[str]] = {}
+    for conclusion, run_title, user_query in raw_rows:
+        evidence_ids = [
+            link.evidence_id
+            for link in sorted(
+                conclusion.evidence_links,
+                key=lambda link: (link.relevance_rank, link.evidence_id),
+            )
+        ]
+        insight = WatchInsightItemResponse(
+            conclusion_id=conclusion.conclusion_id,
+            run_id=conclusion.run_id,
+            run_title=_resolve_run_title(title=run_title, user_query=user_query),
+            section=conclusion.section,
+            claim=conclusion.claim,
+            confidence=conclusion.confidence,
+            evidence_ids=evidence_ids,
+            created_at=conclusion.created_at.isoformat(),
+        )
+        matched_keys = {
+            _normalize_competitor_key(competitor_id)
+            for competitor_id in conclusion.competitor_ids
+            if isinstance(competitor_id, str) and _normalize_competitor_key(competitor_id)
+        }
+        for competitor_key in matched_keys:
+            insights_by_competitor.setdefault(competitor_key, []).append(insight)
+            run_ids_by_competitor.setdefault(competitor_key, set()).add(conclusion.run_id)
+
+    digest_items: list[WatchlistDigestItemResponse] = []
+    for item in watchlist_items:
+        competitor_key = _normalize_competitor_key(item.competitor_id)
+        insights = insights_by_competitor.get(competitor_key, [])
+        latest = insights[0] if insights else None
+        digest_items.append(
+            WatchlistDigestItemResponse(
+                watch_id=item.watch_id,
+                competitor_id=item.competitor_id,
+                note=item.note,
+                created_at=item.created_at.isoformat(),
+                insight_count=len(insights),
+                run_count=len(run_ids_by_competitor.get(competitor_key, set())),
+                last_updated_at=latest.created_at if latest is not None else None,
+                latest_run_id=latest.run_id if latest is not None else None,
+                items=insights[:5],
+            )
+        )
+    return digest_items
 
 
 @router.post("/api/watchlist", response_model=WatchlistItemResponse)
