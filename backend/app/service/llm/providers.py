@@ -230,7 +230,7 @@ def _classify_status_error(exc: APIStatusError) -> tuple[str, bool, int | None, 
 def _classify_transport_error(exc: Exception) -> tuple[str, bool, int | None, float | None]:
     if isinstance(exc, RateLimitError):
         return "rate_limit", True, 429, _parse_retry_after_seconds(exc)
-    if isinstance(exc, APITimeoutError):
+    if isinstance(exc, (APITimeoutError, httpx.TimeoutException)):
         return "timeout", True, None, None
     return "connection", True, None, None
 
@@ -418,7 +418,7 @@ class _OpenAICompatibleProvider:
                         http_status=http_status,
                         retry_after_seconds=retry_after_seconds,
                     )
-                except (APIConnectionError, APITimeoutError, RateLimitError) as fallback_exc:
+                except (APIConnectionError, APITimeoutError, RateLimitError, httpx.TransportError) as fallback_exc:
                     error_class, retryable, http_status, retry_after_seconds = _classify_transport_error(
                         fallback_exc
                     )
@@ -463,7 +463,12 @@ class _OpenAICompatibleProvider:
                     http_status=http_status,
                     retry_after_seconds=retry_after_seconds,
                 )
-        except (APIConnectionError, APITimeoutError, RateLimitError) as exc:
+        # Streaming iteration surfaces raw httpx transport errors (e.g. a peer
+        # that closes the connection mid-stream -> RemoteProtocolError, the
+        # symptom DashScope shows on long generations). The OpenAI SDK does NOT
+        # wrap these into APIConnectionError; catch httpx.TransportError too so a
+        # mid-stream drop degrades to fallback instead of crashing the node.
+        except (APIConnectionError, APITimeoutError, RateLimitError, httpx.TransportError) as exc:
             error_class, retryable, http_status, retry_after_seconds = _classify_transport_error(exc)
             log.warning(
                 "llm.provider.error",

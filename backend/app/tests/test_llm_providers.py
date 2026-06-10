@@ -346,6 +346,51 @@ async def test_provider_keeps_streaming_when_stream_options_are_unsupported(
 
 
 @pytest.mark.asyncio
+async def test_provider_wraps_mid_stream_disconnect_as_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer that drops the connection mid-stream must degrade, not crash.
+
+    DashScope closes long streamed generations with httpx.RemoteProtocolError
+    ("incomplete chunked read"), which the OpenAI SDK does not wrap. The provider
+    must convert it into a retryable LLMRequestError so the agent node falls back
+    instead of raising a raw transport error to the graph.
+    """
+
+    async def fake_create(**_: object):
+        async def _stream():
+            yield SimpleNamespace(
+                model="qwen3.7-max",
+                usage=None,
+                choices=[SimpleNamespace(delta=SimpleNamespace(content='{"chosen_tool":'))],
+            )
+            raise httpx.RemoteProtocolError(
+                "peer closed connection without sending complete message body (incomplete chunked read)"
+            )
+
+        return _stream()
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = QwenProvider(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_key="fake-qwen-key",
+        default_model="qwen3.7-max",
+    )
+    with pytest.raises(LLMRequestError) as exc_info:
+        await provider.complete_json(
+            system_prompt="system",
+            user_prompt="user",
+            model="qwen3.7-max",
+            timeout_seconds=180,
+        )
+
+    assert exc_info.value.retryable is True
+    assert exc_info.value.error_class == "connection"
+
+
+@pytest.mark.asyncio
 async def test_doubao_provider_caches_json_mode_unsupported_after_400(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
