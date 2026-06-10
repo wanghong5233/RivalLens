@@ -72,6 +72,29 @@ services:
     networks:
       - rivallens_net
 
+  rivallens_tunnel:
+    image: cloudflare/cloudflared:2025.8.1
+    container_name: rivallens_tunnel_dev
+    command:
+      [
+        "tunnel",
+        "--no-autoupdate",
+        "--credentials-file",
+        "/etc/cloudflared/c7d851a7-76da-43f7-995a-9c8d6fb2c75f.json",
+        "run",
+        "--url",
+        "http://rivallens_api:8010",
+        "c7d851a7-76da-43f7-995a-9c8d6fb2c75f",
+      ]
+    volumes:
+      - ${USERPROFILE}/.cloudflared:/etc/cloudflared:ro
+    restart: unless-stopped
+    depends_on:
+      rivallens_api:
+        condition: service_healthy
+    networks:
+      - rivallens_net
+
 volumes:
   rivallens_pg_data:
     name: rivallens_dev_pg_data
