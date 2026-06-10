@@ -96,56 +96,62 @@ class LLMProvider(Protocol):
         ...
 
 
-def _extract_message_content(response: Any) -> str:
-    choices = getattr(response, "choices", None)
-    if not isinstance(choices, list) or not choices:
-        raise LLMResponseFormatError("Provider response missing choices.")
-
-    first_choice = choices[0]
-    message = getattr(first_choice, "message", None)
-    if message is None:
-        raise LLMResponseFormatError("Provider response missing message.")
-
-    content = getattr(message, "content", None)
+def _delta_text(choice: Any) -> str | None:
+    delta = getattr(choice, "delta", None)
+    if delta is None:
+        return None
+    content = getattr(delta, "content", None)
     if isinstance(content, str):
-        content_str = content.strip()
-        if not content_str:
-            raise LLMResponseFormatError("Provider response content is empty.")
-        return content_str
-
+        return content
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
-            if isinstance(item, dict):
-                text_part = item.get("text")
-                if isinstance(text_part, str):
-                    parts.append(text_part)
-                continue
-
-            text_part = getattr(item, "text", None)
+            text_part = item.get("text") if isinstance(item, dict) else getattr(item, "text", None)
             if isinstance(text_part, str):
                 parts.append(text_part)
-
-        joined = "".join(parts).strip()
-        if not joined:
-            raise LLMResponseFormatError("Provider list content contains no text part.")
-        return joined
-
-    raise LLMResponseFormatError("Provider response content is not a supported type.")
+        return "".join(parts)
+    return None
 
 
-def _extract_usage_tokens(response: Any) -> tuple[int | None, int | None]:
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return None, None
+async def _consume_stream(*, stream: Any, requested_model: str) -> ProviderRawResponse:
+    """Accumulate a streaming chat completion.
 
-    prompt_tokens_raw = getattr(usage, "prompt_tokens", None)
-    completion_tokens_raw = getattr(usage, "completion_tokens", None)
-    prompt_tokens = int(prompt_tokens_raw) if isinstance(prompt_tokens_raw, int) else None
-    completion_tokens = (
-        int(completion_tokens_raw) if isinstance(completion_tokens_raw, int) else None
+    DashScope's OpenAI-compatible endpoint closes the connection on long
+    non-streaming generations (~60s server window), surfacing as a transport
+    error. Streaming keeps the connection alive chunk-by-chunk, so deep-report
+    writer/analyst calls no longer get truncated into the fallback path.
+    """
+    content_parts: list[str] = []
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    model_name: str | None = None
+    async for chunk in stream:
+        model_raw = getattr(chunk, "model", None)
+        if isinstance(model_raw, str) and model_raw:
+            model_name = model_raw
+        choices = getattr(chunk, "choices", None)
+        if isinstance(choices, list) and choices:
+            piece = _delta_text(choices[0])
+            if piece:
+                content_parts.append(piece)
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            prompt_tokens_raw = getattr(usage, "prompt_tokens", None)
+            completion_tokens_raw = getattr(usage, "completion_tokens", None)
+            if isinstance(prompt_tokens_raw, int):
+                prompt_tokens = prompt_tokens_raw
+            if isinstance(completion_tokens_raw, int):
+                completion_tokens = completion_tokens_raw
+
+    content_raw = "".join(content_parts).strip()
+    if not content_raw:
+        raise LLMResponseFormatError("Provider stream returned empty content.")
+    return ProviderRawResponse(
+        content_raw=content_raw,
+        model_name=model_name or requested_model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
     )
-    return prompt_tokens, completion_tokens
 
 
 def _redact_deployment_model_ids(value: str) -> str:
@@ -272,9 +278,19 @@ def _is_json_mode_unsupported(exc: APIStatusError) -> bool:
     )
 
 
+def _is_stream_options_unsupported(exc: APIStatusError) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code not in {400, 422}:
+        return False
+    body_snippet = _status_error_body_snippet(exc) or ""
+    message = f"{exc} {body_snippet}".lower()
+    return "stream_options" in message or "stream options" in message or "include_usage" in message
+
+
 async def _create_completion(
     *,
     client: AsyncOpenAI,
+    provider_name: str,
     model: str,
     system_prompt: str,
     user_prompt: str,
@@ -282,7 +298,7 @@ async def _create_completion(
     max_tokens: int | None,
     use_json_mode: bool,
     extra_body: dict[str, Any] | None = None,
-) -> Any:
+) -> ProviderRawResponse:
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": [
@@ -295,6 +311,8 @@ async def _create_completion(
             write=10.0,
             pool=5.0,
         ),
+        "stream": True,
+        "stream_options": {"include_usage": True},
     }
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
@@ -302,7 +320,22 @@ async def _create_completion(
         kwargs["response_format"] = {"type": "json_object"}
     if extra_body:
         kwargs["extra_body"] = extra_body
-    return await client.chat.completions.create(**kwargs)
+    try:
+        stream = await client.chat.completions.create(**kwargs)
+    except APIStatusError as exc:
+        if not _is_stream_options_unsupported(exc):
+            raise
+        kwargs.pop("stream_options", None)
+        log.info(
+            "llm.call.stream_options_fallback",
+            provider=provider_name,
+            model=_redact_model_id(model),
+            http_status=getattr(exc, "status_code", None),
+            error_preview=_status_error_body_snippet(exc)
+            or _redact_deployment_model_ids(str(exc))[:200],
+        )
+        stream = await client.chat.completions.create(**kwargs)
+    return await _consume_stream(stream=stream, requested_model=model)
 
 
 class _OpenAICompatibleProvider:
@@ -332,6 +365,7 @@ class _OpenAICompatibleProvider:
         try:
             response = await _create_completion(
                 client=self._client,
+                provider_name=self.name,
                 model=model,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -352,6 +386,7 @@ class _OpenAICompatibleProvider:
                 try:
                     response = await _create_completion(
                         client=self._client,
+                        provider_name=self.name,
                         model=model,
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
@@ -450,17 +485,7 @@ class _OpenAICompatibleProvider:
                 retry_after_seconds=retry_after_seconds,
             )
 
-        content_raw = _extract_message_content(response)
-        prompt_tokens, completion_tokens = _extract_usage_tokens(response)
-        model_name_raw = getattr(response, "model", None)
-        model_name = model_name_raw if isinstance(model_name_raw, str) else model
-
-        return ProviderRawResponse(
-            content_raw=content_raw,
-            model_name=model_name,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        )
+        return response
 
 
 class DoubaoProvider(_OpenAICompatibleProvider):
@@ -476,8 +501,8 @@ class QwenProvider(_OpenAICompatibleProvider):
 
     def _request_extra_body(self) -> dict[str, Any] | None:
         # DashScope hybrid models (qwen3.x-plus/max) default thinking ON, which
-        # forces stream=true and rejects this non-streaming JSON call. Force it
-        # off so any Qwen catalog model stays usable on the structured path.
+        # streams reasoning tokens we neither parse nor want billed. Force it off;
+        # the structured path streams output tokens only.
         return {"enable_thinking": False}
 
 

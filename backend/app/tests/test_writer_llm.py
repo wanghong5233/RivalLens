@@ -72,6 +72,9 @@ def test_build_writer_prompts_include_required_context() -> None:
         requested_sections=["feature"],
         evidence_ids=["ev_001"],
         analyst_summary="Cursor leads in feature depth.",
+        user_query="compare cursor and windsurf",
+        response_language="zh",
+        report_depth="deep",
     )
 
     assert "Writer context" in user_prompt
@@ -95,7 +98,14 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "Exact numbers" in WRITER_SYSTEM_PROMPT
     assert "During QA rewrites" in WRITER_SYSTEM_PROMPT
     assert "Fallback writer request" in fallback_prompt
-    assert "- evidence_ids:" in fallback_prompt
+    assert "- allowed_evidence_ids:" in fallback_prompt
+    # The degraded path used to drop response_language and emit ungrounded English;
+    # guard that it now carries language + grounding so a transport blip cannot
+    # silently flip a zh report to English boilerplate.
+    assert "- response_language: zh" in fallback_prompt
+    assert "- user_query: compare cursor and windsurf" in fallback_prompt
+    assert "- report_depth: deep" in fallback_prompt
+    assert "Write the report in response_language" in fallback_prompt
 
 
 def test_writer_report_output_accepts_valid_payload() -> None:

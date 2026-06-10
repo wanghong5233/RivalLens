@@ -21,7 +21,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { useRunDetail, useSubmitRunFollowUp } from "@/api/hooks";
+import { useRunDetail, useRunTrace, useSubmitRunFollowUp } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import type {
   EvidenceCollectedPayload,
@@ -45,6 +45,7 @@ import { pushToast } from "@/components/ui/toaster";
 import { formatRunTitle } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
+  backfillTaskStatusesFromSteps,
   ensureRunTaskStatuses,
   recordEvidenceCollected,
   recordFollowUpReceived,
@@ -116,6 +117,7 @@ export function LiveRunPage(): JSX.Element {
   const { runId: rawRunId } = useParams<{ runId: string }>();
   const runId = rawRunId ?? "";
   const runDetail = useRunDetail(runId);
+  const runTrace = useRunTrace(runId);
 
   const planTree = runDetail.data?.plan_tree ?? null;
   const runStatus = runDetail.data?.status ?? null;
@@ -135,6 +137,16 @@ export function LiveRunPage(): JSX.Element {
   useEffect(() => {
     ensureRunTaskStatuses(runId, planTree);
   }, [planTree, runId]);
+
+  // SSE has no replay; fold the polled trace in so in-flight tasks paint
+  // "running" even when their decision event fired before this client connected
+  // or was dropped across one of a deep run's many reconnects.
+  const traceSteps = runTrace.data?.steps;
+  useEffect(() => {
+    if (traceSteps !== undefined) {
+      backfillTaskStatusesFromSteps(runId, traceSteps, planTree);
+    }
+  }, [traceSteps, planTree, runId]);
 
   const handleSupervisorDecision = useCallback(
     (payload: SupervisorDecisionEventPayload) => {

@@ -572,8 +572,21 @@ async def discovery_node(state: AgentState) -> AgentState:
             },
         )
 
+    # `competitors` is an operator.add accumulator. Discovery in an explicit-name
+    # run re-finds names already on the list (Cursor/Copilot/...), so appending the
+    # raw discovered set duplicates them in runs.competitors. Only append names that
+    # are not already present (alias-normalized).
+    existing_competitor_keys = {
+        _normalize_alias_key(item)
+        for item in state.get("competitors", [])
+        if isinstance(item, str) and item.strip()
+    }
+    new_competitors = [
+        name for name in discovered if _normalize_alias_key(name) not in existing_competitor_keys
+    ]
+
     result: dict[str, object] = {
-        "competitors": discovered,
+        "competitors": new_competitors,
         "discovered_competitors": discovered,
         "discovered_competitor_sources": discovered_competitor_sources,
         "last_completed_node": None,

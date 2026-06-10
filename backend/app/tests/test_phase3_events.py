@@ -265,9 +265,14 @@ async def test_tool_exec_emits_start_and_finish_on_success(
 
     new_state = await tool_exec(state)
 
-    assert fake_registry.invoke_calls == [
-        ("search_web", {"query": "notion pricing", "max_results": 5, "dimension": "pricing"}),
-    ]
+    assert len(fake_registry.invoke_calls) == 1
+    invoked_tool, invoked_args = fake_registry.invoke_calls[0]
+    assert invoked_tool == "search_web"
+    # tool_exec now also scopes searches with competitor_id + official_hosts; assert
+    # the core args as a subset so the source-scoping additions don't break this.
+    assert invoked_args["query"] == "notion pricing"
+    assert invoked_args["max_results"] == 5
+    assert invoked_args["dimension"] == "pricing"
     assert [event_type for event_type, _, _ in captured] == [
         RunEventType.TOOL_START,
         RunEventType.TOOL_FINISH,

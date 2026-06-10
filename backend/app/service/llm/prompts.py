@@ -1295,12 +1295,25 @@ def build_analyst_fallback_user_prompt(
     competitors: Sequence[str],
     focus_dimensions: Sequence[str],
     evidence_ids: Sequence[str],
+    user_query: str = "",
+    response_language: str | None = None,
+    analysis_intent: str | None = None,
+    evidence_briefs: Sequence[dict[str, object]] = (),
 ) -> str:
+    # Defense-in-depth twin of the writer fallback: a degraded analyst pass must
+    # stay in response_language and stay grounded in real evidence.
+    grounded_briefs = select_layered_evidence_briefs(evidence_briefs, limit=12)
     return (
-        "Fallback analysis request:\n"
+        "Fallback analysis request (primary prompt failed; keep output grounded):\n"
+        f"- user_query: {user_query}\n"
+        f"- response_language: {response_language}\n"
+        f"- analysis_intent: {analysis_intent}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
-        f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
+        f"- allowed_evidence_ids: {_json(list(evidence_ids))}\n"
+        f"- evidence_briefs: {_json(grounded_briefs)}\n\n"
+        "Write all analysis in response_language (zh = Chinese, en = English); when it is "
+        "absent, match the language of user_query. Every insight must cite evidence_ids above. "
         "Return minimal valid JSON with at least one grounded insight and comparisons when possible."
     )
 
@@ -1513,14 +1526,30 @@ def build_writer_fallback_user_prompt(
     requested_sections: Sequence[str],
     evidence_ids: Sequence[str],
     analyst_summary: str,
+    user_query: str = "",
+    response_language: str | None = None,
+    report_depth: str = "quick",
+    analyst_insights: Sequence[dict[str, object]] = (),
+    evidence_briefs: Sequence[dict[str, object]] = (),
 ) -> str:
+    # The fallback fires when the primary prompt fails (e.g. provider transport
+    # error). It must still carry response_language + bounded grounding, or a
+    # transient hiccup silently degrades into an ungrounded English report.
+    grounded_briefs = select_layered_evidence_briefs(evidence_briefs, limit=8)
     return (
-        "Fallback writer request:\n"
+        "Fallback writer request (primary prompt failed; keep output grounded):\n"
+        f"- user_query: {user_query}\n"
+        f"- response_language: {response_language}\n"
+        f"- report_depth: {report_depth}\n"
         f"- template_id: {template_id}\n"
         f"- requested_sections: {_json(list(requested_sections))}\n"
-        f"- evidence_ids: {_json(list(evidence_ids))}\n"
-        f"- analyst_summary: {analyst_summary}\n\n"
-        "Return minimal valid JSON report with at least one section and evidence_refs."
+        f"- allowed_evidence_ids: {_json(list(evidence_ids))}\n"
+        f"- analyst_summary: {analyst_summary}\n"
+        f"- analyst_insights: {_json(list(analyst_insights)[:6])}\n"
+        f"- evidence_briefs: {_json(grounded_briefs)}\n\n"
+        "Write the report in response_language (zh = Chinese, en = English); when it is "
+        "absent, match the language of user_query. Cite [ev_xxx] inline only from "
+        "allowed_evidence_ids. Return valid JSON with at least one grounded section and evidence_refs."
     )
 
 

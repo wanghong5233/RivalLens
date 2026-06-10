@@ -177,6 +177,10 @@ async def analyst_node(state: AgentState) -> AgentState:
         competitors=competitors,
         focus_dimensions=focus_dimensions,
         evidence_ids=sorted(allowed_evidence_ids),
+        user_query=user_query,
+        response_language=intake_draft.response_language,
+        analysis_intent=intake_draft.analysis_intent,
+        evidence_briefs=evidence_briefs,
     )
     harness_result = await complete_structured(
         model_slot="summarization",

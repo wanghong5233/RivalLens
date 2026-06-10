@@ -9,10 +9,18 @@ import type {
   ToolEventPayload,
   ToolFinishEventPayload,
 } from "@/api/sse";
-import type { PlanTaskStage, PlanTree } from "@/api/types";
+import type { PlanTaskStage, PlanTree, StepTraceResponse } from "@/api/types";
 
 type PlanTaskRuntimeStatus = "queued" | "running" | "completed";
 type ToolRuntimeStatus = "running" | "done" | "error";
+
+// Task tiles only move forward; both live SSE and persisted backfill upgrade
+// monotonically so a poll snapshot can never roll a tile back to queued.
+const STATUS_RANK: Record<PlanTaskRuntimeStatus, number> = {
+  queued: 0,
+  running: 1,
+  completed: 2,
+};
 
 export interface ToolActivityEntry {
   key: string;
@@ -175,6 +183,74 @@ export function recordStepFinish(
     }
     next.planTaskStatus = planTaskStatus;
     return next;
+  });
+}
+
+function persistedStepRuntimeStatus(status: string): PlanTaskRuntimeStatus | null {
+  if (status === "running") {
+    return "running";
+  }
+  // Terminal step states settle the tile. The runtime enum has no failed/skipped
+  // tile, and recordStepFinish already collapses them to completed, so match it.
+  if (status === "completed" || status === "failed" || status === "degraded" || status === "skipped") {
+    return "completed";
+  }
+  return null;
+}
+
+function stepCompetitorId(step: StepTraceResponse): string | null {
+  const raw = step.payload?.competitor_id;
+  return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+
+/**
+ * Reconcile plan-task tiles from persisted steps.
+ *
+ * The SSE stream has no historical replay, and a deep run reconnects many times
+ * over its lifetime, so the live `supervisor.decision` flips that paint a tile
+ * "running" are lost on every reconnect/refresh. The polled run trace is the
+ * durable source of truth; fold it in (upgrade-only) so an in-flight task shows
+ * running even when its decision event arrived before this client connected.
+ */
+export function backfillTaskStatusesFromSteps(
+  runId: string,
+  steps: readonly StepTraceResponse[],
+  planTree: PlanTree | null,
+): void {
+  if (planTree === null || steps.length === 0) {
+    return;
+  }
+  update(runId, (prev) => {
+    const planTaskStatus = cloneTaskStatusMap(prev.planTaskStatus);
+    let changed = false;
+    for (const step of steps) {
+      const stage = AGENT_NAME_TO_STAGE[step.agent_name];
+      if (stage === undefined) {
+        continue;
+      }
+      const derived = persistedStepRuntimeStatus(step.status);
+      if (derived === null) {
+        continue;
+      }
+      const competitorId = stage === "research" ? stepCompetitorId(step) : null;
+      for (const task of planTree.tasks) {
+        if (task.stage !== stage) {
+          continue;
+        }
+        if (stage === "research" && (competitorId === null || task.competitor_id !== competitorId)) {
+          continue;
+        }
+        const current = planTaskStatus[task.task_id] ?? "queued";
+        if (STATUS_RANK[derived] > STATUS_RANK[current]) {
+          planTaskStatus[task.task_id] = derived;
+          changed = true;
+        }
+      }
+    }
+    if (!changed) {
+      return prev;
+    }
+    return { ...prev, planTaskStatus };
   });
 }
 

@@ -781,6 +781,11 @@ async def writer_node(state: AgentState) -> AgentState:
         requested_sections=target_sections,
         evidence_ids=sorted(allowed_evidence_ids),
         analyst_summary=analyst_summary,
+        user_query=str(state.get("user_query", "")),
+        response_language=intake_draft.response_language,
+        report_depth=report_depth,
+        analyst_insights=insight_briefs,
+        evidence_briefs=evidence_briefs,
     )
     harness_result = await complete_structured(
         model_slot="writer",

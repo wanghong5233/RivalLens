@@ -12,14 +12,29 @@ from utils.logger import configure_logging
 
 
 def _fake_response(*, model: str, content: str, prompt_tokens: int, completion_tokens: int):
-    return SimpleNamespace(
-        model=model,
-        usage=SimpleNamespace(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        ),
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
-    )
+    """Async stream mirroring DashScope's streamed chat-completion shape.
+
+    The provider now streams (`stream=True`) to dodge the non-streaming
+    long-output disconnect, so the fake `create` must return an async iterator
+    of delta chunks followed by a usage-only chunk.
+    """
+
+    async def _stream():
+        yield SimpleNamespace(
+            model=model,
+            usage=None,
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
+        )
+        yield SimpleNamespace(
+            model=model,
+            usage=SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            ),
+            choices=[],
+        )
+
+    return _stream()
 
 
 @pytest.mark.asyncio
@@ -274,6 +289,60 @@ async def test_provider_passes_split_timeout_and_max_tokens(
     assert timeout.write == 10.0
     assert timeout.pool == 5.0
     assert call_kwargs[0]["max_tokens"] == 2048
+    # Long deep-report generations must stream to survive DashScope's
+    # non-streaming response window; usage rides the final stream chunk.
+    assert call_kwargs[0]["stream"] is True
+    assert call_kwargs[0]["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_provider_keeps_streaming_when_stream_options_are_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyStatusError(Exception):
+        def __init__(self) -> None:
+            super().__init__("InvalidParameter: stream_options.include_usage is not supported")
+            self.status_code = 400
+            self.body = {"message": "stream_options.include_usage is not supported"}
+
+    call_kwargs: list[dict[str, object]] = []
+
+    async def fake_create(**kwargs: object):
+        call_kwargs.append(dict(kwargs))
+        if "stream_options" in kwargs:
+            raise DummyStatusError()
+        return _fake_response(
+            model="gpt-4o-mini",
+            content='{"chosen_tool":"Finalize","tool_args":{"completion_reason":"all_dimensions_covered"},"reasoning_summary":"done"}',
+            prompt_tokens=None,
+            completion_tokens=None,
+        )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=fake_create)))
+    monkeypatch.setattr(llm_providers, "APIStatusError", DummyStatusError)
+    monkeypatch.setattr(llm_providers, "AsyncOpenAI", lambda **_: fake_client)
+
+    provider = OpenAIProvider(
+        base_url="https://api.openai.com/v1",
+        api_key="fake-key",
+        default_model="gpt-4o-mini",
+    )
+    response = await provider.complete_json(
+        system_prompt="system",
+        user_prompt="user",
+        model="gpt-4o-mini",
+        timeout_seconds=90,
+        max_tokens=2048,
+    )
+
+    assert response.content_raw.startswith('{"chosen_tool"')
+    assert len(call_kwargs) == 2
+    assert call_kwargs[0]["stream"] is True
+    assert call_kwargs[0]["stream_options"] == {"include_usage": True}
+    assert call_kwargs[0]["response_format"] == {"type": "json_object"}
+    assert call_kwargs[1]["stream"] is True
+    assert "stream_options" not in call_kwargs[1]
+    assert call_kwargs[1]["response_format"] == {"type": "json_object"}
 
 
 @pytest.mark.asyncio
@@ -521,8 +590,7 @@ async def test_qwen_provider_complete_json_success(monkeypatch: pytest.MonkeyPat
     assert response.prompt_tokens == 18
     assert response.completion_tokens == 8
     assert response.content_raw.startswith('{"chosen_tool"')
-    # Thinking must be forced off so hybrid Qwen models stay usable on the
-    # non-streaming JSON path.
+    # Thinking must be forced off so hybrid Qwen models stream JSON output only.
     assert captured["extra_body"] == {"enable_thinking": False}
 
 
