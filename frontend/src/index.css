@@ -264,3 +264,31 @@ body::before {
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(220 12% 32%);
 }
+
+.scrollbar-prominent-x {
+  scrollbar-color: hsl(var(--primary) / 0.7) hsl(var(--color-raised) / 0.9);
+  scrollbar-width: auto;
+}
+
+.scrollbar-prominent-x::-webkit-scrollbar {
+  height: 12px;
+}
+
+.scrollbar-prominent-x::-webkit-scrollbar-track {
+  background: hsl(var(--color-raised) / 0.9);
+  border-radius: 999px;
+}
+
+.scrollbar-prominent-x::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--primary) / 0.55),
+    hsl(var(--primary) / 0.9)
+  );
+  border: 2px solid hsl(var(--color-raised) / 0.9);
+  border-radius: 999px;
+}
+
+.scrollbar-prominent-x::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 1);
+}

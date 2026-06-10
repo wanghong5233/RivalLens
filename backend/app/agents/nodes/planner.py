@@ -331,17 +331,24 @@ def reconcile_plan_tree_after_discovery(
     if not discovered_competitors:
         return plan
 
-    allowed_competitors = [
-        item.strip()
-        for item in [*(list(existing_competitors or [])), *discovered_competitors]
-        if isinstance(item, str) and item.strip()
-    ]
-
     existing_research = {
         task.competitor_id
         for task in plan.tasks
         if task.stage == "research" and isinstance(task.competitor_id, str) and task.competitor_id.strip()
     }
+    # Existing research tasks are protected plan state. Discovery reconciliation
+    # may append newly discovered competitors, but it must not fail simply
+    # because an already-confirmed research task uses a display/slug id that is
+    # absent from the latest discovery extraction (e.g. beisen vs 北森).
+    allowed_competitors = [
+        item.strip()
+        for item in [
+            *(list(existing_competitors or [])),
+            *sorted(existing_research),
+            *discovered_competitors,
+        ]
+        if isinstance(item, str) and item.strip()
+    ]
 
     focus = normalize_dimensions(list(focus_dimensions or []), allow_empty=True)
     if not focus:

@@ -65,8 +65,10 @@ export function ComparisonMatrix({
           </p>
         ) : null}
       </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full table-fixed border-collapse">
+      <div className="relative">
+        <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-10 bg-gradient-to-l from-surface to-transparent" />
+        <div className="scrollbar-prominent-x overflow-x-auto pb-3">
+          <table className="min-w-full table-fixed border-collapse">
           <thead>
             <tr className="border-b border-white/[0.04] text-left text-micro uppercase text-foreground-subtle">
               <th className="w-36 px-4 py-3 font-medium">维度</th>
@@ -125,6 +127,7 @@ export function ComparisonMatrix({
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </section>
   );

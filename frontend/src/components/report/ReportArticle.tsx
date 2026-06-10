@@ -56,6 +56,16 @@ export function ReportArticle({ markdown, onEvidenceClick, className }: ReportAr
         components={{
           h2: ({ children }) => <h2 id={toHeadingId(extractText(children))}>{children}</h2>,
           h3: ({ children }) => <h3 id={toHeadingId(extractText(children))}>{children}</h3>,
+          table: ({ children }: ComponentPropsWithoutRef<"table">) => (
+            <div className="not-prose my-6 overflow-hidden rounded-lg border border-white/[0.08] bg-background/30">
+              <div className="relative">
+                <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-10 bg-gradient-to-l from-surface to-transparent" />
+                <div className="scrollbar-prominent-x overflow-x-auto pb-3">
+                  <table className="min-w-[760px] border-collapse text-sm">{children}</table>
+                </div>
+              </div>
+            </div>
+          ),
           a: ({ href, children }: ComponentPropsWithoutRef<"a">) => {
             if (typeof href === "string" && href.startsWith("evidence://")) {
               const evidenceId = href.replace("evidence://", "");
