@@ -274,7 +274,11 @@ export function RunViewPage(): JSX.Element {
               )}
               {isReportReady && !reportQuery.isLoading && !reportQuery.isError && (
                 <>
-                  <ReportArticle markdown={reportMarkdown} onEvidenceClick={openEvidenceDrawer} />
+                  <ReportArticle
+                    markdown={reportMarkdown}
+                    onEvidenceClick={openEvidenceDrawer}
+                    qaWarnings={reportQuery.data?.content_json.qa_warnings}
+                  />
                   <ComparisonMatrix comparisons={comparisons} onEvidenceClick={openEvidenceDrawer} />
                 </>
               )}

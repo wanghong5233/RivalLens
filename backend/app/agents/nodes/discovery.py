@@ -59,6 +59,55 @@ _DISCOVERY_NON_OFFICIAL_HOST_HINTS: tuple[str, ...] = (
 _DISCOVERY_GENERIC_NAME_TOKENS: frozenset[str] = frozenset(
     {"ai", "app", "tool", "tools", "software", "assistant", "the", "inc", "labs", "lab"}
 )
+_DISCOVERY_CORE_ROLES: frozenset[str] = frozenset(
+    {"direct_competitor", "adjacent_competitor", "substitute"}
+)
+_DISCOVERY_ROLE_PRIORITY: dict[str, int] = {
+    "direct_competitor": 0,
+    "adjacent_competitor": 1,
+    "substitute": 2,
+    "upstream_supplier": 3,
+    "trend_reference": 4,
+}
+_DISCOVERY_UPSTREAM_HINTS: tuple[str, ...] = (
+    "upstream",
+    "supplier",
+    "chip",
+    "chipset",
+    "semiconductor",
+    "gpu",
+    "cpu",
+    "processor",
+    "算力",
+    "芯片",
+    "半导体",
+    "供应商",
+    "上游",
+)
+_DISCOVERY_TREND_HINTS: tuple[str, ...] = (
+    "trend",
+    "reference",
+    "report",
+    "media",
+    "趋势",
+    "报告",
+    "媒体",
+    "研究机构",
+)
+_DISCOVERY_SUBSTITUTE_HINTS: tuple[str, ...] = (
+    "substitute",
+    "alternative",
+    "替代",
+    "替代品",
+)
+_DISCOVERY_ADJACENT_HINTS: tuple[str, ...] = (
+    "adjacent",
+    "platform",
+    "ecosystem",
+    "相邻",
+    "生态",
+    "平台",
+)
 
 
 def _clean_optional_string(value: object) -> str | None:
@@ -81,6 +130,22 @@ def _state_or_intake_string(state: AgentState, field_name: str) -> str | None:
 def _state_response_language(state: AgentState) -> str | None:
     value = _state_or_intake_string(state, "response_language")
     return value if value in {"zh", "en"} else None
+
+
+def _state_analysis_archetype(state: AgentState) -> str:
+    raw = _clean_optional_string(state.get("analysis_archetype"))
+    if raw in {"comparison", "landscape"}:
+        return raw
+    intake_draft = state.get("intake_draft")
+    if isinstance(intake_draft, dict):
+        intake_raw = _clean_optional_string(intake_draft.get("analysis_archetype"))
+        if intake_raw in {"comparison", "landscape"}:
+            return intake_raw
+    elif intake_draft is not None:
+        intake_raw = _clean_optional_string(getattr(intake_draft, "analysis_archetype", None))
+        if intake_raw in {"comparison", "landscape"}:
+            return intake_raw
+    return "comparison"
 
 
 def _normalize_alias_key(value: str) -> str:
@@ -130,6 +195,72 @@ def _text_mentions_candidate(*, candidate_name: str, text: str | None) -> bool:
     if not name_tokens:
         return False
     return any(token in normalized_text for token in name_tokens)
+
+
+def _normalize_candidate_role(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().casefold()
+    if normalized in _DISCOVERY_ROLE_PRIORITY:
+        return normalized
+    return None
+
+
+def _infer_candidate_role(
+    *,
+    candidate_name: str,
+    relevance_reason: str,
+    domain_context: str | None,
+    analysis_intent: str | None,
+    self_product: str | None,
+) -> str:
+    combined = " ".join(
+        item
+        for item in [candidate_name, relevance_reason, domain_context, analysis_intent]
+        if isinstance(item, str) and item.strip()
+    ).casefold()
+    if any(hint in combined for hint in _DISCOVERY_UPSTREAM_HINTS):
+        return "upstream_supplier"
+    if any(hint in combined for hint in _DISCOVERY_TREND_HINTS):
+        return "trend_reference"
+    if any(hint in combined for hint in _DISCOVERY_SUBSTITUTE_HINTS):
+        return "substitute"
+    if any(hint in combined for hint in _DISCOVERY_ADJACENT_HINTS):
+        return "adjacent_competitor"
+    if isinstance(self_product, str) and self_product.strip():
+        self_tokens = _candidate_name_tokens(self_product)
+        if self_tokens and any(token in combined for token in self_tokens):
+            return "direct_competitor"
+    return "direct_competitor"
+
+
+def _reconcile_candidate_role(
+    *,
+    llm_candidate_role: str | None,
+    candidate_name: str,
+    relevance_reason: str,
+    domain_context: str | None,
+    analysis_intent: str | None,
+    self_product: str | None,
+) -> str:
+    inferred_role = _infer_candidate_role(
+        candidate_name=candidate_name,
+        relevance_reason=relevance_reason,
+        domain_context=domain_context,
+        analysis_intent=analysis_intent,
+        self_product=self_product,
+    )
+    if llm_candidate_role is None:
+        return inferred_role
+    if (
+        llm_candidate_role == "direct_competitor"
+        and inferred_role in {"upstream_supplier", "trend_reference"}
+    ):
+        # Discovery extraction frequently collapses broad landscape entities into
+        # "direct_competitor". Preserve explicit role separation for downstream
+        # ranking/reporting when strong lexical signals indicate upstream/trend.
+        return inferred_role
+    return llm_candidate_role
 
 
 def _score_official_source_candidate(
@@ -232,6 +363,10 @@ def _filter_discovery_candidates(
     candidates: Sequence[object],
     snippets: Sequence[str],
     snippet_rows: Sequence[dict[str, object]],
+    domain_context: str | None = None,
+    analysis_intent: str | None = None,
+    self_product: str | None = None,
+    analysis_archetype: str = "comparison",
 ) -> tuple[list[str], list[dict[str, object]], list[dict[str, object]]]:
     discovered: list[str] = []
     filtered_out: list[dict[str, object]] = []
@@ -243,6 +378,15 @@ def _filter_discovery_candidates(
         is_competitor = bool(getattr(candidate, "is_competitor", False))
         relevance_reason = str(getattr(candidate, "relevance_reason", "") or "").strip()
         evidence_quote = str(getattr(candidate, "evidence_quote", "") or "").strip()
+        llm_candidate_role = _normalize_candidate_role(getattr(candidate, "candidate_role", None))
+        candidate_role = _reconcile_candidate_role(
+            llm_candidate_role=llm_candidate_role,
+            candidate_name=name,
+            relevance_reason=relevance_reason,
+            domain_context=domain_context,
+            analysis_intent=analysis_intent,
+            self_product=self_product,
+        )
         llm_official_url = getattr(candidate, "official_url", None)
         llm_source_domain = getattr(candidate, "source_domain", None)
         alias_key = _normalize_alias_key(name)
@@ -252,6 +396,15 @@ def _filter_discovery_candidates(
             continue
         if not is_competitor:
             filtered_out.append({"name": name, "reason": "not_competitor"})
+            continue
+        if candidate_role not in _DISCOVERY_CORE_ROLES and analysis_archetype != "landscape":
+            filtered_out.append(
+                {
+                    "name": name,
+                    "reason": "non_core_candidate_role",
+                    "candidate_role": candidate_role,
+                }
+            )
             continue
         if not evidence_quote:
             filtered_out.append({"name": name, "reason": "missing_evidence_quote"})
@@ -277,6 +430,7 @@ def _filter_discovery_candidates(
         )
         row: dict[str, object] = {
             "name": name,
+            "candidate_role": candidate_role,
             "relevance_reason": relevance_reason,
             "evidence_quote_preview": evidence_quote[:_DISCOVERY_EVIDENCE_PREVIEW_LIMIT],
         }
@@ -285,6 +439,13 @@ def _filter_discovery_candidates(
             row["source_domain"] = source_domain or _source_domain(official_url)
         relevance.append(row)
 
+    relevance.sort(
+        key=lambda item: _DISCOVERY_ROLE_PRIORITY.get(
+            str(item.get("candidate_role") or ""),
+            99,
+        )
+    )
+    discovered = [str(item["name"]) for item in relevance if isinstance(item.get("name"), str)]
     return discovered, filtered_out, relevance
 
 
@@ -313,6 +474,8 @@ async def discovery_node(state: AgentState) -> AgentState:
     market_scope = _state_or_intake_string(state, "market_scope")
     response_language = _state_response_language(state)
     analysis_intent = _state_or_intake_string(state, "analysis_intent")
+    self_product = _state_or_intake_string(state, "self_product")
+    analysis_archetype = _state_analysis_archetype(state)
 
     search_queries: list[str] = pending_tool_args.get("search_queries", [user_query])
     domain_context: str = pending_tool_args.get("domain_context", user_query)
@@ -427,6 +590,7 @@ async def discovery_node(state: AgentState) -> AgentState:
             user_query=user_query,
             market_scope=market_scope,
             analysis_intent=analysis_intent,
+            self_product=self_product,
             response_language=response_language,
         )
         fallback_prompt = build_discovery_extract_fallback_user_prompt(
@@ -454,6 +618,10 @@ async def discovery_node(state: AgentState) -> AgentState:
                     candidates=harness_result.value.candidates,
                     snippets=all_snippets,
                     snippet_rows=all_snippet_rows,
+                    domain_context=domain_context,
+                    analysis_intent=analysis_intent,
+                    self_product=self_product,
+                    analysis_archetype=analysis_archetype,
                 )
             elif harness_result.llm_response.error is not None:
                 extract_error = harness_result.llm_response.error[:300]
@@ -492,11 +660,12 @@ async def discovery_node(state: AgentState) -> AgentState:
                     str(item["name"]): {
                         "official_url": item.get("official_url"),
                         "source_domain": item.get("source_domain"),
+                        "candidate_role": item.get("candidate_role"),
+                        "relevance_reason": item.get("relevance_reason"),
                     }
                     for item in relevance
                     if isinstance(item, dict)
                     and isinstance(item.get("name"), str)
-                    and isinstance(item.get("official_url"), str)
                 },
                 "snippet_count": snippet_count,
                 "snippet_samples": snippet_samples,
@@ -519,28 +688,20 @@ async def discovery_node(state: AgentState) -> AgentState:
         str(item["name"]): {
             "official_url": item.get("official_url"),
             "source_domain": item.get("source_domain"),
+            "candidate_role": item.get("candidate_role"),
+            "relevance_reason": item.get("relevance_reason"),
         }
         for item in relevance
         if isinstance(item, dict)
         and isinstance(item.get("name"), str)
-        and isinstance(item.get("official_url"), str)
     }
     plan = coerce_plan_tree(state.get("plan_tree"))
     if discovered and plan is not None:
         intake_draft = state.get("intake_draft")
         tier_profile = resolve_tier_profile(_state_or_intake_string(state, "report_depth"))
         focus_dimensions: list[str] | None = None
-        analysis_archetype = "comparison"
         if intake_draft is not None and hasattr(intake_draft, "focus_dimensions"):
             focus_dimensions = list(intake_draft.focus_dimensions)
-        if isinstance(intake_draft, dict):
-            archetype_raw = intake_draft.get("analysis_archetype")
-            if archetype_raw in {"comparison", "landscape"}:
-                analysis_archetype = archetype_raw
-        elif intake_draft is not None and hasattr(intake_draft, "analysis_archetype"):
-            archetype_raw = getattr(intake_draft, "analysis_archetype")
-            if archetype_raw in {"comparison", "landscape"}:
-                analysis_archetype = archetype_raw
         reconciled = reconcile_plan_tree_after_discovery(
             plan_tree=plan,
             discovered_competitors=discovered,

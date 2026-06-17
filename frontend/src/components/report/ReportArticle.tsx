@@ -10,6 +10,32 @@ export interface ReportArticleProps {
   markdown: string;
   onEvidenceClick: (evidenceIds: string[]) => void;
   className?: string;
+  qaWarnings?: unknown;
+}
+
+interface QualityWarning {
+  category: string;
+  message: string;
+  ruleId: string | null;
+}
+
+function normalizeQualityWarnings(value: unknown): QualityWarning[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item): QualityWarning[] => {
+    if (typeof item !== "object" || item === null) {
+      return [];
+    }
+    const payload = item as Record<string, unknown>;
+    const category = typeof payload.category === "string" ? payload.category : "qa_warning";
+    const message = typeof payload.message === "string" ? payload.message : "";
+    const ruleId = typeof payload.rule_id === "string" ? payload.rule_id : null;
+    if (!message.trim()) {
+      return [];
+    }
+    return [{ category, message, ruleId }];
+  });
 }
 
 function extractText(children: ReactNode): string {
@@ -37,8 +63,9 @@ function toHeadingId(value: string): string {
  * brand-specific section separators, heading anchors, and clickable
  * evidence citations.
  */
-export function ReportArticle({ markdown, onEvidenceClick, className }: ReportArticleProps): JSX.Element {
+export function ReportArticle({ markdown, onEvidenceClick, className, qaWarnings }: ReportArticleProps): JSX.Element {
   const citationLinkedMarkdown = useMemo(() => toCitationLinkMarkdown(markdown), [markdown]);
+  const qualityWarnings = useMemo(() => normalizeQualityWarnings(qaWarnings), [qaWarnings]);
 
   return (
     <article
@@ -52,6 +79,21 @@ export function ReportArticle({ markdown, onEvidenceClick, className }: ReportAr
         className,
       )}
     >
+      {qualityWarnings.length > 0 ? (
+        <aside className="not-prose mb-6 rounded-lg border border-warning/30 bg-warning/5 p-4">
+          <p className="text-sm font-semibold text-warning">质量提示</p>
+          <ul className="mt-2 space-y-2 text-xs leading-5 text-warning/90">
+            {qualityWarnings.map((warning, index) => (
+              <li key={`${warning.category}-${warning.ruleId ?? index.toString(10)}`}>
+                {warning.message}
+                {warning.ruleId ? (
+                  <span className="ml-2 text-warning/70">({warning.ruleId})</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </aside>
+      ) : null}
       <ReactMarkdown
         components={{
           h2: ({ children }) => <h2 id={toHeadingId(extractText(children))}>{children}</h2>,

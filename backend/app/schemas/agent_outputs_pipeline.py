@@ -52,6 +52,13 @@ ResearcherActionName = Literal[
 ]
 QASeverity = Literal["blocking", "warning"]
 SkillCuratorCandidateType = Literal["qa_rule", "prompt_template", "source_routing"]
+DiscoveryCandidateRole = Literal[
+    "direct_competitor",
+    "adjacent_competitor",
+    "substitute",
+    "upstream_supplier",
+    "trend_reference",
+]
 
 INTAKE_PATCHABLE_FIELDS: frozenset[str] = frozenset(
     {
@@ -324,6 +331,7 @@ class SupervisorToolCallOutput(BaseModel):
 class DiscoveryCompetitorCandidate(BaseModel):
     name: str = Field(min_length=1)
     is_competitor: bool = True
+    candidate_role: DiscoveryCandidateRole | None = None
     relevance_reason: str = ""
     evidence_quote: str = ""
     official_url: str | None = None
@@ -388,6 +396,7 @@ class DiscoveryExtractOutput(BaseModel):
                 candidate = {
                     "name": name_raw,
                     "is_competitor": item.get("is_competitor", True),
+                    "candidate_role": item.get("candidate_role") or item.get("role"),
                     "relevance_reason": item.get("relevance_reason", ""),
                     "evidence_quote": item.get("evidence_quote", ""),
                     "official_url": item.get("official_url"),
@@ -401,6 +410,7 @@ class DiscoveryExtractOutput(BaseModel):
                     {
                         "name": str(item),
                         "is_competitor": True,
+                        "candidate_role": None,
                         "relevance_reason": "",
                         "evidence_quote": "",
                         "official_url": None,

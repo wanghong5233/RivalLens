@@ -56,6 +56,16 @@ log = get_logger("agents.planner")
 # compete and would also bypass `_derive_focus_dimensions`.
 _USER_ALLOWED_STAGES: frozenset[str] = frozenset({"research", "analyze", "write"})
 _PLAN_STAGE_ORDER: tuple[PlanTaskStage, ...] = ("discover", "research", "analyze", "write")
+_COMPETITOR_ROLE_LABELS: dict[str, str] = {
+    "direct_competitor": "直接竞品",
+    "adjacent_competitor": "相邻竞品",
+    "substitute": "替代方案",
+    "upstream_supplier": "上游供应商",
+    "trend_reference": "趋势参考",
+}
+_CORE_DISCOVERY_ROLES: frozenset[str] = frozenset(
+    {"direct_competitor", "adjacent_competitor", "substitute"}
+)
 _REPORT_DEPTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("debug", ("debug", "调试", "极速", "超快")),
     ("quick", ("quick", "速览", "快速", "标准", "平衡")),
@@ -313,6 +323,58 @@ def _assert_research_competitor_subset(
     )
 
 
+def _research_description_for_discovered_competitor(
+    *,
+    competitor: str,
+    source_payload: dict[str, str | None] | None,
+) -> str:
+    role_raw = source_payload.get("candidate_role") if isinstance(source_payload, dict) else None
+    role_label = _COMPETITOR_ROLE_LABELS.get(role_raw or "")
+    if role_label is None:
+        return f"按维度收集 {competitor} 的事实证据。"
+    return f"按维度收集 {competitor} 的事实证据；候选角色：{role_label}。"
+
+
+def _discovered_competitor_role(
+    *,
+    competitor: str,
+    discovered_competitor_sources: dict[str, dict[str, str | None]] | None,
+) -> str | None:
+    if not isinstance(discovered_competitor_sources, dict):
+        return None
+    source_payload = discovered_competitor_sources.get(competitor)
+    if not isinstance(source_payload, dict):
+        return None
+    role_raw = source_payload.get("candidate_role")
+    if not isinstance(role_raw, str):
+        return None
+    role = role_raw.strip()
+    return role if role else None
+
+
+def _select_discovered_competitors_for_research(
+    *,
+    discovered_competitors: list[str],
+    discovered_competitor_sources: dict[str, dict[str, str | None]] | None,
+    analysis_archetype: str,
+    max_competitors: int,
+) -> list[str]:
+    if analysis_archetype != "landscape":
+        return discovered_competitors[:max_competitors]
+    core: list[str] = []
+    non_core: list[str] = []
+    for competitor in discovered_competitors:
+        role = _discovered_competitor_role(
+            competitor=competitor,
+            discovered_competitor_sources=discovered_competitor_sources,
+        )
+        if role in _CORE_DISCOVERY_ROLES:
+            core.append(competitor)
+            continue
+        non_core.append(competitor)
+    return [*core, *non_core[:max_competitors]]
+
+
 def reconcile_plan_tree_after_discovery(
     *,
     plan_tree: PlanTree | dict[str, object],
@@ -375,14 +437,28 @@ def reconcile_plan_tree_after_discovery(
         analysis_archetype=analysis_archetype,
     )[:max_dimensions]
     new_research_tasks: list[PlanTask] = []
-    for competitor in discovered_competitors[:max_competitors]:
+    selected_discovered_competitors = _select_discovered_competitors_for_research(
+        discovered_competitors=discovered_competitors,
+        discovered_competitor_sources=discovered_competitor_sources,
+        analysis_archetype=analysis_archetype,
+        max_competitors=max_competitors,
+    )
+    for competitor in selected_discovered_competitors:
         if competitor in existing_research:
             continue
+        source_payload = (
+            discovered_competitor_sources.get(competitor)
+            if isinstance(discovered_competitor_sources, dict)
+            else None
+        )
         new_research_tasks.append(
             PlanTask(
                 stage="research",
                 title=f"调研 {competitor}"[:PLAN_TASK_TITLE_MAX_LEN],
-                description=f"按维度收集 {competitor} 的事实证据。",
+                description=_research_description_for_discovered_competitor(
+                    competitor=competitor,
+                    source_payload=source_payload,
+                ),
                 competitor_id=competitor,
                 focus_dimensions=research_focus,
                 source="agent",
@@ -399,6 +475,8 @@ def reconcile_plan_tree_after_discovery(
                 continue
             official_url_raw = source_payload.get("official_url")
             source_domain_raw = source_payload.get("source_domain")
+            candidate_role_raw = source_payload.get("candidate_role")
+            relevance_reason_raw = source_payload.get("relevance_reason")
             official_url = (
                 official_url_raw.strip()
                 if isinstance(official_url_raw, str) and official_url_raw.strip()
@@ -409,11 +487,23 @@ def reconcile_plan_tree_after_discovery(
                 if isinstance(source_domain_raw, str) and source_domain_raw.strip()
                 else None
             )
-            if official_url is None:
+            candidate_role = (
+                candidate_role_raw.strip()
+                if isinstance(candidate_role_raw, str) and candidate_role_raw.strip()
+                else None
+            )
+            relevance_reason = (
+                relevance_reason_raw.strip()
+                if isinstance(relevance_reason_raw, str) and relevance_reason_raw.strip()
+                else None
+            )
+            if official_url is None and candidate_role is None and relevance_reason is None:
                 continue
             merged_competitor_sources[competitor_id] = {
                 "official_url": official_url,
                 "source_domain": source_domain,
+                "candidate_role": candidate_role,
+                "relevance_reason": relevance_reason,
             }
 
     if not new_research_tasks:

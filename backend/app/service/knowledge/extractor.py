@@ -10,7 +10,14 @@ from schemas.business import Feature, Persona, Pricing, UserFeedback
 from schemas.contracts import validate_dimension
 from schemas.ids import make_id
 
-CoverageStatus = Literal["complete", "partial", "insufficient_data", "missing"]
+CoverageStatus = Literal[
+    "complete",
+    "partial",
+    "insufficient_data",
+    "missing",
+    "not_applicable_for_archetype",
+    "not_requested",
+]
 KnowledgeCoverage = dict[str, dict[str, CoverageStatus]]
 SchemaBucket = Literal["feature", "pricing", "persona"]
 
@@ -227,6 +234,7 @@ def _coverage_for_counts(
     pricing_tier_count: int,
     feedback_count: int,
     persona_count: int,
+    pricing_applicable: bool,
 ) -> dict[str, CoverageStatus]:
     feature_status: CoverageStatus
     if feature_count >= 3:
@@ -235,7 +243,9 @@ def _coverage_for_counts(
         feature_status = "partial"
     else:
         feature_status = "insufficient_data"
-    if pricing_count <= 0:
+    if not pricing_applicable:
+        pricing_status = "not_applicable_for_archetype"
+    elif pricing_count <= 0:
         pricing_status: CoverageStatus = "insufficient_data"
     elif pricing_tier_count >= pricing_count:
         pricing_status = "complete"
@@ -271,6 +281,16 @@ def _empty_coverage(competitors: list[str]) -> KnowledgeCoverage:
         }
         for competitor_id in competitors
     }
+
+
+def _pricing_requested(*, focus_dimensions: list[str] | None) -> bool:
+    if not focus_dimensions:
+        return False
+    normalized_dimensions = [_normalize_dimension(item) for item in focus_dimensions]
+    return any(
+        dimension is not None and ("pricing" in dimension or "cost" in dimension)
+        for dimension in normalized_dimensions
+    )
 
 
 def _coerce_competitor_id(value: object) -> str | None:
@@ -318,6 +338,7 @@ def build_knowledge_schema_result(
     feedback: list[dict[str, object]],
     competitors: list[str],
     analysis_archetype: str,
+    focus_dimensions: list[str] | None = None,
 ) -> KnowledgeExtractionResult:
     ordered_competitors = _normalize_competitors(competitors)
     if not ordered_competitors:
@@ -375,27 +396,51 @@ def build_knowledge_schema_result(
                 evidence_owner_by_id=evidence_owner_by_id,
             )
         )
+        pricing_applicable = (
+            analysis_archetype != "landscape"
+            or pricing_count > 0
+            or _pricing_requested(focus_dimensions=focus_dimensions)
+        )
+        landscape_schema_not_applicable = (
+            analysis_archetype == "landscape"
+            and feature_count == 0
+            and persona_count == 0
+            and feedback_count == 0
+        )
         coverage[competitor_id] = _coverage_for_counts(
             feature_count=feature_count,
             pricing_count=pricing_count,
             pricing_tier_count=pricing_tier_count,
             feedback_count=feedback_count,
             persona_count=persona_count,
+            pricing_applicable=pricing_applicable,
         )
+        if landscape_schema_not_applicable:
+            coverage[competitor_id]["feature"] = "not_applicable_for_archetype"
+            coverage[competitor_id]["feedback"] = "not_applicable_for_archetype"
+            coverage[competitor_id]["persona"] = "not_applicable_for_archetype"
         reasons: list[str] = []
-        if feature_count == 0:
+        if landscape_schema_not_applicable:
+            reasons.append("feature:not_applicable_for_archetype")
+        elif feature_count == 0:
             reasons.append("feature:no_grounded_evidence")
         elif feature_count < 3:
             reasons.append("feature:coverage_partial")
-        if pricing_count == 0:
+        if not pricing_applicable:
+            reasons.append("pricing:not_applicable_for_archetype")
+        elif pricing_count == 0:
             reasons.append("pricing:no_grounded_evidence")
         elif pricing_tier_count == 0:
             reasons.append("pricing:tier_details_missing")
-        if feedback_count == 0:
+        if landscape_schema_not_applicable:
+            reasons.append("feedback:not_applicable_for_archetype")
+        elif feedback_count == 0:
             reasons.append("feedback:no_grounded_evidence")
         elif feedback_count < 2:
             reasons.append("feedback:coverage_partial")
-        if persona_count == 0:
+        if landscape_schema_not_applicable:
+            reasons.append("persona:not_applicable_for_archetype")
+        elif persona_count == 0:
             reasons.append("persona:no_grounded_evidence")
         elif persona_count < 2:
             reasons.append("persona:coverage_partial")
@@ -420,7 +465,6 @@ def extract_knowledge_schema(
     focus_dimensions: list[str],
     analysis_archetype: str,
 ) -> KnowledgeExtractionResult:
-    del focus_dimensions
     ordered_competitors = _normalize_competitors(competitors)
     competitor_set = set(ordered_competitors)
     normalized_evidence = _normalize_evidence_briefs(
@@ -553,6 +597,7 @@ def extract_knowledge_schema(
         feedback=feedback,
         competitors=ordered_competitors,
         analysis_archetype=analysis_archetype,
+        focus_dimensions=focus_dimensions,
     )
 
 

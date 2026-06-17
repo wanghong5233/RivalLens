@@ -442,7 +442,7 @@ def test_build_run_metrics_snapshot_counts_top_level_executive_summary_coverage(
         report_rows=[report],
     )
 
-    assert snapshot.report_section_count == 1
+    assert snapshot.report_section_count == 2
     assert snapshot.report_section_coverage_rate == 1.0
     assert "executive_summary" in snapshot.report_section_ids
 

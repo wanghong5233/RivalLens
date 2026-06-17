@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from agents.nodes.researcher import _build_evidence_rows, _build_initial_substate, researcher_node
 from agents.subgraphs.researcher import _append_evidence_drafts, _effective_action_dimension
 from models.step import Step
+from service.collector.source_resolver import SourceResolutionResult
 from service.event_bus import RunEventType
 from schemas.supervisor import ConductResearch
 
@@ -485,6 +487,151 @@ def test_build_evidence_rows_uses_runtime_resolved_official_hosts_for_match() ->
     assert row.source_type == "pricing_page"
     assert row.span["competitor_source_match"] is True
     assert row.span["source_authority"] == "official"
+
+
+def test_build_evidence_rows_marks_market_report_as_authoritative() -> None:
+    rows, _, _ = _build_evidence_rows(
+        run_id="run_market_report_authority",
+        step_id="step_market_report_authority",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["market_size"],
+        evidence_drafts=[
+            {
+                "dimension": "market_size",
+                "competitor_id": "AI Glasses",
+                "quote": "CAICT published a market report on AI hardware adoption.",
+                "sanitized_text": "CAICT published a market report on AI hardware adoption.",
+                "source_type": "article",
+                "source_url": "https://www.caict.ac.cn/reports/ai-hardware",
+                "source_title": "AI Hardware Market Report",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="AI Glasses",
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.source_type == "market_report"
+    assert row.span["source_authority"] == "authoritative_report"
+    assert row.span["source_authority_reason"] == "market_report_source_type"
+
+
+@pytest.mark.asyncio
+async def test_researcher_node_enriches_candidate_urls_with_official_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added_rows: list[object] = []
+    resolved_candidate_urls: list[str] = []
+
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def add(self, row: object) -> None:
+            added_rows.append(row)
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    class _FakeSubgraph:
+        async def ainvoke(self, _: object) -> dict[str, object]:
+            return {
+                "evidence_drafts": [],
+                "observations_log": [],
+                "llm_calls": [],
+                "turn_count": 1,
+                "compression_count": 0,
+                "queried_dimensions": ["pricing"],
+                "search_call_count": 1,
+                "official_fetch_count": 0,
+                "coverage_matrix": {},
+                "final_summary": "",
+            }
+
+    class _FakeRegistry:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def invoke(self, action: str, *, args: dict[str, object]) -> SimpleNamespace:
+            self.calls.append((action, dict(args)))
+            return SimpleNamespace(
+                result=SimpleNamespace(
+                    snippets=[
+                        SimpleNamespace(source_url="https://newvendor.ai"),
+                        SimpleNamespace(source_url="https://newvendor.ai/pricing"),
+                    ]
+                )
+            )
+
+    async def _fake_emit_run_event(**_: object) -> None:
+        return None
+
+    async def _fake_resolve_official_sources(
+        *,
+        competitor_id: str,
+        competitor_name: str,
+        candidate_urls: list[str],
+        candidate_url_budget: int = 5,
+        key_page_budget: int = 5,
+        http_client: object | None = None,
+    ) -> SourceResolutionResult:
+        del competitor_id, competitor_name, candidate_url_budget, key_page_budget, http_client
+        resolved_candidate_urls.extend(candidate_urls)
+        return SourceResolutionResult(
+            official_urls=[],
+            official_hosts=[],
+            key_pages=[],
+            attempted_candidate_count=len(candidate_urls),
+            validated_candidate_count=0,
+        )
+
+    fake_registry = _FakeRegistry()
+    monkeypatch.setattr("agents.nodes.researcher.get_session_factory", lambda: _FakeSession)
+    monkeypatch.setattr("agents.nodes.researcher.get_researcher_subgraph", lambda: _FakeSubgraph())
+    monkeypatch.setattr("agents.nodes.researcher.get_channel_registry", lambda: fake_registry)
+    monkeypatch.setattr("agents.nodes.researcher.emit_run_event", _fake_emit_run_event)
+    monkeypatch.setattr("agents.nodes.researcher.resolve_official_sources", _fake_resolve_official_sources)
+
+    await researcher_node(
+        {
+            "run_id": "run_official_url_candidates",
+            "market_scope": "中国市场",
+            "response_language": "zh",
+            "pending_tool_args": {
+                "research_topic": "NewVendor pricing",
+                "competitor_id": "NewVendor",
+                "focus_dimensions": ["pricing"],
+                "max_iterations": 1,
+                "fallback_to_offline": True,
+            },
+            "researched_competitors": [],
+            "reference_urls": ["https://docs.newvendor.ai/pricing"],
+        }
+    )
+
+    step_rows = [row for row in added_rows if isinstance(row, Step)]
+    assert len(step_rows) == 1
+    source_resolution = step_rows[0].payload["source_resolution"]
+    assert source_resolution["candidate_url_count"] == 3
+    assert source_resolution["official_url_search_candidate_count"] == 2
+    assert resolved_candidate_urls == [
+        "https://docs.newvendor.ai/pricing",
+        "https://newvendor.ai",
+        "https://newvendor.ai/pricing",
+    ]
+    assert fake_registry.calls
+    first_call_args = fake_registry.calls[0][1]
+    assert first_call_args["response_language"] == "zh"
+    assert first_call_args["market_scope"] == "中国市场"
 
 
 def test_build_evidence_rows_restores_quality_floor_when_gate_filters_all_candidates() -> None:

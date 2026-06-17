@@ -85,6 +85,37 @@ def test_golden_case_schema_accepts_knowledge_assertions() -> None:
     assert case.assertions.knowledge_schema_coverage_rate_gte == 0.5
 
 
+def test_golden_case_schema_accepts_trajectory_assertions() -> None:
+    case = GoldenCase.model_validate(
+        {
+            "id": "golden_case_schema_trajectory",
+            "description": "schema parse with trajectory assertions",
+            "input": {
+                "user_query": "AI 硬件的主流产品以及发展趋势。",
+                "competitors": [],
+                "target_roles": ["pm"],
+                "self_product": "AI眼镜",
+                "competitors_discovery_mode": True,
+            },
+            "assertions": {
+                "supervisor_iterations_lt": 8,
+                "analyze_count_lte": 2,
+                "report_section_count_gte": 4,
+                "source_authority_distribution_includes": ["official"],
+                "qa_warnings_count_gte": 1,
+            },
+        }
+    )
+
+    assert case.input.self_product == "AI眼镜"
+    assert case.input.competitors_discovery_mode is True
+    assert case.assertions.supervisor_iterations_lt == 8
+    assert case.assertions.analyze_count_lte == 2
+    assert case.assertions.report_section_count_gte == 4
+    assert case.assertions.source_authority_distribution_includes == ["official"]
+    assert case.assertions.qa_warnings_count_gte == 1
+
+
 def test_golden_case_schema_accepts_null_pack() -> None:
     case = GoldenCase.model_validate(
         {
@@ -176,6 +207,21 @@ def test_locale_zh_domestic_golden_case_passes_without_locale_warning(
     test_client: TestClient,
 ) -> None:
     case_path = Path(__file__).parent / "golden" / "cases" / "14_locale_zh_domestic.yaml"
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
+    assert result.passed is True
+
+
+def test_locale_zh_mismatch_warning_golden_case_passes(
+    test_client: TestClient,
+) -> None:
+    case_path = (
+        Path(__file__).parent
+        / "golden"
+        / "cases"
+        / "17_locale_zh_mismatch_warning.yaml"
+    )
     loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
     assert isinstance(loaded, dict)
     result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)

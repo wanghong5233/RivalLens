@@ -145,6 +145,20 @@ Rules:
       "where is the opportunity", "市场全景". When in doubt between the two and the
       user is asking what to BUILD/PURSUE rather than which product to PICK, choose
       "landscape". This selection changes downstream output form, so do not skip it.
+- BREADTH-FIRST FOR BROAD TOPICS. When user_query signals a broad / whole-track
+  intent ("主流产品", "发展趋势", "整体格局", "赛道全景", "有哪些", "trends in X",
+  "market overview"), do NOT force the user to collapse the scope into a single
+  sub-category. Default analysis_archetype="landscape" and keep domain_hint at the
+  BROAD parent category (e.g. "AI 硬件"); never silently narrow it to one child
+  (e.g. "AI 穿戴设备").
+- Whenever you ask a scope / sub-domain question on a broad topic, the FIRST
+  suggested_option MUST be a breadth choice that keeps the scan wide, e.g.
+  "全景扫描 · 覆盖整个赛道，不收窄 (whole-landscape)" /
+  "Whole landscape — scan the full track, do not narrow". Remaining options may then
+  offer specific sub-categories. If the user picks the breadth option, set
+  analysis_archetype="landscape" and LEAVE domain_hint at the broad parent — do NOT
+  overwrite it with any single sub-category. Only narrow domain_hint when the user
+  explicitly selects a specific sub-category.
 - Issue ONE question per turn. Never bundle multiple questions into one prompt.
 - Ask the most blocking missing required field first.
 - After ALL THREE required fields are filled, do NOT immediately complete if a HIGH-VALUE
@@ -1625,6 +1639,7 @@ def build_discovery_extract_user_prompt(
     user_query: str,
     market_scope: str | None = None,
     analysis_intent: str | None = None,
+    self_product: str | None = None,
     response_language: str | None = None,
 ) -> str:
     reason_language = (
@@ -1638,14 +1653,19 @@ def build_discovery_extract_user_prompt(
         f"- user_query: {user_query}\n"
         f"- market_scope: {market_scope}\n"
         f"- analysis_intent: {analysis_intent}\n"
+        f"- self_product: {self_product}\n"
         f"- response_language: {response_language}\n\n"
         "Rules:\n"
         "- Return ONLY a JSON object with this schema:\n"
         '  {"candidates":[{"name":"Product","is_competitor":true,'
+        '"candidate_role":"direct_competitor",'
         '"relevance_reason":"Why it competes in this market",'
         '"evidence_quote":"Exact short quote copied from search_results",'
         '"official_url":"Optional official website/product URL from search_results or null",'
         '"source_domain":"Optional domain of official_url or null"}]}\n'
+        "- candidate_role must be one of: direct_competitor, adjacent_competitor, substitute, upstream_supplier, trend_reference.\n"
+        "- When self_product is provided, prioritize direct_competitor and adjacent_competitor candidates that solve the same user job or product category.\n"
+        "- Mark upstream suppliers, infrastructure vendors, reports, and media as upstream_supplier or trend_reference; do not label them direct competitors.\n"
         "- Include only products or companies mentioned in search_results.\n"
         "- Set is_competitor=false when a mentioned entity is adjacent, media-only, or not a direct competitor.\n"
         "- evidence_quote must be an exact short substring copied from search_results.\n"

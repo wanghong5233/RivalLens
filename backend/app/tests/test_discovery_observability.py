@@ -108,6 +108,7 @@ def test_filter_discovery_candidates_keeps_grounded_competitor() -> None:
     assert relevance == [
         {
             "name": "Cursor",
+            "candidate_role": "direct_competitor",
             "relevance_reason": "AI coding product in the target market.",
             "evidence_quote_preview": quote,
         }
@@ -208,11 +209,135 @@ def test_filter_discovery_candidates_backfills_validated_official_source() -> No
     assert relevance == [
         {
             "name": "Cursor",
+            "candidate_role": "direct_competitor",
             "relevance_reason": "AI coding product in the target market.",
             "evidence_quote_preview": quote,
             "official_url": "https://cursor.com/pricing",
             "source_domain": "cursor.com",
         }
+    ]
+
+
+def test_filter_discovery_candidates_filters_upstream_suppliers_from_core_queue() -> None:
+    quote = "NVIDIA provides AI chips for smart glasses and wearable devices."
+    candidate = SimpleNamespace(
+        name="NVIDIA",
+        is_competitor=True,
+        candidate_role="upstream_supplier",
+        relevance_reason="上游芯片供应商，不是 AI 眼镜直接竞品。",
+        evidence_quote=quote,
+    )
+
+    discovered, filtered_out, relevance = _filter_discovery_candidates(
+        candidates=[candidate],
+        snippets=[quote],
+        snippet_rows=[],
+        self_product="AI眼镜",
+    )
+
+    assert discovered == []
+    assert relevance == []
+    assert filtered_out == [
+        {
+            "name": "NVIDIA",
+            "reason": "non_core_candidate_role",
+            "candidate_role": "upstream_supplier",
+        }
+    ]
+
+
+def test_filter_discovery_candidates_reconciles_llm_direct_role_to_upstream_signal() -> None:
+    quote = "NVIDIA provides GPU chips for smart glasses and AI edge devices."
+    candidate = SimpleNamespace(
+        name="NVIDIA",
+        is_competitor=True,
+        candidate_role="direct_competitor",
+        relevance_reason="GPU 芯片供应商，上游算力厂商。",
+        evidence_quote=quote,
+    )
+
+    discovered, filtered_out, relevance = _filter_discovery_candidates(
+        candidates=[candidate],
+        snippets=[quote],
+        snippet_rows=[],
+        self_product="AI眼镜",
+        analysis_archetype="landscape",
+    )
+
+    assert discovered == ["NVIDIA"]
+    assert filtered_out == []
+    assert relevance[0]["candidate_role"] == "upstream_supplier"
+
+
+def test_filter_discovery_candidates_still_filters_reconciled_upstream_in_comparison() -> None:
+    quote = "NVIDIA provides GPU chips for smart glasses and AI edge devices."
+    candidate = SimpleNamespace(
+        name="NVIDIA",
+        is_competitor=True,
+        candidate_role="direct_competitor",
+        relevance_reason="GPU 芯片供应商，上游算力厂商。",
+        evidence_quote=quote,
+    )
+
+    discovered, filtered_out, relevance = _filter_discovery_candidates(
+        candidates=[candidate],
+        snippets=[quote],
+        snippet_rows=[],
+        self_product="AI眼镜",
+        analysis_archetype="comparison",
+    )
+
+    assert discovered == []
+    assert relevance == []
+    assert filtered_out == [
+        {
+            "name": "NVIDIA",
+            "reason": "non_core_candidate_role",
+            "candidate_role": "upstream_supplier",
+        }
+    ]
+
+
+def test_filter_discovery_candidates_prioritizes_direct_candidates() -> None:
+    direct_quote = "Meta Ray-Ban smart glasses are AI wearable products."
+    adjacent_quote = "XREAL makes AR glasses for spatial computing."
+    substitute_quote = "Smartphone assistants can substitute some AI glasses workflows."
+    candidates = [
+        SimpleNamespace(
+            name="Phone Assistant",
+            is_competitor=True,
+            candidate_role="substitute",
+            relevance_reason="替代部分 AI 眼镜工作流。",
+            evidence_quote=substitute_quote,
+        ),
+        SimpleNamespace(
+            name="Meta Ray-Ban",
+            is_competitor=True,
+            candidate_role="direct_competitor",
+            relevance_reason="AI 眼镜直接竞品。",
+            evidence_quote=direct_quote,
+        ),
+        SimpleNamespace(
+            name="XREAL",
+            is_competitor=True,
+            candidate_role="adjacent_competitor",
+            relevance_reason="相邻 AR 眼镜玩家。",
+            evidence_quote=adjacent_quote,
+        ),
+    ]
+
+    discovered, _, relevance = _filter_discovery_candidates(
+        candidates=candidates,
+        snippets=[direct_quote, adjacent_quote, substitute_quote],
+        snippet_rows=[],
+        self_product="AI眼镜",
+    )
+
+    assert discovered == ["Meta Ray-Ban", "XREAL", "Phone Assistant"]
+    assert [item["candidate_role"] for item in relevance] == [
+        "direct_competitor",
+        "adjacent_competitor",
+        "substitute",
     ]
 
 

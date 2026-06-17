@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 
 from agents.state import AgentState
 from agents.subgraphs.researcher import MAX_REACT_TURNS, ResearcherSubState, get_researcher_subgraph
+from agents.tools import get_channel_registry
 from agents.tools.parse_page import (
     infer_source_type,
     official_hosts_for_competitor,
@@ -20,7 +21,8 @@ from models.step import Step
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_source_type
 from schemas.ids import make_id
 from schemas.supervisor import ConductResearch, FocusDimension
-from service.collector.source_resolver import resolve_official_sources
+from service.collector.errors import ChannelError
+from service.collector.source_resolver import SourceResolutionResult, resolve_official_sources
 from service.event_bus import RunEventType, emit_run_event
 from service.desensitize import normalize_text_for_storage
 from service.llm.records import build_llm_call_record_from_mapping
@@ -31,6 +33,23 @@ from utils.logger import get_logger
 log = get_logger("agents.researcher")
 
 RESEARCHER_LOW_SEMANTIC_MIN_CHARS = 0
+_OFFICIAL_SOURCE_TYPES: frozenset[str] = frozenset(
+    {"official_site", "official_doc", "docs", "pricing_page"}
+)
+_AUTHORITATIVE_REPORT_HOST_HINTS: tuple[str, ...] = (
+    "caict",
+    "gartner",
+    "idc",
+    "forrester",
+    "statista",
+    "questmobile",
+    "iresearch",
+    "analysys",
+    "researchandmarkets",
+)
+_OFFICIAL_URL_SEARCH_QUERY_LIMIT = 2
+_OFFICIAL_URL_SEARCH_MAX_RESULTS = 6
+_OFFICIAL_URL_CANDIDATE_BUDGET = 8
 
 
 def _resolve_focus_dimensions(
@@ -139,6 +158,95 @@ def _candidate_source_urls_for_competitor(
     return ordered
 
 
+def _official_url_search_queries(
+    *,
+    competitor_id: str,
+    market_scope: str | None,
+    response_language: str | None,
+) -> list[str]:
+    scope_prefix = f"{market_scope} " if market_scope else ""
+    if response_language == "zh":
+        candidates = [
+            f"{scope_prefix}{competitor_id} 官网",
+            f"{scope_prefix}{competitor_id} 官方网站",
+        ]
+    else:
+        candidates = [
+            f"{scope_prefix}{competitor_id} official site",
+            f"{scope_prefix}{competitor_id} company website",
+        ]
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        normalized = item.strip()
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+    return ordered[:_OFFICIAL_URL_SEARCH_QUERY_LIMIT]
+
+
+def _merge_candidate_urls(urls: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in urls:
+        normalized = item.strip()
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+        if len(ordered) >= _OFFICIAL_URL_CANDIDATE_BUDGET:
+            break
+    return ordered
+
+
+async def _discover_official_url_candidates(
+    *,
+    competitor_id: str,
+    market_scope: str | None,
+    response_language: str | None,
+) -> list[str]:
+    registry = get_channel_registry()
+    candidate_urls: list[str] = []
+    for query in _official_url_search_queries(
+        competitor_id=competitor_id,
+        market_scope=market_scope,
+        response_language=response_language,
+    ):
+        args: dict[str, object] = {
+            "query": query,
+            "max_results": _OFFICIAL_URL_SEARCH_MAX_RESULTS,
+        }
+        if response_language is not None:
+            args["response_language"] = response_language
+        if market_scope is not None:
+            args["market_scope"] = market_scope
+        try:
+            observation = await registry.invoke("search_web", args=args)
+        except (ChannelError, RuntimeError, ValueError) as exc:
+            log.warning(
+                "researcher.official_url_search_failed",
+                competitor_id=competitor_id,
+                query=query,
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+            continue
+        for snippet in observation.result.snippets:
+            source_url = getattr(snippet, "source_url", None)
+            if isinstance(source_url, str) and source_url.strip():
+                candidate_urls.append(source_url.strip())
+        if len(candidate_urls) >= _OFFICIAL_URL_CANDIDATE_BUDGET:
+            break
+    return _merge_candidate_urls(candidate_urls)
+
+
 def _build_evidence_rows(
     *,
     run_id: str,
@@ -200,6 +308,24 @@ def _build_evidence_rows(
         if any(host.endswith(f".{item}") for item in normalized_hosts):
             return True
         return False
+
+    def source_authority_for(
+        *,
+        source_url: str | None,
+        source_type: str,
+        competitor_source_match: bool | None,
+    ) -> tuple[str, str]:
+        if competitor_source_match is True and source_type in _OFFICIAL_SOURCE_TYPES:
+            return "official", "competitor_official_host"
+        if source_type == "market_report":
+            return "authoritative_report", "market_report_source_type"
+        if source_type == "public_review":
+            return "public_review", "public_review_source_type"
+        if source_url:
+            host = urlsplit(source_url).netloc.lower().removeprefix("www.")
+            if any(hint in host for hint in _AUTHORITATIVE_REPORT_HOST_HINTS):
+                return "authoritative_report", "authoritative_report_host"
+        return "third_party", "default_third_party"
 
     effective_drafts: list[dict[str, object]] = []
     seen_keys: set[tuple[str, str | None, str, str]] = set()
@@ -399,30 +525,28 @@ def _build_evidence_rows(
                 source_url=source_url,
                 competitor_id=competitor_id_raw,
             )
-        official_source_types = {"official_site", "docs", "pricing_page"}
         if normalized_source_type == "article" and inferred_source_type != "article":
             normalized_source_type = inferred_source_type
         elif (
-            normalized_source_type in official_source_types
-            and inferred_source_type not in official_source_types
+            normalized_source_type in _OFFICIAL_SOURCE_TYPES
+            and inferred_source_type not in _OFFICIAL_SOURCE_TYPES
         ):
             # Upstream tools classify against the union of all competitors' official
             # hosts, so a competitor's research result pointing at another vendor's
             # official domain can arrive mislabeled. Re-derive against this
             # competitor's own hosts and downgrade when it is not genuinely official.
             normalized_source_type = inferred_source_type
+        source_authority, source_authority_reason = source_authority_for(
+            source_url=source_url,
+            source_type=normalized_source_type,
+            competitor_source_match=competitor_source_match,
+        )
         metadata = {
             **metadata,
             "dimension_drop_reason": drop_reason,
             "competitor_source_match": competitor_source_match,
-            "source_authority": (
-                "official"
-                if (
-                    competitor_source_match is True
-                    and normalized_source_type in {"official_site", "docs", "pricing_page"}
-                )
-                else "third_party"
-            ),
+            "source_authority": source_authority,
+            "source_authority_reason": source_authority_reason,
         }
         candidate = {
             "dimension": normalized_dimension,
@@ -527,11 +651,33 @@ async def researcher_node(state: AgentState) -> AgentState:
         competitor_id=request.competitor_id,
         reference_urls=reference_urls,
     )
-    resolved_sources = await resolve_official_sources(
+    official_url_candidates = await _discover_official_url_candidates(
         competitor_id=request.competitor_id,
-        competitor_name=request.competitor_id,
-        candidate_urls=source_candidate_urls,
+        market_scope=market_scope,
+        response_language=response_language,
     )
+    source_candidate_urls = _merge_candidate_urls([*source_candidate_urls, *official_url_candidates])
+    try:
+        resolved_sources = await resolve_official_sources(
+            competitor_id=request.competitor_id,
+            competitor_name=request.competitor_id,
+            candidate_urls=source_candidate_urls,
+        )
+    except (ChannelError, RuntimeError, ValueError) as exc:
+        log.warning(
+            "researcher.source_resolution_failed",
+            competitor_id=request.competitor_id,
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
+            candidate_url_count=len(source_candidate_urls),
+        )
+        resolved_sources = SourceResolutionResult(
+            official_urls=[],
+            official_hosts=[],
+            key_pages=[],
+            attempted_candidate_count=len(source_candidate_urls),
+            validated_candidate_count=0,
+        )
 
     focus_dimensions = _resolve_focus_dimensions(request=request)
     step_id = make_id("step_")
@@ -609,6 +755,8 @@ async def researcher_node(state: AgentState) -> AgentState:
             "uncovered_dimensions": uncovered_dimensions,
         },
         "source_resolution": {
+            "candidate_url_count": len(source_candidate_urls),
+            "official_url_search_candidate_count": len(official_url_candidates),
             "attempted_candidate_count": resolved_sources.attempted_candidate_count,
             "validated_candidate_count": resolved_sources.validated_candidate_count,
             "official_hosts": list(resolved_sources.official_hosts),

@@ -721,6 +721,80 @@ async def test_supervisor_blocks_repeated_discovery_with_fallback(
 
 
 @pytest.mark.asyncio
+async def test_supervisor_routes_write_without_llm_when_analysis_is_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fail_if_llm_called(**_: object) -> SimpleNamespace:
+        raise AssertionError("analysis_done state should route to writer before LLM planning")
+
+    async def _fake_persist_iteration(**_: object) -> str:
+        return "step_supervisor_analysis_done_write"
+
+    async def _fake_emit_run_event(**_: object) -> None:
+        return None
+
+    monkeypatch.setattr("agents.nodes.supervisor.complete_structured", _fail_if_llm_called)
+    monkeypatch.setattr("agents.nodes.supervisor._persist_iteration", _fake_persist_iteration)
+    monkeypatch.setattr("agents.nodes.supervisor.emit_run_event", _fake_emit_run_event)
+    monkeypatch.setattr("agents.nodes.supervisor.get_session_factory", lambda: object())
+
+    new_state = await supervisor_node(
+        {
+            "run_id": "run_test",
+            "user_query": "AI 硬件的主流产品以及发展趋势。",
+            "competitors": ["Meta Ray-Ban", "XREAL"],
+            "researched_competitors": ["Meta Ray-Ban", "XREAL"],
+            "analysis_done": True,
+            "report_draft_done": False,
+            "current_iteration": 4,
+            "decisions": [],
+            "last_completed_node": "analyst",
+        }
+    )
+
+    assert new_state["next_action"] == "writer"
+    assert new_state["pending_tool_args"]["sections"]
+    assert new_state["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_allows_qa_analyst_retry_after_analysis_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Write",
+            "tool_args": {
+                "sections": ["feature", "pricing"],
+            },
+            "reasoning_summary": "LLM output is bypassed by QA fast path.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_qa_analyst_retry",
+        state={
+            "run_id": "run_test",
+            "user_query": "compare coding assistants",
+            "competitors": ["Cursor", "GitHub Copilot"],
+            "researched_competitors": ["Cursor", "GitHub Copilot"],
+            "analysis_done": True,
+            "report_draft_done": True,
+            "current_iteration": 4,
+            "decisions": [],
+            "qa_outcome": "rejected",
+            "qa_reject_to": "analyst",
+            "qa_reasons": ["Needs deeper cross-competitor analysis."],
+        },
+    )
+
+    assert new_state["next_action"] == "analyst"
+    assert new_state["report_draft_done"] is False
+    assert captured[0][2]["chosen_tool"] == "Analyze"
+
+
+@pytest.mark.asyncio
 async def test_supervisor_finalize_without_report_routes_writer_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

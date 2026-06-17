@@ -10,6 +10,7 @@ secrets/
 
 # ==== Private / Internal docs (never committed) ====
 docs/private/
+docs/defense/
 **/private/
 
 # ==== Reference projects (read-only clones for study, never committed) ====

@@ -29,6 +29,11 @@ class GoldenCaseAssertions(BaseModel):
     knowledge_pricing_count_gte: int | None = None
     knowledge_persona_count_gte: int | None = None
     knowledge_schema_coverage_rate_gte: float | None = None
+    supervisor_iterations_lt: int | None = None
+    analyze_count_lte: int | None = None
+    report_section_count_gte: int | None = None
+    source_authority_distribution_includes: list[str] = Field(default_factory=list)
+    qa_warnings_count_gte: int | None = None
 
 
 class PromotedQARuleFixture(BaseModel):
@@ -48,6 +53,8 @@ class GoldenCaseInput(BaseModel):
     target_roles: list[str] = Field(default_factory=lambda: ["pm"])
     report_depth: str = "quick"
     market_scope: str | None = None
+    self_product: str | None = None
+    competitors_discovery_mode: bool = False
 
 
 class GoldenCase(BaseModel):
@@ -78,6 +85,11 @@ class GoldenCaseResult:
     run_wall_clock_seconds: int | None
     created_at: str
     collector_actions: list[str] = field(default_factory=list)
+    supervisor_iterations: int | None = None
+    analyze_count: int | None = None
+    report_section_count: int | None = None
+    source_authority_distribution: dict[str, int] | None = None
+    qa_warnings_count: int | None = None
 
 
 def _load_case(path: Path) -> GoldenCase:
@@ -212,6 +224,42 @@ def _run_metrics_snapshot(*, run_id: str, client: TestClient) -> dict[str, objec
     return payload if isinstance(payload, dict) else {}
 
 
+def _run_trajectory_snapshot(*, run_id: str) -> dict[str, object]:
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            analyze_count = connection.execute(
+                text(
+                    "SELECT count(*) FROM supervisor_decisions "
+                    "WHERE run_id = :run_id AND chosen_tool = 'Analyze'"
+                ),
+                {"run_id": run_id},
+            ).scalar_one()
+            report_row = connection.execute(
+                text(
+                    "SELECT content_json FROM reports "
+                    "WHERE run_id = :run_id ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"run_id": run_id},
+            ).mappings().first()
+    finally:
+        engine.dispose()
+    content_json = report_row["content_json"] if report_row is not None else {}
+    if not isinstance(content_json, dict):
+        content_json = {}
+    sections_raw = content_json.get("sections")
+    qa_warnings_raw = content_json.get("qa_warnings")
+    executive_summary_raw = content_json.get("executive_summary")
+    section_count = len(sections_raw) if isinstance(sections_raw, list) else 0
+    if isinstance(executive_summary_raw, str) and executive_summary_raw.strip():
+        section_count += 1
+    return {
+        "analyze_count": int(analyze_count),
+        "report_section_count": section_count,
+        "qa_warnings_count": len(qa_warnings_raw) if isinstance(qa_warnings_raw, list) else 0,
+    }
+
+
 def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
     invoked_actions: list[str] = []
     registry = get_channel_registry()
@@ -245,6 +293,8 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
                     "target_roles": case.input.target_roles,
                     "report_depth": case.input.report_depth,
                     "market_scope": case.input.market_scope,
+                    "self_product": case.input.self_product,
+                    "competitors_discovery_mode": case.input.competitors_discovery_mode,
                 },
             )
         finally:
@@ -311,6 +361,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
                 value for value in blocked_rule_ids_raw if isinstance(value, str)
             )
     run_metrics = _run_metrics_snapshot(run_id=run_id, client=client)
+    trajectory = _run_trajectory_snapshot(run_id=run_id)
     coverage_rate_raw = run_metrics.get("coverage_rate")
     llm_token_total_raw = run_metrics.get("llm_token_total")
     wall_clock_raw = run_metrics.get("run_wall_clock_seconds")
@@ -318,6 +369,11 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
     knowledge_pricing_count_raw = run_metrics.get("knowledge_pricing_count")
     knowledge_persona_count_raw = run_metrics.get("knowledge_persona_count")
     knowledge_schema_coverage_rate_raw = run_metrics.get("knowledge_schema_coverage_rate")
+    supervisor_iterations_raw = run_metrics.get("supervisor_iterations")
+    report_section_count_raw = run_metrics.get("report_section_count")
+    source_authority_distribution_raw = run_metrics.get("source_authority_distribution")
+    analyze_count_raw = trajectory.get("analyze_count")
+    qa_warnings_count_raw = trajectory.get("qa_warnings_count")
     coverage_rate = (
         float(coverage_rate_raw)
         if isinstance(coverage_rate_raw, (int, float))
@@ -350,6 +406,33 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
     )
     run_wall_clock_seconds = (
         int(wall_clock_raw) if isinstance(wall_clock_raw, (int, float)) else None
+    )
+    supervisor_iterations = (
+        int(supervisor_iterations_raw)
+        if isinstance(supervisor_iterations_raw, (int, float))
+        else None
+    )
+    analyze_count = (
+        int(analyze_count_raw) if isinstance(analyze_count_raw, (int, float)) else None
+    )
+    report_section_count = (
+        int(report_section_count_raw)
+        if isinstance(report_section_count_raw, (int, float))
+        else None
+    )
+    qa_warnings_count = (
+        int(qa_warnings_count_raw)
+        if isinstance(qa_warnings_count_raw, (int, float))
+        else None
+    )
+    source_authority_distribution = (
+        {
+            key: int(value)
+            for key, value in source_authority_distribution_raw.items()
+            if isinstance(key, str) and isinstance(value, (int, float))
+        }
+        if isinstance(source_authority_distribution_raw, dict)
+        else None
     )
 
     failures: list[str] = []
@@ -441,6 +524,42 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         )
         if failed is not None:
             failures.append(failed)
+    if case.assertions.supervisor_iterations_lt is not None:
+        actual = supervisor_iterations if supervisor_iterations is not None else 10**9
+        if actual >= case.assertions.supervisor_iterations_lt:
+            failures.append(
+                f"supervisor_iterations expected < {case.assertions.supervisor_iterations_lt}, got {actual}"
+            )
+    if case.assertions.analyze_count_lte is not None:
+        actual = analyze_count if analyze_count is not None else 10**9
+        if actual > case.assertions.analyze_count_lte:
+            failures.append(
+                f"analyze_count expected <= {case.assertions.analyze_count_lte}, got {actual}"
+            )
+    if case.assertions.report_section_count_gte is not None:
+        failed = assert_gte(
+            actual=report_section_count or 0,
+            expected=case.assertions.report_section_count_gte,
+            field="report_section_count",
+        )
+        if failed is not None:
+            failures.append(failed)
+    if case.assertions.source_authority_distribution_includes:
+        authority_keys = set((source_authority_distribution or {}).keys())
+        for expected in case.assertions.source_authority_distribution_includes:
+            if expected not in authority_keys:
+                failures.append(
+                    "source_authority_distribution expected to include "
+                    f"{expected!r}, got {sorted(authority_keys)!r}"
+                )
+    if case.assertions.qa_warnings_count_gte is not None:
+        failed = assert_gte(
+            actual=qa_warnings_count or 0,
+            expected=case.assertions.qa_warnings_count_gte,
+            field="qa_warnings_count",
+        )
+        if failed is not None:
+            failures.append(failed)
 
     return GoldenCaseResult(
         case_id=case.id,
@@ -461,6 +580,11 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         run_wall_clock_seconds=run_wall_clock_seconds,
         created_at=datetime.now(timezone.utc).isoformat(),
         collector_actions=invoked_actions,
+        supervisor_iterations=supervisor_iterations,
+        analyze_count=analyze_count,
+        report_section_count=report_section_count,
+        source_authority_distribution=source_authority_distribution,
+        qa_warnings_count=qa_warnings_count,
     )
 
 
@@ -498,6 +622,11 @@ def dump_markdown_report(*, results: list[GoldenCaseResult], report_path: Path) 
         lines.append(f"- llm_token_total: {item.llm_token_total}")
         lines.append(f"- run_wall_clock_seconds: {item.run_wall_clock_seconds}")
         lines.append(f"- collector_actions: {item.collector_actions}")
+        lines.append(f"- supervisor_iterations: {item.supervisor_iterations}")
+        lines.append(f"- analyze_count: {item.analyze_count}")
+        lines.append(f"- report_section_count: {item.report_section_count}")
+        lines.append(f"- source_authority_distribution: {item.source_authority_distribution}")
+        lines.append(f"- qa_warnings_count: {item.qa_warnings_count}")
         if item.failures:
             lines.append("- failures:")
             for failure in item.failures:

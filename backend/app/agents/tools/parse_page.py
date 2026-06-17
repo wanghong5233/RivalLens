@@ -27,6 +27,27 @@ REVIEW_HOST_KEYWORDS = (
 DOC_PATH_KEYWORDS = ("/docs", "/api", "/reference")
 DOC_HOSTS = {"help.aliyun.com", "docs.github.com"}
 PRICING_PATH_KEYWORDS = ("/pricing", "/plans")
+MARKET_REPORT_HOST_KEYWORDS = (
+    "caict",
+    "gartner",
+    "idc",
+    "forrester",
+    "statista",
+    "questmobile",
+    "iresearch",
+    "analysys",
+    "researchandmarkets",
+)
+MARKET_REPORT_PATH_KEYWORDS = (
+    "/report",
+    "/reports",
+    "/whitepaper",
+    "/white-paper",
+    "/insight",
+    "/insights",
+    "/研究报告",
+    "/白皮书",
+)
 OFFICIAL_HOSTS_BY_COMPETITOR: dict[str, set[str]] = {
     "cursor": {"cursor.com", "www.cursor.com"},
     "github_copilot": {"github.com", "docs.github.com"},
@@ -129,6 +150,10 @@ def infer_source_type(
     )
     if any(keyword in host for keyword in REVIEW_HOST_KEYWORDS):
         return "public_review"
+    if any(keyword in host for keyword in MARKET_REPORT_HOST_KEYWORDS) or any(
+        keyword in path for keyword in MARKET_REPORT_PATH_KEYWORDS
+    ):
+        return "market_report"
     if normalized_official_hosts and (
         host in normalized_official_hosts
         or any(host.endswith(f".{official}") for official in normalized_official_hosts)

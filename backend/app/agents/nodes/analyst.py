@@ -300,6 +300,7 @@ async def analyst_node(state: AgentState) -> AgentState:
         feedback=list(extracted_knowledge.feedback),
         competitors=normalized_competitors,
         analysis_archetype=intake_draft.analysis_archetype,
+        focus_dimensions=focus_dimensions,
     )
     analysis_features = list(knowledge_result.features)
     analysis_pricings = list(knowledge_result.pricings)

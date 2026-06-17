@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from models.evidence import EvidenceRecord
 from models.run import Run
 from models.step import Step
+from agents.nodes.qa import _qa_warning_items
 from schemas.qa import Approval, Rejection
 from service.llm.prompts import QA_SEMANTIC_SYSTEM_PROMPT
 from service.llm.response import LLMResponse
@@ -701,3 +702,38 @@ def test_engine_aggregation_keeps_warning_rule_ids_on_approval() -> None:
 
     assert isinstance(result, Approval)
     assert result.warning_rule_ids == ["rule_locale_mismatch"]
+
+
+def test_qa_warning_items_classifies_visible_warning_metadata() -> None:
+    warnings = _qa_warning_items(
+        qa_payload={
+            "warning_rule_ids": [
+                "rule_buyer_critical_sections_need_official_source",
+                "rule_locale_mismatch",
+            ]
+        },
+        semantic_metadata={
+            "qa_unsupported_numeric_claims": [
+                {"claim": "提升 28%", "reason": "Evidence does not support it."}
+            ]
+        },
+    )
+
+    assert warnings == [
+        {
+            "category": "missing_official_source",
+            "rule_id": "rule_buyer_critical_sections_need_official_source",
+            "message": "QA warning: rule_buyer_critical_sections_need_official_source",
+        },
+        {
+            "category": "locale_risk",
+            "rule_id": "rule_locale_mismatch",
+            "message": "QA warning: rule_locale_mismatch",
+        },
+        {
+            "category": "numeric_claim_unsupported",
+            "rule_id": "qa_unsupported_numeric_claims",
+            "message": "报告包含未被引用证据支持的数字结论。",
+            "count": 1,
+        },
+    ]

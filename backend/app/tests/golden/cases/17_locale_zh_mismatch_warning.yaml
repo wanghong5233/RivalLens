@@ -1,0 +1,18 @@
+id: locale_zh_mismatch_warning
+description: 中国大陆市场分析若主要使用海外英文来源，应触发 locale mismatch warning 且仍可 approved。
+input:
+  user_query: "global-ai-coding 中国国内 AI 销售工具竞品分析"
+  competitors:
+    - comp_cursor
+    - comp_windsurf
+  domain_hint: "global-ai-coding AI 销售工具"
+  reference_urls: []
+  target_roles:
+    - pm
+  report_depth: quick
+  market_scope: "中国大陆"
+assertions:
+  final_qa_outcome: approved
+  warning_rule_ids_includes:
+    - rule_locale_mismatch
+  qa_warnings_count_gte: 1

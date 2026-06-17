@@ -108,6 +108,8 @@ export interface PlanTree {
     {
       official_url: string | null;
       source_domain: string | null;
+      candidate_role?: string | null;
+      relevance_reason?: string | null;
     }
   >;
 }
@@ -369,6 +371,15 @@ export interface KnowledgeFeedback {
   evidence_ids: string[];
 }
 
+export type KnowledgeCoverageStatus =
+  | "complete"
+  | "partial"
+  | "insufficient_data"
+  | "missing"
+  | "not_applicable_for_archetype"
+  | "not_requested"
+  | string;
+
 export interface RunKnowledgeResponse {
   run_id: string;
   analysis_archetype: "comparison" | "landscape" | string;
@@ -378,7 +389,7 @@ export interface RunKnowledgeResponse {
   personas: KnowledgePersona[];
   feedback: KnowledgeFeedback[];
   missing_reasons: Record<string, string[]>;
-  coverage: Record<string, Record<string, string>>;
+  coverage: Record<string, Record<string, KnowledgeCoverageStatus>>;
 }
 
 export type ComparisonStance = "leader" | "competitive" | "laggard" | "unknown" | string;

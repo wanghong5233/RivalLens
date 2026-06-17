@@ -380,6 +380,73 @@ def _derive_write_sections(*, focus_dimensions: list[str]) -> list[str]:
     return sections[:MAX_WRITE_SECTIONS]
 
 
+def _has_pending_research(
+    *,
+    competitors: list[str],
+    researched_competitors: list[str],
+) -> bool:
+    researched = set(researched_competitors)
+    return any(competitor not in researched for competitor in competitors)
+
+
+def _qa_requests_analyst_retry(
+    *,
+    qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
+    qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
+) -> bool:
+    return qa_outcome == "rejected" and qa_reject_to == "analyst"
+
+
+def _should_route_write_after_analysis(
+    *,
+    competitors: list[str],
+    researched_competitors: list[str],
+    prior_decisions: list[SupervisorDecision],
+    analysis_done: bool,
+    report_draft_done: bool,
+    qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
+    qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
+) -> bool:
+    if not analysis_done or report_draft_done:
+        return False
+    if _qa_requests_analyst_retry(qa_outcome=qa_outcome, qa_reject_to=qa_reject_to):
+        return False
+    if qa_outcome == "rejected" and qa_reject_to == "researcher":
+        return False
+    if any(decision.chosen_tool == "Write" for decision in prior_decisions):
+        return False
+    return not _has_pending_research(
+        competitors=competitors,
+        researched_competitors=researched_competitors,
+    )
+
+
+def _write_after_analysis_decision(
+    *,
+    run_id: str,
+    iteration: int,
+    triggered_by: TriggerSource,
+    fallback_sections: list[str],
+    reason: str,
+) -> SupervisorDecision:
+    now = _now_iso()
+    return SupervisorDecision(
+        id=make_id("decision_"),
+        run_id=run_id,
+        iteration=iteration,
+        chosen_tool="Write",
+        tool_args=Write(
+            template_id=None,
+            sections=fallback_sections,
+        ).model_dump(),
+        reasoning_summary=reason,
+        triggered_by=triggered_by,
+        outcome="dispatched",
+        outcome_recorded_at=now,
+        created_at=now,
+    )
+
+
 async def _load_prior_writer_contract(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -1417,6 +1484,32 @@ async def supervisor_node(state: AgentState) -> AgentState:
             prompt_preview="plan_pending_discovery",
             error=None,
         )
+    elif _should_route_write_after_analysis(
+        competitors=competitors,
+        researched_competitors=researched_competitors,
+        prior_decisions=decisions,
+        analysis_done=analysis_done,
+        report_draft_done=report_draft_done,
+        qa_outcome=qa_outcome,
+        qa_reject_to=qa_reject_to,
+    ):
+        decision = _write_after_analysis_decision(
+            run_id=run_id,
+            iteration=iteration,
+            triggered_by=triggered_by,
+            fallback_sections=fallback_sections,
+            reason=(
+                "Analysis already completed for current scope; deterministic gate routes "
+                "to writer instead of asking supervisor LLM for another analysis pass."
+            ),
+        )
+        decision_dimension_source = dimension_source
+        llm_response = _pseudo_llm_response(
+            provider="supervisor_state_gate",
+            model_name="supervisor_state_gate",
+            prompt_preview="analysis_done_route_write",
+            error=None,
+        )
     else:
         pending_follow_ups = await _load_pending_follow_ups(
             session_factory=session_factory,
@@ -1522,6 +1615,33 @@ async def supervisor_node(state: AgentState) -> AgentState:
                     market_scope=market_scope,
                     domain_context=domain_context,
                     response_language=response_language,
+                )
+            if (
+                decision.chosen_tool == "Analyze"
+                and _should_route_write_after_analysis(
+                    competitors=competitors,
+                    researched_competitors=researched_competitors,
+                    prior_decisions=decisions,
+                    analysis_done=analysis_done,
+                    report_draft_done=report_draft_done,
+                    qa_outcome=qa_outcome,
+                    qa_reject_to=qa_reject_to,
+                )
+            ):
+                log.warning(
+                    "supervisor.guardrail.analyze_after_analysis_blocked",
+                    iteration=iteration,
+                    blocked_reasoning=decision.reasoning_summary[:120],
+                )
+                decision = _write_after_analysis_decision(
+                    run_id=run_id,
+                    iteration=iteration,
+                    triggered_by=triggered_by,
+                    fallback_sections=fallback_sections,
+                    reason=(
+                        "Analyze blocked: current analysis scope is already complete; "
+                        "route to writer to produce the deliverable."
+                    ),
                 )
             if decision.chosen_tool in _DIMENSIONAL_SUPERVISOR_TOOLS:
                 decision_dimension_source = dimension_source

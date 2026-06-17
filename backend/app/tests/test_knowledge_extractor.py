@@ -165,20 +165,20 @@ def test_extract_knowledge_schema_generates_schema_in_landscape_mode() -> None:
     assert result.coverage == {
         "DeepSeek": {
             "feature": "partial",
-            "pricing": "insufficient_data",
+            "pricing": "not_applicable_for_archetype",
             "feedback": "insufficient_data",
             "persona": "insufficient_data",
         }
     }
     assert result.missing_reasons["DeepSeek"] == [
         "feature:coverage_partial",
-        "pricing:no_grounded_evidence",
+        "pricing:not_applicable_for_archetype",
         "feedback:no_grounded_evidence",
         "persona:no_grounded_evidence",
     ]
 
 
-def test_extract_knowledge_schema_keeps_insufficient_status_for_empty_landscape() -> None:
+def test_extract_knowledge_schema_marks_non_pricing_triplet_not_applicable_for_empty_landscape() -> None:
     result = extract_knowledge_schema(
         evidence_briefs=[],
         competitors=["DeepSeek"],
@@ -193,15 +193,27 @@ def test_extract_knowledge_schema_keeps_insufficient_status_for_empty_landscape(
     assert result.feedback == []
     assert result.coverage == {
         "DeepSeek": {
-            "feature": "insufficient_data",
-            "pricing": "insufficient_data",
-            "feedback": "insufficient_data",
-            "persona": "insufficient_data",
+            "feature": "not_applicable_for_archetype",
+            "pricing": "not_applicable_for_archetype",
+            "feedback": "not_applicable_for_archetype",
+            "persona": "not_applicable_for_archetype",
         }
     }
     assert result.missing_reasons["DeepSeek"] == [
-        "feature:no_grounded_evidence",
-        "pricing:no_grounded_evidence",
-        "feedback:no_grounded_evidence",
-        "persona:no_grounded_evidence",
+        "feature:not_applicable_for_archetype",
+        "pricing:not_applicable_for_archetype",
+        "feedback:not_applicable_for_archetype",
+        "persona:not_applicable_for_archetype",
     ]
+
+
+def test_extract_knowledge_schema_requires_pricing_when_landscape_requests_pricing() -> None:
+    result = extract_knowledge_schema(
+        evidence_briefs=[],
+        competitors=["DeepSeek"],
+        focus_dimensions=["pricing"],
+        analysis_archetype="landscape",
+    )
+
+    assert result.coverage["DeepSeek"]["pricing"] == "insufficient_data"
+    assert "pricing:no_grounded_evidence" in result.missing_reasons["DeepSeek"]

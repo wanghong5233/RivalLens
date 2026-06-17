@@ -14,7 +14,9 @@ KNOWN_SOURCE_TYPES: frozenset[str] = frozenset(
     {
         "official_site",
         "docs",
+        "official_doc",
         "pricing_page",
+        "market_report",
         "public_review",
         "article",
         "local_note",

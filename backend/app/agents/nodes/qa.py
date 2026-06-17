@@ -97,6 +97,50 @@ def _make_qa_payload(
     }
 
 
+def _warning_category(rule_id: str) -> str:
+    if "official_source" in rule_id:
+        return "missing_official_source"
+    if "locale" in rule_id:
+        return "locale_risk"
+    if "knowledge" in rule_id:
+        return "schema_coverage_risk"
+    if "semantic" in rule_id:
+        return "semantic_quality_risk"
+    return "qa_warning"
+
+
+def _qa_warning_items(
+    *,
+    qa_payload: dict[str, object],
+    semantic_metadata: dict[str, object],
+) -> list[dict[str, object]]:
+    warning_rule_ids_raw = qa_payload.get("warning_rule_ids", [])
+    warning_rule_ids = (
+        [item for item in warning_rule_ids_raw if isinstance(item, str)]
+        if isinstance(warning_rule_ids_raw, list)
+        else []
+    )
+    warnings = [
+        {
+            "category": _warning_category(rule_id),
+            "rule_id": rule_id,
+            "message": f"QA warning: {rule_id}",
+        }
+        for rule_id in warning_rule_ids
+    ]
+    unsupported_numeric_claims = semantic_metadata.get("qa_unsupported_numeric_claims", [])
+    if isinstance(unsupported_numeric_claims, list) and unsupported_numeric_claims:
+        warnings.append(
+            {
+                "category": "numeric_claim_unsupported",
+                "rule_id": "qa_unsupported_numeric_claims",
+                "message": "报告包含未被引用证据支持的数字结论。",
+                "count": len([item for item in unsupported_numeric_claims if isinstance(item, dict)]),
+            }
+        )
+    return warnings
+
+
 def _to_qa_reasons(rejection: Rejection) -> list[str]:
     # Prefer actionable rewrite hints (curated Chinese instruction, or the
     # rule's own message as fallback) so the writer's next attempt is targeted.
@@ -200,7 +244,20 @@ async def qa_node(state: AgentState) -> AgentState:
         qa_payload["qa_reject_to"] = "supervisor"
         qa_payload["reject_to"] = "supervisor"
 
+    qa_warnings = _qa_warning_items(
+        qa_payload=qa_payload,
+        semantic_metadata=semantic_metadata,
+    )
+    if qa_warnings:
+        qa_payload["qa_warnings"] = qa_warnings
+
     async with session_factory() as session:
+        report_row = await session.get(Report, report.report_id)
+        if report_row is not None and qa_warnings:
+            report_row.content_json = {
+                **report_row.content_json,
+                "qa_warnings": qa_warnings,
+            }
         step = Step(
             step_id=qa_step_id,
             run_id=run_id,
@@ -263,6 +320,7 @@ async def qa_node(state: AgentState) -> AgentState:
                 "reject_to": event_reject_to,
                 "target_step_id": writer_step.step_id,
                 "warning_rule_ids": qa_payload.get("warning_rule_ids", []),
+                "qa_warnings": qa_warnings,
             },
         )
         return {
@@ -308,6 +366,7 @@ async def qa_node(state: AgentState) -> AgentState:
             "target_step_id": writer_step.step_id,
             "failed_rule_count": len(failed_rule_ids),
             "warning_rule_ids": qa_payload.get("warning_rule_ids", []),
+            "qa_warnings": qa_warnings,
         },
     )
     qa_reasons = (

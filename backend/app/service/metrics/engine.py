@@ -358,6 +358,8 @@ def _knowledge_schema_coverage_rate(
                 continue
             if not isinstance(status_raw, str):
                 continue
+            if status_raw in {"not_applicable_for_archetype", "not_requested"}:
+                continue
             total += 1
             if not _dimension_has_substantial_record(
                 competitor_id=competitor_id,
@@ -414,10 +416,10 @@ def _sections_from_conclusions(rows: list[ConclusionRecord]) -> set[str]:
 
 
 def _section_count_from_report(report: Report | None) -> int:
-    if report is None or not isinstance(report.content_json, dict):
-        return 0
-    sections_raw = report.content_json.get("sections")
-    return len(sections_raw) if isinstance(sections_raw, list) else 0
+    # Must stay in lockstep with report_section_ids. The writer emits
+    # executive_summary as a top-level field outside `sections`, so counting the
+    # raw array alone undercounts the rendered report (ids=4 vs count=3).
+    return len(_section_ids_from_report(report))
 
 
 def _latest_writer_target_sections(step_rows: list[Step]) -> set[str]:

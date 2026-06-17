@@ -68,6 +68,72 @@ def test_reconcile_plan_tree_skips_duplicate_competitors() -> None:
     assert reconciled.version == 4
 
 
+def test_reconcile_plan_tree_preserves_candidate_role_in_sources_and_description() -> None:
+    plan = PlanTree(
+        plan_id="plan_test",
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    reconciled = reconcile_plan_tree_after_discovery(
+        plan_tree=plan,
+        discovered_competitors=["Meta Ray-Ban"],
+        discovered_competitor_sources={
+            "Meta Ray-Ban": {
+                "official_url": None,
+                "source_domain": None,
+                "candidate_role": "direct_competitor",
+                "relevance_reason": "AI 眼镜直接竞品。",
+            }
+        },
+    )
+
+    research_tasks = [task for task in reconciled.tasks if task.stage == "research"]
+    assert len(research_tasks) == 1
+    assert "候选角色：直接竞品" in research_tasks[0].description
+    assert reconciled.competitor_sources["Meta Ray-Ban"] == {
+        "official_url": None,
+        "source_domain": None,
+        "candidate_role": "direct_competitor",
+        "relevance_reason": "AI 眼镜直接竞品。",
+    }
+
+
+def test_reconcile_plan_tree_landscape_soft_caps_non_core_candidates() -> None:
+    plan = PlanTree(
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    reconciled = reconcile_plan_tree_after_discovery(
+        plan_tree=plan,
+        discovered_competitors=[
+            "Meta Ray-Ban",
+            "XREAL",
+            "NVIDIA",
+            "CAICT",
+        ],
+        discovered_competitor_sources={
+            "Meta Ray-Ban": {"candidate_role": "direct_competitor"},
+            "XREAL": {"candidate_role": "adjacent_competitor"},
+            "NVIDIA": {"candidate_role": "upstream_supplier"},
+            "CAICT": {"candidate_role": "trend_reference"},
+        },
+        analysis_archetype="landscape",
+        max_competitors=1,
+    )
+
+    research_competitors = [
+        task.competitor_id for task in reconciled.tasks if task.stage == "research"
+    ]
+    # core competitors are fully preserved; non-core competitors are added with a soft cap.
+    assert research_competitors == ["Meta Ray-Ban", "XREAL", "NVIDIA"]
+
+
 def test_reconcile_plan_tree_logs_authoritative_research_competitor_set(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

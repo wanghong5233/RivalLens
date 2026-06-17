@@ -74,6 +74,47 @@ function groupFeedback(items: KnowledgeFeedback[]): Map<string, KnowledgeFeedbac
   return grouped;
 }
 
+function pricingEmptyText(knowledge: RunKnowledgeResponse | null): string {
+  if (knowledge === null) {
+    return "暂无定价模型条目：可能是价格未公开、证据不足，或抽取仍在处理中。";
+  }
+  const pricingStatuses = Object.values(knowledge.coverage)
+    .map((item) => item.pricing)
+    .filter((value): value is string => typeof value === "string");
+  const pricingMissingReasons = Object.values(knowledge.missing_reasons).flat();
+  const pricingNotApplicable =
+    knowledge.analysis_archetype === "landscape" &&
+    (pricingStatuses.includes("not_applicable_for_archetype") ||
+      pricingMissingReasons.includes("pricing:not_applicable_for_archetype"));
+  if (pricingNotApplicable) {
+    return "本次为趋势/全景分析，未检索到可验证套餐或价格证据；定价模型不作为本场景的强制字段。";
+  }
+  return "暂无定价模型条目：可能是价格未公开、证据不足，或抽取仍在处理中。";
+}
+
+
+function schemaEmptyText(
+  knowledge: RunKnowledgeResponse | null,
+  options: {
+    bucket: "feature" | "feedback" | "persona";
+    defaultText: string;
+    landscapeText: string;
+  },
+): string {
+  const { bucket, defaultText, landscapeText } = options;
+  if (knowledge === null || knowledge.analysis_archetype !== "landscape") {
+    return defaultText;
+  }
+  const statuses = Object.values(knowledge.coverage)
+    .map((item) => item[bucket])
+    .filter((value): value is string => typeof value === "string");
+  const missingReasons = Object.values(knowledge.missing_reasons).flat();
+  const notApplicable =
+    statuses.includes("not_applicable_for_archetype") ||
+    missingReasons.includes(`${bucket}:not_applicable_for_archetype`);
+  return notApplicable ? landscapeText : defaultText;
+}
+
 function EvidenceButton({
   evidenceIds,
   onEvidenceClick,
@@ -332,6 +373,7 @@ export function KnowledgePanel({
   const pricingCount = knowledge?.pricings.length ?? 0;
   const personaCount = knowledge?.personas.length ?? 0;
   const feedbackCount = knowledge?.feedback.length ?? 0;
+  const isLandscape = knowledge?.analysis_archetype === "landscape";
   const hasKnowledge =
     featureCount + pricingCount + personaCount + feedbackCount > 0;
 
@@ -365,6 +407,11 @@ export function KnowledgePanel({
           </p>
         </div>
       </div>
+      {isLandscape ? (
+        <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground">
+          本次为趋势/全景分析，竞品知识三件套为辅助视图；若需完整功能树/定价/画像，请在下一步发起聚焦到具体产品的对比分析。
+        </div>
+      ) : null}
 
       <div className="grid gap-2 sm:grid-cols-4">
         <SchemaStat hint="功能树节点" label="功能树" value={featureCount} />
@@ -386,7 +433,11 @@ export function KnowledgePanel({
         </h4>
         {competitorIds.length === 0 || knowledge?.features.length === 0 ? (
           <EmptyBlock
-            text="暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。"
+            text={schemaEmptyText(knowledge ?? null, {
+              bucket: "feature",
+              defaultText: "暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。",
+              landscapeText: "当前是趋势/全景模式，未强制抽取逐竞品功能树。若需功能树，请切换到聚焦竞品分析。",
+            })}
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
@@ -412,7 +463,7 @@ export function KnowledgePanel({
         </h4>
         {competitorIds.length === 0 || knowledge?.pricings.length === 0 ? (
           <EmptyBlock
-            text="暂无定价模型条目：可能是价格未公开、证据不足，或抽取仍在处理中。"
+            text={pricingEmptyText(knowledge ?? null)}
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
@@ -447,7 +498,11 @@ export function KnowledgePanel({
         </h4>
         {knowledge?.personas.length === 0 ? (
           <EmptyBlock
-            text="暂无用户画像条目：可能是公开资料未覆盖目标用户，或抽取仍在处理中。"
+            text={schemaEmptyText(knowledge ?? null, {
+              bucket: "persona",
+              defaultText: "暂无用户画像条目：可能是公开资料未覆盖目标用户，或抽取仍在处理中。",
+              landscapeText: "当前是趋势/全景模式，未强制抽取逐竞品用户画像。若需画像，请切换到聚焦竞品分析。",
+            })}
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
@@ -469,7 +524,11 @@ export function KnowledgePanel({
         </h4>
         {competitorIds.length === 0 || knowledge?.feedback.length === 0 ? (
           <EmptyBlock
-            text="暂无用户反馈条目：可能是公开评论证据不足，或抽取仍在处理中。"
+            text={schemaEmptyText(knowledge ?? null, {
+              bucket: "feedback",
+              defaultText: "暂无用户反馈条目：可能是公开评论证据不足，或抽取仍在处理中。",
+              landscapeText: "当前是趋势/全景模式，未强制抽取逐竞品用户反馈。若需反馈画像，请切换到聚焦竞品分析。",
+            })}
           />
         ) : (
           <div className="grid gap-3 xl:grid-cols-2">
