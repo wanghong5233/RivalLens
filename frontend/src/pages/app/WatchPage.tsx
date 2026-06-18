@@ -57,6 +57,7 @@ function RecentChangeItem({ diff }: { diff: CompetitorDiffResponse }): JSX.Eleme
 
 export function WatchPage(): JSX.Element {
   const [newCompetitor, setNewCompetitor] = useState("");
+  const [refreshingIds, setRefreshingIds] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
   const watchlistDigestQuery = useWatchlistDigest();
   const createMutation = useCreateWatchlistItem();
@@ -87,6 +88,7 @@ export function WatchPage(): JSX.Element {
   }
 
   async function handleRefresh(watchId: string): Promise<void> {
+    setRefreshingIds((prev) => new Set(prev).add(watchId));
     try {
       const result = await refreshMutation.mutateAsync(watchId);
       pushToast({ title: "刷新任务已启动", variant: "success" });
@@ -94,6 +96,12 @@ export function WatchPage(): JSX.Element {
     } catch (error) {
       if (error instanceof Error)
         pushToast({ title: "触发刷新失败", description: error.message, variant: "danger" });
+    } finally {
+      setRefreshingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(watchId);
+        return next;
+      });
     }
   }
 
@@ -170,12 +178,12 @@ export function WatchPage(): JSX.Element {
                   size="icon"
                   variant="ghost"
                   onClick={() => void handleRefresh(item.watch_id)}
-                  disabled={refreshMutation.isPending}
+                  disabled={refreshingIds.has(item.watch_id)}
                   aria-label="立即刷新"
                   title="立即刷新"
                 >
                   <RefreshCw
-                    className={`h-3.5 w-3.5 text-foreground-muted ${refreshMutation.isPending ? "animate-spin" : ""}`}
+                    className={`h-3.5 w-3.5 text-foreground-muted ${refreshingIds.has(item.watch_id) ? "animate-spin" : ""}`}
                   />
                 </Button>
                 <RefreshScheduleDialog item={item}>

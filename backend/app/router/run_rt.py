@@ -3059,6 +3059,7 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
                 select(CompetitorDiff)
                 .where(CompetitorDiff.competitor_id.in_(all_competitor_ids))
                 .order_by(CompetitorDiff.created_at.desc())
+                .limit(5 * len(all_competitor_ids))
             )
         ).scalars().all()
 
@@ -3192,8 +3193,8 @@ async def update_watchlist_item(watch_id: str, payload: WatchlistUpdateRequest) 
                 error_code="WATCHLIST_ITEM_NOT_FOUND",
                 message=f"watch_id={watch_id} does not exist",
             )
-        if payload.note is not None:
-            normalized_note = payload.note.strip()
+        if "note" in payload.model_fields_set:
+            normalized_note = payload.note.strip() if payload.note is not None else None
             item.note = normalized_note if normalized_note else None
         if "next_refresh_at" in payload.model_fields_set:
             item.next_refresh_at = payload.next_refresh_at

@@ -119,11 +119,13 @@ async def lifespan(app: FastAPI):
                     )
                     bt.add(task)
                     task.add_done_callback(bt.discard)
+                    await task
                 return _launcher
 
             refresher = WatchlistRefresher(
                 session_factory=get_session_factory(),
                 run_launcher=_make_watchlist_run_launcher(app.state.compiled_graph, app.state),
+                background_tasks=background_tasks,
             )
             app.state.watchlist_refresher = refresher
             refresher_task = asyncio.create_task(refresher.start_loop(), name="watchlist_refresher")

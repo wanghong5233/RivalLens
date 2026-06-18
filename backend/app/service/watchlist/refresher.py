@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,10 +34,12 @@ class WatchlistRefresher:
         *,
         session_factory: Callable[[], AsyncSession],
         run_launcher: Callable[[str, dict[str, object]], Awaitable[None]],
+        background_tasks: set[asyncio.Task[Any]],
     ) -> None:
         self._session_factory = session_factory
         self._run_launcher = run_launcher
         self._semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REFRESHES)
+        self._background_tasks = background_tasks
 
     async def trigger_single(self, watch_id: str) -> str:
         """Immediately trigger a refresh run for one watchlist item. Returns run_id."""
@@ -46,10 +49,12 @@ class WatchlistRefresher:
                 raise ValueError(f"watch_id={watch_id} not found in watchlist")
             run_id = await self._create_run_record(item, session)
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._execute_and_finalize(watch_id=watch_id, run_id=run_id, competitor_id=item.competitor_id),
-            name=f"run_graph_{run_id}",
+            name=f"watchlist_finalize_{run_id}",
         )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
         return run_id
 
     async def run_once(self) -> None:
@@ -69,10 +74,12 @@ class WatchlistRefresher:
 
         log.info("watchlist.refresher.run_once.found", count=len(items))
         for item in items:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._trigger_item(item.watch_id),
                 name=f"watchlist_refresh_trigger_{item.watch_id}",
             )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def start_loop(self, interval_seconds: int = 300) -> None:
         """Background polling loop. Call once from app lifespan."""
