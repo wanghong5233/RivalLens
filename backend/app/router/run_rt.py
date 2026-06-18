@@ -15,7 +15,7 @@ from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import selectinload
 import yaml
@@ -25,6 +25,7 @@ from core.tiers import resolve_tier_profile
 from db.engine import get_session_factory
 from core.config import settings
 from exceptions.base import APIException
+from models.competitor_diff import CompetitorDiff
 from models.conclusion import ConclusionRecord
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
@@ -46,6 +47,8 @@ from schemas.intake import (
 from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.comparison import load_comparisons_for_run
 from service.conclusion import load_conclusions_for_run
+from service.diff.comparator import compute_diff
+from service.diff.persistence import persist_diffs
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.knowledge import load_knowledge_for_run
 from service.locale import detect_language
@@ -506,6 +509,7 @@ class WatchlistCreateRequest(BaseModel):
     competitor_id: str
     note: str | None = None
     next_refresh_at: datetime | None = None
+    refresh_interval_hours: int | None = None
 
     @field_validator("competitor_id")
     @classmethod
@@ -523,12 +527,35 @@ class WatchlistCreateRequest(BaseModel):
         normalized = value.strip()
         return normalized if normalized else None
 
+    @field_validator("refresh_interval_hours")
+    @classmethod
+    def _validate_refresh_interval(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("refresh_interval_hours must be a positive integer.")
+        return value
+
+
+class WatchlistUpdateRequest(BaseModel):
+    note: str | None = None
+    next_refresh_at: datetime | None = None
+    refresh_interval_hours: int | None = None
+
+    @field_validator("refresh_interval_hours")
+    @classmethod
+    def _validate_refresh_interval(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("refresh_interval_hours must be a positive integer.")
+        return value
+
 
 class WatchlistItemResponse(BaseModel):
     watch_id: str
     competitor_id: str
     note: str | None
     next_refresh_at: str | None
+    last_refreshed_at: str | None
+    refresh_interval_hours: int | None
+    last_run_id: str | None
     created_at: str
 
 
@@ -543,6 +570,19 @@ class WatchInsightItemResponse(BaseModel):
     created_at: str
 
 
+class CompetitorDiffItemResponse(BaseModel):
+    diff_id: str
+    competitor_id: str
+    run_id_new: str
+    run_id_old: str
+    dimension: str
+    change_type: str
+    old_value: dict | None
+    new_value: dict | None
+    significance: str
+    created_at: str
+
+
 class WatchlistDigestItemResponse(BaseModel):
     watch_id: str
     competitor_id: str
@@ -552,7 +592,12 @@ class WatchlistDigestItemResponse(BaseModel):
     run_count: int
     last_updated_at: str | None
     latest_run_id: str | None
+    last_run_id: str | None
+    last_refreshed_at: str | None
+    next_refresh_at: str | None
+    refresh_interval_hours: int | None
     items: list[WatchInsightItemResponse]
+    recent_changes: list[CompetitorDiffItemResponse]
 
 
 def _to_sse_chunk(*, event: str, data: dict[str, object]) -> str:
@@ -1039,6 +1084,9 @@ def _to_watchlist_item(item: WatchlistItem) -> WatchlistItemResponse:
         competitor_id=item.competitor_id,
         note=item.note,
         next_refresh_at=_to_iso(item.next_refresh_at),
+        last_refreshed_at=_to_iso(item.last_refreshed_at),
+        refresh_interval_hours=item.refresh_interval_hours,
+        last_run_id=item.last_run_id,
         created_at=item.created_at.isoformat(),
     )
 
@@ -1244,6 +1292,12 @@ async def _execute_run_graph(
             payload=_build_run_finish_payload(run_id=run_id, status=final_status),
         )
         await _log_run_summary(run_id=run_id, status=final_status)
+        diff_task = asyncio.create_task(
+            _compute_and_persist_diffs(run_id=run_id),
+            name=f"competitor_diff_{run_id}",
+        )
+        background_tasks.add(diff_task)
+        diff_task.add_done_callback(background_tasks.discard)
         curator_task = asyncio.create_task(
             run_skill_curator_for_run(run_id=run_id, domain_hint=domain_hint),
             name=f"skill_curator_{run_id}",
@@ -1251,6 +1305,52 @@ async def _execute_run_graph(
         background_tasks.add(curator_task)
         curator_task.add_done_callback(background_tasks.discard)
         log.info("api.run.execute.finish", status=final_status)
+
+
+async def _compute_and_persist_diffs(*, run_id: str) -> None:
+    """Compute competitive diffs for all watchlisted competitors in this run."""
+    session_factory = get_session_factory()
+    try:
+        async with session_factory() as session:
+            run = await session.get(Run, run_id)
+            if run is None or not isinstance(run.competitors, list):
+                return
+            watchlist_ids = {
+                row[0]
+                for row in (
+                    await session.execute(
+                        select(WatchlistItem.competitor_id)
+                    )
+                ).all()
+            }
+            competitors_to_diff = [c for c in run.competitors if c in watchlist_ids]
+
+        for competitor_id in competitors_to_diff:
+            try:
+                async with session_factory() as session:
+                    diffs = await compute_diff(
+                        run_id_new=run_id,
+                        competitor_id=competitor_id,
+                        session=session,
+                    )
+                    if diffs:
+                        await persist_diffs(session=session, diffs=diffs)
+                        await session.commit()
+                        log.info(
+                            "diff.persisted",
+                            run_id=run_id,
+                            competitor_id=competitor_id,
+                            count=len(diffs),
+                        )
+            except Exception as exc:
+                log.warning(
+                    "diff.error",
+                    run_id=run_id,
+                    competitor_id=competitor_id,
+                    error=format_exception_for_log(exc),
+                )
+    except Exception as exc:
+        log.warning("diff.batch.error", run_id=run_id, error=format_exception_for_log(exc))
 
 
 async def _log_run_summary(*, run_id: str, status: str) -> None:
@@ -2953,6 +3053,34 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
         )
         raw_rows = conclusion_rows.all()
 
+        all_competitor_ids = [item.competitor_id for item in watchlist_items]
+        diff_rows = (
+            await session.execute(
+                select(CompetitorDiff)
+                .where(CompetitorDiff.competitor_id.in_(all_competitor_ids))
+                .order_by(CompetitorDiff.created_at.desc())
+            )
+        ).scalars().all()
+
+    diffs_by_competitor: dict[str, list[CompetitorDiffItemResponse]] = {}
+    for diff in diff_rows:
+        diffs_by_competitor.setdefault(
+            _normalize_competitor_key(diff.competitor_id), []
+        ).append(
+            CompetitorDiffItemResponse(
+                diff_id=diff.diff_id,
+                competitor_id=diff.competitor_id,
+                run_id_new=diff.run_id_new,
+                run_id_old=diff.run_id_old,
+                dimension=diff.dimension,
+                change_type=diff.change_type,
+                old_value=diff.old_value,
+                new_value=diff.new_value,
+                significance=diff.significance,
+                created_at=diff.created_at.isoformat(),
+            )
+        )
+
     insights_by_competitor: dict[str, list[WatchInsightItemResponse]] = {}
     run_ids_by_competitor: dict[str, set[str]] = {}
     for conclusion, run_title, user_query in raw_rows:
@@ -2997,7 +3125,12 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
                 run_count=len(run_ids_by_competitor.get(competitor_key, set())),
                 last_updated_at=latest.created_at if latest is not None else None,
                 latest_run_id=latest.run_id if latest is not None else None,
+                last_run_id=item.last_run_id,
+                last_refreshed_at=_to_iso(item.last_refreshed_at),
+                next_refresh_at=_to_iso(item.next_refresh_at),
+                refresh_interval_hours=item.refresh_interval_hours,
                 items=insights[:5],
+                recent_changes=diffs_by_competitor.get(competitor_key, [])[:5],
             )
         )
     return digest_items
@@ -3023,6 +3156,7 @@ async def create_watchlist_item(payload: WatchlistCreateRequest) -> WatchlistIte
             competitor_id=payload.competitor_id,
             note=payload.note,
             next_refresh_at=payload.next_refresh_at,
+            refresh_interval_hours=payload.refresh_interval_hours,
         )
         session.add(item)
         await session.commit()
@@ -3045,6 +3179,93 @@ async def delete_watchlist_item(watch_id: str) -> WatchlistItemResponse:
         await session.delete(item)
         await session.commit()
     return deleted_item
+
+
+@router.patch("/api/watchlist/{watch_id}", response_model=WatchlistItemResponse)
+async def update_watchlist_item(watch_id: str, payload: WatchlistUpdateRequest) -> WatchlistItemResponse:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        item = await session.get(WatchlistItem, watch_id)
+        if item is None:
+            raise APIException(
+                status_code=404,
+                error_code="WATCHLIST_ITEM_NOT_FOUND",
+                message=f"watch_id={watch_id} does not exist",
+            )
+        if payload.note is not None:
+            normalized_note = payload.note.strip()
+            item.note = normalized_note if normalized_note else None
+        if "next_refresh_at" in payload.model_fields_set:
+            item.next_refresh_at = payload.next_refresh_at
+        if "refresh_interval_hours" in payload.model_fields_set:
+            item.refresh_interval_hours = payload.refresh_interval_hours
+        await session.commit()
+        await session.refresh(item)
+    return _to_watchlist_item(item)
+
+
+class WatchlistRefreshResponse(BaseModel):
+    run_id: str
+    watch_id: str
+    status: str
+
+
+@router.post("/api/watchlist/{watch_id}/refresh", response_model=WatchlistRefreshResponse)
+async def manual_refresh_watchlist_item(watch_id: str, request: Request) -> WatchlistRefreshResponse:
+    refresher = getattr(request.app.state, "watchlist_refresher", None)
+    if refresher is None:
+        raise APIException(
+            status_code=503,
+            error_code="REFRESHER_NOT_AVAILABLE",
+            message="Watchlist refresher is not initialized.",
+        )
+    try:
+        run_id = await refresher.trigger_single(watch_id)
+    except ValueError as exc:
+        raise APIException(
+            status_code=404,
+            error_code="WATCHLIST_ITEM_NOT_FOUND",
+            message=str(exc),
+        ) from exc
+    return WatchlistRefreshResponse(run_id=run_id, watch_id=watch_id, status="running")
+
+
+@router.get("/api/runs/{run_id}/diff", response_model=list[CompetitorDiffItemResponse])
+async def get_run_diff(run_id: str) -> list[CompetitorDiffItemResponse]:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            raise APIException(
+                status_code=404,
+                error_code="RUN_NOT_FOUND",
+                message=f"run_id={run_id} does not exist",
+            )
+        diff_rows = (
+            await session.execute(
+                select(CompetitorDiff)
+                .where(CompetitorDiff.run_id_new == run_id)
+                .order_by(
+                    case({"high": 0, "medium": 1, "low": 2}, value=CompetitorDiff.significance, else_=3),
+                    CompetitorDiff.created_at.asc(),
+                )
+            )
+        ).scalars().all()
+    return [
+        CompetitorDiffItemResponse(
+            diff_id=diff.diff_id,
+            competitor_id=diff.competitor_id,
+            run_id_new=diff.run_id_new,
+            run_id_old=diff.run_id_old,
+            dimension=diff.dimension,
+            change_type=diff.change_type,
+            old_value=diff.old_value,
+            new_value=diff.new_value,
+            significance=diff.significance,
+            created_at=diff.created_at.isoformat(),
+        )
+        for diff in diff_rows
+    ]
 
 
 @router.get("/api/runs/{run_id}/metrics", response_model=RunMetricsResponse)

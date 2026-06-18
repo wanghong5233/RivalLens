@@ -411,6 +411,9 @@ export interface WatchlistItemResponse {
   note: string | null;
   next_refresh_at: string | null;
   created_at: string;
+  last_refreshed_at: string | null;
+  refresh_interval_hours: number | null;
+  last_run_id: string | null;
 }
 
 export interface WatchInsightItemResponse {
@@ -433,13 +436,52 @@ export interface WatchlistDigestItemResponse {
   run_count: number;
   last_updated_at: string | null;
   latest_run_id: string | null;
+  last_run_id: string | null;
   items: WatchInsightItemResponse[];
+  last_refreshed_at: string | null;
+  next_refresh_at: string | null;
+  refresh_interval_hours: number | null;
+  recent_changes: CompetitorDiffResponse[];
 }
 
 export interface WatchlistCreateRequest {
   competitor_id: string;
   note?: string | null;
   next_refresh_at?: string | null;
+  refresh_interval_hours?: number | null;
+}
+
+export interface WatchlistUpdateRequest {
+  note?: string | null;
+  refresh_interval_hours?: number | null;
+  next_refresh_at?: string | null;
+}
+
+export interface WatchlistRefreshResponse {
+  run_id: string;
+  watch_id: string;
+  status: string;
+}
+
+export type DiffChangeType =
+  | "stance_changed"
+  | "new_dimension"
+  | "lost_dimension"
+  | "summary_changed";
+
+export type DiffSignificance = "high" | "medium" | "low";
+
+export interface CompetitorDiffResponse {
+  diff_id: string;
+  competitor_id: string;
+  run_id_new: string;
+  run_id_old: string;
+  dimension: string;
+  change_type: DiffChangeType;
+  old_value: { stance?: string; summary?: string } | null;
+  new_value: { stance?: string; summary?: string } | null;
+  significance: DiffSignificance;
+  created_at: string;
 }
 
 export interface EvidenceListItemResponse {

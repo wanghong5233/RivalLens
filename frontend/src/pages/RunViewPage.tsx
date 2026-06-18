@@ -14,6 +14,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   useRunComparisons,
   useRunDetail,
+  useRunDiff,
   useRunKnowledge,
   useRunMetrics,
   useRunReport,
@@ -21,6 +22,7 @@ import {
 } from "@/api/hooks";
 import { useRunEvents } from "@/api/sse";
 import { ComparisonMatrix } from "@/components/comparison/ComparisonMatrix";
+import { CompetitorDiffCard } from "@/components/comparison/CompetitorDiffCard";
 import { RunTraceDag } from "@/components/dag/RunTraceDag";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { KnowledgePanel } from "@/components/knowledge/KnowledgePanel";
@@ -52,6 +54,7 @@ export function RunViewPage(): JSX.Element {
   const [isEvidenceDrawerOpen, setIsEvidenceDrawerOpen] = useState(false);
   const [activeEvidenceIds, setActiveEvidenceIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<RunViewTab>("report");
+  const [activeDimensions, setActiveDimensions] = useState<Set<string> | null>(null);
   useRunEvents(runId);
 
   const detailQuery = useRunDetail(runId);
@@ -77,15 +80,36 @@ export function RunViewPage(): JSX.Element {
     enabled: isReportReady,
     refetchInterval: isRunActive ? 2_000 : false,
   });
+  const diffQuery = useRunDiff(isReportReady ? runId : null);
 
   const reportMarkdown = reportQuery.data?.content_markdown ?? "";
   const comparisons = comparisonsQuery.data?.items ?? [];
+  const diffs = diffQuery.data ?? [];
+  const filteredComparisons =
+    activeDimensions === null
+      ? comparisons
+      : comparisons.filter((c) => activeDimensions.has(c.dimension));
   const activeRunRoute = detailQuery.data ? runPhaseRoute(detailQuery.data) : null;
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) return;
     setActiveEvidenceIds(evidenceIds);
     setIsEvidenceDrawerOpen(true);
+  }
+
+  function toggleDimension(dimension: string): void {
+    setActiveDimensions((prev) => {
+      const allDimensions = new Set(comparisons.map((c) => c.dimension));
+      const current = prev ?? allDimensions;
+      const next = new Set(current);
+      if (next.has(dimension)) {
+        next.delete(dimension);
+      } else {
+        next.add(dimension);
+      }
+      if (next.size === allDimensions.size) return null;
+      return next;
+    });
   }
 
   function handleTabChange(value: string): void {
@@ -96,6 +120,7 @@ export function RunViewPage(): JSX.Element {
 
   useEffect(() => {
     setActiveTab("report");
+    setActiveDimensions(null);
   }, [runId]);
 
   function handleExportMarkdown(): void {
@@ -275,7 +300,39 @@ export function RunViewPage(): JSX.Element {
               {isReportReady && !reportQuery.isLoading && !reportQuery.isError && (
                 <>
                   <ReportArticle markdown={reportMarkdown} onEvidenceClick={openEvidenceDrawer} />
-                  <ComparisonMatrix comparisons={comparisons} onEvidenceClick={openEvidenceDrawer} />
+                  {diffs.length > 0 ? (
+                    <CompetitorDiffCard diffs={diffs} />
+                  ) : null}
+                  {comparisons.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {comparisons.map((c) => {
+                        const isActive = activeDimensions === null || activeDimensions.has(c.dimension);
+                        return (
+                          <button
+                            key={c.dimension}
+                            onClick={() => toggleDimension(c.dimension)}
+                            className={cn(
+                              "rounded-full border px-2.5 py-0.5 text-micro transition-colors",
+                              isActive
+                                ? "border-primary/40 bg-primary/10 text-primary"
+                                : "border-white/[0.08] bg-transparent text-foreground-subtle hover:border-white/20",
+                            )}
+                          >
+                            {c.dimension.replace(/_/g, " ")}
+                          </button>
+                        );
+                      })}
+                      {activeDimensions !== null ? (
+                        <button
+                          onClick={() => setActiveDimensions(null)}
+                          className="rounded-full border border-white/[0.08] px-2.5 py-0.5 text-micro text-foreground-subtle hover:border-white/20"
+                        >
+                          重置
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  <ComparisonMatrix comparisons={filteredComparisons} onEvidenceClick={openEvidenceDrawer} />
                 </>
               )}
             </TabsContent>

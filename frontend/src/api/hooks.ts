@@ -9,6 +9,7 @@ import {
 import { apiClient } from "@/api/client";
 import { getRunFallbackPollMs, useRunEvents } from "@/api/sse";
 import type {
+  CompetitorDiffResponse,
   CompetitorSeedResponse,
   EvidenceListItemResponse,
   FollowUpAcceptedResponse,
@@ -36,6 +37,8 @@ import type {
   WatchlistCreateRequest,
   WatchlistDigestItemResponse,
   WatchlistItemResponse,
+  WatchlistRefreshResponse,
+  WatchlistUpdateRequest,
 } from "@/api/types";
 
 const RUNNING_POLL_INTERVAL_MS = getRunFallbackPollMs();
@@ -132,6 +135,24 @@ async function createWatchlistItem(payload: WatchlistCreateRequest): Promise<Wat
 
 async function deleteWatchlistItem(watchId: string): Promise<WatchlistItemResponse> {
   const { data } = await apiClient.delete<WatchlistItemResponse>(`/api/watchlist/${watchId}`);
+  return data;
+}
+
+async function patchWatchlistItem(
+  watchId: string,
+  payload: WatchlistUpdateRequest,
+): Promise<WatchlistItemResponse> {
+  const { data } = await apiClient.patch<WatchlistItemResponse>(`/api/watchlist/${watchId}`, payload);
+  return data;
+}
+
+async function manualRefreshWatchlist(watchId: string): Promise<WatchlistRefreshResponse> {
+  const { data } = await apiClient.post<WatchlistRefreshResponse>(`/api/watchlist/${watchId}/refresh`);
+  return data;
+}
+
+async function fetchRunDiff(runId: string): Promise<CompetitorDiffResponse[]> {
+  const { data } = await apiClient.get<CompetitorDiffResponse[]>(`/api/runs/${runId}/diff`);
   return data;
 }
 
@@ -538,6 +559,47 @@ export function useDeleteWatchlistItem(): UseMutationResult<WatchlistItemRespons
         queryClient.invalidateQueries({ queryKey: ["watchlist-digest"] }),
       ]);
     },
+  });
+}
+
+export function usePatchWatchlistItem(): UseMutationResult<
+  WatchlistItemResponse,
+  Error,
+  { watchId: string; payload: WatchlistUpdateRequest }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ watchId, payload }) => patchWatchlistItem(watchId, payload),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["watchlist"] }),
+        queryClient.invalidateQueries({ queryKey: ["watchlist-digest"] }),
+      ]);
+    },
+  });
+}
+
+export function useManualRefreshWatchlist(): UseMutationResult<
+  WatchlistRefreshResponse,
+  Error,
+  string
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: manualRefreshWatchlist,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["watchlist-digest"] });
+    },
+  });
+}
+
+export function useRunDiff(
+  runId: string | null | undefined,
+): UseQueryResult<CompetitorDiffResponse[], Error> {
+  return useQuery({
+    queryKey: ["run-diff", runId],
+    queryFn: () => fetchRunDiff(runId!),
+    enabled: Boolean(runId),
   });
 }
 

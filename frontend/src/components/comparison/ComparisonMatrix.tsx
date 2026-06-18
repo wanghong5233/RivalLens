@@ -24,8 +24,23 @@ const STANCE_LABEL: Record<string, string> = {
   unknown: "未知",
 };
 
+const DIMENSION_LABEL: Record<string, string> = {
+  feature: "功能",
+  pricing: "定价",
+  user_feedback: "用户反馈",
+  positioning: "产品定位",
+  tech_stack: "技术栈",
+  go_to_market: "市场策略",
+  market_differences: "市场差异",
+  enterprise_capabilities: "企业能力",
+  strategic_recommendations: "战略建议",
+  hiring_signals: "招聘动态",
+  recent_news: "近期动态",
+  product_changelog: "产品更新",
+};
+
 function formatDimension(value: string): string {
-  return value.replace(/_/g, " ");
+  return DIMENSION_LABEL[value] ?? value.replace(/_/g, " ");
 }
 
 export function ComparisonMatrix({

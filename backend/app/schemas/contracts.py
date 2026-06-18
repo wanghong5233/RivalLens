@@ -26,6 +26,26 @@ _DIMENSION_ALIASES: Final[dict[str, str]] = {
     "strategic_investment_recommendat": "strategic_recommendations",
     "strategic_investment_recommendation": "strategic_recommendations",
     "strategic_recommendation": "strategic_recommendations",
+    # Hiring signals aliases
+    "hiring": "hiring_signals",
+    "jobs": "hiring_signals",
+    "recruitment": "hiring_signals",
+    "talent": "hiring_signals",
+    "job_postings": "hiring_signals",
+    # Recent news / funding aliases
+    "news": "recent_news",
+    "funding": "recent_news",
+    "announcements": "recent_news",
+    "press": "recent_news",
+    "press_releases": "recent_news",
+    "recent_announcements": "recent_news",
+    # Product changelog aliases
+    "changelog": "product_changelog",
+    "releases": "product_changelog",
+    "updates": "product_changelog",
+    "version": "product_changelog",
+    "release_notes": "product_changelog",
+    "product_updates": "product_changelog",
 }
 
 COMPARISON_SCHEMA_BASE_DIMENSIONS: Final[tuple[str, str, str]] = (
