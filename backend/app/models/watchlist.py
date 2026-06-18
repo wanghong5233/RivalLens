@@ -15,6 +15,8 @@ class WatchlistItem(Base):
     competitor_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     next_refresh_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    added_from_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

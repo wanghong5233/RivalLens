@@ -101,9 +101,10 @@ def ensure_comparison_schema_dimensions(
     focus_dimensions: list[str],
     *,
     analysis_archetype: str = "comparison",
+    force_schema_dimensions: bool = False,
 ) -> list[str]:
     normalized = normalize_dimensions(list(focus_dimensions), allow_empty=True)
-    if analysis_archetype != "comparison":
+    if analysis_archetype != "comparison" and not force_schema_dimensions:
         return normalized
     existing = set(normalized)
     expanded = list(normalized)

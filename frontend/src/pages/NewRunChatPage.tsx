@@ -20,6 +20,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 
 import {
   fetchRunIntakeSession,
+  useRunDetail,
   useCreateRunIntake,
   useReplyRunIntake,
   type CreateRunIntakeVariables,
@@ -210,6 +211,8 @@ function emptyDraft(userQuery: string): RunIntakeDraft {
     self_product: null,
     market_scope: null,
     time_context: null,
+    response_language: null,
+    analysis_archetype: "comparison",
     is_complete: false,
   };
 }
@@ -378,6 +381,22 @@ export function NewRunChatPage(): JSX.Element {
   const [searchParams] = useSearchParams();
   const createIntake = useCreateRunIntake();
   const replyIntake = useReplyRunIntake();
+  const fromRunId = searchParams.get("from")?.trim() || null;
+  const seedCompetitorsFromQuery = useMemo(() => {
+    const raw = searchParams.get("seed");
+    if (!raw) {
+      return [];
+    }
+    return Array.from(
+      new Set(
+        raw
+          .split(",")
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    );
+  }, [searchParams]);
+  const sourceRunQuery = useRunDetail(fromRunId ?? "");
 
   const [runId, setRunId] = useState<string | null>(null);
   const [draft, setDraft] = useState<RunIntakeDraft | null>(null);
@@ -495,6 +514,51 @@ export function NewRunChatPage(): JSX.Element {
       cancelled = true;
     };
   }, [freshStartToken]);
+
+  const inheritedSeedCompetitors = useMemo(() => {
+    if (seedCompetitorsFromQuery.length > 0) {
+      return seedCompetitorsFromQuery;
+    }
+    const fromDetail = sourceRunQuery.data;
+    if (!fromDetail) {
+      return [];
+    }
+    if (fromDetail.seed_competitor_ids && fromDetail.seed_competitor_ids.length > 0) {
+      return fromDetail.seed_competitor_ids;
+    }
+    return fromDetail.competitors;
+  }, [seedCompetitorsFromQuery, sourceRunQuery.data]);
+
+  useEffect(() => {
+    if (fromRunId === null || runId !== null || status !== "idle") {
+      return;
+    }
+    if (composerText.trim().length > 0) {
+      return;
+    }
+    if (messages.length > 1) {
+      return;
+    }
+    if (sourceRunQuery.isLoading) {
+      return;
+    }
+    const focusTargets = inheritedSeedCompetitors.slice(0, 5);
+    if (focusTargets.length > 0) {
+      setComposerText(
+        `基于上次结果，聚焦分析 ${focusTargets.join("、")}，输出功能、定价与用户反馈三件套对比。`,
+      );
+      return;
+    }
+    setComposerText("基于上次结果做一轮更聚焦的竞品对比，输出功能、定价与用户反馈三件套。");
+  }, [
+    composerText,
+    fromRunId,
+    inheritedSeedCompetitors,
+    messages.length,
+    runId,
+    sourceRunQuery.isLoading,
+    status,
+  ]);
 
   const currentClarify = useMemo<ChatMessage | null>(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -655,6 +719,10 @@ export function NewRunChatPage(): JSX.Element {
       const payload: IntakeCreateRequest = {
         user_query: userQuery,
       };
+      if (fromRunId !== null) {
+        payload.from_run_id = fromRunId;
+        payload.seed_competitor_ids = inheritedSeedCompetitors;
+      }
       const idempotencyKey =
         createIdempotencyKeyRef.current !== null && createIdempotencyQueryRef.current === userQuery
           ? createIdempotencyKeyRef.current
@@ -1002,6 +1070,11 @@ export function NewRunChatPage(): JSX.Element {
           告诉 Agent 你想分析什么，我会用对话帮你确认身份、意图和竞品范围，再开始抓取证据。
           想跳过澄清直接填表单，可以切到「专家表单」。
         </p>
+        {fromRunId !== null ? (
+          <p className="text-xs text-primary">
+            当前为聚焦模式：继承 run {fromRunId} 的上下文，默认会按 comparison 生成三件套分析。
+          </p>
+        ) : null}
       </header>
 
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-3 lg:items-stretch">

@@ -21,16 +21,19 @@ _DEBUG_REACT_TURNS = 2
 _DEBUG_SUPERVISOR_ITERATIONS = 6
 _DEBUG_QA_REJECT_BUDGET = 1
 _DEBUG_REPLAN_BUDGET = 1
+_DEBUG_LANDSCAPE_CORE_DEEPDIVE_N = 1
 
 _QUICK_MAX_DIMENSIONS = 3
 _QUICK_SEARCH_MAX_RESULTS = 5
 _QUICK_REACT_TURNS = 3
 _QUICK_QA_REJECT_BUDGET = 2
 _QUICK_REPLAN_BUDGET = 2
+_QUICK_LANDSCAPE_CORE_DEEPDIVE_N = 3
 
 _DEEP_SEARCH_MAX_RESULTS = 8
 _DEEP_SUPERVISOR_ITERATIONS = 12
 _DEEP_REPLAN_BUDGET = 4
+_DEEP_LANDSCAPE_CORE_DEEPDIVE_N = 5
 
 
 def _derive_recursion_limit(supervisor_max_iterations: int) -> int:
@@ -46,6 +49,7 @@ class TierProfile:
     supervisor_max_iterations: int
     qa_reject_budget: int
     replan_budget: int
+    landscape_core_deepdive_n: int
     recursion_limit: int
     report_depth_semantics: ReportDepthSemantics
     enable_deep_qa_rules: bool
@@ -60,6 +64,7 @@ def _build_profile(
     supervisor_max_iterations: int,
     qa_reject_budget: int,
     replan_budget: int,
+    landscape_core_deepdive_n: int,
     report_depth_semantics: ReportDepthSemantics,
     enable_deep_qa_rules: bool,
 ) -> TierProfile:
@@ -71,6 +76,7 @@ def _build_profile(
         supervisor_max_iterations=supervisor_max_iterations,
         qa_reject_budget=qa_reject_budget,
         replan_budget=replan_budget,
+        landscape_core_deepdive_n=landscape_core_deepdive_n,
         recursion_limit=_derive_recursion_limit(supervisor_max_iterations),
         report_depth_semantics=report_depth_semantics,
         enable_deep_qa_rules=enable_deep_qa_rules,
@@ -86,6 +92,7 @@ TIER_PROFILES: dict[AnalysisTier, TierProfile] = {
         supervisor_max_iterations=_DEBUG_SUPERVISOR_ITERATIONS,
         qa_reject_budget=_DEBUG_QA_REJECT_BUDGET,
         replan_budget=_DEBUG_REPLAN_BUDGET,
+        landscape_core_deepdive_n=_DEBUG_LANDSCAPE_CORE_DEEPDIVE_N,
         report_depth_semantics="quick",
         enable_deep_qa_rules=False,
     ),
@@ -97,6 +104,7 @@ TIER_PROFILES: dict[AnalysisTier, TierProfile] = {
         supervisor_max_iterations=MAX_SUPERVISOR_ITERATIONS,
         qa_reject_budget=_QUICK_QA_REJECT_BUDGET,
         replan_budget=_QUICK_REPLAN_BUDGET,
+        landscape_core_deepdive_n=_QUICK_LANDSCAPE_CORE_DEEPDIVE_N,
         report_depth_semantics="quick",
         enable_deep_qa_rules=False,
     ),
@@ -108,6 +116,7 @@ TIER_PROFILES: dict[AnalysisTier, TierProfile] = {
         supervisor_max_iterations=_DEEP_SUPERVISOR_ITERATIONS,
         qa_reject_budget=MAX_QA_RERESEARCH_ITERATIONS,
         replan_budget=_DEEP_REPLAN_BUDGET,
+        landscape_core_deepdive_n=_DEEP_LANDSCAPE_CORE_DEEPDIVE_N,
         report_depth_semantics="deep",
         enable_deep_qa_rules=True,
     ),

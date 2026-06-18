@@ -57,3 +57,12 @@ class Run(Base):
         JSONB(none_as_null=True),
         nullable=True,
     )
+    parent_run_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    seed_competitor_ids: Mapped[list[str] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        nullable=True,
+    )

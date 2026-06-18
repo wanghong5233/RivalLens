@@ -82,3 +82,11 @@ def test_ensure_comparison_schema_dimensions_skips_landscape_injection() -> None
         ["pricing_strategy"],
         analysis_archetype="landscape",
     ) == ["pricing_strategy"]
+
+
+def test_ensure_comparison_schema_dimensions_can_force_landscape_injection() -> None:
+    assert ensure_comparison_schema_dimensions(
+        ["pricing_strategy"],
+        analysis_archetype="landscape",
+        force_schema_dimensions=True,
+    ) == ["pricing_strategy", "feature", "pricing", "user_feedback"]

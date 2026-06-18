@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import time
+from typing import Any
 
 import yaml
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
 
+from core.config import settings
 from tests.golden.runner import GoldenCase, dump_markdown_report, run_case, to_dict_rows
 
 
@@ -241,3 +246,214 @@ def test_ai_coding_enterprise_schema_triplet_golden_case_passes(
     assert isinstance(loaded, dict)
     result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
     assert result.passed is True
+
+
+def _wait_for_plan_tree(
+    test_client: TestClient,
+    *,
+    run_id: str,
+    timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        detail = test_client.get(f"/api/runs/{run_id}").json()
+        candidate = detail.get("plan_tree")
+        if isinstance(candidate, dict) and isinstance(candidate.get("tasks"), list):
+            return candidate
+        time.sleep(0.1)
+    raise AssertionError(f"plan_tree not ready within {timeout_seconds}s for run_id={run_id}")
+
+
+def _wait_for_intake_field(
+    test_client: TestClient,
+    *,
+    run_id: str,
+    field: str,
+    timeout_seconds: float = 10.0,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        detail = test_client.get(f"/api/runs/{run_id}").json()
+        draft = detail.get("intake_draft")
+        if isinstance(draft, dict) and draft.get(field):
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"intake_draft.{field} not ready within {timeout_seconds}s for run_id={run_id}")
+
+
+def _post_intake_reply_when_ready(
+    test_client: TestClient,
+    *,
+    run_id: str,
+    body: dict[str, object],
+    timeout_seconds: float = 10.0,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        response = test_client.post(f"/api/runs/{run_id}/intake/reply", json=body)
+        if response.status_code == 200:
+            return
+        if response.status_code == 409 and response.json().get("error_code") == "INTAKE_NOT_AWAITING_REPLY":
+            time.sleep(0.1)
+            continue
+        raise AssertionError(
+            f"unexpected intake reply response: status={response.status_code} body={response.text}"
+        )
+    raise AssertionError(f"intake/reply never became resumable within {timeout_seconds}s for run_id={run_id}")
+
+
+def test_focus_run_lineage_schema_triplet_golden_case_passes(
+    test_client: TestClient,
+) -> None:
+    case_path = (
+        Path(__file__).parent
+        / "golden"
+        / "cases"
+        / "18_focus_run_lineage_schema_triplet.yaml"
+    )
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+
+    setup = loaded.get("setup")
+    assertions = loaded.get("assertions")
+    assert isinstance(setup, dict)
+    assert isinstance(assertions, dict)
+
+    parent_create_user_query = setup.get("parent_create_user_query")
+    parent_patch = setup.get("parent_patch")
+    child_request = setup.get("child_request")
+    assert isinstance(parent_create_user_query, str)
+    assert isinstance(parent_patch, dict)
+    assert isinstance(child_request, dict)
+
+    parent_create = test_client.post(
+        "/api/runs/intake",
+        json={"user_query": parent_create_user_query},
+    )
+    assert parent_create.status_code == 200, parent_create.text
+    parent_run_id = parent_create.json()["run_id"]
+
+    parent_intake_draft = parent_patch.get("intake_draft")
+    parent_seed_ids = parent_patch.get("seed_competitor_ids")
+    parent_competitors = parent_patch.get("competitors")
+    parent_domain_hint = parent_patch.get("domain_hint")
+    assert isinstance(parent_intake_draft, dict)
+    assert isinstance(parent_seed_ids, list)
+    assert isinstance(parent_competitors, list)
+    assert isinstance(parent_domain_hint, str)
+
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE runs SET "
+                    "intake_draft = CAST(:intake_draft AS jsonb), "
+                    "seed_competitor_ids = CAST(:seed_ids AS jsonb), "
+                    "competitors = CAST(:competitors AS jsonb), "
+                    "domain_hint = :domain_hint "
+                    "WHERE run_id = :run_id"
+                ),
+                {
+                    "run_id": parent_run_id,
+                    "intake_draft": json.dumps(parent_intake_draft, ensure_ascii=False),
+                    "seed_ids": json.dumps(parent_seed_ids, ensure_ascii=False),
+                    "competitors": json.dumps(parent_competitors, ensure_ascii=False),
+                    "domain_hint": parent_domain_hint,
+                },
+            )
+    finally:
+        engine.dispose()
+
+    seed_competitor_ids = child_request.get("seed_competitor_ids")
+    child_user_query = child_request.get("user_query")
+    assert isinstance(seed_competitor_ids, list)
+    assert isinstance(child_user_query, str)
+
+    child_create = test_client.post(
+        "/api/runs/intake",
+        json={
+            "user_query": child_user_query,
+            "from_run_id": parent_run_id,
+            "seed_competitor_ids": seed_competitor_ids,
+        },
+    )
+    assert child_create.status_code == 200, child_create.text
+    child_payload = child_create.json()
+    child_run_id = child_payload["run_id"]
+    child_draft = child_payload["intake_draft"]
+
+    expected_analysis_archetype = assertions.get("analysis_archetype")
+    expected_competitors = assertions.get("competitors_explicit")
+    expected_domain_hint = assertions.get("domain_hint")
+    expected_self_product = assertions.get("self_product")
+    expected_market_scope = assertions.get("market_scope")
+    required_focus_dimensions = assertions.get("required_focus_dimensions")
+    assert isinstance(expected_analysis_archetype, str)
+    assert isinstance(expected_competitors, list)
+    assert isinstance(expected_domain_hint, str)
+    assert isinstance(expected_self_product, str)
+    assert isinstance(expected_market_scope, str)
+    assert isinstance(required_focus_dimensions, list)
+
+    assert child_draft["analysis_archetype"] == expected_analysis_archetype
+    assert child_draft["competitors_explicit"] == expected_competitors
+    assert child_draft["domain_hint"] == expected_domain_hint
+    assert child_draft["self_product"] == expected_self_product
+    assert child_draft["market_scope"] == expected_market_scope
+
+    child_detail = test_client.get(f"/api/runs/{child_run_id}")
+    assert child_detail.status_code == 200, child_detail.text
+    child_detail_payload = child_detail.json()
+    assert child_detail_payload["parent_run_id"] == parent_run_id
+    assert child_detail_payload["seed_competitor_ids"] == seed_competitor_ids
+
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=child_run_id,
+        body={"text": "pm", "selected_options": ["pm"]},
+    )
+    _wait_for_intake_field(test_client, run_id=child_run_id, field="user_role")
+
+    child_detail_payload = test_client.get(f"/api/runs/{child_run_id}").json()
+    child_draft = child_detail_payload.get("intake_draft")
+    if isinstance(child_draft, dict) and not child_draft.get("analysis_intent"):
+        _post_intake_reply_when_ready(
+            test_client,
+            run_id=child_run_id,
+            body={"text": "聚焦 Meta Ray-Ban 三件套对比"},
+        )
+        _wait_for_intake_field(test_client, run_id=child_run_id, field="analysis_intent")
+
+    _post_intake_reply_when_ready(
+        test_client,
+        run_id=child_run_id,
+        body={"text": "", "selected_options": ["quick"]},
+    )
+
+    child_detail_payload = test_client.get(f"/api/runs/{child_run_id}").json()
+    child_draft_after_profile = child_detail_payload.get("intake_draft")
+    assert isinstance(child_draft_after_profile, dict)
+    assert child_draft_after_profile.get("analysis_archetype") == expected_analysis_archetype
+
+    plan_tree = _wait_for_plan_tree(test_client, run_id=child_run_id)
+    tasks = plan_tree.get("tasks")
+    assert isinstance(tasks, list)
+    target_competitor = str(expected_competitors[0])
+    focus_dimensions: list[str] | None = None
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        if task.get("stage") != "research":
+            continue
+        if task.get("competitor_id") != target_competitor:
+            continue
+        candidate_focus = task.get("focus_dimensions")
+        if isinstance(candidate_focus, list):
+            focus_dimensions = [str(item) for item in candidate_focus]
+            break
+
+    assert focus_dimensions is not None
+    for dimension in required_focus_dimensions:
+        assert isinstance(dimension, str)
+        assert dimension in focus_dimensions

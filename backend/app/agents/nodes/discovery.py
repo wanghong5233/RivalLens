@@ -713,6 +713,7 @@ async def discovery_node(state: AgentState) -> AgentState:
             analysis_archetype=analysis_archetype,
             max_competitors=tier_profile.max_competitors,
             max_dimensions=tier_profile.max_dimensions,
+            landscape_core_deepdive_n=tier_profile.landscape_core_deepdive_n,
         )
         reconciled_plan_tree = reconciled.model_dump()
         async with session_factory() as session:

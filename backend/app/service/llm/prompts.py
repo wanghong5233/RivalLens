@@ -533,6 +533,7 @@ Output JSON schema:
   "personas": [
     {
       "id": str,
+      "competitor_id": str,
       "name": str,
       "role": str,
       "pain_points": list[str],
@@ -557,6 +558,7 @@ Rules:
 - Every emitted row must have at least one valid evidence_id.
 - If evidence is insufficient, omit the row; do not emit placeholders.
 - For pricing rows, include non-empty tiers when evidence contains concrete package limits or prices.
+- For persona rows, competitor_id is mandatory and must belong to the provided competitors list.
 - For persona rows, ensure pain_points/jobs_to_be_done are grounded in cited evidence.
 - For feedback rows, use concise topic + summary and a grounded sentiment label.
 - Return JSON object only.

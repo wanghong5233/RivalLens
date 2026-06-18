@@ -25,6 +25,7 @@ import { NativeSelect } from "@/components/ui/native-select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pushToast } from "@/components/ui/toaster";
+import { groupCompetitorRoles } from "@/lib/competitorRoles";
 import { cn } from "@/lib/utils";
 
 const STAGE_META: Record<PlanTaskStage, { label: string; icon: typeof Compass; description: string }> = {
@@ -338,6 +339,7 @@ export function PlanConfirmPage(): JSX.Element {
         <aside className="flex min-h-0 flex-col gap-3 lg:h-full">
           <IntakeSummaryCard
             draft={runDetail.data?.intake_draft ?? null}
+            planTree={planTree}
             className="min-h-0 flex-1"
           />
           <PlanMetadataCard planTree={planTree} className="shrink-0" />
@@ -679,11 +681,14 @@ function PlanLoadingCard(): JSX.Element {
 
 function IntakeSummaryCard({
   draft,
+  planTree,
   className,
 }: {
   draft: RunIntakeDraft | null;
+  planTree: PlanTree | null;
   className?: string;
 }): JSX.Element {
+  const roleGroups = useMemo(() => groupCompetitorRoles(planTree), [planTree]);
   return (
     <Card className={cn("flex min-h-0 flex-col", className)}>
       <CardHeader className="shrink-0 pb-3">
@@ -701,6 +706,14 @@ function IntakeSummaryCard({
             <SummaryRow label="用户角色" value={draft.user_role ?? "—"} />
             <SummaryRow label="分析意图" value={draft.analysis_intent ?? "—"} />
             <SummaryRow
+              label="分析形态"
+              value={
+                draft.analysis_archetype === "landscape"
+                  ? "landscape（赛道分层）"
+                  : "comparison（同类对比）"
+              }
+            />
+            <SummaryRow
               label="竞品"
               value={
                 draft.competitors_explicit.length > 0
@@ -712,6 +725,12 @@ function IntakeSummaryCard({
             />
             {draft.focus_dimensions.length > 0 ? (
               <SummaryRow label="关注维度" value={draft.focus_dimensions.join("、")} />
+            ) : null}
+            {roleGroups.length > 0 ? (
+              <SummaryRow
+                label="角色分层"
+                value={roleGroups.map((group) => `${group.label}(${group.competitors.length})`).join(" · ")}
+              />
             ) : null}
           </>
         )}

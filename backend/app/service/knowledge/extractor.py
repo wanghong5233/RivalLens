@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Literal
 
 from pydantic import ValidationError
@@ -22,6 +21,7 @@ KnowledgeCoverage = dict[str, dict[str, CoverageStatus]]
 SchemaBucket = Literal["feature", "pricing", "persona"]
 
 SCHEMA_VERSION = "schema_v0.2"
+_LANDSCAPE_CORE_ROLES = frozenset({"direct_competitor", "adjacent_competitor", "substitute"})
 
 
 @dataclass(frozen=True)
@@ -300,9 +300,6 @@ def _coerce_competitor_id(value: object) -> str | None:
     return normalized if normalized else None
 
 
-_GENERIC_COMPETITOR_TOKENS = frozenset({"com", "www", "ai", "app", "tool", "tools"})
-
-
 def _persona_matches_competitor(
     *,
     persona_item: dict[str, object],
@@ -320,13 +317,22 @@ def _persona_matches_competitor(
                 and evidence_owner_by_id.get(evidence_id) == competitor_id
             ):
                 return True
-    haystack = f"{_safe_string(persona_item.get('name'))} {_safe_string(persona_item.get('role'))}".lower()
-    competitor_tokens = [
-        token
-        for token in re.split(r"[^a-z0-9]+", competitor_id.lower())
-        if len(token) >= 3 and token not in _GENERIC_COMPETITOR_TOKENS
-    ]
-    return any(token in haystack for token in competitor_tokens)
+    return False
+
+
+def _normalize_competitor_roles(
+    competitor_roles: dict[str, str] | None,
+) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    if not isinstance(competitor_roles, dict):
+        return normalized
+    for competitor_id_raw, role_raw in competitor_roles.items():
+        competitor_id = _coerce_competitor_id(competitor_id_raw)
+        role = _coerce_competitor_id(role_raw)
+        if competitor_id is None or role is None:
+            continue
+        normalized[competitor_id] = role
+    return normalized
 
 
 def build_knowledge_schema_result(
@@ -339,6 +345,7 @@ def build_knowledge_schema_result(
     competitors: list[str],
     analysis_archetype: str,
     focus_dimensions: list[str] | None = None,
+    competitor_roles: dict[str, str] | None = None,
 ) -> KnowledgeExtractionResult:
     ordered_competitors = _normalize_competitors(competitors)
     if not ordered_competitors:
@@ -354,6 +361,7 @@ def build_knowledge_schema_result(
         )
     coverage: KnowledgeCoverage = _empty_coverage(ordered_competitors)
     missing_reasons: dict[str, list[str]] = {}
+    normalized_competitor_roles = _normalize_competitor_roles(competitor_roles)
     evidence_owner_by_id: dict[str, str] = {}
     for item in [*features, *pricings, *feedback]:
         competitor_id = _coerce_competitor_id(item.get("competitor_id"))
@@ -366,6 +374,12 @@ def build_knowledge_schema_result(
             if isinstance(evidence_id, str) and evidence_id not in evidence_owner_by_id:
                 evidence_owner_by_id[evidence_id] = competitor_id
     for competitor_id in ordered_competitors:
+        competitor_role = normalized_competitor_roles.get(competitor_id)
+        landscape_peripheral_competitor = (
+            analysis_archetype == "landscape"
+            and competitor_role is not None
+            and competitor_role not in _LANDSCAPE_CORE_ROLES
+        )
         feature_count = sum(
             1
             for item in features
@@ -398,11 +412,12 @@ def build_knowledge_schema_result(
         )
         pricing_applicable = (
             analysis_archetype != "landscape"
+            or not landscape_peripheral_competitor
             or pricing_count > 0
             or _pricing_requested(focus_dimensions=focus_dimensions)
         )
         landscape_schema_not_applicable = (
-            analysis_archetype == "landscape"
+            landscape_peripheral_competitor
             and feature_count == 0
             and persona_count == 0
             and feedback_count == 0
@@ -464,6 +479,7 @@ def extract_knowledge_schema(
     competitors: list[str],
     focus_dimensions: list[str],
     analysis_archetype: str,
+    competitor_roles: dict[str, str] | None = None,
 ) -> KnowledgeExtractionResult:
     ordered_competitors = _normalize_competitors(competitors)
     competitor_set = set(ordered_competitors)
@@ -558,6 +574,7 @@ def extract_knowledge_schema(
                 Persona.model_validate(
                     {
                         "id": make_id("persona_"),
+                        "competitor_id": competitor_id,
                         "name": f"{competitor_id} buyer persona",
                         "role": _persona_role(competitor_id),
                         "pain_points": [pain_point] if pain_point else [],
@@ -598,6 +615,7 @@ def extract_knowledge_schema(
         competitors=ordered_competitors,
         analysis_archetype=analysis_archetype,
         focus_dimensions=focus_dimensions,
+        competitor_roles=competitor_roles,
     )
 
 

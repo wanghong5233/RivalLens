@@ -8,10 +8,11 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
+  useCreateWatchlistItem,
   useRunComparisons,
   useRunDetail,
   useRunKnowledge,
@@ -24,6 +25,7 @@ import { ComparisonMatrix } from "@/components/comparison/ComparisonMatrix";
 import { RunTraceDag } from "@/components/dag/RunTraceDag";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { KnowledgePanel } from "@/components/knowledge/KnowledgePanel";
+import { RoleLayerMap } from "@/components/knowledge/RoleLayerMap";
 import { ReportArticle } from "@/components/report/ReportArticle";
 import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -37,6 +39,7 @@ import { formatDateTime, formatDuration, formatRunTitle } from "@/lib/format";
 import { SHOW_DEBUG_PANELS } from "@/lib/debugFlags";
 import { runPhaseRoute } from "@/lib/runRoute";
 import { track } from "@/lib/analytics";
+import { groupCompetitorRoles, roleByCompetitor } from "@/lib/competitorRoles";
 import { cn } from "@/lib/utils";
 
 type RunViewTab = "knowledge" | "report" | "trace";
@@ -53,6 +56,7 @@ export function RunViewPage(): JSX.Element {
   const [activeEvidenceIds, setActiveEvidenceIds] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<RunViewTab>("report");
   useRunEvents(runId);
+  const createWatchlistMutation = useCreateWatchlistItem();
 
   const detailQuery = useRunDetail(runId);
   const traceQuery = useRunTrace(runId);
@@ -81,6 +85,16 @@ export function RunViewPage(): JSX.Element {
   const reportMarkdown = reportQuery.data?.content_markdown ?? "";
   const comparisons = comparisonsQuery.data?.items ?? [];
   const activeRunRoute = detailQuery.data ? runPhaseRoute(detailQuery.data) : null;
+  const roleGroups = useMemo(
+    () => groupCompetitorRoles(detailQuery.data?.plan_tree ?? null),
+    [detailQuery.data?.plan_tree],
+  );
+  const competitorRoleMap = useMemo(
+    () => roleByCompetitor(detailQuery.data?.plan_tree ?? null),
+    [detailQuery.data?.plan_tree],
+  );
+  const analysisArchetype = detailQuery.data?.intake_draft?.analysis_archetype ?? "comparison";
+  const isLandscapeRun = analysisArchetype === "landscape";
 
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) return;
@@ -91,6 +105,36 @@ export function RunViewPage(): JSX.Element {
   function handleTabChange(value: string): void {
     if (isRunViewTab(value)) {
       setActiveTab(value);
+    }
+  }
+
+  function navigateToFocusedRun(seedCompetitorIds: string[]): void {
+    const params = new URLSearchParams();
+    params.set("from", runId);
+    if (seedCompetitorIds.length > 0) {
+      params.set("seed", seedCompetitorIds.join(","));
+    }
+    navigate(`/app/runs/new?${params.toString()}`);
+  }
+
+  async function handleAddWatchlist(competitorId: string, sourceRole?: string): Promise<void> {
+    try {
+      await createWatchlistMutation.mutateAsync({
+        competitor_id: competitorId,
+        added_from_run_id: runId,
+        source_role: sourceRole ?? competitorRoleMap[competitorId] ?? null,
+      });
+      pushToast({
+        title: `已加入追踪：${competitorId}`,
+        variant: "success",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "未知错误";
+      if (message.includes("WATCHLIST_ALREADY_EXISTS")) {
+        pushToast({ title: `${competitorId} 已在追踪列表`, variant: "default" });
+        return;
+      }
+      pushToast({ title: "加入追踪失败", description: message, variant: "danger" });
     }
   }
 
@@ -178,7 +222,7 @@ export function RunViewPage(): JSX.Element {
           status={runStatus as "failed" | "cancelled"}
           startedAt={detailQuery.data.started_at}
           finishedAt={detailQuery.data.finished_at}
-          onReanalyze={() => navigate(`/app/runs/new?from=${runId}`)}
+          onReanalyze={() => navigateToFocusedRun([])}
         />
       )}
 
@@ -231,7 +275,7 @@ export function RunViewPage(): JSX.Element {
                 <Button size="sm" variant="ghost" onClick={handleExportPdf} aria-label="导出 PDF">
                   <FileDown className="h-3.5 w-3.5" />
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => navigate(`/app/runs/new?from=${runId}`)} aria-label="再分析一版">
+                <Button size="sm" variant="ghost" onClick={() => navigateToFocusedRun([])} aria-label="再分析一版">
                   <RotateCcw className="h-3.5 w-3.5" />
                 </Button>
                 {SHOW_DEBUG_PANELS && isReportReady ? (
@@ -251,12 +295,30 @@ export function RunViewPage(): JSX.Element {
                 </div>
               )}
               {isReportReady ? (
-                <KnowledgePanel
-                  errorMessage={knowledgeQuery.error?.message ?? null}
-                  isLoading={knowledgeQuery.isLoading}
-                  knowledge={knowledgeQuery.data ?? null}
-                  onEvidenceClick={openEvidenceDrawer}
-                />
+                <>
+                  {isLandscapeRun ? (
+                    <RoleLayerMap
+                      groups={roleGroups}
+                      showActions
+                      onFocusCompetitor={(competitorId) => navigateToFocusedRun([competitorId])}
+                      onFocusRole={(_, competitors) => navigateToFocusedRun(competitors)}
+                      onAddWatchlist={(competitorId, sourceRole) =>
+                        void handleAddWatchlist(competitorId, sourceRole)
+                      }
+                    />
+                  ) : null}
+                  <KnowledgePanel
+                    errorMessage={knowledgeQuery.error?.message ?? null}
+                    isLoading={knowledgeQuery.isLoading}
+                    knowledge={knowledgeQuery.data ?? null}
+                    onEvidenceClick={openEvidenceDrawer}
+                    onFocusCompetitor={(competitorId) => navigateToFocusedRun([competitorId])}
+                    onAddWatchlist={(competitorId, sourceRole) =>
+                      void handleAddWatchlist(competitorId, sourceRole)
+                    }
+                    roleByCompetitor={competitorRoleMap}
+                  />
+                </>
               ) : null}
             </TabsContent>
 
@@ -274,6 +336,17 @@ export function RunViewPage(): JSX.Element {
               )}
               {isReportReady && !reportQuery.isLoading && !reportQuery.isError && (
                 <>
+                  {isLandscapeRun ? (
+                    <RoleLayerMap
+                      groups={roleGroups}
+                      showActions
+                      onFocusCompetitor={(competitorId) => navigateToFocusedRun([competitorId])}
+                      onFocusRole={(_, competitors) => navigateToFocusedRun(competitors)}
+                      onAddWatchlist={(competitorId, sourceRole) =>
+                        void handleAddWatchlist(competitorId, sourceRole)
+                      }
+                    />
+                  ) : null}
                   <ReportArticle
                     markdown={reportMarkdown}
                     onEvidenceClick={openEvidenceDrawer}

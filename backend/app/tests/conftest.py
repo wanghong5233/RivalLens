@@ -622,6 +622,7 @@ class _FakeLLMClient:
                 personas.append(
                     {
                         "id": f"persona_{competitor_id}",
+                        "competitor_id": competitor_id,
                         "name": f"{competitor_id} engineering manager",
                         "role": "engineering_manager",
                         "pain_points": ["delivery pressure"],

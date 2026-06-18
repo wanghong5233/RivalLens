@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     DATABASE_URL_SYNC: str
     LANGGRAPH_CHECKPOINT_DSN: str | None = None
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
 
     DOUBAO_EP: str | None = None
     DOUBAO_API_KEY: str | None = None
@@ -243,6 +245,10 @@ class Settings(BaseSettings):
             raise ValueError("LLM_TPM_BUDGET cannot be negative.")
         if self.LLM_GLOBAL_CONCURRENCY <= 0:
             raise ValueError("LLM_GLOBAL_CONCURRENCY must be positive.")
+        if self.DB_POOL_SIZE <= 0:
+            raise ValueError("DB_POOL_SIZE must be positive.")
+        if self.DB_MAX_OVERFLOW < 0:
+            raise ValueError("DB_MAX_OVERFLOW cannot be negative.")
         if self.COLLECTOR_PER_HOST_QPS <= 0:
             raise ValueError("COLLECTOR_PER_HOST_QPS must be positive.")
         if self.COLLECTOR_FETCH_TIMEOUT_S <= 0:

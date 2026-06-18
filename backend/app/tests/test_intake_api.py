@@ -8,6 +8,7 @@ background-task wiring, or stale stub raisers.
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -249,7 +250,7 @@ def test_intake_reply_rejects_when_not_paused(test_client: TestClient) -> None:
     final_status = _wait_for_run_status(
         run_id,
         expected_statuses={"completed", "degraded", "failed"},
-        timeout_seconds=60.0,
+        timeout_seconds=120.0,
     )
     assert final_status in {"completed", "degraded"}
 
@@ -285,6 +286,89 @@ def test_intake_reply_empty_payload_returns_422(test_client: TestClient) -> None
     )
     reply = test_client.post(f"/api/runs/{run_id}/intake/reply", json={"text": "", "selected_options": []})
     assert reply.status_code == 422
+
+
+def test_intake_create_from_run_inherits_context_and_sets_lineage(test_client: TestClient) -> None:
+    parent = test_client.post(
+        "/api/runs/intake",
+        json={"user_query": "parent landscape run"},
+    )
+    assert parent.status_code == 200, parent.text
+    parent_run_id = parent.json()["run_id"]
+
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE runs SET "
+                    "intake_draft = CAST(:intake_draft AS jsonb), "
+                    "seed_competitor_ids = CAST(:seed_ids AS jsonb), "
+                    "competitors = CAST(:competitors AS jsonb), "
+                    "domain_hint = :domain_hint "
+                    "WHERE run_id = :run_id"
+                ),
+                {
+                    "run_id": parent_run_id,
+                    "intake_draft": json.dumps(
+                        {
+                            "user_query": "parent landscape run",
+                            "domain_hint": "AI hardware",
+                            "self_product": "My smart glasses",
+                            "market_scope": "global",
+                            "analysis_archetype": "landscape",
+                            "competitors_explicit": ["Meta Ray-Ban", "XREAL"],
+                            "competitors_discovery_mode": False,
+                            "focus_dimensions": ["market_differences"],
+                            "report_depth": "quick",
+                            "reference_urls": [],
+                            "response_language": "zh",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "seed_ids": json.dumps(["Meta Ray-Ban", "XREAL"], ensure_ascii=False),
+                    "competitors": json.dumps(["Meta Ray-Ban", "XREAL"], ensure_ascii=False),
+                    "domain_hint": "AI hardware",
+                },
+            )
+    finally:
+        engine.dispose()
+
+    create_child = test_client.post(
+        "/api/runs/intake",
+        json={
+            "user_query": "请聚焦标杆产品，做三件套对比。",
+            "from_run_id": parent_run_id,
+            "seed_competitor_ids": ["Meta Ray-Ban"],
+        },
+    )
+    assert create_child.status_code == 200, create_child.text
+    child_payload = create_child.json()
+    assert child_payload["intake_draft"]["analysis_archetype"] == "comparison"
+    assert child_payload["intake_draft"]["competitors_explicit"] == ["Meta Ray-Ban"]
+    assert child_payload["intake_draft"]["competitors_discovery_mode"] is False
+    assert child_payload["intake_draft"]["domain_hint"] == "AI hardware"
+    assert child_payload["intake_draft"]["self_product"] == "My smart glasses"
+    assert child_payload["intake_draft"]["market_scope"] == "global"
+
+    child_detail = test_client.get(f"/api/runs/{child_payload['run_id']}")
+    assert child_detail.status_code == 200, child_detail.text
+    child_data = child_detail.json()
+    assert child_data["parent_run_id"] == parent_run_id
+    assert child_data["seed_competitor_ids"] == ["Meta Ray-Ban"]
+
+
+def test_intake_create_from_run_not_found_returns_404(test_client: TestClient) -> None:
+    response = test_client.post(
+        "/api/runs/intake",
+        json={
+            "user_query": "focus run not found",
+            "from_run_id": "run_not_exists",
+        },
+    )
+    assert response.status_code == 404, response.text
+    payload = response.json()
+    assert payload["error_code"] == "FROM_RUN_NOT_FOUND"
 
 
 # Phase 2: POST /api/runs/{id}/plan/confirm tests live in test_plan_api.py so

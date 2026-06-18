@@ -6,6 +6,7 @@ import pytest
 
 from agents.nodes.planner import reconcile_plan_tree_after_discovery
 from core.defaults import MAX_DISCOVERY_COMPETITORS, MAX_RESEARCH_COMPETITORS
+from schemas.contracts import COMPARISON_SCHEMA_BASE_DIMENSIONS
 from schemas.plan import PlanTask, PlanTree
 from utils.logger import configure_logging
 
@@ -101,7 +102,7 @@ def test_reconcile_plan_tree_preserves_candidate_role_in_sources_and_description
     }
 
 
-def test_reconcile_plan_tree_landscape_soft_caps_non_core_candidates() -> None:
+def test_reconcile_plan_tree_landscape_caps_core_deepdive_and_prefers_peripheral_fill() -> None:
     plan = PlanTree(
         tasks=[
             PlanTask(stage="discover", title="发现竞品", description="discover"),
@@ -124,14 +125,52 @@ def test_reconcile_plan_tree_landscape_soft_caps_non_core_candidates() -> None:
             "CAICT": {"candidate_role": "trend_reference"},
         },
         analysis_archetype="landscape",
-        max_competitors=1,
+        max_competitors=3,
+        landscape_core_deepdive_n=1,
     )
 
     research_competitors = [
         task.competitor_id for task in reconciled.tasks if task.stage == "research"
     ]
-    # core competitors are fully preserved; non-core competitors are added with a soft cap.
-    assert research_competitors == ["Meta Ray-Ban", "XREAL", "NVIDIA"]
+    assert research_competitors == ["Meta Ray-Ban", "NVIDIA", "CAICT"]
+
+
+def test_reconcile_plan_tree_landscape_core_tasks_keep_schema_dimensions() -> None:
+    plan = PlanTree(
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    reconciled = reconcile_plan_tree_after_discovery(
+        plan_tree=plan,
+        discovered_competitors=["Meta Ray-Ban", "XREAL", "NVIDIA"],
+        discovered_competitor_sources={
+            "Meta Ray-Ban": {"candidate_role": "direct_competitor"},
+            "XREAL": {"candidate_role": "adjacent_competitor"},
+            "NVIDIA": {"candidate_role": "upstream_supplier"},
+        },
+        focus_dimensions=["market_differences", "product_positioning"],
+        analysis_archetype="landscape",
+        max_competitors=3,
+        max_dimensions=3,
+        landscape_core_deepdive_n=2,
+    )
+
+    research_by_competitor = {
+        task.competitor_id: task
+        for task in reconciled.tasks
+        if task.stage == "research" and isinstance(task.competitor_id, str)
+    }
+    for core_competitor in ("Meta Ray-Ban", "XREAL"):
+        assert research_by_competitor[core_competitor].focus_dimensions[:3] == list(
+            COMPARISON_SCHEMA_BASE_DIMENSIONS
+        )
+    peripheral_dimensions = research_by_competitor["NVIDIA"].focus_dimensions
+    assert "feature" not in peripheral_dimensions
+    assert "pricing" not in peripheral_dimensions
+    assert "user_feedback" not in peripheral_dimensions
 
 
 def test_reconcile_plan_tree_logs_authoritative_research_competitor_set(

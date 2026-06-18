@@ -11,6 +11,7 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { candidateRoleLabel } from "@/lib/competitorRoles";
 import { cn } from "@/lib/utils";
 
 export interface KnowledgePanelProps {
@@ -19,6 +20,9 @@ export interface KnowledgePanelProps {
   errorMessage?: string | null;
   onEvidenceClick: (evidenceIds: string[]) => void;
   compact?: boolean;
+  roleByCompetitor?: Record<string, string>;
+  onFocusCompetitor?: (competitorId: string) => void;
+  onAddWatchlist?: (competitorId: string, sourceRole?: string) => void;
 }
 
 const MATURITY_LABELS: Record<NonNullable<KnowledgeFeature["maturity"]>, string> = {
@@ -66,6 +70,16 @@ function groupPricings(pricings: KnowledgePricing[]): Map<string, KnowledgePrici
 
 function groupFeedback(items: KnowledgeFeedback[]): Map<string, KnowledgeFeedback[]> {
   const grouped = new Map<string, KnowledgeFeedback[]>();
+  for (const item of items) {
+    const rows = grouped.get(item.competitor_id) ?? [];
+    rows.push(item);
+    grouped.set(item.competitor_id, rows);
+  }
+  return grouped;
+}
+
+function groupPersonas(items: KnowledgePersona[]): Map<string, KnowledgePersona[]> {
+  const grouped = new Map<string, KnowledgePersona[]>();
   for (const item of items) {
     const rows = grouped.get(item.competitor_id) ?? [];
     rows.push(item);
@@ -364,10 +378,14 @@ export function KnowledgePanel({
   errorMessage = null,
   onEvidenceClick,
   compact = false,
+  roleByCompetitor = {},
+  onFocusCompetitor,
+  onAddWatchlist,
 }: KnowledgePanelProps): JSX.Element {
   const featureGroups = useMemo(() => groupFeatures(knowledge?.features ?? []), [knowledge?.features]);
   const pricingGroups = useMemo(() => groupPricings(knowledge?.pricings ?? []), [knowledge?.pricings]);
   const feedbackGroups = useMemo(() => groupFeedback(knowledge?.feedback ?? []), [knowledge?.feedback]);
+  const personaGroups = useMemo(() => groupPersonas(knowledge?.personas ?? []), [knowledge?.personas]);
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
   const featureCount = knowledge?.features.length ?? 0;
   const pricingCount = knowledge?.pricings.length ?? 0;
@@ -376,6 +394,34 @@ export function KnowledgePanel({
   const isLandscape = knowledge?.analysis_archetype === "landscape";
   const hasKnowledge =
     featureCount + pricingCount + personaCount + feedbackCount > 0;
+  const roleGroups = useMemo(() => {
+    const grouped = new Map<string, string[]>();
+    for (const [competitorId, role] of Object.entries(roleByCompetitor)) {
+      const rows = grouped.get(role) ?? [];
+      rows.push(competitorId);
+      grouped.set(role, rows);
+    }
+    return Array.from(grouped.entries()).map(([role, competitors]) => ({
+      role,
+      label: candidateRoleLabel(role),
+      competitors: competitors.sort((left, right) => left.localeCompare(right)),
+    }));
+  }, [roleByCompetitor]);
+  const featureEmpty = schemaEmptyText(knowledge ?? null, {
+    bucket: "feature",
+    defaultText: "暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。",
+    landscapeText: "当前是趋势/全景模式，外围角色可允许不强制功能树。",
+  });
+  const personaEmpty = schemaEmptyText(knowledge ?? null, {
+    bucket: "persona",
+    defaultText: "暂无用户画像条目：可能是公开资料未覆盖目标用户，或抽取仍在处理中。",
+    landscapeText: "当前是趋势/全景模式，外围角色可允许不强制用户画像。",
+  });
+  const feedbackEmpty = schemaEmptyText(knowledge ?? null, {
+    bucket: "feedback",
+    defaultText: "暂无用户反馈条目：可能是公开评论证据不足，或抽取仍在处理中。",
+    landscapeText: "当前是趋势/全景模式，外围角色可允许不强制用户反馈。",
+  });
 
   if (isLoading) {
     return (
@@ -412,6 +458,21 @@ export function KnowledgePanel({
           本次为趋势/全景分析，竞品知识三件套为辅助视图；若需完整功能树/定价/画像，请在下一步发起聚焦到具体产品的对比分析。
         </div>
       ) : null}
+      {isLandscape && roleGroups.length > 0 ? (
+        <section className="rounded-md border border-primary/20 bg-background/40 p-3">
+          <p className="text-xs font-medium text-foreground">赛道角色分层</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {roleGroups.map((group) => (
+              <div
+                className="rounded border border-white/[0.08] bg-surface/70 px-2 py-1 text-xs text-muted-foreground"
+                key={`role-group-${group.role}`}
+              >
+                <span className="font-medium text-foreground">{group.label}</span> · {group.competitors.join("、")}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <div className="grid gap-2 sm:grid-cols-4">
         <SchemaStat hint="功能树节点" label="功能树" value={featureCount} />
@@ -424,137 +485,190 @@ export function KnowledgePanel({
         <EmptyBlock
           text="当前暂无可展示的竞品知识。通常是公开证据不足、目标信息未公开，或抽取仍在处理中。"
         />
-      ) : null}
+      ) : (
+        <>
+          <section className="space-y-3">
+            <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <Tags className="h-4 w-4 text-primary" />
+              关键维度对比矩阵
+            </h4>
+            <div className="overflow-hidden rounded-lg border border-border">
+              <div className="overflow-x-auto">
+                <table className="min-w-[760px] w-full text-xs">
+                  <thead className="bg-surface/80 text-left text-foreground-muted">
+                    <tr>
+                      <th className="px-3 py-2">竞品</th>
+                      <th className="px-3 py-2">角色</th>
+                      <th className="px-3 py-2">关键功能</th>
+                      <th className="px-3 py-2">定价模型</th>
+                      <th className="px-3 py-2">画像</th>
+                      <th className="px-3 py-2">反馈</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {competitorIds.map((competitorId) => {
+                      const competitorFeatures = featureGroups.get(competitorId) ?? [];
+                      const competitorPricings = pricingGroups.get(competitorId) ?? [];
+                      const competitorPersonas = personaGroups.get(competitorId) ?? [];
+                      const competitorFeedback = feedbackGroups.get(competitorId) ?? [];
+                      const role = roleByCompetitor[competitorId];
+                      return (
+                        <tr className="border-t border-border/80" key={`matrix-${competitorId}`}>
+                          <td className="px-3 py-2 font-medium text-foreground">{competitorId}</td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {role ? candidateRoleLabel(role) : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {competitorFeatures.slice(0, 2).map((item) => item.name).join(" / ") || "—"}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {competitorPricings.slice(0, 1).map((item) => item.model).join(" / ") || "—"}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {competitorPersonas.length > 0 ? `${competitorPersonas.length} 条` : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">
+                            {competitorFeedback.length > 0 ? `${competitorFeedback.length} 条` : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
 
-      <section className="space-y-3">
-        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Boxes className="h-4 w-4 text-primary" />
-          功能树
-        </h4>
-        {competitorIds.length === 0 || knowledge?.features.length === 0 ? (
-          <EmptyBlock
-            text={schemaEmptyText(knowledge ?? null, {
-              bucket: "feature",
-              defaultText: "暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。",
-              landscapeText: "当前是趋势/全景模式，未强制抽取逐竞品功能树。若需功能树，请切换到聚焦竞品分析。",
-            })}
-          />
-        ) : (
-          <div className="grid gap-3 xl:grid-cols-2">
-            {competitorIds.map((competitorId) => {
-              const items = featureGroups.get(competitorId) ?? [];
-              return items.length > 0 ? (
-                <FeatureTree
-                  competitorId={competitorId}
-                  features={items}
-                  key={competitorId}
-                  onEvidenceClick={onEvidenceClick}
-                />
-              ) : null;
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Tags className="h-4 w-4 text-primary" />
-          定价模型
-        </h4>
-        {competitorIds.length === 0 || knowledge?.pricings.length === 0 ? (
-          <EmptyBlock
-            text={pricingEmptyText(knowledge ?? null)}
-          />
-        ) : (
-          <div className="grid gap-3 xl:grid-cols-2">
-            {competitorIds.map((competitorId) => {
-              const items = pricingGroups.get(competitorId) ?? [];
-              return items.length > 0 ? (
-                <section className="rounded-lg border border-border bg-background/50 p-4" key={competitorId}>
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
-                    <Badge variant="secondary">{items.length} 个模型</Badge>
-                  </div>
-                  <div className="space-y-2">
-                    {items.map((pricing) => (
-                      <PricingBlock
-                        key={pricing.id}
-                        onEvidenceClick={onEvidenceClick}
-                        pricing={pricing}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ) : null;
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <UserRound className="h-4 w-4 text-primary" />
-          用户画像
-        </h4>
-        {knowledge?.personas.length === 0 ? (
-          <EmptyBlock
-            text={schemaEmptyText(knowledge ?? null, {
-              bucket: "persona",
-              defaultText: "暂无用户画像条目：可能是公开资料未覆盖目标用户，或抽取仍在处理中。",
-              landscapeText: "当前是趋势/全景模式，未强制抽取逐竞品用户画像。若需画像，请切换到聚焦竞品分析。",
-            })}
-          />
-        ) : (
-          <div className="grid gap-3 xl:grid-cols-2">
-            {(knowledge?.personas ?? []).map((persona) => (
-              <PersonaBlock
-                key={persona.id}
-                onEvidenceClick={onEvidenceClick}
-                persona={persona}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <MessageSquareQuote className="h-4 w-4 text-primary" />
-          用户反馈
-        </h4>
-        {competitorIds.length === 0 || knowledge?.feedback.length === 0 ? (
-          <EmptyBlock
-            text={schemaEmptyText(knowledge ?? null, {
-              bucket: "feedback",
-              defaultText: "暂无用户反馈条目：可能是公开评论证据不足，或抽取仍在处理中。",
-              landscapeText: "当前是趋势/全景模式，未强制抽取逐竞品用户反馈。若需反馈画像，请切换到聚焦竞品分析。",
-            })}
-          />
-        ) : (
-          <div className="grid gap-3 xl:grid-cols-2">
-            {competitorIds.map((competitorId) => {
-              const items = feedbackGroups.get(competitorId) ?? [];
-              return items.length > 0 ? (
-                <section className="rounded-lg border border-border bg-background/50 p-4" key={`${competitorId}-feedback`}>
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
-                    <Badge variant="secondary">{items.length} 条反馈</Badge>
-                  </div>
-                  <div className="space-y-2">
-                    {items.map((feedback) => (
-                      <FeedbackBlock
-                        feedback={feedback}
-                        key={feedback.id}
-                        onEvidenceClick={onEvidenceClick}
-                      />
-                    ))}
-                  </div>
-                </section>
-              ) : null;
-            })}
-          </div>
-        )}
-      </section>
+          <section className="space-y-3">
+            <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <Boxes className="h-4 w-4 text-primary" />
+              按竞品展开
+            </h4>
+            <div className="space-y-4">
+              {competitorIds.map((competitorId) => {
+                const competitorFeatures = featureGroups.get(competitorId) ?? [];
+                const competitorPricings = pricingGroups.get(competitorId) ?? [];
+                const competitorPersonas = personaGroups.get(competitorId) ?? [];
+                const competitorFeedback = feedbackGroups.get(competitorId) ?? [];
+                const sourceRole = roleByCompetitor[competitorId];
+                return (
+                  <article className="rounded-lg border border-border bg-background/40 p-4" key={`card-${competitorId}`}>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
+                        {sourceRole ? (
+                          <Badge variant={isLandscape ? "secondary" : "outline"}>
+                            {candidateRoleLabel(sourceRole)}
+                          </Badge>
+                        ) : null}
+                        {isLandscape && sourceRole ? (
+                          <Badge variant="outline">{sourceRole}</Badge>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {onFocusCompetitor ? (
+                          <Button
+                            onClick={() => onFocusCompetitor(competitorId)}
+                            size="sm"
+                            type="button"
+                            variant="outline"
+                          >
+                            聚焦分析
+                          </Button>
+                        ) : null}
+                        {onAddWatchlist ? (
+                          <Button
+                            onClick={() => onAddWatchlist(competitorId, sourceRole)}
+                            size="sm"
+                            type="button"
+                            variant="ghost"
+                          >
+                            加入追踪
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                          <Boxes className="h-3.5 w-3.5 text-primary" />
+                          功能树
+                        </p>
+                        {competitorFeatures.length > 0 ? (
+                          <FeatureTree
+                            competitorId={competitorId}
+                            features={competitorFeatures}
+                            onEvidenceClick={onEvidenceClick}
+                          />
+                        ) : (
+                          <EmptyBlock text={featureEmpty} />
+                        )}
+                      </section>
+                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                          <Tags className="h-3.5 w-3.5 text-primary" />
+                          定价模型
+                        </p>
+                        {competitorPricings.length > 0 ? (
+                          <div className="space-y-2">
+                            {competitorPricings.map((pricing) => (
+                              <PricingBlock
+                                key={pricing.id}
+                                onEvidenceClick={onEvidenceClick}
+                                pricing={pricing}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <EmptyBlock text={pricingEmptyText(knowledge ?? null)} />
+                        )}
+                      </section>
+                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                          <UserRound className="h-3.5 w-3.5 text-primary" />
+                          用户画像
+                        </p>
+                        {competitorPersonas.length > 0 ? (
+                          <div className="space-y-2">
+                            {competitorPersonas.map((persona) => (
+                              <PersonaBlock
+                                key={persona.id}
+                                onEvidenceClick={onEvidenceClick}
+                                persona={persona}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <EmptyBlock text={personaEmpty} />
+                        )}
+                      </section>
+                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                          <MessageSquareQuote className="h-3.5 w-3.5 text-primary" />
+                          用户反馈
+                        </p>
+                        {competitorFeedback.length > 0 ? (
+                          <div className="space-y-2">
+                            {competitorFeedback.map((feedback) => (
+                              <FeedbackBlock
+                                feedback={feedback}
+                                key={feedback.id}
+                                onEvidenceClick={onEvidenceClick}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <EmptyBlock text={feedbackEmpty} />
+                        )}
+                      </section>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }

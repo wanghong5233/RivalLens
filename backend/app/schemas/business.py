@@ -53,11 +53,19 @@ class Pricing(BaseModel):
 
 class Persona(BaseModel):
     id: str
+    competitor_id: str
     name: str
     role: str
     pain_points: list[str] = Field(default_factory=list)
     jobs_to_be_done: list[str] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def validate_evidence_ids(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("Persona requires at least one evidence_id")
+        return value
 
 
 class UserFeedback(BaseModel):

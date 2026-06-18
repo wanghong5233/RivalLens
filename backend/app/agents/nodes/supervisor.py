@@ -35,6 +35,7 @@ from utils.logger import bind_step, get_logger
 log = get_logger("agents.supervisor")
 from schemas.agent_outputs import SupervisorToolCallOutput
 from schemas.contracts import (
+    COMPARISON_SCHEMA_BASE_DIMENSIONS,
     ensure_comparison_schema_dimensions,
     normalize_dimensions,
     research_focus_dimensions,
@@ -945,7 +946,23 @@ def _clamp_tool_args_to_canonical_dimensions(
     canonical_dimensions = normalize_dimensions(fallback_dimensions, allow_empty=True)
     if not canonical_dimensions:
         canonical_dimensions = list(DEFAULT_FOCUS_DIMENSIONS)[:effective_profile.max_dimensions]
-    canonical_dimensions = canonical_dimensions[:effective_profile.max_dimensions]
+    canonical_cap = effective_profile.max_dimensions
+    if all(dimension in canonical_dimensions for dimension in COMPARISON_SCHEMA_BASE_DIMENSIONS):
+        canonical_cap = max(canonical_cap, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
+    canonical_dimensions = canonical_dimensions[:canonical_cap]
+
+    def clamp_dimensions(value: object) -> list[str]:
+        candidate: list[str] = []
+        if isinstance(value, list):
+            candidate = normalize_dimensions(
+                [item for item in value if isinstance(item, str)],
+                allow_empty=True,
+            )
+        dimensions = candidate or list(canonical_dimensions)
+        cap = effective_profile.max_dimensions
+        if all(dimension in dimensions for dimension in COMPARISON_SCHEMA_BASE_DIMENSIONS):
+            cap = max(cap, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
+        return dimensions[:cap]
 
     def clamp_react_turns(value: object) -> int:
         if isinstance(value, int) and value > 0:
@@ -959,7 +976,7 @@ def _clamp_tool_args_to_canonical_dimensions(
 
     clamped = dict(tool_args)
     if chosen_tool == "ConductResearch":
-        clamped["focus_dimensions"] = canonical_dimensions
+        clamped["focus_dimensions"] = clamp_dimensions(clamped.get("focus_dimensions"))
         clamped["max_iterations"] = clamp_react_turns(clamped.get("max_iterations"))
         clamped["search_max_results"] = clamp_search_max_results(
             clamped.get("search_max_results")
@@ -974,7 +991,7 @@ def _clamp_tool_args_to_canonical_dimensions(
                 capped_topics.append(
                     {
                         **topic,
-                        "focus_dimensions": canonical_dimensions,
+                        "focus_dimensions": clamp_dimensions(topic.get("focus_dimensions")),
                         "max_iterations": clamp_react_turns(topic.get("max_iterations")),
                         "search_max_results": clamp_search_max_results(
                             topic.get("search_max_results")
@@ -1284,6 +1301,138 @@ def _has_enabled_write_task(plan_tree: object) -> bool:
         if stage == "write" and enabled is not False:
             return True
     return False
+
+
+def _build_landscape_batch_topics(
+    *,
+    competitors: list[str],
+    researched_competitors: list[str],
+    plan_tree: object,
+    fallback_dimensions: list[str],
+    profile: TierProfile,
+    user_query: str,
+) -> list[ConductResearch]:
+    researched_set = set(researched_competitors)
+    pending_competitors = [
+        competitor
+        for competitor in competitors
+        if competitor not in researched_set
+    ][: profile.max_competitors]
+    if not pending_competitors:
+        return []
+    task_focus_by_competitor: dict[str, list[str]] = {}
+    tasks_raw = _get_object_field(plan_tree, "tasks")
+    if isinstance(tasks_raw, list):
+        for task in tasks_raw:
+            if _get_object_field(task, "stage") != "research":
+                continue
+            if _get_object_field(task, "enabled") is False:
+                continue
+            competitor_id = _clean_optional_string(_get_object_field(task, "competitor_id"))
+            if competitor_id is None or competitor_id not in pending_competitors:
+                continue
+            focus_dimensions_raw = _get_object_field(task, "focus_dimensions")
+            if not isinstance(focus_dimensions_raw, list):
+                continue
+            normalized = normalize_dimensions(
+                [
+                    item
+                    for item in focus_dimensions_raw
+                    if isinstance(item, str)
+                ],
+                allow_empty=True,
+            )
+            if not normalized:
+                continue
+            # Keep planner-provided per-competitor focus dimensions intact for
+            # landscape runs, while preserving the schema trio when present.
+            cap = profile.max_dimensions
+            if all(dimension in normalized for dimension in COMPARISON_SCHEMA_BASE_DIMENSIONS):
+                cap = max(cap, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
+            task_focus_by_competitor[competitor_id] = normalized[:cap]
+    topics: list[ConductResearch] = []
+    for competitor_id in pending_competitors:
+        competitor_focus = task_focus_by_competitor.get(competitor_id) or list(fallback_dimensions)
+        topics.append(
+            ConductResearch(
+                research_topic=f"{competitor_id} vs user_query={user_query}",
+                competitor_id=competitor_id,
+                focus_dimensions=competitor_focus,
+                max_iterations=profile.react_turns,
+                search_max_results=profile.search_max_results,
+                fallback_to_offline=True,
+            )
+        )
+    return topics
+
+
+def _enforce_landscape_batch_research(
+    *,
+    decision: SupervisorDecision,
+    run_id: str,
+    iteration: int,
+    triggered_by: TriggerSource,
+    intake_draft: object,
+    competitors: list[str],
+    researched_competitors: list[str],
+    plan_tree: object,
+    fallback_dimensions: list[str],
+    profile: TierProfile,
+    user_query: str,
+) -> SupervisorDecision:
+    if _analysis_archetype_from_intake(intake_draft) != "landscape":
+        return decision
+    if decision.chosen_tool not in {"ConductResearch", "ConductResearchBatch"}:
+        return decision
+    topics = _build_landscape_batch_topics(
+        competitors=competitors,
+        researched_competitors=researched_competitors,
+        plan_tree=plan_tree,
+        fallback_dimensions=fallback_dimensions,
+        profile=profile,
+        user_query=user_query,
+    )
+    if len(topics) <= 1:
+        return decision
+    selected_competitors = [topic.competitor_id for topic in topics]
+    current_competitors: list[str] = []
+    if decision.chosen_tool == "ConductResearch":
+        competitor_id = _clean_optional_string(decision.tool_args.get("competitor_id"))
+        if competitor_id is not None:
+            current_competitors = [competitor_id]
+    else:
+        topics_raw = decision.tool_args.get("topics")
+        if isinstance(topics_raw, list):
+            for topic in topics_raw:
+                if not isinstance(topic, dict):
+                    continue
+                competitor_id = _clean_optional_string(topic.get("competitor_id"))
+                if competitor_id is not None:
+                    current_competitors.append(competitor_id)
+    if current_competitors == selected_competitors:
+        return decision
+
+    now = _now_iso()
+    return SupervisorDecision(
+        id=make_id("decision_"),
+        run_id=run_id,
+        iteration=iteration,
+        chosen_tool="ConductResearchBatch",
+        tool_args=ConductResearchBatch(
+            topics=topics,
+            parallelism_rationale=(
+                "Landscape guardrail enforces batch research for all pending competitors in this iteration."
+            ),
+        ).model_dump(),
+        reasoning_summary=(
+            "Landscape guardrail rewrote research dispatch to batch mode to keep representative "
+            "competitor deep-dive within the iteration budget."
+        ),
+        triggered_by=triggered_by,
+        outcome="dispatched",
+        outcome_recorded_at=now,
+        created_at=now,
+    )
 
 
 def _enforce_deliverable_before_finalize(
@@ -1664,6 +1813,19 @@ async def supervisor_node(state: AgentState) -> AgentState:
             )
             decision_dimension_source = dimension_source
 
+    decision = _enforce_landscape_batch_research(
+        decision=decision,
+        run_id=run_id,
+        iteration=iteration,
+        triggered_by=triggered_by,
+        intake_draft=state.get("intake_draft"),
+        competitors=competitors,
+        researched_competitors=researched_competitors,
+        plan_tree=state.get("plan_tree"),
+        fallback_dimensions=fallback_dimensions,
+        profile=tier_profile,
+        user_query=user_query,
+    )
     decision = _enforce_deliverable_before_finalize(
         decision=decision,
         plan_tree=state.get("plan_tree"),

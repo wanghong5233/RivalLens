@@ -235,15 +235,23 @@ def _filter_personas(
     value: object,
     *,
     allowed_evidence_ids: set[str],
+    competitors: set[str],
 ) -> list[dict[str, object]]:
     filtered: list[dict[str, object]] = []
     for item in _list_of_dicts(value):
+        competitor_id = _string_value(item.get("competitor_id"))
         name = _string_value(item.get("name"))
         role = _string_value(item.get("role"))
-        if name is None or role is None:
+        if (
+            competitor_id is None
+            or (competitors and competitor_id not in competitors)
+            or name is None
+            or role is None
+        ):
             continue
         payload = {
             "id": make_id("persona_"),
+            "competitor_id": competitor_id,
             "name": name,
             "role": role,
             "pain_points": _list_of_strings(item.get("pain_points")),
@@ -617,6 +625,7 @@ class KnowledgeExtractionOutput(BaseModel):
             "personas": _filter_personas(
                 content.get("personas"),
                 allowed_evidence_ids=allowed_evidence_ids,
+                competitors=allowed_competitors,
             ),
             "feedback": _filter_feedback(
                 content.get("feedback"),

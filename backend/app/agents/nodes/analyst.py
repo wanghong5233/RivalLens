@@ -237,6 +237,17 @@ async def analyst_node(state: AgentState) -> AgentState:
         else []
     )
     normalized_competitors = [item for item in competitors if isinstance(item, str) and item]
+    discovered_competitor_sources = state.get("discovered_competitor_sources")
+    competitor_roles: dict[str, str] = {}
+    if isinstance(discovered_competitor_sources, dict):
+        for competitor_id, source_payload in discovered_competitor_sources.items():
+            if not isinstance(competitor_id, str):
+                continue
+            if not isinstance(source_payload, dict):
+                continue
+            role_raw = source_payload.get("candidate_role")
+            if isinstance(role_raw, str) and role_raw.strip():
+                competitor_roles[competitor_id] = role_raw.strip()
     knowledge_user_prompt = build_knowledge_extraction_user_prompt(
         competitors=normalized_competitors,
         focus_dimensions=focus_dimensions,
@@ -284,6 +295,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             competitors=normalized_competitors,
             focus_dimensions=focus_dimensions,
             analysis_archetype=intake_draft.analysis_archetype,
+            competitor_roles=competitor_roles,
         )
         extracted_knowledge = KnowledgeExtractionOutput(
             schema_version=deterministic_knowledge.schema_version,
@@ -301,6 +313,7 @@ async def analyst_node(state: AgentState) -> AgentState:
         competitors=normalized_competitors,
         analysis_archetype=intake_draft.analysis_archetype,
         focus_dimensions=focus_dimensions,
+        competitor_roles=competitor_roles,
     )
     analysis_features = list(knowledge_result.features)
     analysis_pricings = list(knowledge_result.pricings)

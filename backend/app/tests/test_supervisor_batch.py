@@ -142,6 +142,53 @@ def test_decision_from_tool_output_accepts_conduct_research_batch() -> None:
     assert decision.outcome == "dispatched"
 
 
+def test_decision_from_tool_output_preserves_topic_dimensions_when_valid() -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "ConductResearchBatch",
+            "tool_args": {
+                "topics": [
+                    {
+                        "research_topic": "comp_meta vs user_query=fake",
+                        "competitor_id": "comp_meta",
+                        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                        "max_iterations": 6,
+                        "fallback_to_offline": True,
+                    },
+                    {
+                        "research_topic": "comp_nvidia vs user_query=fake",
+                        "competitor_id": "comp_nvidia",
+                        "focus_dimensions": ["market_differences"],
+                        "max_iterations": 6,
+                        "fallback_to_offline": True,
+                    },
+                ],
+                "parallelism_rationale": "preserve per-competitor focus",
+            },
+            "reasoning_summary": "Batch pending competitors.",
+        }
+    )
+
+    decision = _decision_from_tool_output(
+        run_id="run_test",
+        iteration=1,
+        output=output,
+        triggered_by="user_query",
+        fallback_dimensions=["product_positioning", "pricing_strategy"],
+        fallback_sections=["product_positioning", "pricing_strategy"],
+    )
+
+    topics = decision.tool_args["topics"]
+    assert isinstance(topics, list)
+    by_competitor = {item["competitor_id"]: item for item in topics}
+    assert by_competitor["comp_meta"]["focus_dimensions"] == [
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
+    assert by_competitor["comp_nvidia"]["focus_dimensions"] == ["market_differences"]
+
+
 def test_decision_from_tool_output_truncates_batch_topics_to_max_eight() -> None:
     output = SupervisorToolCallOutput.parse_llm_content(
         {
@@ -718,6 +765,72 @@ async def test_supervisor_blocks_repeated_discovery_with_fallback(
 
     assert new_state["next_action"] == "researcher"
     assert captured[0][2]["chosen_tool"] == "ConductResearchBatch"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_landscape_research_is_forced_to_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "ConductResearch",
+            "tool_args": {
+                "research_topic": "comp_meta vs user_query=fake",
+                "competitor_id": "Meta Ray-Ban",
+                "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                "max_iterations": 6,
+                "fallback_to_offline": True,
+            },
+            "reasoning_summary": "LLM selected one competitor first.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_landscape_batch_guardrail",
+        state={
+            "run_id": "run_test",
+            "user_query": "AI 硬件 landscape",
+            "competitors": ["Meta Ray-Ban", "XREAL", "NVIDIA"],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "decisions": [],
+            "intake_draft": {
+                "analysis_archetype": "landscape",
+                "focus_dimensions": ["market_differences"],
+            },
+            "plan_tree": {
+                "tasks": [
+                    {
+                        "stage": "research",
+                        "competitor_id": "Meta Ray-Ban",
+                        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                        "enabled": True,
+                    },
+                    {
+                        "stage": "research",
+                        "competitor_id": "XREAL",
+                        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                        "enabled": True,
+                    },
+                    {
+                        "stage": "research",
+                        "competitor_id": "NVIDIA",
+                        "focus_dimensions": ["market_differences"],
+                        "enabled": True,
+                    },
+                ]
+            },
+        },
+    )
+
+    assert new_state["next_action"] == "researcher"
+    assert captured[0][2]["chosen_tool"] == "ConductResearchBatch"
+    topics = new_state["pending_tool_args"]["topics"]
+    assert isinstance(topics, list)
+    assert [item["competitor_id"] for item in topics] == ["Meta Ray-Ban", "XREAL", "NVIDIA"]
 
 
 @pytest.mark.asyncio

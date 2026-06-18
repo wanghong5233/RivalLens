@@ -29,6 +29,7 @@ from models.run import Run
 from models.step import Step
 from schemas.agent_outputs import PlannerOutput
 from schemas.contracts import (
+    COMPARISON_SCHEMA_BASE_DIMENSIONS,
     ensure_comparison_schema_dimensions,
     normalize_dimensions,
     research_focus_dimensions,
@@ -66,6 +67,7 @@ _COMPETITOR_ROLE_LABELS: dict[str, str] = {
 _CORE_DISCOVERY_ROLES: frozenset[str] = frozenset(
     {"direct_competitor", "adjacent_competitor", "substitute"}
 )
+_COMPARISON_SCHEMA_DIMENSIONS_SET: frozenset[str] = frozenset(COMPARISON_SCHEMA_BASE_DIMENSIONS)
 _REPORT_DEPTH_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("debug", ("debug", "调试", "极速", "超快")),
     ("quick", ("quick", "速览", "快速", "标准", "平衡")),
@@ -122,10 +124,22 @@ def _canonical_focus_dimensions(
     normalized = normalize_dimensions(values, allow_empty=True)
     if not normalized:
         normalized = list(DEFAULT_FOCUS_DIMENSIONS)
-    return ensure_comparison_schema_dimensions(
+    canonical = ensure_comparison_schema_dimensions(
         normalized,
         analysis_archetype=analysis_archetype,
-    )[:max_dimensions]
+    )
+    if analysis_archetype == "comparison":
+        extras = [
+            dimension
+            for dimension in canonical
+            if dimension not in _COMPARISON_SCHEMA_DIMENSIONS_SET
+        ]
+        ordered = [*COMPARISON_SCHEMA_BASE_DIMENSIONS, *extras]
+        # Focused comparison runs must keep the schema triplet intact even when
+        # max_dimensions is configured to a lower cap.
+        cap = max(max_dimensions, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
+        return ordered[:cap]
+    return canonical[:max_dimensions]
 
 
 def _fallback_tasks(
@@ -327,7 +341,10 @@ def _research_description_for_discovered_competitor(
     *,
     competitor: str,
     source_payload: dict[str, str | None] | None,
+    is_landscape_core_deepdive: bool,
 ) -> str:
+    if is_landscape_core_deepdive:
+        return f"按三件套深挖 {competitor}（功能、定价、用户反馈），用于核心代表层对比。"
     role_raw = source_payload.get("candidate_role") if isinstance(source_payload, dict) else None
     role_label = _COMPETITOR_ROLE_LABELS.get(role_raw or "")
     if role_label is None:
@@ -352,15 +369,52 @@ def _discovered_competitor_role(
     return role if role else None
 
 
+def _landscape_core_research_focus_dimensions(
+    *,
+    base_focus: list[str],
+    max_dimensions: int,
+) -> list[str]:
+    normalized = ensure_comparison_schema_dimensions(
+        normalize_dimensions(base_focus, allow_empty=True),
+        analysis_archetype="landscape",
+        force_schema_dimensions=True,
+    )
+    extras = [
+        dimension
+        for dimension in normalized
+        if dimension not in _COMPARISON_SCHEMA_DIMENSIONS_SET
+    ]
+    ordered = [*COMPARISON_SCHEMA_BASE_DIMENSIONS, *extras]
+    cap = max(max_dimensions, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
+    return ordered[:cap]
+
+
+def _landscape_peripheral_research_focus_dimensions(
+    *,
+    base_focus: list[str],
+    max_dimensions: int,
+) -> list[str]:
+    normalized = normalize_dimensions(base_focus, allow_empty=True)
+    reduced = [
+        dimension
+        for dimension in normalized
+        if dimension not in _COMPARISON_SCHEMA_DIMENSIONS_SET
+    ]
+    if not reduced:
+        reduced = ["product_positioning", "market_differences"]
+    return normalize_dimensions(reduced, allow_empty=True)[:max_dimensions]
+
+
 def _select_discovered_competitors_for_research(
     *,
     discovered_competitors: list[str],
     discovered_competitor_sources: dict[str, dict[str, str | None]] | None,
     analysis_archetype: str,
     max_competitors: int,
-) -> list[str]:
+    landscape_core_deepdive_n: int,
+) -> tuple[list[str], set[str]]:
     if analysis_archetype != "landscape":
-        return discovered_competitors[:max_competitors]
+        return discovered_competitors[:max_competitors], set()
     core: list[str] = []
     non_core: list[str] = []
     for competitor in discovered_competitors:
@@ -372,7 +426,14 @@ def _select_discovered_competitors_for_research(
             core.append(competitor)
             continue
         non_core.append(competitor)
-    return [*core, *non_core[:max_competitors]]
+    deepdive_cap = max(0, min(max_competitors, landscape_core_deepdive_n))
+    deepdive_core = core[:deepdive_cap]
+    remaining_slots = max(0, max_competitors - len(deepdive_core))
+    shallow_non_core = non_core[:remaining_slots]
+    remaining_slots -= len(shallow_non_core)
+    shallow_core = core[deepdive_cap : deepdive_cap + remaining_slots]
+    selected = [*deepdive_core, *shallow_non_core, *shallow_core]
+    return selected, set(deepdive_core)
 
 
 def reconcile_plan_tree_after_discovery(
@@ -385,6 +446,7 @@ def reconcile_plan_tree_after_discovery(
     analysis_archetype: str = "comparison",
     max_competitors: int = MAX_RESEARCH_COMPETITORS,
     max_dimensions: int = MAX_FOCUS_DIMENSIONS,
+    landscape_core_deepdive_n: int = 3,
 ) -> PlanTree:
     """Materialize per-competitor research tasks after discovery completes."""
     plan = coerce_plan_tree(plan_tree)
@@ -435,13 +497,14 @@ def reconcile_plan_tree_after_discovery(
     research_focus = research_focus_dimensions(
         focus,
         analysis_archetype=analysis_archetype,
-    )[:max_dimensions]
+    )
     new_research_tasks: list[PlanTask] = []
-    selected_discovered_competitors = _select_discovered_competitors_for_research(
+    selected_discovered_competitors, deepdive_core_competitors = _select_discovered_competitors_for_research(
         discovered_competitors=discovered_competitors,
         discovered_competitor_sources=discovered_competitor_sources,
         analysis_archetype=analysis_archetype,
         max_competitors=max_competitors,
+        landscape_core_deepdive_n=landscape_core_deepdive_n,
     )
     for competitor in selected_discovered_competitors:
         if competitor in existing_research:
@@ -451,6 +514,23 @@ def reconcile_plan_tree_after_discovery(
             if isinstance(discovered_competitor_sources, dict)
             else None
         )
+        is_landscape_core_deepdive = (
+            analysis_archetype == "landscape"
+            and competitor in deepdive_core_competitors
+        )
+        competitor_focus = (
+            _landscape_core_research_focus_dimensions(
+                base_focus=research_focus,
+                max_dimensions=max_dimensions,
+            )
+            if is_landscape_core_deepdive
+            else _landscape_peripheral_research_focus_dimensions(
+                base_focus=research_focus,
+                max_dimensions=max_dimensions,
+            )
+            if analysis_archetype == "landscape"
+            else list(research_focus)[:max_dimensions]
+        )
         new_research_tasks.append(
             PlanTask(
                 stage="research",
@@ -458,9 +538,10 @@ def reconcile_plan_tree_after_discovery(
                 description=_research_description_for_discovered_competitor(
                     competitor=competitor,
                     source_payload=source_payload,
+                    is_landscape_core_deepdive=is_landscape_core_deepdive,
                 ),
                 competitor_id=competitor,
-                focus_dimensions=research_focus,
+                focus_dimensions=competitor_focus,
                 source="agent",
                 enabled=True,
             )

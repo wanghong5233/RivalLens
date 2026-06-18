@@ -5,9 +5,11 @@ import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from datetime import datetime, timezone
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Awaitable, Literal
 from uuid import uuid4
 
@@ -188,6 +190,8 @@ class IntakeCreateRequest(BaseModel):
     competitors_discovery_mode: bool = False
     focus_dimensions: list[str] = Field(default_factory=list)
     report_depth: Literal["debug", "quick", "deep"] = "quick"
+    from_run_id: str | None = None
+    seed_competitor_ids: list[str] = Field(default_factory=list)
     client_request_id: str | None = None
 
     @field_validator("client_request_id")
@@ -197,6 +201,27 @@ class IntakeCreateRequest(BaseModel):
             return None
         normalized = value.strip()
         return normalized if normalized else None
+
+    @field_validator("from_run_id")
+    @classmethod
+    def _normalize_from_run_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
+
+    @field_validator("seed_competitor_ids")
+    @classmethod
+    def _normalize_seed_competitor_ids(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            item = raw.strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized
 
 
 class IntakeCreateResponse(BaseModel):
@@ -245,6 +270,8 @@ class RunDetailResponse(BaseModel):
     started_at: str
     finished_at: str | None
     created_at: str
+    parent_run_id: str | None = None
+    seed_competitor_ids: list[str] = Field(default_factory=list)
     # Phase 1b additions: derived from status + intake_draft + plan_tree so the FE
     # can render the live-run page without re-reading the LangGraph checkpoint.
     phase: Literal["intake", "planning", "executing", "done"] | None = None
@@ -452,6 +479,7 @@ class KnowledgePricingResponse(BaseModel):
 
 class KnowledgePersonaResponse(BaseModel):
     id: str
+    competitor_id: str
     name: str
     role: str
     pain_points: list[str]
@@ -506,6 +534,8 @@ class WatchlistCreateRequest(BaseModel):
     competitor_id: str
     note: str | None = None
     next_refresh_at: datetime | None = None
+    added_from_run_id: str | None = None
+    source_role: str | None = None
 
     @field_validator("competitor_id")
     @classmethod
@@ -523,12 +553,30 @@ class WatchlistCreateRequest(BaseModel):
         normalized = value.strip()
         return normalized if normalized else None
 
+    @field_validator("added_from_run_id")
+    @classmethod
+    def _normalize_added_from_run_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
+
+    @field_validator("source_role")
+    @classmethod
+    def _normalize_source_role(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized if normalized else None
+
 
 class WatchlistItemResponse(BaseModel):
     watch_id: str
     competitor_id: str
     note: str | None
     next_refresh_at: str | None
+    added_from_run_id: str | None = None
+    source_role: str | None = None
     created_at: str
 
 
@@ -543,6 +591,13 @@ class WatchInsightItemResponse(BaseModel):
     created_at: str
 
 
+class WatchlistDigestDeltaResponse(BaseModel):
+    latest_run_id: str | None
+    previous_run_id: str | None
+    added_claims: list[str]
+    removed_claims: list[str]
+
+
 class WatchlistDigestItemResponse(BaseModel):
     watch_id: str
     competitor_id: str
@@ -552,6 +607,10 @@ class WatchlistDigestItemResponse(BaseModel):
     run_count: int
     last_updated_at: str | None
     latest_run_id: str | None
+    added_from_run_id: str | None = None
+    source_role: str | None = None
+    next_refresh_at: str | None = None
+    delta: WatchlistDigestDeltaResponse | None = None
     items: list[WatchInsightItemResponse]
 
 
@@ -867,6 +926,8 @@ def _to_run_detail(run: Run) -> RunDetailResponse:
         started_at=run.started_at.isoformat(),
         finished_at=_to_iso(run.finished_at),
         created_at=run.created_at.isoformat(),
+        parent_run_id=run.parent_run_id,
+        seed_competitor_ids=list(run.seed_competitor_ids or []),
         phase=_derive_run_phase(run),
         intake_draft=dict(run.intake_draft) if run.intake_draft is not None else None,
         plan_tree=dict(run.plan_tree) if run.plan_tree is not None else None,
@@ -1039,12 +1100,86 @@ def _to_watchlist_item(item: WatchlistItem) -> WatchlistItemResponse:
         competitor_id=item.competitor_id,
         note=item.note,
         next_refresh_at=_to_iso(item.next_refresh_at),
+        added_from_run_id=item.added_from_run_id,
+        source_role=item.source_role,
         created_at=item.created_at.isoformat(),
     )
 
 
+def _watchlist_delta_from_insights(
+    insights: list[WatchInsightItemResponse],
+) -> WatchlistDigestDeltaResponse | None:
+    claims_by_run_id: dict[str, set[str]] = {}
+    ordered_run_ids: list[str] = []
+    for insight in insights:
+        if insight.run_id not in claims_by_run_id:
+            claims_by_run_id[insight.run_id] = set()
+            ordered_run_ids.append(insight.run_id)
+        claim = insight.claim.strip()
+        if claim:
+            claims_by_run_id[insight.run_id].add(claim)
+    if len(ordered_run_ids) < 2:
+        return None
+    latest_run_id = ordered_run_ids[0]
+    previous_run_id = ordered_run_ids[1]
+    latest_claims = claims_by_run_id.get(latest_run_id, set())
+    previous_claims = claims_by_run_id.get(previous_run_id, set())
+    return WatchlistDigestDeltaResponse(
+        latest_run_id=latest_run_id,
+        previous_run_id=previous_run_id,
+        added_claims=sorted(latest_claims - previous_claims)[:5],
+        removed_claims=sorted(previous_claims - latest_claims)[:5],
+    )
+
+
 def _normalize_competitor_key(value: str) -> str:
-    return value.strip().casefold()
+    lowered = value.casefold().strip()
+    if not lowered:
+        return ""
+    normalized = re.sub(r"[^\w\s\u4e00-\u9fff]+", " ", lowered, flags=re.UNICODE)
+    tokens = [token for token in normalized.split() if token]
+    if not tokens:
+        return ""
+    # Token sorting absorbs punctuation and token-order variants
+    # ("Meta Ray-Ban" vs "Ray-Ban Meta").
+    return " ".join(sorted(tokens))
+
+
+@lru_cache
+def _competitor_seed_alias_sets() -> tuple[frozenset[str], ...]:
+    alias_sets: list[frozenset[str]] = []
+    for row in _load_competitor_seed_rows():
+        raw_values: list[str] = []
+        row_id = row.get("id")
+        if isinstance(row_id, str) and row_id.strip():
+            raw_values.append(row_id)
+        display_name = row.get("display_name")
+        if isinstance(display_name, str) and display_name.strip():
+            raw_values.append(display_name)
+        aliases = row.get("aliases")
+        if isinstance(aliases, list):
+            for alias in aliases:
+                if isinstance(alias, str) and alias.strip():
+                    raw_values.append(alias)
+        normalized_keys = {
+            _normalize_competitor_key(raw_value)
+            for raw_value in raw_values
+            if _normalize_competitor_key(raw_value)
+        }
+        if normalized_keys:
+            alias_sets.append(frozenset(normalized_keys))
+    return tuple(alias_sets)
+
+
+def _alias_keys_for_competitor(value: str) -> set[str]:
+    normalized = _normalize_competitor_key(value)
+    if not normalized:
+        return set()
+    alias_keys = {normalized}
+    for alias_set in _competitor_seed_alias_sets():
+        if normalized in alias_set:
+            alias_keys.update(alias_set)
+    return alias_keys
 
 
 def _resolve_run_title(*, title: str | None, user_query: str) -> str:
@@ -1498,6 +1633,8 @@ def _intake_request_fingerprint(payload: IntakeCreateRequest) -> str:
         "competitors_discovery_mode": payload.competitors_discovery_mode,
         "focus_dimensions": list(payload.focus_dimensions),
         "report_depth": payload.report_depth,
+        "from_run_id": payload.from_run_id,
+        "seed_competitor_ids": list(payload.seed_competitor_ids),
     }
     encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -1800,20 +1937,105 @@ async def create_run_intake(
         body_value=payload.client_request_id,
     )
     request_hash = _intake_request_fingerprint(payload)
-    normalized_reference_urls = list(payload.reference_urls or [])
+    session_factory = get_session_factory()
+    inherited_run: Run | None = None
+    inherited_draft_raw: dict[str, object] | None = None
+    if payload.from_run_id is not None:
+        async with session_factory() as session:
+            inherited_run = await session.get(Run, payload.from_run_id)
+        if inherited_run is None:
+            raise APIException(
+                status_code=404,
+                error_code="FROM_RUN_NOT_FOUND",
+                message=f"from_run_id={payload.from_run_id} does not exist",
+            )
+        if isinstance(inherited_run.intake_draft, dict):
+            inherited_draft_raw = inherited_run.intake_draft
+
+    def _pick_non_empty_string(*values: object) -> str | None:
+        for value in values:
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized:
+                    return normalized
+        return None
+
+    inherited_reference_urls = (
+        list(inherited_run.reference_urls or [])
+        if inherited_run is not None
+        else []
+    )
+    normalized_reference_urls = list(payload.reference_urls or []) or inherited_reference_urls
+    payload_competitors = _normalize_competitor_inputs(list(payload.competitors_explicit))
+    payload_seed_competitors = _normalize_competitor_inputs(list(payload.seed_competitor_ids))
+    inherited_seed_competitors = _normalize_competitor_inputs(
+        [
+            item
+            for item in (
+                inherited_run.seed_competitor_ids
+                if inherited_run is not None and isinstance(inherited_run.seed_competitor_ids, list)
+                else []
+            )
+            if isinstance(item, str)
+        ]
+    )
+    inherited_competitors = _normalize_competitor_inputs(
+        list(inherited_run.competitors) if inherited_run is not None else []
+    )
+    effective_seed_competitors = payload_seed_competitors or inherited_seed_competitors
+    effective_competitors = (
+        payload_competitors
+        or effective_seed_competitors
+        or inherited_competitors
+    )
+    inherited_focus_dimensions = (
+        inherited_draft_raw.get("focus_dimensions")
+        if isinstance(inherited_draft_raw, dict)
+        else None
+    )
+    inherited_user_role_raw = (
+        inherited_draft_raw.get("user_role")
+        if isinstance(inherited_draft_raw, dict)
+        else None
+    )
+    inherited_user_role = (
+        inherited_user_role_raw
+        if inherited_user_role_raw in {"pm", "founder", "sales", "investor"}
+        else None
+    )
     initial_draft = RunIntakeDraft(
         user_query=payload.user_query,
-        user_role=payload.user_role,
-        domain_hint=payload.domain_hint,
-        competitors_explicit=list(payload.competitors_explicit),
-        competitors_discovery_mode=payload.competitors_discovery_mode,
-        focus_dimensions=list(payload.focus_dimensions),
+        user_role=payload.user_role or inherited_user_role,
+        domain_hint=_pick_non_empty_string(
+            payload.domain_hint,
+            inherited_draft_raw.get("domain_hint") if isinstance(inherited_draft_raw, dict) else None,
+            inherited_run.domain_hint if inherited_run is not None else None,
+        ),
+        competitors_explicit=effective_competitors,
+        competitors_discovery_mode=bool(payload.competitors_discovery_mode) and not effective_competitors,
+        focus_dimensions=(
+            list(payload.focus_dimensions)
+            if payload.focus_dimensions
+            else [item for item in inherited_focus_dimensions or [] if isinstance(item, str)]
+        ),
         report_depth=payload.report_depth,
         reference_urls=normalized_reference_urls,
-        response_language=detect_language(payload.user_query),
+        self_product=_pick_non_empty_string(
+            inherited_draft_raw.get("self_product") if isinstance(inherited_draft_raw, dict) else None,
+        ),
+        market_scope=_pick_non_empty_string(
+            inherited_draft_raw.get("market_scope") if isinstance(inherited_draft_raw, dict) else None,
+        ),
+        time_context=_pick_non_empty_string(
+            inherited_draft_raw.get("time_context") if isinstance(inherited_draft_raw, dict) else None,
+        ),
+        response_language=_pick_non_empty_string(
+            inherited_draft_raw.get("response_language") if isinstance(inherited_draft_raw, dict) else None,
+            detect_language(payload.user_query),
+        ),
+        analysis_archetype="comparison" if payload.from_run_id is not None else "comparison",
     )
 
-    session_factory = get_session_factory()
     async with session_factory() as session:
         existing = await session.get(RunCreateRequestRecord, idempotency_key)
         if existing is not None:
@@ -1868,12 +2090,14 @@ async def create_run_intake(
                 Run(
                     run_id=run_id,
                     user_query=payload.user_query,
-                    domain_hint=payload.domain_hint,
+                    domain_hint=initial_draft.domain_hint,
                     reference_urls=normalized_reference_urls,
                     status="running",
                     target_roles=[],
-                    competitors=list(payload.competitors_explicit),
+                    competitors=list(initial_draft.competitors_explicit),
                     intake_draft=initial_draft.model_dump(exclude={"is_complete"}),
+                    parent_run_id=payload.from_run_id,
+                    seed_competitor_ids=effective_seed_competitors or None,
                 )
             )
             session.add(
@@ -1924,11 +2148,11 @@ async def create_run_intake(
         initial_state: dict[str, object] = {
             "run_id": run_id,
             "user_query": payload.user_query,
-            "domain_hint": payload.domain_hint,
+            "domain_hint": initial_draft.domain_hint,
             "market_scope": initial_draft.market_scope,
             "response_language": initial_draft.response_language,
             "reference_urls": normalized_reference_urls,
-            "competitors": list(payload.competitors_explicit),
+            "competitors": list(initial_draft.competitors_explicit),
             "discovered_competitors": [],
             "discovered_competitor_sources": {},
             "researched_competitors": [],
@@ -2973,20 +3197,32 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
             evidence_ids=evidence_ids,
             created_at=conclusion.created_at.isoformat(),
         )
-        matched_keys = {
-            _normalize_competitor_key(competitor_id)
-            for competitor_id in conclusion.competitor_ids
-            if isinstance(competitor_id, str) and _normalize_competitor_key(competitor_id)
-        }
+        matched_keys: set[str] = set()
+        for competitor_id in conclusion.competitor_ids:
+            if not isinstance(competitor_id, str):
+                continue
+            matched_keys.update(_alias_keys_for_competitor(competitor_id))
         for competitor_key in matched_keys:
             insights_by_competitor.setdefault(competitor_key, []).append(insight)
             run_ids_by_competitor.setdefault(competitor_key, set()).add(conclusion.run_id)
 
     digest_items: list[WatchlistDigestItemResponse] = []
     for item in watchlist_items:
-        competitor_key = _normalize_competitor_key(item.competitor_id)
-        insights = insights_by_competitor.get(competitor_key, [])
+        competitor_keys = _alias_keys_for_competitor(item.competitor_id)
+        deduped_insights: dict[str, WatchInsightItemResponse] = {}
+        matched_run_ids: set[str] = set()
+        for competitor_key in competitor_keys:
+            matched_run_ids.update(run_ids_by_competitor.get(competitor_key, set()))
+            for insight in insights_by_competitor.get(competitor_key, []):
+                if insight.conclusion_id not in deduped_insights:
+                    deduped_insights[insight.conclusion_id] = insight
+        insights = sorted(
+            deduped_insights.values(),
+            key=lambda insight: (insight.created_at, insight.conclusion_id),
+            reverse=True,
+        )
         latest = insights[0] if insights else None
+        delta = _watchlist_delta_from_insights(insights)
         digest_items.append(
             WatchlistDigestItemResponse(
                 watch_id=item.watch_id,
@@ -2994,9 +3230,13 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
                 note=item.note,
                 created_at=item.created_at.isoformat(),
                 insight_count=len(insights),
-                run_count=len(run_ids_by_competitor.get(competitor_key, set())),
+                run_count=len(matched_run_ids),
                 last_updated_at=latest.created_at if latest is not None else None,
                 latest_run_id=latest.run_id if latest is not None else None,
+                added_from_run_id=item.added_from_run_id,
+                source_role=item.source_role,
+                next_refresh_at=_to_iso(item.next_refresh_at),
+                delta=delta,
                 items=insights[:5],
             )
         )
@@ -3007,22 +3247,42 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
 async def create_watchlist_item(payload: WatchlistCreateRequest) -> WatchlistItemResponse:
     session_factory = get_session_factory()
     async with session_factory() as session:
-        existing = (
-            await session.execute(
-                select(WatchlistItem).where(WatchlistItem.competitor_id == payload.competitor_id)
-            )
-        ).scalars().first()
+        if payload.added_from_run_id is not None:
+            source_run = await session.get(Run, payload.added_from_run_id)
+            if source_run is None:
+                raise APIException(
+                    status_code=404,
+                    error_code="FROM_RUN_NOT_FOUND",
+                    message=f"added_from_run_id={payload.added_from_run_id} does not exist",
+                )
+        existing_rows = (
+            await session.execute(select(WatchlistItem).order_by(WatchlistItem.created_at.desc()))
+        ).scalars().all()
+        target_alias_keys = _alias_keys_for_competitor(payload.competitor_id)
+        existing = next(
+            (
+                item
+                for item in existing_rows
+                if target_alias_keys.intersection(_alias_keys_for_competitor(item.competitor_id))
+            ),
+            None,
+        )
         if existing is not None:
             raise APIException(
                 status_code=409,
                 error_code="WATCHLIST_ALREADY_EXISTS",
-                message=f"competitor_id={payload.competitor_id} already exists in watchlist",
+                message=(
+                    f"competitor_id={payload.competitor_id} already exists in watchlist "
+                    f"(matched={existing.competitor_id})"
+                ),
             )
         item = WatchlistItem(
             watch_id=make_id("watch_"),
             competitor_id=payload.competitor_id,
             note=payload.note,
             next_refresh_at=payload.next_refresh_at,
+            added_from_run_id=payload.added_from_run_id,
+            source_role=payload.source_role,
         )
         session.add(item)
         await session.commit()

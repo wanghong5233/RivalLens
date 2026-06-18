@@ -16,6 +16,8 @@ def init_engine() -> None:
     _engine = create_async_engine(
         settings.DATABASE_URL,
         pool_pre_ping=True,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
     )
     _session_factory = async_sessionmaker(
         bind=_engine,

@@ -1,4 +1,4 @@
-import { ArrowUpRight, Plus, Trash2 } from "lucide-react";
+import { ArrowUpRight, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -22,6 +22,15 @@ function toConfidenceVariant(confidence: string): "success" | "warning" | "dange
     return "danger";
   }
   return "secondary";
+}
+
+function focusRunLink(latestRunId: string | null, competitorId: string): string {
+  const params = new URLSearchParams();
+  if (latestRunId) {
+    params.set("from", latestRunId);
+  }
+  params.set("seed", competitorId);
+  return `/app/runs/new?${params.toString()}`;
 }
 
 export function WatchPage(): JSX.Element {
@@ -98,9 +107,20 @@ export function WatchPage(): JSX.Element {
                 {item.note ? (
                   <p className="mt-0.5 text-micro text-foreground-subtle">{item.note}</p>
                 ) : null}
+                {item.source_role ? (
+                  <p className="mt-0.5 text-micro text-foreground-subtle">来源角色：{item.source_role}</p>
+                ) : null}
+                {item.added_from_run_id ? (
+                  <p className="mt-0.5 text-micro text-foreground-subtle">来源 run：{item.added_from_run_id}</p>
+                ) : null}
                 <p className="mt-1 text-micro text-foreground-subtle">
                   追踪自 {formatDateTime(item.created_at)}
                 </p>
+                {item.next_refresh_at ? (
+                  <p className="mt-0.5 text-micro text-foreground-subtle">
+                    下次刷新：{formatDateTime(item.next_refresh_at)}
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-start gap-2">
                 <div className="flex flex-wrap justify-end gap-1.5">
@@ -122,6 +142,17 @@ export function WatchPage(): JSX.Element {
             </div>
 
             <div className="border-t border-white/[0.04] px-4 py-3">
+              {item.delta && (item.delta.added_claims.length > 0 || item.delta.removed_claims.length > 0) ? (
+                <div className="mb-2 rounded-md border border-primary/20 bg-primary/5 p-2 text-micro text-foreground-subtle">
+                  <p className="font-medium text-foreground">最近两次变化</p>
+                  {item.delta.added_claims.length > 0 ? (
+                    <p className="mt-1">新增：{item.delta.added_claims.join("；")}</p>
+                  ) : null}
+                  {item.delta.removed_claims.length > 0 ? (
+                    <p className="mt-1">减少：{item.delta.removed_claims.join("；")}</p>
+                  ) : null}
+                </div>
+              ) : null}
               {item.items.length === 0 ? (
                 <div className="rounded-md border border-dashed border-white/[0.1] bg-black/10 px-3 py-4 text-micro text-foreground-subtle">
                   暂无分析洞察，先做一次分析后这里会自动出现最新动态。
@@ -163,6 +194,12 @@ export function WatchPage(): JSX.Element {
                   <Link to={`/app/runs/${item.latest_run_id}`}>查看最近分析</Link>
                 </Button>
               ) : null}
+              <Button asChild size="sm" variant="outline">
+                <Link to={focusRunLink(item.latest_run_id, item.competitor_id)}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  手动重跑
+                </Link>
+              </Button>
               <Button asChild size="sm" variant="ghost">
                 <Link to="/app/runs/new">去分析</Link>
               </Button>

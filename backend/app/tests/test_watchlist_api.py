@@ -253,6 +253,12 @@ def test_watchlist_digest_groups_conclusions_case_insensitive(test_client: TestC
         assert watch_item["latest_run_id"] == fixture["run_new_id"]
         assert watch_item["last_updated_at"] is not None
         assert len(watch_item["items"]) == 2
+        assert watch_item["delta"] == {
+            "latest_run_id": fixture["run_new_id"],
+            "previous_run_id": fixture["run_old_id"],
+            "added_claims": ["New feature launch signal."],
+            "removed_claims": ["Old pricing signal."],
+        }
 
         latest_item = watch_item["items"][0]
         previous_item = watch_item["items"][1]
@@ -271,3 +277,28 @@ def test_watchlist_digest_groups_conclusions_case_insensitive(test_client: TestC
             watch_id=str(fixture["watch_id"]),
             run_ids=[str(fixture["run_old_id"]), str(fixture["run_new_id"])],
         )
+
+
+def test_watchlist_create_blocks_alias_duplicate(test_client: TestClient) -> None:
+    suffix = uuid4().hex[:6]
+    primary_name = f"Meta Ray-Ban {suffix}"
+    alias_name = f"Ray-Ban Meta {suffix}"
+    created_watch_id: str | None = None
+    try:
+        create_response = test_client.post(
+            "/api/watchlist",
+            json={"competitor_id": primary_name},
+        )
+        assert create_response.status_code == 200, create_response.text
+        created_watch_id = create_response.json()["watch_id"]
+
+        duplicate_response = test_client.post(
+            "/api/watchlist",
+            json={"competitor_id": alias_name},
+        )
+        assert duplicate_response.status_code == 409, duplicate_response.text
+        payload = duplicate_response.json()
+        assert payload["error_code"] == "WATCHLIST_ALREADY_EXISTS"
+    finally:
+        if created_watch_id is not None:
+            test_client.delete(f"/api/watchlist/{created_watch_id}")

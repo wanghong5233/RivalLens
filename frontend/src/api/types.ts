@@ -33,6 +33,8 @@ export interface RunIntakeDraft {
   self_product: string | null;
   market_scope: string | null;
   time_context: string | null;
+  response_language: "zh" | "en" | null;
+  analysis_archetype: "comparison" | "landscape" | string;
   is_complete: boolean;
 }
 
@@ -57,6 +59,8 @@ export interface IntakeCreateRequest {
   competitors_discovery_mode?: boolean;
   focus_dimensions?: string[];
   report_depth?: ReportDepth;
+  from_run_id?: string | null;
+  seed_competitor_ids?: string[];
 }
 
 export interface IntakeCreateResponse {
@@ -160,6 +164,8 @@ export interface RunDetailResponse {
   started_at: string;
   finished_at: string | null;
   created_at: string;
+  parent_run_id?: string | null;
+  seed_competitor_ids?: string[];
   // Phase 1+ (optional until the backend detail handler + migration land).
   phase?: RunPhase;
   intake_draft?: RunIntakeDraft | null;
@@ -353,6 +359,7 @@ export interface KnowledgePricing {
 
 export interface KnowledgePersona {
   id: string;
+  competitor_id: string;
   name: string;
   role: string;
   pain_points: string[];
@@ -421,6 +428,8 @@ export interface WatchlistItemResponse {
   competitor_id: string;
   note: string | null;
   next_refresh_at: string | null;
+  added_from_run_id?: string | null;
+  source_role?: string | null;
   created_at: string;
 }
 
@@ -435,6 +444,13 @@ export interface WatchInsightItemResponse {
   created_at: string;
 }
 
+export interface WatchlistDigestDeltaResponse {
+  latest_run_id: string | null;
+  previous_run_id: string | null;
+  added_claims: string[];
+  removed_claims: string[];
+}
+
 export interface WatchlistDigestItemResponse {
   watch_id: string;
   competitor_id: string;
@@ -444,6 +460,10 @@ export interface WatchlistDigestItemResponse {
   run_count: number;
   last_updated_at: string | null;
   latest_run_id: string | null;
+  added_from_run_id?: string | null;
+  source_role?: string | null;
+  next_refresh_at?: string | null;
+  delta?: WatchlistDigestDeltaResponse | null;
   items: WatchInsightItemResponse[];
 }
 
@@ -451,6 +471,8 @@ export interface WatchlistCreateRequest {
   competitor_id: string;
   note?: string | null;
   next_refresh_at?: string | null;
+  added_from_run_id?: string | null;
+  source_role?: string | null;
 }
 
 export interface EvidenceListItemResponse {

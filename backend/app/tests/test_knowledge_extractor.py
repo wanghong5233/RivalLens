@@ -165,20 +165,20 @@ def test_extract_knowledge_schema_generates_schema_in_landscape_mode() -> None:
     assert result.coverage == {
         "DeepSeek": {
             "feature": "partial",
-            "pricing": "not_applicable_for_archetype",
+            "pricing": "insufficient_data",
             "feedback": "insufficient_data",
             "persona": "insufficient_data",
         }
     }
     assert result.missing_reasons["DeepSeek"] == [
         "feature:coverage_partial",
-        "pricing:not_applicable_for_archetype",
+        "pricing:no_grounded_evidence",
         "feedback:no_grounded_evidence",
         "persona:no_grounded_evidence",
     ]
 
 
-def test_extract_knowledge_schema_marks_non_pricing_triplet_not_applicable_for_empty_landscape() -> None:
+def test_extract_knowledge_schema_landscape_without_role_keeps_triplet_required() -> None:
     result = extract_knowledge_schema(
         evidence_briefs=[],
         competitors=["DeepSeek"],
@@ -193,13 +193,38 @@ def test_extract_knowledge_schema_marks_non_pricing_triplet_not_applicable_for_e
     assert result.feedback == []
     assert result.coverage == {
         "DeepSeek": {
+            "feature": "insufficient_data",
+            "pricing": "insufficient_data",
+            "feedback": "insufficient_data",
+            "persona": "insufficient_data",
+        }
+    }
+    assert result.missing_reasons["DeepSeek"] == [
+        "feature:no_grounded_evidence",
+        "pricing:no_grounded_evidence",
+        "feedback:no_grounded_evidence",
+        "persona:no_grounded_evidence",
+    ]
+
+
+def test_extract_knowledge_schema_landscape_peripheral_role_allows_not_applicable() -> None:
+    result = extract_knowledge_schema(
+        evidence_briefs=[],
+        competitors=["CAICT"],
+        focus_dimensions=["monetization_paths"],
+        analysis_archetype="landscape",
+        competitor_roles={"CAICT": "trend_reference"},
+    )
+
+    assert result.coverage == {
+        "CAICT": {
             "feature": "not_applicable_for_archetype",
             "pricing": "not_applicable_for_archetype",
             "feedback": "not_applicable_for_archetype",
             "persona": "not_applicable_for_archetype",
         }
     }
-    assert result.missing_reasons["DeepSeek"] == [
+    assert result.missing_reasons["CAICT"] == [
         "feature:not_applicable_for_archetype",
         "pricing:not_applicable_for_archetype",
         "feedback:not_applicable_for_archetype",
