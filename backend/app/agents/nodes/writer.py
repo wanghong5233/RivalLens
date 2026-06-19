@@ -1138,15 +1138,11 @@ def _build_competitor_profiles_section(
     }
 
 
-def _build_positioning_map_section(
+def _positioning_clusters_from_coverage(
     *,
     competitors: list[str],
     coverage: dict[str, object],
-    response_language: str | None,
-    knowledge_payload: dict[str, object],
-    evidence_briefs: list[dict[str, object]],
-    allowed_evidence_ids: set[str],
-) -> dict[str, object]:
+) -> dict[str, list[str]]:
     def score(status: str) -> int:
         if status == "complete":
             return 2
@@ -1154,26 +1150,69 @@ def _build_positioning_map_section(
             return 1
         return 0
 
-    quadrants: dict[str, list[str]] = {
-        "Q1": [],
-        "Q2": [],
-        "Q3": [],
-        "Q4": [],
+    clusters: dict[str, list[str]] = {
+        "leaders": [],
+        "capability_potential": [],
+        "commercial_execution": [],
+        "watchlist": [],
     }
-    refs: list[str] = []
     for competitor in competitors:
         capability = score(_coverage_status(coverage=coverage, competitor=competitor, key="feature")) + score(
             _coverage_status(coverage=coverage, competitor=competitor, key="feedback")
         )
         commercialization = score(_coverage_status(coverage=coverage, competitor=competitor, key="pricing"))
         if capability >= 2 and commercialization >= 1:
-            quadrants["Q1"].append(competitor)
+            clusters["leaders"].append(competitor)
         elif capability >= 2 and commercialization < 1:
-            quadrants["Q2"].append(competitor)
+            clusters["capability_potential"].append(competitor)
         elif capability < 2 and commercialization >= 1:
-            quadrants["Q3"].append(competitor)
+            clusters["commercial_execution"].append(competitor)
         else:
-            quadrants["Q4"].append(competitor)
+            clusters["watchlist"].append(competitor)
+    return clusters
+
+
+def _positioning_signal_summary(
+    *,
+    clusters: dict[str, list[str]],
+    response_language: str | None,
+) -> str:
+    leaders = ", ".join(clusters.get("leaders", [])) or ("暂无" if response_language == "zh" else "none")
+    capability = ", ".join(clusters.get("capability_potential", [])) or (
+        "暂无" if response_language == "zh" else "none"
+    )
+    commercial = ", ".join(clusters.get("commercial_execution", [])) or (
+        "暂无" if response_language == "zh" else "none"
+    )
+    watchlist = ", ".join(clusters.get("watchlist", [])) or ("暂无" if response_language == "zh" else "none")
+    if response_language == "zh":
+        return (
+            "基于功能深度与商业化成熟度同一定位信号："
+            f"领先梯队 {leaders}；"
+            f"能力潜力梯队 {capability}；"
+            f"商业执行梯队 {commercial}；"
+            f"观察梯队 {watchlist}。"
+        )
+    return (
+        "Using the same positioning signal (capability depth + commercial maturity): "
+        f"leaders {leaders}; "
+        f"capability potential {capability}; "
+        f"commercial execution {commercial}; "
+        f"watchlist {watchlist}."
+    )
+
+
+def _build_positioning_map_section(
+    *,
+    competitors: list[str],
+    response_language: str | None,
+    knowledge_payload: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    clusters: dict[str, list[str]],
+) -> dict[str, object]:
+    refs: list[str] = []
+    for competitor in competitors:
         refs.extend(
             _collect_competitor_evidence_refs(
                 competitor=competitor,
@@ -1185,21 +1224,31 @@ def _build_positioning_map_section(
         )
     if response_language == "zh":
         lines = [
-            "- 横轴: 商业化成熟度（定价与企业化可见度）",
-            "- 纵轴: 产品能力深度（功能与口碑证据）",
-            f"- Q1 高能力-高商业化: {', '.join(quadrants['Q1']) or '暂无'}",
-            f"- Q2 高能力-低商业化: {', '.join(quadrants['Q2']) or '暂无'}",
-            f"- Q3 低能力-高商业化: {', '.join(quadrants['Q3']) or '暂无'}",
-            f"- Q4 低能力-低商业化: {', '.join(quadrants['Q4']) or '暂无'}",
+            "- 定位信号: 能力深度（feature + feedback） × 商业化成熟度（pricing）",
+            f"- 领先梯队（能力深、商业化强）: {', '.join(clusters.get('leaders', [])) or '暂无'}",
+            (
+                "- 能力潜力梯队（能力强、商业化待补）: "
+                f"{', '.join(clusters.get('capability_potential', [])) or '暂无'}"
+            ),
+            (
+                "- 商业执行梯队（商业化强、能力待补）: "
+                f"{', '.join(clusters.get('commercial_execution', [])) or '暂无'}"
+            ),
+            f"- 观察梯队（能力与商业化均待补）: {', '.join(clusters.get('watchlist', [])) or '暂无'}",
         ]
     else:
         lines = [
-            "- X axis: commercial maturity (pricing and enterprise transparency)",
-            "- Y axis: capability depth (feature + feedback evidence)",
-            f"- Q1 high capability / high maturity: {', '.join(quadrants['Q1']) or 'none'}",
-            f"- Q2 high capability / low maturity: {', '.join(quadrants['Q2']) or 'none'}",
-            f"- Q3 low capability / high maturity: {', '.join(quadrants['Q3']) or 'none'}",
-            f"- Q4 low capability / low maturity: {', '.join(quadrants['Q4']) or 'none'}",
+            "- Positioning signal: capability depth (feature + feedback) x commercial maturity (pricing).",
+            f"- Leaders (high capability, high maturity): {', '.join(clusters.get('leaders', [])) or 'none'}",
+            (
+                "- Capability potential (high capability, maturity gap): "
+                f"{', '.join(clusters.get('capability_potential', [])) or 'none'}"
+            ),
+            (
+                "- Commercial execution (high maturity, capability gap): "
+                f"{', '.join(clusters.get('commercial_execution', [])) or 'none'}"
+            ),
+            f"- Watchlist (capability and maturity both thin): {', '.join(clusters.get('watchlist', [])) or 'none'}",
         ]
     return {
         "section_id": "positioning_map",
@@ -1337,6 +1386,7 @@ def _apply_structured_writer_sections(
     state_competitors: list[str],
     discovered_competitor_sources: dict[str, dict[str, object]] | None,
     self_product: str | None,
+    preserve_llm_executive_summary: bool,
 ) -> dict[str, object]:
     sections_raw = report_content.get("sections")
     sections = [dict(item) for item in sections_raw if isinstance(item, dict)] if isinstance(sections_raw, list) else []
@@ -1355,6 +1405,13 @@ def _apply_structured_writer_sections(
             discovered_competitor_sources=discovered_competitor_sources,
             report_depth=report_depth,
         )
+    )
+    positioning_competitors = (
+        profile_competitors if analysis_archetype == "landscape" else ordered_competitors
+    )
+    positioning_clusters = _positioning_clusters_from_coverage(
+        competitors=positioning_competitors,
+        coverage=coverage,
     )
     _upsert_section(
         sections=sections,
@@ -1382,12 +1439,12 @@ def _apply_structured_writer_sections(
     _upsert_section(
         sections=sections,
         section_payload=_build_positioning_map_section(
-            competitors=profile_competitors if analysis_archetype == "landscape" else ordered_competitors,
-            coverage=coverage,
+            competitors=positioning_competitors,
             response_language=response_language,
             knowledge_payload=knowledge_payload,
             evidence_briefs=evidence_briefs,
             allowed_evidence_ids=allowed_evidence_ids,
+            clusters=positioning_clusters,
         ),
     )
     if analysis_archetype == "landscape":
@@ -1463,8 +1520,24 @@ def _apply_structured_writer_sections(
     )
     if analysis_archetype == "landscape" and not profile_competitors:
         risk_callouts.append("landscape_core_profiles_empty")
+    existing_summary_raw = report_content.get("executive_summary")
+    existing_summary = (
+        existing_summary_raw.strip() if isinstance(existing_summary_raw, str) else ""
+    )
+    # The LLM primary report already carries an evidence-grounded narrative summary;
+    # only synthesize the deterministic positioning signal when the report fell back
+    # or produced no summary, so we never downgrade a real narrative to a template.
+    executive_summary = (
+        existing_summary
+        if preserve_llm_executive_summary and existing_summary
+        else _positioning_signal_summary(
+            clusters=positioning_clusters,
+            response_language=response_language,
+        )
+    )
     return {
         **report_content,
+        "executive_summary": executive_summary,
         "sections": ordered_sections,
         "risk_callouts": _stable_unique(risk_callouts),
     }
@@ -1876,6 +1949,7 @@ async def writer_node(state: AgentState) -> AgentState:
         state_competitors=state_competitors,
         discovered_competitor_sources=discovered_competitor_sources,
         self_product=intake_draft.self_product,
+        preserve_llm_executive_summary=writer_mode == "llm",
     )
     report_content, numeric_guardrail_sections = _apply_numeric_claim_guardrail(
         report_content=report_content,

@@ -146,7 +146,8 @@ def _to_qa_reasons(rejection: Rejection) -> list[str]:
     # rule's own message as fallback) so the writer's next attempt is targeted.
     hints = [hint for hint in rejection.remediation_hints.values() if hint]
     if hints:
-        return hints
+        findings = [item for item in rejection.semantic_findings if item]
+        return list(dict.fromkeys([*hints, *findings]))
     reasons = [item for item in rejection.semantic_findings if item]
     if reasons:
         return reasons

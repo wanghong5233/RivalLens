@@ -651,6 +651,7 @@ def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() 
             "XREAL": {"candidate_role": "adjacent_competitor"},
         },
         self_product=None,
+        preserve_llm_executive_summary=False,
     )
 
     sections = [item for item in updated["sections"] if isinstance(item, dict)]
@@ -661,5 +662,76 @@ def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() 
     assert "market_landscape_map" in section_ids
     matrix_section = next(item for item in sections if item.get("section_id") == "comparison_matrix")
     profile_section = next(item for item in sections if item.get("section_id") == "competitor_profiles")
+    positioning_section = next(item for item in sections if item.get("section_id") == "positioning_map")
     assert "|竞品|核心功能摘要|覆盖状态|" in matrix_section["content_markdown"]
     assert "### Meta" in profile_section["content_markdown"]
+    assert "领先梯队（能力深、商业化强）" in positioning_section["content_markdown"]
+    assert "Q1" not in positioning_section["content_markdown"]
+    # Fallback path (no LLM summary preserved) synthesizes the deterministic
+    # positioning signal so positioning_map and executive_summary stay consistent.
+    assert "领先梯队 Meta" in updated["executive_summary"]
+    assert "观察梯队 XREAL" in updated["executive_summary"]
+
+
+def test_apply_structured_writer_sections_preserves_llm_executive_summary() -> None:
+    llm_summary = "Meta 在功能深度与商业化上同时领先，XREAL 仍处早期观察阶段。"
+    updated = _apply_structured_writer_sections(
+        report_content={
+            "template_id": "default",
+            "title": "RivalLens",
+            "executive_summary": llm_summary,
+            "sections": [],
+            "risk_callouts": [],
+        },
+        target_sections=[
+            "executive_summary",
+            "competitor_profiles",
+            "comparison_matrix",
+            "positioning_map",
+            "market_landscape_map",
+            "trend_summary",
+        ],
+        analysis_archetype="landscape",
+        response_language="zh",
+        report_depth="quick",
+        knowledge_payload={
+            "schema_version": "schema_v0.2",
+            "features": [
+                {"competitor_id": "Meta", "name": "语音助手", "evidence_ids": ["ev_001"]},
+            ],
+            "pricings": [
+                {"competitor_id": "Meta", "model": "subscription", "free_plan": False, "enterprise_plan": True, "evidence_ids": ["ev_001"]}
+            ],
+            "personas": [],
+            "feedback": [
+                {"competitor_id": "Meta", "sentiment": "positive", "topic": "续航", "summary": "续航较好", "evidence_ids": ["ev_003"]}
+            ],
+            "missing_reasons": {},
+            "coverage": {
+                "Meta": {"feature": "complete", "pricing": "complete", "feedback": "partial"},
+            },
+        },
+        comparison_briefs=[],
+        evidence_briefs=[
+            {"evidence_id": "ev_001", "competitor_id": "Meta"},
+            {"evidence_id": "ev_003", "competitor_id": "Meta"},
+        ],
+        allowed_evidence_ids={"ev_001", "ev_003"},
+        state_competitors=["Meta", "XREAL"],
+        discovered_competitor_sources={
+            "Meta": {"candidate_role": "direct_competitor"},
+            "XREAL": {"candidate_role": "adjacent_competitor"},
+        },
+        self_product=None,
+        preserve_llm_executive_summary=True,
+    )
+
+    # Primary LLM narrative must survive untouched; positioning_map still renders
+    # the deterministic clusters independently.
+    assert updated["executive_summary"] == llm_summary
+    positioning_section = next(
+        item
+        for item in updated["sections"]
+        if isinstance(item, dict) and item.get("section_id") == "positioning_map"
+    )
+    assert "领先梯队（能力深、商业化强）" in positioning_section["content_markdown"]

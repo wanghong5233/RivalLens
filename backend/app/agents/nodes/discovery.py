@@ -668,6 +668,11 @@ async def discovery_node(state: AgentState) -> AgentState:
                 )
             elif harness_result.llm_response.error is not None:
                 extract_error = harness_result.llm_response.error[:300]
+            elif harness_result.schema_error is not None:
+                # value is None without a provider error means the extract output
+                # failed schema validation after retries; surface the reason so a
+                # zero-competitor run is debuggable instead of "failed, reason null".
+                extract_error = f"schema_invalid: {harness_result.schema_error}"[:300]
         except (KeyError, ValueError) as exc:
             extract_error = f"{type(exc).__name__}: {str(exc)[:300]}"
             with bind_step(step_id):
@@ -678,6 +683,14 @@ async def discovery_node(state: AgentState) -> AgentState:
                 )
 
     with bind_step(step_id):
+        if snippet_count > 0 and not discovered:
+            log.warning(
+                "discovery.zero_competitors_with_snippets",
+                snippet_count=snippet_count,
+                extract_outcome=extract_outcome,
+                extract_error=extract_error,
+                filtered_out_count=len(filtered_out_competitors),
+            )
         log.info(
             "discovery.complete",
             discovered_count=len(discovered),

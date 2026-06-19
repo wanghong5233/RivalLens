@@ -589,6 +589,8 @@ Rules:
 - citation_coverage: true only when important claims are tied to evidence_refs from the prompt.
 - faithfulness: true only when claims are supported by the provided evidence and do not invent sources.
 - instruction_following: true only when sections match requested target sections and report_depth.
+- If a required field has genuinely no supporting evidence in the prompt and the report explicitly marks the gap (for example "no public pricing evidence"), do NOT fail instruction_following for that field.
+- Do not require fabricated pricing tiers, exact numbers, or pseudo-citations to satisfy instruction_following.
 - For every numeric_claim in the prompt, decide whether any cited evidence item supports that exact number or a directly computable equivalent. One supporting cited evidence item is sufficient; do not require every cited evidence item to contain the same number.
 - Add an item to unsupported_numeric_claims only when no cited evidence item clearly supports the number. Do not include supported claims in unsupported_numeric_claims, and do not write self-correcting reasoning such as "actually supported" inside unsupported_numeric_claims.
 - If unsupported_numeric_claims is non-empty, semantic_audit_passed should be false unless deterministic QA has already told you the report is being accepted with warnings.

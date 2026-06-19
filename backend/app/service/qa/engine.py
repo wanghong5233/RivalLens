@@ -447,26 +447,34 @@ def _semantic_rule_result(semantic_output: dict[str, object]) -> RuleResult:
     )
 
 
-def _semantic_dimension_rule_results(semantic_output: dict[str, object]) -> list[RuleResult]:
+def _semantic_dimension_rule_results(
+    semantic_output: dict[str, object],
+    *,
+    severity: Literal["blocking", "warning"] = "blocking",
+) -> list[RuleResult]:
     dimension_results_raw = semantic_output.get("dimension_results")
     dimension_results = dimension_results_raw if isinstance(dimension_results_raw, dict) else {}
+    reject_to_raw = semantic_output.get("reject_to")
+    reject_to = reject_to_raw if isinstance(reject_to_raw, str) else "writer"
+    finding_raw = semantic_output.get("finding")
+    finding = finding_raw.strip() if isinstance(finding_raw, str) else ""
     failed_dimension_rules: list[RuleResult] = []
     for dimension_key in _QA_SEMANTIC_DIMENSIONS:
         dimension_passed = dimension_results.get(dimension_key)
         if dimension_passed is True:
             continue
-        failure_reason = (
-            f"{dimension_key} failed semantic QA checks."
-            if isinstance(dimension_passed, bool)
-            else f"{dimension_key} result is missing from semantic QA output."
-        )
+        if isinstance(dimension_passed, bool):
+            failure_reason = f"{dimension_key} failed semantic QA checks."
+        else:
+            failure_reason = f"{dimension_key} result is missing from semantic QA output."
+        actionable_finding = f" Actionable finding: {finding}" if finding else ""
         failed_dimension_rules.append(
             RuleResult(
                 rule_id=f"rule_qa_semantic_{dimension_key}",
                 passed=False,
-                severity="blocking",
-                reject_to="writer",
-                message=failure_reason,
+                severity=severity,
+                reject_to=reject_to,
+                message=f"{failure_reason}{actionable_finding}",
             )
         )
     return failed_dimension_rules
@@ -499,7 +507,24 @@ def _unsupported_numeric_claims(semantic_output: dict[str, object]) -> list[dict
     items_raw = semantic_output.get("unsupported_numeric_claims")
     if not isinstance(items_raw, list):
         return []
-    return [item for item in items_raw if isinstance(item, dict)]
+    filtered: list[dict[str, object]] = []
+    for item in items_raw:
+        if not isinstance(item, dict):
+            continue
+        section_id_raw = item.get("section_id")
+        section_id = (
+            section_id_raw.strip().casefold()
+            if isinstance(section_id_raw, str)
+            else ""
+        )
+        if section_id == "positioning_map" or section_id.startswith("positioning_map."):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _semantic_escape_hatch_min_evidence(report_depth: Literal["quick", "deep"]) -> int:
+    return 12 if report_depth == "deep" else 6
 
 
 def _apply_numeric_claim_gate(
@@ -754,6 +779,7 @@ async def evaluate_report(
         analysis_archetype=analysis_archetype,
         report_depth=report_depth,
     )
+    expected_competitors = run.competitors if run is not None else None
     rule_results = evaluate_fast_path_rules(
         content_markdown=report.content_markdown,
         content_json=report.content_json,
@@ -775,7 +801,7 @@ async def evaluate_report(
     rule_results.append(
         rule_knowledge_schema_conformance(
             knowledge=knowledge,
-            expected_competitors=run.competitors if run is not None else None,
+            expected_competitors=expected_competitors,
             evidence_item_count=len(evidence_items),
             qa_rejection_count=qa_rejection_count,
             require_competitor_schema=require_competitor_schema,
@@ -836,6 +862,7 @@ async def evaluate_report(
     semantic_mode: Literal["applied", "degraded_rule_only"] = "degraded_rule_only"
     semantic_audit_passed = False
     semantic_dimension_rules: list[RuleResult] = []
+    semantic_escape_hatch_applied = False
     if semantic_output is not None:
         semantic_mode = "applied"
         semantic_output = _apply_numeric_claim_gate(
@@ -843,46 +870,44 @@ async def evaluate_report(
             qa_rejection_count=qa_rejection_count,
             has_blocking_failures_pre_semantic=has_blocking_failures_pre_semantic,
         )
-        semantic_dimension_rules = _semantic_dimension_rule_results(semantic_output)
         semantic_reject_to_raw = semantic_output.get("reject_to")
         semantic_audit_passed_raw = semantic_output.get("semantic_audit_passed")
-        if (
+        semantic_escape_hatch_applied = (
             semantic_audit_passed_raw is False
-            and semantic_reject_to_raw in {"researcher", "analyst"}
-            and len(evidence_items) >= 3
-        ):
-            # When evidence is already sufficient, route rewrite to writer first to avoid costly
-            # re-research loops that rarely improve report grounding quality.
-            semantic_output = {
-                **semantic_output,
-                "reject_to": "writer",
-            }
-        if (
-            semantic_audit_passed_raw is False
-            and semantic_reject_to_raw in {"researcher", "analyst", "writer"}
+            and isinstance(semantic_reject_to_raw, str)
+            and semantic_reject_to_raw in {"researcher", "analyst", "writer", "supervisor"}
             and qa_rejection_count >= 1
-            and len(evidence_items) >= 12
+            and len(evidence_items) >= _semantic_escape_hatch_min_evidence(report_depth)
             and not has_blocking_failures_pre_semantic
             and not _report_has_writer_fallback_mode(report.content_json)
-            and not _unsupported_numeric_claims(semantic_output)
-            and not semantic_dimension_rules
-        ):
-            # If deterministic QA already passed and semantic retry still bounces between
-            # analyst/researcher, stop the loop and accept with warning-level metadata.
+        )
+        if semantic_escape_hatch_applied:
+            finding_raw = semantic_output.get("finding")
+            finding = (
+                finding_raw.strip()
+                if isinstance(finding_raw, str) and finding_raw.strip()
+                else "semantic finding unavailable."
+            )
             semantic_output = {
                 **semantic_output,
                 "semantic_audit_passed": True,
                 "severity": "warning",
-                "reject_to": "writer",
                 "finding": (
-                    "Semantic audit remained unstable after retry; accepted because "
-                    "deterministic QA passed and evidence coverage is sufficient."
+                    "Semantic audit accepted with warnings after retry because deterministic "
+                    f"QA passed and evidence coverage is sufficient. Original finding: {finding}"
                 ),
             }
+        semantic_dimension_rules = _semantic_dimension_rule_results(
+            semantic_output,
+            severity="warning" if semantic_escape_hatch_applied else "blocking",
+        )
         semantic_rule = _semantic_rule_result(semantic_output)
         rule_results.append(semantic_rule)
         rule_results.extend(semantic_dimension_rules)
-        semantic_audit_passed = semantic_rule.passed and not semantic_dimension_rules
+        semantic_audit_passed = semantic_rule.passed and not any(
+            (not item.passed and item.severity == "blocking")
+            for item in semantic_dimension_rules
+        )
     else:
         semantic_rule = _semantic_fail_closed_rule_result(
             semantic_response=semantic_response,
@@ -905,6 +930,7 @@ async def evaluate_report(
         "qa_semantic_fallback_used": semantic_response.fallback_used,
         "qa_semantic_fallback_reason": semantic_response.fallback_reason,
         "qa_numeric_claim_count": len(numeric_claims_for_prompt),
+        "qa_semantic_escape_hatch": semantic_escape_hatch_applied,
         "qa_unsupported_numeric_claims": (
             _unsupported_numeric_claims(semantic_output) if semantic_output is not None else []
         ),

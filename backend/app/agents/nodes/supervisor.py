@@ -75,6 +75,9 @@ LandscapeTopicSignature = tuple[str, tuple[str, ...], int, int, bool]
 _DIMENSIONAL_SUPERVISOR_TOOLS = frozenset(
     {"ConductResearch", "ConductResearchBatch", "Analyze", "Write"}
 )
+_LANDSCAPE_CORE_ROLES = frozenset(
+    {"direct_competitor", "adjacent_competitor", "substitute"}
+)
 
 
 def _resolve_triggered_by(
@@ -1358,19 +1361,60 @@ def _build_landscape_batch_topics(
                 cap = max(cap, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
             task_focus_by_competitor[competitor_id] = normalized[:cap]
     source_context_by_competitor: dict[str, str] = {}
+    role_by_competitor: dict[str, str | None] = {}
     competitor_sources_raw = _get_object_field(plan_tree, "competitor_sources")
     if isinstance(competitor_sources_raw, dict):
         for competitor_id in pending_competitors:
             payload = competitor_sources_raw.get(competitor_id)
             if not isinstance(payload, dict):
                 continue
+            role_raw = _clean_optional_string(payload.get("candidate_role"))
+            role_by_competitor[competitor_id] = role_raw
             relevance_reason = _clean_optional_string(payload.get("relevance_reason"))
             if relevance_reason is None:
                 continue
             source_context_by_competitor[competitor_id] = " ".join(relevance_reason.split())[:240]
+    deepdive_cap = max(0, min(len(pending_competitors), profile.landscape_core_deepdive_n))
+    landscape_core_competitors = [
+        competitor
+        for competitor in pending_competitors
+        if role_by_competitor.get(competitor) in _LANDSCAPE_CORE_ROLES
+    ][:deepdive_cap]
+    if not landscape_core_competitors and deepdive_cap > 0:
+        fallback_non_upstream = [
+            competitor
+            for competitor in pending_competitors
+            if role_by_competitor.get(competitor) != "upstream_supplier"
+        ]
+        landscape_core_competitors = fallback_non_upstream[:deepdive_cap]
+    landscape_core_set = set(landscape_core_competitors)
     topics: list[ConductResearch] = []
     for competitor_id in pending_competitors:
         competitor_focus = task_focus_by_competitor.get(competitor_id) or list(fallback_dimensions)
+        competitor_focus = normalize_dimensions(
+            [item for item in competitor_focus if isinstance(item, str)],
+            allow_empty=True,
+        )
+        if competitor_id in landscape_core_set:
+            competitor_focus = ensure_comparison_schema_dimensions(
+                competitor_focus,
+                analysis_archetype="landscape",
+                force_schema_dimensions=True,
+            )
+            extras = [
+                dimension
+                for dimension in competitor_focus
+                if dimension not in COMPARISON_SCHEMA_BASE_DIMENSIONS
+            ]
+            competitor_focus = [*COMPARISON_SCHEMA_BASE_DIMENSIONS, *extras]
+            cap = max(profile.max_dimensions, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
+        elif all(
+            dimension in competitor_focus for dimension in COMPARISON_SCHEMA_BASE_DIMENSIONS
+        ):
+            cap = max(profile.max_dimensions, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
+        else:
+            cap = profile.max_dimensions
+        competitor_focus = competitor_focus[:cap]
         research_topic = task_topic_by_competitor.get(competitor_id) or (
             f"{competitor_id} vs user_query={user_query}"
         )
@@ -1907,6 +1951,38 @@ async def supervisor_node(state: AgentState) -> AgentState:
                 response_language=response_language,
             )
             decision_dimension_source = dimension_source
+
+    discovery_attempted = bool(discovered_competitors) or any(
+        prior.chosen_tool == "DiscoverCompetitors" for prior in decisions
+    )
+    if (
+        not competitors
+        and not discovery_attempted
+        and decision.chosen_tool
+        not in {"DiscoverCompetitors", "ConductResearch", "ConductResearchBatch"}
+    ):
+        log.warning(
+            "supervisor.guardrail.empty_competitors_blocked",
+            iteration=iteration,
+            blocked_tool=decision.chosen_tool,
+        )
+        decision = _fallback_decision(
+            run_id=run_id,
+            iteration=iteration,
+            competitors=competitors,
+            researched_competitors=researched_competitors,
+            analysis_done=analysis_done,
+            report_draft_done=report_draft_done,
+            triggered_by=triggered_by,
+            user_query=user_query,
+            fallback_dimensions=fallback_dimensions,
+            fallback_sections=fallback_sections,
+            profile=tier_profile,
+            market_scope=market_scope,
+            domain_context=domain_context,
+            response_language=response_language,
+        )
+        decision_dimension_source = dimension_source
 
     decision = _enforce_landscape_batch_research(
         decision=decision,

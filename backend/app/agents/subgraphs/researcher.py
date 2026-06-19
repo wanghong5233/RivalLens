@@ -1778,11 +1778,15 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     else:
         result_payload = {}
 
+    evidence_drafts_before = list(state.get("evidence_drafts", []))
+    draft_count_before = len(evidence_drafts_before)
     evidence_drafts = _append_evidence_drafts(
-        evidence_drafts=list(state.get("evidence_drafts", [])),
+        evidence_drafts=evidence_drafts_before,
         observation=result_payload,
         focus_dimensions=list(state.get("focus_dimensions", [])),
     )
+    draft_count_after = len(evidence_drafts)
+    draft_delta = max(draft_count_after - draft_count_before, 0)
 
     focus_dimensions = list(state.get("focus_dimensions", []))
     coverage_matrix = _build_coverage_matrix(
@@ -1807,6 +1811,20 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
     next_turn_count = int(state.get("turn_count", 0)) + 1
     log_context = bind_step(step_id) if step_id is not None else nullcontext()
     with log_context:
+        log.info(
+            "researcher.funnel.search_to_draft",
+            tool=action_raw,
+            competitor_id=state.get("competitor_id"),
+            dimension=dimension,
+            search_results=(
+                result_diagnostics["snippet_count"]
+                if action_raw == "search_web"
+                else 0
+            ),
+            draft_count_before=draft_count_before,
+            draft_count_after=draft_count_after,
+            draft_delta=draft_delta,
+        )
         log.info(
             "researcher.tool_call",
             tool=action_raw,
@@ -1933,6 +1951,13 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
         query=_build_rerank_query(state),
         focus_dimensions=list(state.get("focus_dimensions", [])),
     )
+    log_context = bind_step(step_id) if step_id is not None else nullcontext()
+    with log_context:
+        log.info(
+            "researcher.funnel.post_rerank",
+            competitor_id=state.get("competitor_id"),
+            post_rerank_count=len(evidence_drafts),
+        )
     coverage_matrix = _build_coverage_matrix(
         state=state,
         evidence_drafts=evidence_drafts,

@@ -15,6 +15,7 @@ from service.qa.engine import (
     _build_qa_slow_path_log_fields,
     _semantic_fail_closed_rule_result,
     _semantic_dimension_rule_results,
+    _unsupported_numeric_claims,
     _target_sections_for_report,
     build_qa_outcome,
 )
@@ -608,9 +609,37 @@ def test_numeric_claim_gate_blocks_unsupported_numbers_until_removed() -> None:
     assert retry_round["severity"] == "blocking"
 
 
+def test_numeric_claim_gate_ignores_positioning_map_claims() -> None:
+    semantic_output = {
+        "semantic_audit_passed": True,
+        "reject_to": "writer",
+        "severity": "warning",
+        "finding": "Looks fine.",
+        "required_fields": [],
+        "unsupported_numeric_claims": [
+            {
+                "claim": "Q1 high capability / high maturity: none",
+                "section_id": "positioning_map",
+                "reason": "Quadrant label detected as numeric claim.",
+            }
+        ],
+    }
+
+    gated = _apply_numeric_claim_gate(
+        semantic_output=semantic_output,
+        qa_rejection_count=0,
+        has_blocking_failures_pre_semantic=False,
+    )
+
+    assert gated["semantic_audit_passed"] is True
+    assert gated["severity"] == "warning"
+    assert _unsupported_numeric_claims(gated) == []
+
+
 def test_qa_semantic_prompt_treats_one_supporting_citation_as_sufficient() -> None:
     assert "One supporting cited evidence item is sufficient" in QA_SEMANTIC_SYSTEM_PROMPT
     assert "Do not include supported claims in unsupported_numeric_claims" in QA_SEMANTIC_SYSTEM_PROMPT
+    assert "do NOT fail instruction_following for that field" in QA_SEMANTIC_SYSTEM_PROMPT
 
 
 def test_engine_aggregation_rejects_when_blocking_failed() -> None:
@@ -734,6 +763,32 @@ def test_semantic_dimension_rule_results_block_on_false_dimension() -> None:
     assert rules[0].rule_id == "rule_qa_semantic_citation_coverage"
     assert rules[0].passed is False
     assert rules[0].severity == "blocking"
+    assert rules[0].reject_to == "writer"
+    assert "Actionable finding: Looks acceptable." in rules[0].message
+
+
+def test_semantic_dimension_rule_results_can_downgrade_to_warning() -> None:
+    semantic_output = {
+        "semantic_audit_passed": True,
+        "reject_to": "analyst",
+        "severity": "warning",
+        "finding": "Executive summary contradicts positioning signal.",
+        "dimension_results": {
+            "depth": False,
+            "citation_coverage": True,
+            "faithfulness": True,
+            "instruction_following": True,
+        },
+    }
+
+    rules = _semantic_dimension_rule_results(
+        semantic_output,
+        severity="warning",
+    )
+    assert len(rules) == 1
+    assert rules[0].rule_id == "rule_qa_semantic_depth"
+    assert rules[0].severity == "warning"
+    assert rules[0].reject_to == "analyst"
 
 
 def test_semantic_fail_closed_rule_result_from_llm_error() -> None:

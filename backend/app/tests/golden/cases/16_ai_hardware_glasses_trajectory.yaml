@@ -1,5 +1,5 @@
 id: 16_ai_hardware_glasses_trajectory
-description: Regression case promoted from judge-like run_7919487a1482: broad AI hardware landscape with self_product=AI眼镜 must not loop Analyze and must keep evidence/read-model quality visible.
+description: "Regression case promoted from judge-like run_7919487a1482: broad AI hardware landscape with self_product=AI眼镜 must not loop Analyze and must keep evidence/read-model quality visible."
 input:
   user_query: "AI 硬件的主流产品以及发展趋势。"
   competitors: []

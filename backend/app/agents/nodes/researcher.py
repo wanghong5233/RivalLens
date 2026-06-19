@@ -390,13 +390,83 @@ def _build_evidence_rows(
     observations_log: list[dict[str, object]],
     default_competitor_id: str,
     resolved_official_hosts: set[str] | None = None,
+    funnel_metrics: dict[str, object] | None = None,
 ) -> tuple[list[EvidenceRecord], list[str], dict[str, object]]:
     dropped_reasons: dict[str, int] = {}
+    funnel_overall: dict[str, int] = {
+        "search_results": 0,
+        "drafts": 0,
+        "post_quality": 0,
+        "post_grounding": 0,
+        "post_rerank": 0,
+        "persisted": 0,
+    }
+    funnel_by_competitor: dict[str, dict[str, dict[str, object]]] = {}
+
+    def _dimension_bucket(value: str | None) -> str:
+        if isinstance(value, str) and value.strip():
+            return value
+        return "unclassified"
+
+    def _funnel_bucket(
+        *,
+        competitor_id: str,
+        dimension: str | None,
+    ) -> dict[str, object]:
+        competitor_key = competitor_id.strip() or "unknown"
+        dimension_key = _dimension_bucket(dimension)
+        competitor_rows = funnel_by_competitor.setdefault(competitor_key, {})
+        bucket = competitor_rows.get(dimension_key)
+        if bucket is not None:
+            return bucket
+        created = {
+            "search_results": 0,
+            "drafts": 0,
+            "post_quality": 0,
+            "post_grounding": 0,
+            "post_rerank": 0,
+            "persisted": 0,
+            "drop_reasons": {},
+        }
+        competitor_rows[dimension_key] = created
+        return created
+
+    def _record_stage(
+        *,
+        competitor_id: str,
+        dimension: str | None,
+        stage: str,
+        amount: int = 1,
+    ) -> None:
+        if amount <= 0:
+            return
+        bucket = _funnel_bucket(competitor_id=competitor_id, dimension=dimension)
+        stage_count_raw = bucket.get(stage)
+        stage_count = stage_count_raw if isinstance(stage_count_raw, int) else 0
+        bucket[stage] = stage_count + amount
+        funnel_overall[stage] = funnel_overall.get(stage, 0) + amount
 
     def record_drop(reason: str | None) -> None:
         if reason is None:
             return
         dropped_reasons[reason] = dropped_reasons.get(reason, 0) + 1
+
+    def record_drop_for_bucket(
+        *,
+        reason: str | None,
+        competitor_id: str,
+        dimension: str | None,
+    ) -> None:
+        if reason is None:
+            return
+        record_drop(reason)
+        bucket = _funnel_bucket(competitor_id=competitor_id, dimension=dimension)
+        drop_reasons_raw = bucket.get("drop_reasons")
+        drop_reasons = (
+            drop_reasons_raw if isinstance(drop_reasons_raw, dict) else {}
+        )
+        drop_reasons[reason] = int(drop_reasons.get(reason, 0)) + 1
+        bucket["drop_reasons"] = drop_reasons
 
     def dedupe_key(
         *,
@@ -484,6 +554,11 @@ def _build_evidence_rows(
             continue
         seen_keys.add(key)
         effective_drafts.append(draft)
+        _record_stage(
+            competitor_id=competitor_id_raw,
+            dimension=normalized_dimension,
+            stage="post_rerank",
+        )
 
     for observation in observations_log:
         if not isinstance(observation, dict):
@@ -511,9 +586,6 @@ def _build_evidence_rows(
         for snippet_raw in snippets_raw:
             if not isinstance(snippet_raw, dict):
                 continue
-            quote_raw = snippet_raw.get("quote")
-            if not isinstance(quote_raw, str) or not quote_raw.strip():
-                continue
             metadata_raw = snippet_raw.get("metadata", {})
             metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
             dimension_raw = snippet_raw.get("dimension")
@@ -534,6 +606,25 @@ def _build_evidence_rows(
                     competitor_id_raw = competitor_candidate_raw
                 else:
                     competitor_id_raw = fallback_competitor
+            _record_stage(
+                competitor_id=competitor_id_raw,
+                dimension=normalized_dimension,
+                stage="search_results",
+            )
+            quote_candidate_raw = snippet_raw.get("quote")
+            sanitized_candidate_raw = snippet_raw.get("sanitized_text")
+            quote_raw: str | None = None
+            if isinstance(quote_candidate_raw, str) and quote_candidate_raw.strip():
+                quote_raw = quote_candidate_raw
+            elif isinstance(sanitized_candidate_raw, str) and sanitized_candidate_raw.strip():
+                quote_raw = sanitized_candidate_raw
+            if quote_raw is None:
+                record_drop_for_bucket(
+                    reason="missing_quote",
+                    competitor_id=competitor_id_raw,
+                    dimension=normalized_dimension,
+                )
+                continue
             source_url_raw = snippet_raw.get("source_url")
             source_url = source_url_raw if isinstance(source_url_raw, str) else None
             key = dedupe_key(
@@ -562,15 +653,43 @@ def _build_evidence_rows(
                 }
             )
 
+    for draft in effective_drafts:
+        if not isinstance(draft, dict):
+            continue
+        competitor_raw = draft.get("competitor_id")
+        quote_raw = draft.get("quote")
+        if not isinstance(competitor_raw, str) or not isinstance(quote_raw, str):
+            continue
+        dimension_raw, _ = normalize_dimension_or_none(
+            draft.get("dimension"),
+            allowed=focus_dimensions,
+        )
+        _record_stage(
+            competitor_id=competitor_raw,
+            dimension=dimension_raw,
+            stage="drafts",
+        )
+
     evidence_rows: list[EvidenceRecord] = []
     evidence_ids: list[str] = []
-    quality_floor_candidates: list[dict[str, object]] = []
+    floor_candidates: list[dict[str, object]] = []
 
     def append_evidence_row(candidate: dict[str, object]) -> None:
         evidence_id = make_id("ev_")
         evidence_ids.append(evidence_id)
         metadata_raw = candidate.get("metadata")
         metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+        competitor_id_raw = candidate.get("competitor_id")
+        if isinstance(competitor_id_raw, str):
+            _record_stage(
+                competitor_id=competitor_id_raw,
+                dimension=(
+                    candidate.get("dimension")
+                    if isinstance(candidate.get("dimension"), str)
+                    else None
+                ),
+                stage="persisted",
+            )
         evidence_rows.append(
             EvidenceRecord(
                 id=evidence_id,
@@ -627,7 +746,11 @@ def _build_evidence_rows(
         upstream_drop_reason = metadata.get("dimension_drop_reason")
         if isinstance(upstream_drop_reason, str) and upstream_drop_reason:
             drop_reason = upstream_drop_reason
-        record_drop(drop_reason)
+        record_drop_for_bucket(
+            reason=drop_reason,
+            competitor_id=competitor_id_raw,
+            dimension=normalized_dimension,
+        )
         if isinstance(source_type_raw, str):
             try:
                 normalized_source_type = validate_source_type(source_type_raw)
@@ -697,18 +820,28 @@ def _build_evidence_rows(
             text=sanitized_text or quote_raw,
         )
         if quality_drop_reason is not None:
-            record_drop(quality_drop_reason)
-            if quality_drop_reason == "low_semantic":
-                quality_floor_candidates.append(
+            record_drop_for_bucket(
+                reason=quality_drop_reason,
+                competitor_id=competitor_id_raw,
+                dimension=normalized_dimension,
+            )
+            if quality_drop_reason in {"low_semantic", "source_blocklist"}:
+                floor_candidates.append(
                     {
                         **candidate,
                         "metadata": {
                             **metadata,
                             "source_quality_drop_reason": quality_drop_reason,
+                            "funnel_floor_reason": quality_drop_reason,
                         },
                     }
                 )
             continue
+        _record_stage(
+            competitor_id=competitor_id_raw,
+            dimension=normalized_dimension,
+            stage="post_quality",
+        )
         grounded = _text_mentions_candidate(
             candidate_name=competitor_id_raw,
             text=sanitized_text,
@@ -717,23 +850,78 @@ def _build_evidence_rows(
             text=source_title,
         )
         if not grounded:
-            record_drop("competitor_grounding_miss")
+            record_drop_for_bucket(
+                reason="competitor_grounding_miss",
+                competitor_id=competitor_id_raw,
+                dimension=normalized_dimension,
+            )
+            floor_candidates.append(
+                {
+                    **candidate,
+                    "metadata": {
+                        **metadata,
+                        "grounding_drop_reason": "competitor_grounding_miss",
+                        "funnel_floor_reason": "competitor_grounding_miss",
+                    },
+                }
+            )
             continue
+        _record_stage(
+            competitor_id=competitor_id_raw,
+            dimension=normalized_dimension,
+            stage="post_grounding",
+        )
         append_evidence_row(candidate)
-    if not evidence_rows and quality_floor_candidates:
+    if not evidence_rows and floor_candidates:
+        def _floor_priority(reason: str) -> int:
+            if reason == "low_semantic":
+                return 3
+            if reason == "source_blocklist":
+                return 2
+            if reason == "competitor_grounding_miss":
+                return 1
+            return 0
+
         floor_candidate = max(
-            quality_floor_candidates,
-            key=lambda item: len(str(item.get("sanitized_text") or item.get("quote") or "")),
+            floor_candidates,
+            key=lambda item: (
+                _floor_priority(
+                    str(
+                        (
+                            item.get("metadata")
+                            if isinstance(item.get("metadata"), dict)
+                            else {}
+                        ).get("funnel_floor_reason", "unknown")
+                    )
+                ),
+                len(str(item.get("sanitized_text") or item.get("quote") or "")),
+            ),
         )
         floor_metadata_raw = floor_candidate.get("metadata")
         floor_metadata = floor_metadata_raw if isinstance(floor_metadata_raw, dict) else {}
+        floor_reason_raw = floor_metadata.get("funnel_floor_reason")
+        floor_reason = (
+            floor_reason_raw if isinstance(floor_reason_raw, str) else "unknown"
+        )
         append_evidence_row(
             {
                 **floor_candidate,
                 "metadata": {
                     **floor_metadata,
-                    "source_quality_floor": True,
+                    "source_quality_floor": floor_reason in {"low_semantic", "source_blocklist"},
+                    "grounding_floor": floor_reason == "competitor_grounding_miss",
+                    "evidence_floor": True,
+                    "evidence_floor_reason": floor_reason,
                 },
+            }
+        )
+    if funnel_metrics is not None:
+        funnel_metrics.clear()
+        funnel_metrics.update(
+            {
+                "overall": funnel_overall,
+                "by_competitor": funnel_by_competitor,
+                "drop_reasons": dropped_reasons,
             }
         )
     return (
@@ -862,6 +1050,7 @@ async def researcher_node(state: AgentState) -> AgentState:
     subgraph_output = await subgraph.ainvoke(subgraph_input)
 
     collected_at = datetime.now(timezone.utc)
+    evidence_funnel: dict[str, object] = {}
     evidence_rows, evidence_ids, dropped_dimensions = _build_evidence_rows(
         run_id=run_id,
         step_id=step_id,
@@ -871,6 +1060,7 @@ async def researcher_node(state: AgentState) -> AgentState:
         observations_log=list(subgraph_output.get("observations_log", [])),
         default_competitor_id=request.competitor_id,
         resolved_official_hosts=set(resolved_sources.official_hosts),
+        funnel_metrics=evidence_funnel,
     )
     llm_call_rows = _build_llm_call_rows(
         step_id=step_id,
@@ -922,6 +1112,7 @@ async def researcher_node(state: AgentState) -> AgentState:
         },
         "final_summary": str(subgraph_output.get("final_summary", "")),
         "dropped_dimensions": dropped_dimensions,
+        "evidence_funnel": evidence_funnel,
     }
     zero_evidence = len(evidence_rows) == 0
     if zero_evidence:
@@ -935,6 +1126,18 @@ async def researcher_node(state: AgentState) -> AgentState:
         run_id=run_id,
         step_id=step_id,
         dropped_dimensions=dropped_dimensions,
+    )
+    log.info(
+        "researcher.evidence_funnel",
+        run_id=run_id,
+        step_id=step_id,
+        competitor_id=request.competitor_id,
+        funnel_overall=(
+            evidence_funnel.get("overall")
+            if isinstance(evidence_funnel.get("overall"), dict)
+            else {}
+        ),
+        drop_reasons=dropped_dimensions.get("reasons", {}),
     )
 
     async with session_factory() as session:

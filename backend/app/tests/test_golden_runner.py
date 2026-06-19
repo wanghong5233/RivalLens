@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 from typing import Any
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
@@ -208,6 +209,39 @@ def test_deep_short_report_golden_case_blocks(test_client: TestClient) -> None:
     assert result.passed is True
 
 
+def test_reject_max_retry_force_degraded_golden_case_still_passes(
+    test_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tests.golden.runner as golden_runner
+
+    original_wait_for_terminal = golden_runner._wait_for_run_terminal
+
+    def _wait_with_extended_timeout(
+        run_id: str,
+        *,
+        timeout_seconds: float = 90.0,
+    ) -> str:
+        return original_wait_for_terminal(run_id, timeout_seconds=180.0)
+
+    monkeypatch.setattr(
+        golden_runner,
+        "_wait_for_run_terminal",
+        _wait_with_extended_timeout,
+    )
+    case_path = (
+        Path(__file__).parent
+        / "golden"
+        / "cases"
+        / "04_reject_max_retry_force_degraded.yaml"
+    )
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
+    assert result.qa_outcome == "force_degraded"
+    assert result.qa_rejection_count >= 3
+
+
 def test_locale_zh_domestic_golden_case_passes_without_locale_warning(
     test_client: TestClient,
 ) -> None:
@@ -246,6 +280,78 @@ def test_ai_coding_enterprise_schema_triplet_golden_case_passes(
     assert isinstance(loaded, dict)
     result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
     assert result.passed is True
+
+
+def test_ai_hardware_glasses_trajectory_golden_case_passes(
+    test_client: TestClient,
+) -> None:
+    case_path = (
+        Path(__file__).parent
+        / "golden"
+        / "cases"
+        / "16_ai_hardware_glasses_trajectory.yaml"
+    )
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
+    assert result.passed is True
+
+
+def test_landscape_style_explicit_competitor_run_completes_with_triplet_coverage(
+    test_client: TestClient,
+) -> None:
+    case = GoldenCase.model_validate(
+        {
+            "id": "landscape_style_explicit_competitor_triplet",
+            "description": "Landscape-style explicit competitor run should complete with triplet coverage.",
+            "input": {
+                "user_query": (
+                    "请做 AI 硬件赛道 landscape：Meta Ray-Ban、XREAL、Rokid 的主流产品与发展趋势，"
+                    "不要写 battlecard 式逐项胜负。"
+                ),
+                "competitors": ["Meta Ray-Ban", "XREAL", "Rokid"],
+                "domain_hint": "AI hardware and smart glasses",
+                "target_roles": ["pm"],
+                "report_depth": "quick",
+                "market_scope": "中国市场",
+                "self_product": "AI眼镜",
+                "competitors_discovery_mode": False,
+            },
+            "assertions": {},
+        }
+    )
+    result = run_case(case=case, client=test_client)
+
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            run_row = connection.execute(
+                text(
+                    "SELECT status FROM runs "
+                    "WHERE run_id = :run_id"
+                ),
+                {"run_id": result.run_id},
+            ).mappings().first()
+            knowledge_row = connection.execute(
+                text(
+                    "SELECT jsonb_array_length(features) AS feature_count, "
+                    "jsonb_array_length(pricings) AS pricing_count, "
+                    "jsonb_array_length(feedback) AS feedback_count "
+                    "FROM run_knowledge "
+                    "WHERE run_id = :run_id "
+                    "ORDER BY sequence_id DESC LIMIT 1"
+                ),
+                {"run_id": result.run_id},
+            ).mappings().first()
+    finally:
+        engine.dispose()
+
+    assert run_row is not None
+    assert run_row["status"] == "completed"
+    assert knowledge_row is not None
+    assert int(knowledge_row["feature_count"]) >= 3
+    assert int(knowledge_row["pricing_count"]) >= 3
+    assert int(knowledge_row["feedback_count"]) >= 3
 
 
 def _wait_for_plan_tree(

@@ -590,6 +590,11 @@ def test_qa_semantic_output_normalizes_dict() -> None:
                     "section_id": "efficiency",
                     "reason": "Cited evidence does not mention 28%.",
                 },
+                {
+                    "claim": "Q1 high capability / high maturity: none",
+                    "section_id": "positioning_map",
+                    "reason": "Deterministic quadrant label flagged by auditor.",
+                },
             ],
             "dimension_results": {
                 "depth": False,
@@ -607,7 +612,12 @@ def test_qa_semantic_output_normalizes_dict() -> None:
             "claim": "效率提升 28%",
             "section_id": "efficiency",
             "reason": "Cited evidence does not mention 28%.",
-        }
+        },
+        {
+            "claim": "Q1 high capability / high maturity: none",
+            "section_id": "positioning_map",
+            "reason": "Deterministic quadrant label flagged by auditor.",
+        },
     ]
     assert normalized["dimension_results"] == {
         "depth": False,

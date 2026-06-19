@@ -167,6 +167,48 @@ def test_build_evidence_rows_inherits_dimension_from_observation_args() -> None:
     assert dropped_dimensions == {"count": 0, "reasons": {}}
 
 
+def test_build_evidence_rows_uses_sanitized_text_when_quote_missing() -> None:
+    rows, _, dropped_dimensions = _build_evidence_rows(
+        run_id="run_observation_sanitized_fallback_test",
+        step_id="step_observation_sanitized_fallback_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[],
+        observations_log=[
+            {
+                "tool": "search_web",
+                "args": {
+                    "query": "Cursor pricing",
+                    "competitor_id": "Cursor",
+                    "dimension": "pricing",
+                },
+                "result": {
+                    "snippets": [
+                        {
+                            "quote": None,
+                            "sanitized_text": (
+                                "Cursor pricing page lists team and enterprise plans for procurement reviews in detail, "
+                                "including annual billing policy, seat governance checkpoints, finance approval flow, "
+                                "and contract terms used by enterprise buyers evaluating production rollout."
+                            ),
+                            "source_url": "https://cursor.com/pricing",
+                            "source_title": "Cursor Pricing",
+                            "source_type": "pricing_page",
+                            "metadata": {},
+                        }
+                    ]
+                },
+            }
+        ],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 1
+    assert rows[0].quote.startswith("Cursor pricing page")
+    assert rows[0].sanitized_text.startswith("Cursor pricing page")
+    assert dropped_dimensions == {"count": 0, "reasons": {}}
+
+
 def test_build_evidence_rows_dedupes_draft_and_observation_path() -> None:
     quote = (
         "Cursor publishes pricing details for team buyers, including annual billing discounts, "
@@ -1074,7 +1116,7 @@ def test_build_evidence_rows_restores_quality_floor_when_gate_filters_all_candid
     assert dropped_dimensions["reasons"] == {"source_blocklist": 1, "low_semantic": 1}
 
 
-def test_build_evidence_rows_does_not_quality_floor_blocklisted_candidates() -> None:
+def test_build_evidence_rows_restores_floor_for_blocklisted_only_candidates() -> None:
     rows, ids, dropped_dimensions = _build_evidence_rows(
         run_id="run_source_quality_floor_blocklist_only",
         step_id="step_source_quality_floor_blocklist_only",
@@ -1108,9 +1150,51 @@ def test_build_evidence_rows_does_not_quality_floor_blocklisted_candidates() -> 
         default_competitor_id="Cursor",
     )
 
-    assert rows == []
-    assert ids == []
+    assert len(rows) == 1
+    assert len(ids) == 1
+    assert rows[0].span["source_quality_floor"] is True
+    assert rows[0].span["evidence_floor"] is True
+    assert rows[0].span["evidence_floor_reason"] == "source_blocklist"
     assert dropped_dimensions["reasons"] == {"source_blocklist": 2}
+
+
+def test_build_evidence_rows_restores_floor_for_grounding_miss_only_candidates() -> None:
+    rows, ids, dropped_dimensions = _build_evidence_rows(
+        run_id="run_grounding_floor_only",
+        step_id="step_grounding_floor_only",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": (
+                    "Windsurf introduced team pricing updates for enterprise procurement workflows and annual billing, "
+                    "with release notes describing contract approvals, admin seat governance, invoice operations, "
+                    "and long-form support commitments for larger software organizations."
+                ),
+                "sanitized_text": (
+                    "Windsurf introduced team pricing updates for enterprise procurement workflows and annual billing, "
+                    "with release notes describing contract approvals, admin seat governance, invoice operations, "
+                    "and long-form support commitments for larger software organizations."
+                ),
+                "source_type": "article",
+                "source_url": "https://example.com/pricing-update",
+                "source_title": "AI pricing update",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 1
+    assert len(ids) == 1
+    assert rows[0].span["grounding_floor"] is True
+    assert rows[0].span["evidence_floor"] is True
+    assert rows[0].span["evidence_floor_reason"] == "competitor_grounding_miss"
+    assert dropped_dimensions["reasons"] == {"competitor_grounding_miss": 1}
 
 
 @pytest.mark.asyncio
@@ -1197,6 +1281,10 @@ async def test_researcher_node_degrades_zero_evidence_without_requeue(
     assert step.payload["official_fetch_count"] == 2
     assert step.payload["coverage_summary"]["total_dimension_count"] == 1
     assert step.payload["coverage_summary"]["uncovered_dimensions"] == ["pricing"]
+    evidence_funnel = step.payload["evidence_funnel"]
+    assert evidence_funnel["overall"]["search_results"] == 0
+    assert evidence_funnel["overall"]["drafts"] == 0
+    assert evidence_funnel["overall"]["persisted"] == 0
     assert result["researched_competitors"] == ["Cursor"]
     assert result["researcher_degraded_competitors"] == ["Cursor"]
     assert captured_events[-1][0] == RunEventType.STEP_FINISH

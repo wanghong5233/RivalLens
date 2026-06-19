@@ -17,6 +17,7 @@ from agents.nodes.supervisor import (
 from agents.nodes.planner import planner_generate_node
 from schemas.intake import RunIntakeDraft
 from schemas.agent_outputs import SupervisorToolCallOutput
+from schemas.supervisor import SupervisorDecision
 from service.event_bus import RunEventType
 from service.llm.prompts import _format_plan_tree_for_supervisor
 from service.llm.response import LLMResponse
@@ -768,6 +769,99 @@ async def test_supervisor_blocks_repeated_discovery_with_fallback(
 
 
 @pytest.mark.asyncio
+async def test_supervisor_blocks_analyze_when_competitors_are_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Analyze",
+            "tool_args": {
+                "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                "parallel_by_dimension": False,
+                "require_cross_competitor": True,
+            },
+            "reasoning_summary": "LLM attempts to analyze before competitor discovery.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_empty_competitors_guardrail",
+        state={
+            "run_id": "run_test",
+            "user_query": "AI 硬件的主流产品以及发展趋势。",
+            "competitors": [],
+            "discovered_competitors": [],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "decisions": [],
+            "intake_draft": {
+                "analysis_archetype": "landscape",
+                "competitors_discovery_mode": True,
+            },
+        },
+    )
+
+    assert new_state["next_action"] == "discovery"
+    assert captured[0][2]["chosen_tool"] == "DiscoverCompetitors"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_allows_analyze_after_discovery_attempt_with_empty_competitors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "Analyze",
+            "tool_args": {
+                "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                "parallel_by_dimension": False,
+                "require_cross_competitor": True,
+            },
+            "reasoning_summary": "Proceed with analysis after one discovery attempt.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_empty_competitors_after_discovery",
+        state={
+            "run_id": "run_test",
+            "user_query": "AI 硬件的主流产品以及发展趋势。",
+            "competitors": [],
+            "discovered_competitors": [],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 1,
+            "decisions": [
+                SupervisorDecision(
+                    id="decision_prior_discovery",
+                    run_id="run_test",
+                    iteration=0,
+                    chosen_tool="DiscoverCompetitors",
+                    tool_args={},
+                    reasoning_summary="prior discovery attempt",
+                    triggered_by="user_query",
+                    outcome="dispatched",
+                    outcome_recorded_at="2026-01-01T00:00:00Z",
+                    created_at="2026-01-01T00:00:00Z",
+                )
+            ],
+            "intake_draft": {
+                "analysis_archetype": "landscape",
+                "competitors_discovery_mode": True,
+            },
+        },
+    )
+
+    assert new_state["next_action"] == "analyst"
+    assert captured[0][2]["chosen_tool"] == "Analyze"
+
+
+@pytest.mark.asyncio
 async def test_supervisor_landscape_research_is_forced_to_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -943,6 +1037,123 @@ async def test_supervisor_landscape_batch_rewrites_focus_dimension_drift(
     ]
     assert by_competitor["NVIDIA"]["focus_dimensions"] == ["market_differences"]
     assert "上游芯片供应商" in by_competitor["NVIDIA"]["research_topic"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_landscape_batch_promotes_core_competitors_to_triplet_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "ConductResearchBatch",
+            "tool_args": {
+                "topics": [
+                    {
+                        "research_topic": "Intel AI Solutions 用户反馈",
+                        "competitor_id": "Intel AI Solutions",
+                        "focus_dimensions": ["user_feedback"],
+                        "max_iterations": 3,
+                        "search_max_results": 5,
+                        "fallback_to_offline": True,
+                    },
+                    {
+                        "research_topic": "AMD Instinct Accelerators 用户反馈",
+                        "competitor_id": "AMD Instinct Accelerators",
+                        "focus_dimensions": ["user_feedback"],
+                        "max_iterations": 3,
+                        "search_max_results": 5,
+                        "fallback_to_offline": True,
+                    },
+                    {
+                        "research_topic": "NVIDIA 生态趋势",
+                        "competitor_id": "NVIDIA",
+                        "focus_dimensions": ["market_differences"],
+                        "max_iterations": 3,
+                        "search_max_results": 5,
+                        "fallback_to_offline": True,
+                    },
+                ],
+                "parallelism_rationale": "llm output keeps thin dimensions for all competitors",
+            },
+            "reasoning_summary": "LLM keeps single-dimension focus for core competitors.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_landscape_core_triplet_guardrail",
+        state={
+            "run_id": "run_test",
+            "user_query": "AI 硬件 landscape",
+            "competitors": [
+                "Intel AI Solutions",
+                "AMD Instinct Accelerators",
+                "NVIDIA",
+            ],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "decisions": [],
+            "intake_draft": {
+                "analysis_archetype": "landscape",
+                "focus_dimensions": ["market_differences"],
+            },
+            "plan_tree": {
+                "tasks": [
+                    {
+                        "stage": "research",
+                        "competitor_id": "Intel AI Solutions",
+                        "focus_dimensions": ["user_feedback"],
+                        "enabled": True,
+                    },
+                    {
+                        "stage": "research",
+                        "competitor_id": "AMD Instinct Accelerators",
+                        "focus_dimensions": ["user_feedback"],
+                        "enabled": True,
+                    },
+                    {
+                        "stage": "research",
+                        "competitor_id": "NVIDIA",
+                        "focus_dimensions": ["market_differences"],
+                        "enabled": True,
+                    },
+                ],
+                "competitor_sources": {
+                    "Intel AI Solutions": {
+                        "candidate_role": "direct_competitor",
+                        "relevance_reason": "Intel 在边缘端 AI 能力上有直接竞对关系。",
+                    },
+                    "AMD Instinct Accelerators": {
+                        "candidate_role": "adjacent_competitor",
+                        "relevance_reason": "AMD 在算力和生态上构成相邻竞品。",
+                    },
+                    "NVIDIA": {
+                        "candidate_role": "upstream_supplier",
+                        "relevance_reason": "上游芯片供应商，影响供给与成本。",
+                    },
+                },
+            },
+        },
+    )
+
+    assert new_state["next_action"] == "researcher"
+    assert captured[0][2]["chosen_tool"] == "ConductResearchBatch"
+    topics = new_state["pending_tool_args"]["topics"]
+    assert isinstance(topics, list)
+    by_competitor = {item["competitor_id"]: item for item in topics}
+    assert by_competitor["Intel AI Solutions"]["focus_dimensions"] == [
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
+    assert by_competitor["AMD Instinct Accelerators"]["focus_dimensions"] == [
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
+    assert by_competitor["NVIDIA"]["focus_dimensions"] == ["market_differences"]
 
 
 @pytest.mark.asyncio
