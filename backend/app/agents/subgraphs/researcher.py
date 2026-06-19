@@ -1315,6 +1315,20 @@ def _rerank_reflection_search_args(
     }
 
 
+def _build_rerank_query(state: ResearcherSubState) -> str:
+    competitor_raw = state.get("competitor_id")
+    competitor = competitor_raw.strip() if isinstance(competitor_raw, str) else ""
+    research_topic_raw = state.get("research_topic")
+    research_topic = research_topic_raw.strip() if isinstance(research_topic_raw, str) else ""
+    dimensions = [
+        item.strip()
+        for item in state.get("focus_dimensions", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    dimension_context = " ".join(dimensions)
+    return " ".join(part for part in [competitor, dimension_context, research_topic] if part).strip()
+
+
 async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
     step_id = _state_step_id(state)
     max_turns = int(state.get("max_turns", MAX_REACT_TURNS))
@@ -1916,7 +1930,7 @@ async def finalize(state: ResearcherSubState) -> ResearcherSubState:
 
     evidence_drafts = await _rerank_evidence_drafts(
         evidence_drafts=list(state.get("evidence_drafts", [])),
-        query=state.get("research_topic", ""),
+        query=_build_rerank_query(state),
         focus_dimensions=list(state.get("focus_dimensions", [])),
     )
     coverage_matrix = _build_coverage_matrix(

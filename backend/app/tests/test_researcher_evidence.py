@@ -23,11 +23,11 @@ def test_build_evidence_rows_strips_null_bytes_from_text_fields() -> None:
             {
                 "dimension": "product_market_positioning",
                 "competitor_id": "通义灵码",
-                "quote": "官方介绍\x00片段",
-                "sanitized_text": "官方介绍\x00片段",
+                "quote": "通义灵码\x00官方介绍覆盖代码补全、企业权限、审计日志和知识库检索等能力，适合研发团队在私有化环境部署，并支持跨语言协作流程。官方文档还说明了模型接入策略、团队空间治理、代码评审协同、合规模块配置、审批链路和故障追踪流程。",
+                "sanitized_text": "通义灵码\x00官方介绍覆盖代码补全、企业权限、审计日志和知识库检索等能力，适合研发团队在私有化环境部署，并支持跨语言协作流程。官方文档还说明了模型接入策略、团队空间治理、代码评审协同、合规模块配置、审批链路和故障追踪流程。",
                 "source_type": "article",
                 "source_url": "https://example.com/\x00page",
-                "source_title": "标题\x00测试",
+                "source_title": "通义灵码\x00产品说明",
                 "desensitized": True,
                 "metadata": {},
             }
@@ -37,7 +37,8 @@ def test_build_evidence_rows_strips_null_bytes_from_text_fields() -> None:
     )
     assert len(rows) == 1
     assert len(ids) == 1
-    assert dropped_dimensions == {"count": 0, "reasons": {}}
+    assert dropped_dimensions["count"] == 1
+    assert dropped_dimensions["reasons"]["low_semantic"] == 1
     row = rows[0]
     assert "\x00" not in row.quote
     assert "\x00" not in row.sanitized_text
@@ -81,11 +82,11 @@ def test_build_evidence_rows_keeps_out_of_focus_dimension_as_unclassified() -> N
             {
                 "dimension": "User Feedback",
                 "competitor_id": "Cursor",
-                "quote": "Users discuss onboarding friction.",
-                "sanitized_text": "Users discuss onboarding friction.",
+                "quote": "Cursor users discuss onboarding friction, enterprise SSO setup steps, repository permission audits, and procurement review workflow in long-form forum feedback for team administrators.",
+                "sanitized_text": "Cursor users discuss onboarding friction, enterprise SSO setup steps, repository permission audits, and procurement review workflow in long-form forum feedback for team administrators.",
                 "source_type": "article",
                 "source_url": "https://example.com/review",
-                "source_title": "Review",
+                "source_title": "Cursor Review",
                 "desensitized": True,
                 "metadata": {},
             }
@@ -110,11 +111,11 @@ def test_build_evidence_rows_keeps_missing_dimension_as_unclassified() -> None:
         evidence_drafts=[
             {
                 "competitor_id": "Cursor",
-                "quote": "Cursor publishes a public price point.",
-                "sanitized_text": "Cursor publishes a public price point.",
+                "quote": "Cursor publishes a public price point, outlines annual discounts, clarifies enterprise seat minimums, and explains invoicing controls for legal and finance teams.",
+                "sanitized_text": "Cursor publishes a public price point, outlines annual discounts, clarifies enterprise seat minimums, and explains invoicing controls for legal and finance teams.",
                 "source_type": "article",
                 "source_url": "https://example.com/pricing",
-                "source_title": "Pricing",
+                "source_title": "Cursor Pricing",
                 "desensitized": True,
                 "metadata": {},
             }
@@ -146,8 +147,8 @@ def test_build_evidence_rows_inherits_dimension_from_observation_args() -> None:
                 "result": {
                     "snippets": [
                         {
-                            "quote": "Cursor publishes pricing details for team buyers.",
-                            "sanitized_text": "Cursor publishes pricing details for team buyers.",
+                                "quote": "Cursor publishes pricing details for team buyers, including annual billing discounts, admin seat controls, and procurement checkpoints used by enterprise finance teams.",
+                                "sanitized_text": "Cursor publishes pricing details for team buyers, including annual billing discounts, admin seat controls, and procurement checkpoints used by enterprise finance teams.",
                             "source_url": "https://cursor.com/pricing",
                             "source_title": "Cursor Pricing",
                             "source_type": "pricing_page",
@@ -167,7 +168,10 @@ def test_build_evidence_rows_inherits_dimension_from_observation_args() -> None:
 
 
 def test_build_evidence_rows_dedupes_draft_and_observation_path() -> None:
-    quote = "Cursor publishes pricing details for team buyers."
+    quote = (
+        "Cursor publishes pricing details for team buyers, including annual billing discounts, "
+        "admin seat controls, and procurement checkpoints used by enterprise finance teams."
+    )
     rows, _, dropped_dimensions = _build_evidence_rows(
         run_id="run_dedupe_test",
         step_id="step_dedupe_test",
@@ -222,8 +226,8 @@ def test_build_evidence_rows_keeps_same_url_for_different_dimensions() -> None:
             {
                 "dimension": "pricing",
                 "competitor_id": "Cursor",
-                "quote": "Cursor pricing includes a public team plan.",
-                "sanitized_text": "Cursor pricing includes a public team plan.",
+                "quote": "Cursor pricing includes a public team plan, annual discounts, billing contact workflows, and procurement requirements that help finance teams evaluate predictable spend for software organizations.",
+                "sanitized_text": "Cursor pricing includes a public team plan, annual discounts, billing contact workflows, and procurement requirements that help finance teams evaluate predictable spend for software organizations.",
                 "source_type": "pricing_page",
                 "source_url": "https://cursor.com/pricing",
                 "source_title": "Cursor Pricing",
@@ -233,8 +237,8 @@ def test_build_evidence_rows_keeps_same_url_for_different_dimensions() -> None:
             {
                 "dimension": "security",
                 "competitor_id": "Cursor",
-                "quote": "Cursor security controls are described for enterprise buyers.",
-                "sanitized_text": "Cursor security controls are described for enterprise buyers.",
+                "quote": "Cursor security controls are described for enterprise buyers, including workspace policy management, audit logs, SSO integration guidance, and administrator review procedures for regulated teams.",
+                "sanitized_text": "Cursor security controls are described for enterprise buyers, including workspace policy management, audit logs, SSO integration guidance, and administrator review procedures for regulated teams.",
                 "source_type": "pricing_page",
                 "source_url": "https://cursor.com/pricing",
                 "source_title": "Cursor Pricing",
@@ -364,8 +368,8 @@ def test_build_evidence_rows_applies_source_quality_gate() -> None:
             {
                 "dimension": "pricing",
                 "competitor_id": "Cursor",
-                "quote": "Cursor publishes paid team plan details and enterprise controls for buyers.",
-                "sanitized_text": "Cursor publishes paid team plan details and enterprise controls for buyers.",
+                "quote": "Cursor publishes paid team plan details, annual contract options, enterprise controls, legal terms, and billing responsibilities for procurement and finance stakeholders evaluating large deployments.",
+                "sanitized_text": "Cursor publishes paid team plan details, annual contract options, enterprise controls, legal terms, and billing responsibilities for procurement and finance stakeholders evaluating large deployments.",
                 "source_type": "pricing_page",
                 "source_url": "https://cursor.com/pricing",
                 "source_title": "Cursor Pricing",
@@ -393,8 +397,8 @@ def test_build_evidence_rows_marks_source_authority_and_competitor_match() -> No
             {
                 "dimension": "pricing",
                 "competitor_id": "Cursor",
-                "quote": "Cursor pricing page describes team plans for buyers.",
-                "sanitized_text": "Cursor pricing page describes team plans for buyers.",
+                "quote": "Cursor pricing page describes team plans for buyers, annual billing policy, enterprise procurement guardrails, and account administration expectations for larger software teams.",
+                "sanitized_text": "Cursor pricing page describes team plans for buyers, annual billing policy, enterprise procurement guardrails, and account administration expectations for larger software teams.",
                 "source_type": "article",
                 "source_url": "https://cursor.com/pricing",
                 "source_title": "Cursor Pricing",
@@ -404,11 +408,11 @@ def test_build_evidence_rows_marks_source_authority_and_competitor_match() -> No
             {
                 "dimension": "pricing",
                 "competitor_id": "Cursor",
-                "quote": "BillingPlatform discusses general pricing automation for B2B vendors.",
-                "sanitized_text": "BillingPlatform discusses general pricing automation for B2B vendors.",
+                "quote": "BillingPlatform compares Cursor with other B2B vendors and discusses how Cursor pricing automation, invoice governance, and enterprise controls differ across procurement scenarios.",
+                "sanitized_text": "BillingPlatform compares Cursor with other B2B vendors and discusses how Cursor pricing automation, invoice governance, and enterprise controls differ across procurement scenarios.",
                 "source_type": "pricing_page",
                 "source_url": "https://billingplatform.com/pricing",
-                "source_title": "BillingPlatform Pricing",
+                "source_title": "Cursor and BillingPlatform Pricing",
                 "desensitized": True,
                 "metadata": {},
             },
@@ -517,6 +521,57 @@ def test_build_evidence_rows_marks_market_report_as_authoritative() -> None:
     assert row.source_type == "market_report"
     assert row.span["source_authority"] == "authoritative_report"
     assert row.span["source_authority_reason"] == "market_report_source_type"
+
+
+def test_build_evidence_rows_drops_homepage_and_ungrounded_candidates() -> None:
+    rows, _, dropped_dimensions = _build_evidence_rows(
+        run_id="run_grounding_gate_test",
+        step_id="step_grounding_gate_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Cursor official website homepage.",
+                "sanitized_text": "Cursor official website homepage.",
+                "source_type": "article",
+                "source_url": "https://cursor.com/",
+                "source_title": "Cursor",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Windsurf announces updated monthly plans, enterprise bundle discounts, account administration workflows, and customer support commitments in a long-form launch article for procurement teams.",
+                "sanitized_text": "Windsurf announces updated monthly plans, enterprise bundle discounts, account administration workflows, and customer support commitments in a long-form launch article for procurement teams.",
+                "source_type": "article",
+                "source_url": "https://news.example.com/tools-pricing",
+                "source_title": "AI tools pricing update",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Cursor team plan starts at $20 and includes enterprise controls.",
+                "sanitized_text": "Cursor team plan starts at $20 and includes enterprise controls.",
+                "source_type": "pricing_page",
+                "source_url": "https://cursor.com/pricing",
+                "source_title": "Cursor pricing",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 1
+    assert rows[0].source_url == "https://cursor.com/pricing"
+    assert dropped_dimensions["reasons"]["source_blocklist"] == 1
+    assert dropped_dimensions["reasons"]["competitor_grounding_miss"] == 1
 
 
 @pytest.mark.asyncio
@@ -634,6 +689,350 @@ async def test_researcher_node_enriches_candidate_urls_with_official_search(
     assert first_call_args["market_scope"] == "中国市场"
 
 
+@pytest.mark.asyncio
+async def test_researcher_node_falls_back_to_intake_locale_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added_rows: list[object] = []
+
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        def add(self, row: object) -> None:
+            added_rows.append(row)
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    class _FakeSubgraph:
+        async def ainvoke(self, _: object) -> dict[str, object]:
+            return {
+                "evidence_drafts": [],
+                "observations_log": [],
+                "llm_calls": [],
+                "turn_count": 1,
+                "compression_count": 0,
+                "queried_dimensions": ["pricing"],
+                "search_call_count": 1,
+                "official_fetch_count": 0,
+                "coverage_matrix": {},
+                "final_summary": "",
+            }
+
+    class _FakeRegistry:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def invoke(self, action: str, *, args: dict[str, object]) -> SimpleNamespace:
+            self.calls.append((action, dict(args)))
+            return SimpleNamespace(
+                result=SimpleNamespace(
+                    snippets=[SimpleNamespace(source_url="https://example.cn/official")]
+                )
+            )
+
+    async def _fake_emit_run_event(**_: object) -> None:
+        return None
+
+    async def _fake_resolve_official_sources(
+        *,
+        competitor_id: str,
+        competitor_name: str,
+        candidate_urls: list[str],
+        candidate_url_budget: int = 5,
+        key_page_budget: int = 5,
+        http_client: object | None = None,
+    ) -> SourceResolutionResult:
+        del competitor_id, competitor_name, candidate_urls, candidate_url_budget, key_page_budget, http_client
+        return SourceResolutionResult(
+            official_urls=[],
+            official_hosts=[],
+            key_pages=[],
+            attempted_candidate_count=0,
+            validated_candidate_count=0,
+        )
+
+    fake_registry = _FakeRegistry()
+    monkeypatch.setattr("agents.nodes.researcher.get_session_factory", lambda: _FakeSession)
+    monkeypatch.setattr("agents.nodes.researcher.get_researcher_subgraph", lambda: _FakeSubgraph())
+    monkeypatch.setattr("agents.nodes.researcher.get_channel_registry", lambda: fake_registry)
+    monkeypatch.setattr("agents.nodes.researcher.emit_run_event", _fake_emit_run_event)
+    monkeypatch.setattr("agents.nodes.researcher.resolve_official_sources", _fake_resolve_official_sources)
+
+    await researcher_node(
+        {
+            "run_id": "run_intake_locale_fallback",
+            "pending_tool_args": {
+                "research_topic": "测试竞品定价",
+                "competitor_id": "测试竞品",
+                "focus_dimensions": ["pricing"],
+                "max_iterations": 1,
+                "fallback_to_offline": True,
+            },
+            "researched_competitors": [],
+            "intake_draft": {
+                "domain_hint": "AI硬件",
+                "market_scope": "中国市场",
+                "response_language": "zh",
+                "reference_urls": ["https://example.cn/pricing"],
+            },
+        }
+    )
+
+    assert fake_registry.calls
+    first_call_args = fake_registry.calls[0][1]
+    assert first_call_args["response_language"] == "zh"
+    assert first_call_args["market_scope"] == "中国市场"
+    step_rows = [row for row in added_rows if isinstance(row, Step)]
+    assert len(step_rows) == 1
+    assert step_rows[0].payload["domain_hint"] == "AI硬件"
+    assert step_rows[0].payload["market_scope"] == "中国市场"
+    assert step_rows[0].payload["response_language"] == "zh"
+    assert step_rows[0].payload["reference_urls"] == ["https://example.cn/pricing"]
+
+
+@pytest.mark.asyncio
+async def test_researcher_node_loads_intake_locale_context_from_run_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added_rows: list[object] = []
+
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, _: object, run_id: str) -> object | None:
+            if run_id != "run_persisted_intake_locale":
+                return None
+            return SimpleNamespace(
+                intake_draft={
+                    "domain_hint": "AI硬件",
+                    "market_scope": "中国市场",
+                    "response_language": "zh",
+                    "reference_urls": ["https://example.cn/pricing"],
+                }
+            )
+
+        def add(self, row: object) -> None:
+            added_rows.append(row)
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    class _FakeSubgraph:
+        async def ainvoke(self, _: object) -> dict[str, object]:
+            return {
+                "evidence_drafts": [],
+                "observations_log": [],
+                "llm_calls": [],
+                "turn_count": 1,
+                "compression_count": 0,
+                "queried_dimensions": ["pricing"],
+                "search_call_count": 1,
+                "official_fetch_count": 0,
+                "coverage_matrix": {},
+                "final_summary": "",
+            }
+
+    class _FakeRegistry:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def invoke(self, action: str, *, args: dict[str, object]) -> SimpleNamespace:
+            self.calls.append((action, dict(args)))
+            return SimpleNamespace(
+                result=SimpleNamespace(
+                    snippets=[SimpleNamespace(source_url="https://example.cn/official")]
+                )
+            )
+
+    async def _fake_emit_run_event(**_: object) -> None:
+        return None
+
+    async def _fake_resolve_official_sources(
+        *,
+        competitor_id: str,
+        competitor_name: str,
+        candidate_urls: list[str],
+        candidate_url_budget: int = 5,
+        key_page_budget: int = 5,
+        http_client: object | None = None,
+    ) -> SourceResolutionResult:
+        del competitor_id, competitor_name, candidate_urls, candidate_url_budget, key_page_budget, http_client
+        return SourceResolutionResult(
+            official_urls=[],
+            official_hosts=[],
+            key_pages=[],
+            attempted_candidate_count=0,
+            validated_candidate_count=0,
+        )
+
+    fake_registry = _FakeRegistry()
+    monkeypatch.setattr("agents.nodes.researcher.get_session_factory", lambda: _FakeSession)
+    monkeypatch.setattr("agents.nodes.researcher.get_researcher_subgraph", lambda: _FakeSubgraph())
+    monkeypatch.setattr("agents.nodes.researcher.get_channel_registry", lambda: fake_registry)
+    monkeypatch.setattr("agents.nodes.researcher.emit_run_event", _fake_emit_run_event)
+    monkeypatch.setattr("agents.nodes.researcher.resolve_official_sources", _fake_resolve_official_sources)
+
+    await researcher_node(
+        {
+            "run_id": "run_persisted_intake_locale",
+            "domain_hint": "AI眼镜",
+            "pending_tool_args": {
+                "research_topic": "测试竞品定价",
+                "competitor_id": "测试竞品",
+                "focus_dimensions": ["pricing"],
+                "max_iterations": 1,
+                "fallback_to_offline": True,
+            },
+            "researched_competitors": [],
+        }
+    )
+
+    assert fake_registry.calls
+    first_call_args = fake_registry.calls[0][1]
+    assert first_call_args["response_language"] == "zh"
+    assert first_call_args["market_scope"] == "中国市场"
+    step_rows = [row for row in added_rows if isinstance(row, Step)]
+    assert len(step_rows) == 1
+    assert step_rows[0].payload["domain_hint"] == "AI眼镜"
+    assert step_rows[0].payload["market_scope"] == "中国市场"
+    assert step_rows[0].payload["response_language"] == "zh"
+    assert step_rows[0].payload["reference_urls"] == ["https://example.cn/pricing"]
+
+
+@pytest.mark.asyncio
+async def test_researcher_node_merges_partial_state_intake_with_persisted_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    added_rows: list[object] = []
+
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, _: object, run_id: str) -> object | None:
+            if run_id != "run_partial_intake_locale":
+                return None
+            return SimpleNamespace(
+                intake_draft={
+                    "domain_hint": "AI硬件",
+                    "market_scope": "中国市场",
+                    "response_language": "zh",
+                    "reference_urls": ["https://example.cn/pricing"],
+                }
+            )
+
+        def add(self, row: object) -> None:
+            added_rows.append(row)
+
+        async def flush(self) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    class _FakeSubgraph:
+        async def ainvoke(self, _: object) -> dict[str, object]:
+            return {
+                "evidence_drafts": [],
+                "observations_log": [],
+                "llm_calls": [],
+                "turn_count": 1,
+                "compression_count": 0,
+                "queried_dimensions": ["pricing"],
+                "search_call_count": 1,
+                "official_fetch_count": 0,
+                "coverage_matrix": {},
+                "final_summary": "",
+            }
+
+    class _FakeRegistry:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def invoke(self, action: str, *, args: dict[str, object]) -> SimpleNamespace:
+            self.calls.append((action, dict(args)))
+            return SimpleNamespace(
+                result=SimpleNamespace(
+                    snippets=[SimpleNamespace(source_url="https://example.cn/official")]
+                )
+            )
+
+    async def _fake_emit_run_event(**_: object) -> None:
+        return None
+
+    async def _fake_resolve_official_sources(
+        *,
+        competitor_id: str,
+        competitor_name: str,
+        candidate_urls: list[str],
+        candidate_url_budget: int = 5,
+        key_page_budget: int = 5,
+        http_client: object | None = None,
+    ) -> SourceResolutionResult:
+        del competitor_id, competitor_name, candidate_urls, candidate_url_budget, key_page_budget, http_client
+        return SourceResolutionResult(
+            official_urls=[],
+            official_hosts=[],
+            key_pages=[],
+            attempted_candidate_count=0,
+            validated_candidate_count=0,
+        )
+
+    fake_registry = _FakeRegistry()
+    monkeypatch.setattr("agents.nodes.researcher.get_session_factory", lambda: _FakeSession)
+    monkeypatch.setattr("agents.nodes.researcher.get_researcher_subgraph", lambda: _FakeSubgraph())
+    monkeypatch.setattr("agents.nodes.researcher.get_channel_registry", lambda: fake_registry)
+    monkeypatch.setattr("agents.nodes.researcher.emit_run_event", _fake_emit_run_event)
+    monkeypatch.setattr("agents.nodes.researcher.resolve_official_sources", _fake_resolve_official_sources)
+
+    await researcher_node(
+        {
+            "run_id": "run_partial_intake_locale",
+            "intake_draft": {
+                "domain_hint": "AI眼镜",
+                "reference_urls": [],
+            },
+            "pending_tool_args": {
+                "research_topic": "测试竞品定价",
+                "competitor_id": "测试竞品",
+                "focus_dimensions": ["pricing"],
+                "max_iterations": 1,
+                "fallback_to_offline": True,
+            },
+            "researched_competitors": [],
+        }
+    )
+
+    assert fake_registry.calls
+    first_call_args = fake_registry.calls[0][1]
+    assert first_call_args["response_language"] == "zh"
+    assert first_call_args["market_scope"] == "中国市场"
+    step_rows = [row for row in added_rows if isinstance(row, Step)]
+    assert len(step_rows) == 1
+    assert step_rows[0].payload["domain_hint"] == "AI眼镜"
+    assert step_rows[0].payload["market_scope"] == "中国市场"
+    assert step_rows[0].payload["response_language"] == "zh"
+    assert step_rows[0].payload["reference_urls"] == ["https://example.cn/pricing"]
+
+
 def test_build_evidence_rows_restores_quality_floor_when_gate_filters_all_candidates() -> None:
     rows, ids, dropped_dimensions = _build_evidence_rows(
         run_id="run_source_quality_floor_test",
@@ -671,8 +1070,47 @@ def test_build_evidence_rows_restores_quality_floor_when_gate_filters_all_candid
     assert len(rows) == 1
     assert len(ids) == 1
     assert rows[0].span["source_quality_floor"] is True
-    assert rows[0].span["source_quality_drop_reason"] == "source_blocklist"
+    assert rows[0].span["source_quality_drop_reason"] == "low_semantic"
     assert dropped_dimensions["reasons"] == {"source_blocklist": 1, "low_semantic": 1}
+
+
+def test_build_evidence_rows_does_not_quality_floor_blocklisted_candidates() -> None:
+    rows, ids, dropped_dimensions = _build_evidence_rows(
+        run_id="run_source_quality_floor_blocklist_only",
+        step_id="step_source_quality_floor_blocklist_only",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "Cursor official homepage.",
+                "sanitized_text": "Cursor official homepage.",
+                "source_type": "article",
+                "source_url": "https://cursor.com/",
+                "source_title": "Cursor",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": "LinkedIn login wall content for a competitor page.",
+                "sanitized_text": "LinkedIn login wall content for a competitor page.",
+                "source_type": "article",
+                "source_url": "https://www.linkedin.com/login",
+                "source_title": "LinkedIn",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert rows == []
+    assert ids == []
+    assert dropped_dimensions["reasons"] == {"source_blocklist": 2}
 
 
 @pytest.mark.asyncio

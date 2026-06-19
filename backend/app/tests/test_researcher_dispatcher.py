@@ -314,6 +314,43 @@ async def test_finalize_does_not_repeat_rerank_reflection(
 
 
 @pytest.mark.asyncio
+async def test_finalize_builds_rerank_query_with_competitor_and_dimensions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_query: dict[str, str] = {}
+
+    async def _capture_rerank(
+        *,
+        evidence_drafts: list[dict[str, object]],
+        query: str,
+        focus_dimensions: list[str],
+    ) -> list[dict[str, object]]:
+        del focus_dimensions
+        captured_query["value"] = query
+        return evidence_drafts
+
+    monkeypatch.setattr("agents.subgraphs.researcher._rerank_evidence_drafts", _capture_rerank)
+    monkeypatch.setattr(settings, "RERANK_MIN_HIGH_SCORE_PER_DIM", 0)
+    state = {
+        **_base_state(),
+        "research_topic": "AI hardware trend",
+        "competitor_id": "Meta Ray-Ban",
+        "focus_dimensions": ["pricing", "feature"],
+        "pending_dimensions": [],
+        "queried_dimensions": ["pricing", "feature"],
+        "evidence_drafts": [
+            {"dimension": "pricing", "quote": "Meta Ray-Ban pricing", "metadata": {"rerank_score": 0.8}}
+        ],
+    }
+
+    output = await finalize(state)
+
+    assert captured_query["value"] == "Meta Ray-Ban pricing feature AI hardware trend"
+    assert output["next_action"] == "finalize"
+    assert output["pending_action_args"] == {}
+
+
+@pytest.mark.asyncio
 async def test_researcher_dispatcher_uses_registry_and_collects_source_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -94,6 +94,20 @@ _DISCOVERY_TREND_HINTS: tuple[str, ...] = (
     "媒体",
     "研究机构",
 )
+_DISCOVERY_MEDIA_HINTS: tuple[str, ...] = (
+    "media",
+    "report",
+    "research",
+    "institute",
+    "news",
+    "press",
+    "资讯",
+    "报道",
+    "媒体",
+    "研究机构",
+    "协会",
+    "智库",
+)
 _DISCOVERY_SUBSTITUTE_HINTS: tuple[str, ...] = (
     "substitute",
     "alternative",
@@ -210,13 +224,11 @@ def _infer_candidate_role(
     *,
     candidate_name: str,
     relevance_reason: str,
-    domain_context: str | None,
-    analysis_intent: str | None,
     self_product: str | None,
 ) -> str:
     combined = " ".join(
         item
-        for item in [candidate_name, relevance_reason, domain_context, analysis_intent]
+        for item in [candidate_name, relevance_reason]
         if isinstance(item, str) and item.strip()
     ).casefold()
     if any(hint in combined for hint in _DISCOVERY_UPSTREAM_HINTS):
@@ -239,15 +251,14 @@ def _reconcile_candidate_role(
     llm_candidate_role: str | None,
     candidate_name: str,
     relevance_reason: str,
-    domain_context: str | None,
-    analysis_intent: str | None,
+    domain_context: str | None = None,
+    analysis_intent: str | None = None,
     self_product: str | None,
 ) -> str:
+    del domain_context, analysis_intent
     inferred_role = _infer_candidate_role(
         candidate_name=candidate_name,
         relevance_reason=relevance_reason,
-        domain_context=domain_context,
-        analysis_intent=analysis_intent,
         self_product=self_product,
     )
     if llm_candidate_role is None:
@@ -261,6 +272,36 @@ def _reconcile_candidate_role(
         # ranking/reporting when strong lexical signals indicate upstream/trend.
         return inferred_role
     return llm_candidate_role
+
+
+def _is_landscape_core_fallback_candidate(
+    *,
+    candidate_role: str,
+    candidate_name: str,
+    relevance_reason: str,
+) -> bool:
+    if candidate_role == "upstream_supplier":
+        return False
+    if candidate_role != "trend_reference":
+        return True
+    combined = f"{candidate_name} {relevance_reason}".casefold()
+    return not any(hint in combined for hint in _DISCOVERY_MEDIA_HINTS)
+
+
+def _ensure_landscape_core_candidate(*, relevance: list[dict[str, object]]) -> None:
+    if any(str(item.get("candidate_role") or "") in _DISCOVERY_CORE_ROLES for item in relevance):
+        return
+    for item in relevance:
+        candidate_role = str(item.get("candidate_role") or "")
+        candidate_name = str(item.get("name") or "")
+        relevance_reason = str(item.get("relevance_reason") or "")
+        if _is_landscape_core_fallback_candidate(
+            candidate_role=candidate_role,
+            candidate_name=candidate_name,
+            relevance_reason=relevance_reason,
+        ):
+            item["candidate_role"] = "adjacent_competitor"
+            return
 
 
 def _score_official_source_candidate(
@@ -439,6 +480,8 @@ def _filter_discovery_candidates(
             row["source_domain"] = source_domain or _source_domain(official_url)
         relevance.append(row)
 
+    if analysis_archetype == "landscape":
+        _ensure_landscape_core_candidate(relevance=relevance)
     relevance.sort(
         key=lambda item: _DISCOVERY_ROLE_PRIORITY.get(
             str(item.get("candidate_role") or ""),

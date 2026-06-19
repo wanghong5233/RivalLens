@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
@@ -17,6 +18,7 @@ from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.llm_call import LLMCall
+from models.run import Run
 from models.step import Step
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_source_type
 from schemas.ids import make_id
@@ -32,7 +34,7 @@ from utils.logger import get_logger
 
 log = get_logger("agents.researcher")
 
-RESEARCHER_LOW_SEMANTIC_MIN_CHARS = 0
+RESEARCHER_LOW_SEMANTIC_MIN_CHARS = 140
 _OFFICIAL_SOURCE_TYPES: frozenset[str] = frozenset(
     {"official_site", "official_doc", "docs", "pricing_page"}
 )
@@ -50,6 +52,137 @@ _AUTHORITATIVE_REPORT_HOST_HINTS: tuple[str, ...] = (
 _OFFICIAL_URL_SEARCH_QUERY_LIMIT = 2
 _OFFICIAL_URL_SEARCH_MAX_RESULTS = 6
 _OFFICIAL_URL_CANDIDATE_BUDGET = 8
+_RESEARCHER_GENERIC_NAME_TOKENS: frozenset[str] = frozenset(
+    {"ai", "app", "tool", "tools", "software", "assistant", "the", "inc", "labs", "lab"}
+)
+
+
+def _candidate_name_tokens(name: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9\u4e00-\u9fff]+", name.casefold()))
+    return {
+        token
+        for token in tokens
+        if token not in _RESEARCHER_GENERIC_NAME_TOKENS and (len(token) >= 2 or not token.isascii())
+    }
+
+
+def _text_mentions_candidate(*, candidate_name: str, text: str | None) -> bool:
+    if not text:
+        return False
+    normalized_text = text.casefold()
+    if candidate_name.casefold() in normalized_text:
+        return True
+    name_tokens = _candidate_name_tokens(candidate_name)
+    if not name_tokens:
+        return False
+    return any(token in normalized_text for token in name_tokens)
+
+
+def _coerce_intake_draft(payload: object) -> dict[str, object] | None:
+    return payload if isinstance(payload, dict) else None
+
+
+def _normalized_intake_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized if normalized else None
+
+
+def _normalized_intake_reference_urls(value: object) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    normalized = [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return normalized
+
+
+def _merge_intake_context_drafts(
+    *,
+    state_intake_draft: dict[str, object] | None,
+    persisted_intake_draft: dict[str, object] | None,
+) -> dict[str, object] | None:
+    merged: dict[str, object] = {}
+    for field_name in ("domain_hint", "market_scope", "response_language"):
+        state_value = (
+            _normalized_intake_string(state_intake_draft.get(field_name))
+            if state_intake_draft is not None
+            else None
+        )
+        persisted_value = (
+            _normalized_intake_string(persisted_intake_draft.get(field_name))
+            if persisted_intake_draft is not None
+            else None
+        )
+        selected = state_value if state_value is not None else persisted_value
+        if selected is not None:
+            merged[field_name] = selected
+    state_reference_urls = (
+        _normalized_intake_reference_urls(state_intake_draft.get("reference_urls"))
+        if state_intake_draft is not None
+        else None
+    )
+    persisted_reference_urls = (
+        _normalized_intake_reference_urls(persisted_intake_draft.get("reference_urls"))
+        if persisted_intake_draft is not None
+        else None
+    )
+    selected_reference_urls = (
+        state_reference_urls
+        if state_reference_urls
+        else persisted_reference_urls
+    )
+    if selected_reference_urls is not None:
+        merged["reference_urls"] = selected_reference_urls
+    return merged if merged else None
+
+
+async def _load_persisted_intake_draft(
+    *,
+    run_id: str,
+    session_factory: object,
+) -> dict[str, object] | None:
+    async with session_factory() as session:
+        getter = getattr(session, "get", None)
+        if not callable(getter):
+            return None
+        run_row = await getter(Run, run_id)
+    if run_row is None:
+        return None
+    return _coerce_intake_draft(getattr(run_row, "intake_draft", None))
+
+
+def _state_or_intake_string(
+    state: AgentState,
+    field_name: str,
+    *,
+    intake_draft: dict[str, object] | None = None,
+) -> str | None:
+    value_raw = state.get(field_name)
+    if isinstance(value_raw, str) and value_raw.strip():
+        return value_raw.strip()
+    source_draft = intake_draft if intake_draft is not None else _coerce_intake_draft(
+        state.get("intake_draft")
+    )
+    intake_value_raw = source_draft.get(field_name) if source_draft is not None else None
+    if isinstance(intake_value_raw, str) and intake_value_raw.strip():
+        return intake_value_raw.strip()
+    return None
+
+
+def _state_or_intake_reference_urls(
+    state: AgentState,
+    *,
+    intake_draft: dict[str, object] | None = None,
+) -> list[str]:
+    reference_urls_raw = state.get("reference_urls")
+    if not isinstance(reference_urls_raw, list):
+        source_draft = intake_draft if intake_draft is not None else _coerce_intake_draft(
+            state.get("intake_draft")
+        )
+        reference_urls_raw = source_draft.get("reference_urls") if source_draft is not None else None
+    if not isinstance(reference_urls_raw, list):
+        return []
+    return [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
 
 
 def _resolve_focus_dimensions(
@@ -565,15 +698,26 @@ def _build_evidence_rows(
         )
         if quality_drop_reason is not None:
             record_drop(quality_drop_reason)
-            quality_floor_candidates.append(
-                {
-                    **candidate,
-                    "metadata": {
-                        **metadata,
-                        "source_quality_drop_reason": quality_drop_reason,
-                    },
-                }
-            )
+            if quality_drop_reason == "low_semantic":
+                quality_floor_candidates.append(
+                    {
+                        **candidate,
+                        "metadata": {
+                            **metadata,
+                            "source_quality_drop_reason": quality_drop_reason,
+                        },
+                    }
+                )
+            continue
+        grounded = _text_mentions_candidate(
+            candidate_name=competitor_id_raw,
+            text=sanitized_text,
+        ) or _text_mentions_candidate(
+            candidate_name=competitor_id_raw,
+            text=source_title,
+        )
+        if not grounded:
+            record_drop("competitor_grounding_miss")
             continue
         append_evidence_row(candidate)
     if not evidence_rows and quality_floor_candidates:
@@ -627,25 +771,29 @@ async def researcher_node(state: AgentState) -> AgentState:
         raise RuntimeError("AgentState.run_id is required for researcher node.")
 
     session_factory = get_session_factory()
-    request = ConductResearch.model_validate(state.get("pending_tool_args", {}))
-    domain_hint_raw = state.get("domain_hint")
-    domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
-    market_scope_raw = state.get("market_scope")
-    market_scope = (
-        market_scope_raw if isinstance(market_scope_raw, str) and market_scope_raw.strip() else None
+    state_intake_draft = _coerce_intake_draft(state.get("intake_draft"))
+    persisted_intake_draft = await _load_persisted_intake_draft(
+        run_id=run_id,
+        session_factory=session_factory,
     )
-    response_language_raw = state.get("response_language")
+    intake_draft = _merge_intake_context_drafts(
+        state_intake_draft=state_intake_draft,
+        persisted_intake_draft=persisted_intake_draft,
+    )
+    request = ConductResearch.model_validate(state.get("pending_tool_args", {}))
+    domain_hint = _state_or_intake_string(state, "domain_hint", intake_draft=intake_draft)
+    market_scope = _state_or_intake_string(state, "market_scope", intake_draft=intake_draft)
+    response_language_raw = _state_or_intake_string(
+        state,
+        "response_language",
+        intake_draft=intake_draft,
+    )
     response_language = (
         response_language_raw
-        if isinstance(response_language_raw, str) and response_language_raw in {"zh", "en"}
+        if response_language_raw in {"zh", "en"}
         else None
     )
-    reference_urls_raw = state.get("reference_urls", [])
-    reference_urls = (
-        [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
-        if isinstance(reference_urls_raw, list)
-        else []
-    )
+    reference_urls = _state_or_intake_reference_urls(state, intake_draft=intake_draft)
     source_candidate_urls = _candidate_source_urls_for_competitor(
         state=state,
         competitor_id=request.competitor_id,
@@ -740,6 +888,8 @@ async def researcher_node(state: AgentState) -> AgentState:
     step_payload = {
         **request.model_dump(),
         "domain_hint": domain_hint,
+        "market_scope": market_scope,
+        "response_language": response_language,
         "reference_urls": reference_urls,
         "focus_dimensions": focus_dimensions,
         "evidence_ids": evidence_ids,

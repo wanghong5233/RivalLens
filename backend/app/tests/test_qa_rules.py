@@ -23,12 +23,16 @@ from service.qa.rules import (
     evaluate_fast_path_rules,
     rule_buyer_critical_sections_need_official_source,
     rule_evidence_must_be_desensitized,
+    rule_evidence_balance_for_profile_competitors,
     rule_deep_report_min_char_count,
     rule_locale_mismatch,
     rule_report_must_have_at_least_one_section,
     rule_report_must_have_markdown_content,
     rule_report_section_count_in_bounds,
+    rule_source_quality_blocklist_share,
+    rule_structured_sections_present,
     rule_report_template_id_present,
+    rule_triplet_coverage_for_profile_competitors,
     rule_writer_must_cite_evidence,
     rule_writer_no_fallback_mode,
     rule_writer_sections_must_have_content,
@@ -84,6 +88,27 @@ def _make_locale_evidence(
         quote=sanitized_text,
         sanitized_text=sanitized_text,
         span={},
+        collected_by="step_researcher_001",
+        collected_at=datetime.now(timezone.utc),
+        desensitized=True,
+    )
+
+
+def _make_profile_evidence(
+    *,
+    evidence_id: str,
+    competitor_id: str,
+    source_url: str,
+) -> EvidenceRecord:
+    return EvidenceRecord(
+        id=evidence_id,
+        run_id="run_profile_balance",
+        source_type="article",
+        source_url=source_url,
+        source_title="Profile Source",
+        quote="profile quote",
+        sanitized_text="profile quote",
+        span={"competitor_id": competitor_id, "source_authority": "third_party"},
         collected_by="step_researcher_001",
         collected_at=datetime.now(timezone.utc),
         desensitized=True,
@@ -302,6 +327,108 @@ def test_rule_writer_no_fallback_mode_pass_and_fail() -> None:
     assert rule_writer_no_fallback_mode({"risk_callouts": []}).passed is True
     assert rule_writer_no_fallback_mode({"risk_callouts": ["writer_fallback_mode"]}).passed is False
     assert rule_writer_no_fallback_mode({"risk_callouts": ["pricing volatility"]}).passed is True
+
+
+def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
+    landscape_json = {
+        "sections": [
+            {"section_id": "competitor_profiles"},
+            {"section_id": "comparison_matrix"},
+            {"section_id": "positioning_map"},
+        ]
+    }
+    comparison_json = {
+        "sections": [
+            {"section_id": "competitor_profiles"},
+            {"section_id": "comparison_matrix"},
+            {"section_id": "positioning_map"},
+            {"section_id": "self_positioning"},
+        ]
+    }
+
+    landscape_result = rule_structured_sections_present(
+        content_json=landscape_json,
+        analysis_archetype="landscape",
+    )
+    comparison_result = rule_structured_sections_present(
+        content_json=comparison_json,
+        analysis_archetype="comparison",
+    )
+
+    assert landscape_result.passed is False
+    assert "market_landscape_map" in landscape_result.message
+    assert comparison_result.passed is True
+
+
+def test_rule_triplet_coverage_for_profile_competitors_blocks_thin_coverage() -> None:
+    result = rule_triplet_coverage_for_profile_competitors(
+        knowledge={
+            "coverage": {
+                "Meta": {
+                    "feature": "complete",
+                    "pricing": "insufficient_data",
+                    "feedback": "missing",
+                }
+            }
+        },
+        profile_competitors=["Meta"],
+    )
+
+    assert result.passed is False
+    assert result.reject_to == "researcher"
+    assert "Meta" in result.message
+
+
+def test_rule_evidence_balance_for_profile_competitors_blocks_dominance_and_gaps() -> None:
+    result = rule_evidence_balance_for_profile_competitors(
+        evidence_items=[
+            _make_profile_evidence(
+                evidence_id="ev_meta_1",
+                competitor_id="Meta",
+                source_url="https://meta.com/pricing",
+            ),
+            _make_profile_evidence(
+                evidence_id="ev_meta_2",
+                competitor_id="Meta",
+                source_url="https://meta.com/features",
+            ),
+            _make_profile_evidence(
+                evidence_id="ev_meta_3",
+                competitor_id="Meta",
+                source_url="https://meta.com/reviews",
+            ),
+        ],
+        profile_competitors=["Meta", "XREAL"],
+    )
+
+    assert result.passed is False
+    assert "zero_competitors=['XREAL']" in result.message
+
+
+def test_rule_source_quality_blocklist_share_blocks_spam_sources() -> None:
+    result = rule_source_quality_blocklist_share(
+        evidence_items=[
+            _make_profile_evidence(
+                evidence_id="ev_ok",
+                competitor_id="Meta",
+                source_url="https://meta.com/pricing",
+            ),
+            _make_profile_evidence(
+                evidence_id="ev_spam_1",
+                competitor_id="Meta",
+                source_url="https://x.com/search?q=ai+hardware",
+            ),
+            _make_profile_evidence(
+                evidence_id="ev_spam_2",
+                competitor_id="XREAL",
+                source_url="https://book118.com/webdir/ai",
+            ),
+        ]
+    )
+
+    assert result.passed is False
+    assert result.reject_to == "researcher"
+    assert "blocked_ratio" in result.message
 
 
 def test_deep_report_min_char_count_blocks_short_baseline() -> None:

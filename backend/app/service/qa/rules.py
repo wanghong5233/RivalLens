@@ -11,6 +11,7 @@ from core.defaults import (
 )
 from models.evidence import EvidenceRecord
 from schemas.contracts import validate_section_id
+from service.collector.source_quality import source_blocklist_reason
 from service.locale import source_locale, target_country_from_scope
 
 RuleSeverity = Literal["blocking", "warning"]
@@ -19,6 +20,17 @@ _HONEST_INCOMPLETE_COVERAGE = {"partial", "insufficient_data", "missing"}
 # Coverage floor, NOT a dominance target: an explicitly China-scoped analysis should have
 # at least some domestic firsthand grounding. Foreign sources stay valid for breadth.
 _MIN_DOMESTIC_COVERAGE_RATE = 0.20
+_STRUCTURED_REQUIRED_SECTIONS: tuple[str, ...] = (
+    "competitor_profiles",
+    "comparison_matrix",
+    "positioning_map",
+)
+_LANDSCAPE_REQUIRED_SECTIONS: tuple[str, ...] = ("market_landscape_map",)
+_COMPARISON_REQUIRED_SECTIONS: tuple[str, ...] = ("self_positioning",)
+_TRIPLET_FIELDS: tuple[str, ...] = ("feature", "pricing", "feedback")
+_TRIPLET_MIN_SUPPORTED_DIMENSIONS = 2
+_MAX_SINGLE_COMPETITOR_EVIDENCE_SHARE = 0.60
+_MAX_BLOCKLIST_EVIDENCE_SHARE = 0.20
 
 
 @dataclass(frozen=True)
@@ -445,6 +457,168 @@ def rule_locale_mismatch(
     )
 
 
+def rule_structured_sections_present(
+    *,
+    content_json: dict[str, object],
+    analysis_archetype: str,
+) -> RuleResult:
+    required_sections = [
+        *_STRUCTURED_REQUIRED_SECTIONS,
+        *(
+            _LANDSCAPE_REQUIRED_SECTIONS
+            if analysis_archetype == "landscape"
+            else _COMPARISON_REQUIRED_SECTIONS
+        ),
+    ]
+    present = {
+        section_id
+        for section in _iter_report_sections(content_json)
+        for section_id in [_section_id(section)]
+        if section_id is not None
+    }
+    missing = [section_id for section_id in required_sections if section_id not in present]
+    return RuleResult(
+        rule_id="rule_structured_sections_present",
+        passed=not missing,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            "Commercial report skeleton must include required structured sections "
+            f"(missing={missing})."
+        ),
+    )
+
+
+def _normalized_profile_competitors(profile_competitors: list[str] | None) -> list[str]:
+    if not profile_competitors:
+        return []
+    normalized: list[str] = []
+    for competitor in profile_competitors:
+        if not isinstance(competitor, str):
+            continue
+        item = competitor.strip()
+        if not item or item in normalized:
+            continue
+        normalized.append(item)
+    return normalized
+
+
+def rule_triplet_coverage_for_profile_competitors(
+    *,
+    knowledge: dict[str, object],
+    profile_competitors: list[str] | None,
+    min_supported_dimensions: int = _TRIPLET_MIN_SUPPORTED_DIMENSIONS,
+) -> RuleResult:
+    competitors = _normalized_profile_competitors(profile_competitors)
+    coverage = knowledge.get("coverage")
+    if not competitors:
+        return RuleResult(
+            rule_id="rule_triplet_coverage_for_profile_competitors",
+            passed=True,
+            severity="blocking",
+            reject_to="researcher",
+            message="Triplet coverage check skipped because no profile competitors were resolved.",
+        )
+    failures: list[str] = []
+    for competitor in competitors:
+        statuses: dict[str, str] = {}
+        supported_count = 0
+        for field in _TRIPLET_FIELDS:
+            status = _coverage_status(
+                coverage=coverage,
+                competitor_id=competitor,
+                field_name=field,
+            ) or "missing"
+            statuses[field] = status
+            if status in {"complete", "partial"}:
+                supported_count += 1
+        if supported_count < min_supported_dimensions:
+            failures.append(f"{competitor}:{statuses}")
+    return RuleResult(
+        rule_id="rule_triplet_coverage_for_profile_competitors",
+        passed=not failures,
+        severity="blocking",
+        reject_to="researcher",
+        message=(
+            "Profile competitors need usable triplet coverage "
+            f"(min_supported_dimensions={min_supported_dimensions}, failures={failures})."
+        ),
+    )
+
+
+def rule_evidence_balance_for_profile_competitors(
+    *,
+    evidence_items: list[EvidenceRecord],
+    profile_competitors: list[str] | None,
+    max_single_competitor_share: float = _MAX_SINGLE_COMPETITOR_EVIDENCE_SHARE,
+) -> RuleResult:
+    competitors = _normalized_profile_competitors(profile_competitors)
+    if not competitors:
+        return RuleResult(
+            rule_id="rule_evidence_balance_for_profile_competitors",
+            passed=True,
+            severity="blocking",
+            reject_to="researcher",
+            message="Evidence balance check skipped because no profile competitors were resolved.",
+        )
+    counts = {competitor: 0 for competitor in competitors}
+    total = 0
+    for item in evidence_items:
+        span = item.span if isinstance(item.span, dict) else {}
+        competitor_raw = span.get("competitor_id")
+        if not isinstance(competitor_raw, str):
+            continue
+        competitor = competitor_raw.strip()
+        if competitor not in counts:
+            continue
+        counts[competitor] += 1
+        total += 1
+    zero_competitors = [competitor for competitor, count in counts.items() if count == 0]
+    max_share = (max(counts.values()) / total) if total > 0 else 1.0
+    passed = total > 0 and not zero_competitors and max_share <= max_single_competitor_share
+    return RuleResult(
+        rule_id="rule_evidence_balance_for_profile_competitors",
+        passed=passed,
+        severity="blocking",
+        reject_to="researcher",
+        message=(
+            "Evidence should be balanced across profile competitors "
+            f"(counts={counts}, max_share={max_share:.2f}, limit={max_single_competitor_share:.2f}, "
+            f"zero_competitors={zero_competitors})."
+        ),
+    )
+
+
+def rule_source_quality_blocklist_share(
+    *,
+    evidence_items: list[EvidenceRecord],
+    max_blocklist_share: float = _MAX_BLOCKLIST_EVIDENCE_SHARE,
+) -> RuleResult:
+    if not evidence_items:
+        return RuleResult(
+            rule_id="rule_source_quality_blocklist_share",
+            passed=True,
+            severity="blocking",
+            reject_to="researcher",
+            message="Source-quality blocklist check skipped because evidence is empty.",
+        )
+    blocked_ids: list[str] = []
+    for item in evidence_items:
+        if source_blocklist_reason(item.source_url) is not None:
+            blocked_ids.append(item.id)
+    blocked_ratio = len(blocked_ids) / len(evidence_items)
+    return RuleResult(
+        rule_id="rule_source_quality_blocklist_share",
+        passed=blocked_ratio <= max_blocklist_share,
+        severity="blocking",
+        reject_to="researcher",
+        message=(
+            "Blocked/spam source share is too high "
+            f"(blocked_ratio={blocked_ratio:.2f}, limit={max_blocklist_share:.2f}, blocked_ids={blocked_ids})."
+        ),
+    )
+
+
 def _knowledge_items_by_competitor(
     items: object,
 ) -> dict[str, list[dict[str, object]]]:
@@ -737,7 +911,11 @@ def evaluate_fast_path_rules(
     report_depth: Literal["quick", "deep"] = "quick",
     target_sections: list[str] | None = None,
     market_scope: str | None = None,
+    knowledge: dict[str, object] | None = None,
+    analysis_archetype: str = "comparison",
+    profile_competitors: list[str] | None = None,
 ) -> list[RuleResult]:
+    effective_knowledge = knowledge if isinstance(knowledge, dict) else {}
     rule_results = [
         rule_report_must_have_markdown_content(content_markdown),
         rule_report_template_id_present(content_json),
@@ -756,6 +934,21 @@ def evaluate_fast_path_rules(
         ),
         rule_locale_mismatch(
             market_scope=market_scope,
+            evidence_items=evidence_items,
+        ),
+        rule_structured_sections_present(
+            content_json=content_json,
+            analysis_archetype=analysis_archetype,
+        ),
+        rule_triplet_coverage_for_profile_competitors(
+            knowledge=effective_knowledge,
+            profile_competitors=profile_competitors,
+        ),
+        rule_evidence_balance_for_profile_competitors(
+            evidence_items=evidence_items,
+            profile_competitors=profile_competitors,
+        ),
+        rule_source_quality_blocklist_share(
             evidence_items=evidence_items,
         ),
     ]

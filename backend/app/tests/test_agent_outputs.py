@@ -46,7 +46,34 @@ def test_resolve_writer_target_sections_prefers_analyst_dimensions() -> None:
         recommended_sections=["competitive_edge", "monetization_model"],
     )
 
-    assert sections == ["competitive_edge", "monetization_model"]
+    assert sections[:6] == [
+        "executive_summary",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
+        "strategic_recommendations",
+        "self_positioning",
+    ]
+    assert sections[-2:] == ["competitive_edge", "monetization_model"]
+
+
+def test_resolve_writer_target_sections_adds_landscape_required_sections() -> None:
+    sections = resolve_writer_target_sections(
+        requested_sections=None,
+        recommended_sections=["trend_summary"],
+        analysis_archetype="landscape",
+    )
+
+    assert sections[:8] == [
+        "executive_summary",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
+        "strategic_recommendations",
+        "market_landscape_map",
+        "trend_summary",
+        "opportunity_map",
+    ]
 
 
 def test_writer_execution_context_aligns_with_analyst_output() -> None:
@@ -72,7 +99,15 @@ def test_writer_execution_context_aligns_with_analyst_output() -> None:
         allowed_insight_ids={"insight_1"},
     )
 
-    assert context.target_sections == ["feature"]
+    assert context.target_sections[:6] == [
+        "executive_summary",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
+        "strategic_recommendations",
+        "self_positioning",
+    ]
+    assert "feature" in context.target_sections
 
 
 def test_analyst_fallback_marks_uncovered_dimensions() -> None:
@@ -638,6 +673,7 @@ def test_knowledge_extraction_output_filters_non_grounded_rows() -> None:
             "personas": [
                 {
                     "id": "persona_input_1",
+                        "competitor_id": "Cursor",
                     "name": "Engineering manager",
                     "role": "engineering_manager",
                     "pain_points": ["Review load"],

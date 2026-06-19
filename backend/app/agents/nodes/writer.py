@@ -31,6 +31,7 @@ from service.llm import (
     build_writer_repair_user_prompt,
     build_writer_user_prompt,
 )
+from service.knowledge import EMPTY_RUN_KNOWLEDGE, load_knowledge_for_run
 from service.llm.harness import complete_structured
 from service.llm.records import build_llm_call_record
 from utils.log_node import log_node
@@ -41,6 +42,75 @@ log = get_logger("agents.writer")
 BARE_EVIDENCE_ID_PATTERN = re.compile(r"(?<!\[)\b(ev_[A-Za-z0-9_]+)\b(?!\])")
 BRACKETED_EVIDENCE_ID_PATTERN = re.compile(r"\[(ev_[A-Za-z0-9_]+)\]")
 INSIGHT_ID_PATTERN = re.compile(r"\binsight_[A-Za-z0-9_]+\b")
+NUMERIC_RANGE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?\s*(?:-|–|—|~|～|至|到)\s*\d+(?:\.\d+)?"
+    r"(?:\s*(?:%|％|元|美元|人民币|cny|rmb|usd))?(?![A-Za-z0-9_])",
+    flags=re.IGNORECASE,
+)
+NUMERIC_LITERAL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])\d+(?:\.\d+)?"
+    r"(?:\s*(?:%|％|元|美元|人民币|cny|rmb|usd))?(?![A-Za-z0-9_])",
+    flags=re.IGNORECASE,
+)
+_CORE_DISCOVERY_ROLES: frozenset[str] = frozenset(
+    {"direct_competitor", "adjacent_competitor", "substitute"}
+)
+
+
+def _copy_empty_knowledge_payload() -> dict[str, object]:
+    return {
+        "schema_version": EMPTY_RUN_KNOWLEDGE.get("schema_version", "schema_v0.2"),
+        "features": list(EMPTY_RUN_KNOWLEDGE.get("features", [])),
+        "pricings": list(EMPTY_RUN_KNOWLEDGE.get("pricings", [])),
+        "personas": list(EMPTY_RUN_KNOWLEDGE.get("personas", [])),
+        "feedback": list(EMPTY_RUN_KNOWLEDGE.get("feedback", [])),
+        "missing_reasons": dict(EMPTY_RUN_KNOWLEDGE.get("missing_reasons", {})),
+        "coverage": dict(EMPTY_RUN_KNOWLEDGE.get("coverage", {})),
+    }
+
+
+def _section_title(section_id: str, *, response_language: str | None) -> str:
+    titles = (
+        {
+            "competitor_profiles": "逐竞品画像",
+            "comparison_matrix": "三件套对比矩阵（功能/定价/口碑）",
+            "positioning_map": "2x2 定位图（结构化）",
+            "market_landscape_map": "竞品分层地图",
+            "self_positioning": "我方位置与差异化",
+            "trend_summary": "趋势综述",
+            "opportunity_map": "机会地图",
+            "strategic_recommendations": "可执行建议",
+        }
+        if response_language == "zh"
+        else {
+            "competitor_profiles": "Competitor Profiles",
+            "comparison_matrix": "Triplet Comparison Matrix (Feature/Pricing/Feedback)",
+            "positioning_map": "2x2 Positioning Map (Structured)",
+            "market_landscape_map": "Competitor Layering Map",
+            "self_positioning": "Self Positioning and Differentiation",
+            "trend_summary": "Trend Summary",
+            "opportunity_map": "Opportunity Map",
+            "strategic_recommendations": "Actionable Recommendations",
+        }
+    )
+    return titles.get(section_id, section_id.replace("_", " ").title())
+
+
+def _markdown_cell(value: object) -> str:
+    if value is None:
+        return "-"
+    text = str(value).replace("\n", " ").replace("|", "/").strip()
+    return text or "-"
+
+
+def _build_markdown_table(*, headers: list[str], rows: list[list[object]]) -> str:
+    header_line = "|" + "|".join(_markdown_cell(item) for item in headers) + "|"
+    separator_line = "|" + "|".join("---" for _ in headers) + "|"
+    row_lines = [
+        "|" + "|".join(_markdown_cell(item) for item in row) + "|"
+        for row in rows
+    ]
+    return "\n".join([header_line, separator_line, *row_lines])
 
 
 def _is_valid_section_id(value: str) -> bool:
@@ -245,6 +315,113 @@ def _sanitize_report_markdown_text(
     return sanitized.strip()
 
 
+def _numeric_placeholder(*, response_language: str | None) -> str:
+    return "若干" if response_language == "zh" else "several"
+
+
+def _normalize_writer_section_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if not _is_valid_section_id(raw):
+        return None
+    return raw
+
+
+def _apply_numeric_claim_guardrail(
+    *,
+    report_content: dict[str, object],
+    unsupported_numeric_claims: list[dict[str, object]],
+    response_language: str | None,
+) -> tuple[dict[str, object], list[str]]:
+    if not unsupported_numeric_claims:
+        return report_content, []
+    sections_raw = report_content.get("sections")
+    if not isinstance(sections_raw, list):
+        return report_content, []
+    section_ids: set[str] = set()
+    explicit_claims_by_section: dict[str, list[str]] = {}
+    for item in unsupported_numeric_claims:
+        if not isinstance(item, dict):
+            continue
+        section_id = _normalize_writer_section_id(item.get("section_id"))
+        if section_id is None:
+            continue
+        section_ids.add(section_id)
+        claim_raw = item.get("claim")
+        if not isinstance(claim_raw, str):
+            continue
+        claim = " ".join(claim_raw.split())
+        if not claim:
+            continue
+        explicit_claims_by_section.setdefault(section_id, []).append(claim)
+    if not section_ids:
+        return report_content, []
+
+    placeholder = _numeric_placeholder(response_language=response_language)
+    section_note = (
+        "- 注：本段具体数值已按 QA 反馈降级为定性表述，待补充可核验数字证据。"
+        if response_language == "zh"
+        else "- Note: exact numeric claims in this section were downgraded to qualitative statements pending verifiable evidence."
+    )
+    updated_sections: list[dict[str, object]] = []
+    downgraded_sections: list[str] = []
+    for section_raw in sections_raw:
+        if not isinstance(section_raw, dict):
+            continue
+        section = dict(section_raw)
+        section_id = _normalize_writer_section_id(section.get("section_id"))
+        if section_id is None or section_id not in section_ids:
+            updated_sections.append(section)
+            continue
+        body_raw = section.get("content_markdown")
+        if not isinstance(body_raw, str) or not body_raw.strip():
+            updated_sections.append(section)
+            continue
+        rewritten = body_raw
+        for claim in explicit_claims_by_section.get(section_id, []):
+            if claim and claim in rewritten:
+                rewritten = rewritten.replace(claim, f"{placeholder}区间" if response_language == "zh" else "a qualitative range")
+        rewritten = NUMERIC_RANGE_PATTERN.sub(
+            f"{placeholder}区间" if response_language == "zh" else "a qualitative range",
+            rewritten,
+        )
+        rewritten = NUMERIC_LITERAL_PATTERN.sub(placeholder, rewritten)
+        rewritten = re.sub(r"\s{2,}", " ", rewritten)
+        rewritten = rewritten.strip()
+        if rewritten == body_raw.strip():
+            updated_sections.append(section)
+            continue
+        if section_note not in rewritten:
+            rewritten = f"{rewritten}\n\n{section_note}"
+        section["content_markdown"] = rewritten
+        updated_sections.append(section)
+        downgraded_sections.append(section_id)
+
+    if not downgraded_sections:
+        return report_content, []
+    risk_callouts_raw = report_content.get("risk_callouts")
+    risk_callouts = (
+        [item for item in risk_callouts_raw if isinstance(item, str)]
+        if isinstance(risk_callouts_raw, list)
+        else []
+    )
+    guarded_callouts = [
+        f"numeric_claims_downgraded:{section_id}"
+        for section_id in _stable_unique(downgraded_sections)
+    ]
+    return (
+        {
+            **report_content,
+            "sections": updated_sections,
+            "risk_callouts": _stable_unique([*risk_callouts, *guarded_callouts]),
+        },
+        _stable_unique(downgraded_sections),
+    )
+
+
 def _report_depth_from_state(state: AgentState) -> Literal["quick", "deep"]:
     intake_draft = state.get("intake_draft")
     if isinstance(intake_draft, dict):
@@ -321,7 +498,7 @@ async def _load_writer_inputs(
     *,
     session_factory: async_sessionmaker[AsyncSession],
     run_id: str,
-) -> tuple[list[EvidenceRecord], AnalystOutput]:
+) -> tuple[list[EvidenceRecord], AnalystOutput, dict[str, object]]:
     async with session_factory() as session:
         evidence_rows = (
             await session.execute(
@@ -330,6 +507,19 @@ async def _load_writer_inputs(
                 .order_by(EvidenceRecord.created_at.asc())
             )
         ).scalars().all()
+        try:
+            knowledge_payload = await load_knowledge_for_run(
+                session=session,
+                run_id=run_id,
+            )
+        except SQLAlchemyError as exc:
+            log.info(
+                "writer.knowledge.fallback_to_empty",
+                run_id=run_id,
+                reason="query_error",
+                error=str(exc)[:500],
+            )
+            knowledge_payload = _copy_empty_knowledge_payload()
         if settings.WRITER_READ_CONCLUSIONS_FROM_TABLE:
             try:
                 conclusion_rows = await load_conclusions_for_run(
@@ -358,9 +548,13 @@ async def _load_writer_inputs(
                         error=str(exc)[:500],
                     )
                     comparison_rows = []
-                return evidence_rows, _analyst_payload_from_conclusions(
-                    conclusion_rows,
-                    comparison_rows=comparison_rows,
+                return (
+                    evidence_rows,
+                    _analyst_payload_from_conclusions(
+                        conclusion_rows,
+                        comparison_rows=comparison_rows,
+                    ),
+                    knowledge_payload,
                 )
             log.info(
                 "writer.conclusions.fallback_to_json",
@@ -382,17 +576,25 @@ async def _load_writer_inputs(
 
     evidence_briefs = _build_evidence_briefs(evidence_rows)
     if analyst_step is None:
-        return evidence_rows, AnalystOutput.build_fallback(
-            focus_dimensions=[],
-            evidence_briefs=evidence_briefs,
+        return (
+            evidence_rows,
+            AnalystOutput.build_fallback(
+                focus_dimensions=[],
+                evidence_briefs=evidence_briefs,
+            ),
+            knowledge_payload,
         )
     parsed = AnalystOutput.parse_persisted(analyst_step.payload.get("analysis_payload"))
     if parsed is None:
-        return evidence_rows, AnalystOutput.build_fallback(
-            focus_dimensions=[],
-            evidence_briefs=evidence_briefs,
+        return (
+            evidence_rows,
+            AnalystOutput.build_fallback(
+                focus_dimensions=[],
+                evidence_briefs=evidence_briefs,
+            ),
+            knowledge_payload,
         )
-    return evidence_rows, parsed
+    return evidence_rows, parsed, knowledge_payload
 
 
 def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str, object]]:
@@ -470,6 +672,802 @@ def _build_comparison_briefs(
             }
         )
     return comparison_briefs
+
+
+def _ordered_competitors_for_report(
+    *,
+    state_competitors: list[str],
+    evidence_briefs: list[dict[str, object]],
+    knowledge_payload: dict[str, object],
+) -> list[str]:
+    ordered: list[str] = []
+    for competitor in state_competitors:
+        if isinstance(competitor, str) and competitor.strip():
+            ordered.append(competitor.strip())
+    for brief in evidence_briefs:
+        competitor_raw = brief.get("competitor_id")
+        if isinstance(competitor_raw, str) and competitor_raw.strip() and competitor_raw != "unknown":
+            ordered.append(competitor_raw.strip())
+    for key in ("features", "pricings", "feedback", "personas"):
+        rows_raw = knowledge_payload.get(key)
+        if not isinstance(rows_raw, list):
+            continue
+        for row in rows_raw:
+            if not isinstance(row, dict):
+                continue
+            competitor_raw = row.get("competitor_id")
+            if isinstance(competitor_raw, str) and competitor_raw.strip():
+                ordered.append(competitor_raw.strip())
+    coverage_raw = knowledge_payload.get("coverage")
+    if isinstance(coverage_raw, dict):
+        for competitor_raw in coverage_raw.keys():
+            if isinstance(competitor_raw, str) and competitor_raw.strip():
+                ordered.append(competitor_raw.strip())
+    return _stable_unique(ordered)
+
+
+def _landscape_profile_competitors(
+    *,
+    ordered_competitors: list[str],
+    discovered_competitor_sources: dict[str, dict[str, object]] | None,
+    report_depth: Literal["quick", "deep"],
+) -> list[str]:
+    role_map = discovered_competitor_sources or {}
+    core = [
+        competitor
+        for competitor in ordered_competitors
+        if isinstance(role_map.get(competitor), dict)
+        and role_map[competitor].get("candidate_role") in _CORE_DISCOVERY_ROLES
+    ]
+    if not core:
+        non_upstream = [
+            competitor
+            for competitor in ordered_competitors
+            if not (
+                isinstance(role_map.get(competitor), dict)
+                and role_map[competitor].get("candidate_role") == "upstream_supplier"
+            )
+        ]
+        core = non_upstream or ordered_competitors
+    limit = 5 if report_depth == "deep" else 3
+    return core[:limit]
+
+
+def _knowledge_rows_for_competitor(
+    *,
+    rows: object,
+    competitor: str,
+) -> list[dict[str, object]]:
+    if not isinstance(rows, list):
+        return []
+    filtered: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        competitor_raw = row.get("competitor_id")
+        if isinstance(competitor_raw, str) and competitor_raw.strip() == competitor:
+            filtered.append(row)
+    return filtered
+
+
+def _coverage_status(
+    *,
+    coverage: dict[str, object],
+    competitor: str,
+    key: str,
+) -> str:
+    competitor_coverage_raw = coverage.get(competitor)
+    if not isinstance(competitor_coverage_raw, dict):
+        return "insufficient_data"
+    status_raw = competitor_coverage_raw.get(key)
+    if isinstance(status_raw, str) and status_raw.strip():
+        return status_raw.strip()
+    return "insufficient_data"
+
+
+def _status_label(*, status: str, response_language: str | None) -> str:
+    if response_language == "zh":
+        return {
+            "complete": "complete",
+            "partial": "partial",
+            "insufficient_data": "insufficient_data",
+            "missing": "missing",
+        }.get(status, status)
+    return status
+
+
+def _fallback_evidence_refs(*, allowed_evidence_ids: set[str], limit: int = 4) -> list[str]:
+    if not allowed_evidence_ids:
+        return []
+    return sorted(allowed_evidence_ids)[:limit]
+
+
+def _collect_competitor_evidence_refs(
+    *,
+    competitor: str,
+    knowledge_payload: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    limit: int = 6,
+) -> list[str]:
+    refs: list[str] = []
+    for key in ("features", "pricings", "feedback", "personas"):
+        rows = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get(key),
+            competitor=competitor,
+        )
+        for row in rows:
+            evidence_ids_raw = row.get("evidence_ids")
+            if not isinstance(evidence_ids_raw, list):
+                continue
+            refs.extend(
+                evidence_id
+                for evidence_id in evidence_ids_raw
+                if isinstance(evidence_id, str) and evidence_id in allowed_evidence_ids
+            )
+    for brief in evidence_briefs:
+        if brief.get("competitor_id") != competitor:
+            continue
+        evidence_id_raw = brief.get("evidence_id")
+        if isinstance(evidence_id_raw, str) and evidence_id_raw in allowed_evidence_ids:
+            refs.append(evidence_id_raw)
+    return _stable_unique(refs)[:limit]
+
+
+def _feature_summary(
+    *,
+    features: list[dict[str, object]],
+    response_language: str | None,
+) -> str:
+    names = [
+        str(item.get("name")).strip()
+        for item in features
+        if isinstance(item.get("name"), str) and str(item.get("name")).strip()
+    ]
+    if not names:
+        return "数据不足" if response_language == "zh" else "insufficient data"
+    return ", ".join(_stable_unique(names)[:5])
+
+
+def _pricing_summary(
+    *,
+    pricings: list[dict[str, object]],
+    response_language: str | None,
+) -> str:
+    if not pricings:
+        return "数据不足" if response_language == "zh" else "insufficient data"
+    models = [
+        str(item.get("model")).strip()
+        for item in pricings
+        if isinstance(item.get("model"), str) and str(item.get("model")).strip()
+    ]
+    free_plan = any(item.get("free_plan") is True for item in pricings)
+    enterprise_plan = any(item.get("enterprise_plan") is True for item in pricings)
+    if response_language == "zh":
+        return (
+            f"模型: {', '.join(_stable_unique(models)[:3]) or 'unknown'}; "
+            f"免费版: {'是' if free_plan else '否/未知'}; "
+            f"企业版: {'是' if enterprise_plan else '否/未知'}"
+        )
+    return (
+        f"models: {', '.join(_stable_unique(models)[:3]) or 'unknown'}; "
+        f"free_plan: {'yes' if free_plan else 'no/unknown'}; "
+        f"enterprise_plan: {'yes' if enterprise_plan else 'no/unknown'}"
+    )
+
+
+def _feedback_summary(
+    *,
+    feedback_rows: list[dict[str, object]],
+    response_language: str | None,
+) -> str:
+    if not feedback_rows:
+        return "数据不足" if response_language == "zh" else "insufficient data"
+    sentiments = Counter(
+        str(item.get("sentiment")).strip()
+        for item in feedback_rows
+        if isinstance(item.get("sentiment"), str) and str(item.get("sentiment")).strip()
+    )
+    topics = [
+        str(item.get("topic")).strip()
+        for item in feedback_rows
+        if isinstance(item.get("topic"), str) and str(item.get("topic")).strip()
+    ]
+    sentiment_text = _format_distribution(
+        sentiments,
+        empty_label="无" if response_language == "zh" else "none",
+    )
+    topics_text = ", ".join(_stable_unique(topics)[:3]) or ("无" if response_language == "zh" else "none")
+    if response_language == "zh":
+        return f"情绪分布: {sentiment_text}; 高频主题: {topics_text}"
+    return f"sentiment: {sentiment_text}; top topics: {topics_text}"
+
+
+def _positioning_summary_from_comparisons(
+    *,
+    competitor: str,
+    comparison_briefs: list[dict[str, object]],
+    response_language: str | None,
+) -> str:
+    for comparison in comparison_briefs:
+        cells_raw = comparison.get("cells")
+        if not isinstance(cells_raw, list):
+            continue
+        for cell in cells_raw:
+            if not isinstance(cell, dict):
+                continue
+            competitor_raw = cell.get("competitor_id")
+            summary_raw = cell.get("summary")
+            if (
+                isinstance(competitor_raw, str)
+                and competitor_raw == competitor
+                and isinstance(summary_raw, str)
+                and summary_raw.strip()
+            ):
+                return summary_raw.strip()
+    return "定位信息不足" if response_language == "zh" else "positioning data is limited"
+
+
+def _upsert_section(
+    *,
+    sections: list[dict[str, object]],
+    section_payload: dict[str, object],
+) -> None:
+    section_id_raw = section_payload.get("section_id")
+    if not isinstance(section_id_raw, str) or not section_id_raw.strip():
+        return
+    section_id = section_id_raw.strip()
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict):
+            continue
+        existing_section_id = section.get("section_id")
+        if isinstance(existing_section_id, str) and existing_section_id.strip() == section_id:
+            sections[index] = section_payload
+            return
+    sections.append(section_payload)
+
+
+def _build_comparison_matrix_section(
+    *,
+    competitors: list[str],
+    knowledge_payload: dict[str, object],
+    coverage: dict[str, object],
+    response_language: str | None,
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+) -> dict[str, object]:
+    feature_rows: list[list[object]] = []
+    pricing_rows: list[list[object]] = []
+    feedback_rows: list[list[object]] = []
+    evidence_refs: list[str] = []
+    for competitor in competitors:
+        features = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("features"),
+            competitor=competitor,
+        )
+        pricings = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("pricings"),
+            competitor=competitor,
+        )
+        feedback = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("feedback"),
+            competitor=competitor,
+        )
+        evidence_refs.extend(
+            _collect_competitor_evidence_refs(
+                competitor=competitor,
+                knowledge_payload=knowledge_payload,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+                limit=4,
+            )
+        )
+        feature_rows.append(
+            [
+                competitor,
+                _feature_summary(features=features, response_language=response_language),
+                _status_label(
+                    status=_coverage_status(coverage=coverage, competitor=competitor, key="feature"),
+                    response_language=response_language,
+                ),
+            ]
+        )
+        pricing_rows.append(
+            [
+                competitor,
+                _pricing_summary(pricings=pricings, response_language=response_language),
+                _status_label(
+                    status=_coverage_status(coverage=coverage, competitor=competitor, key="pricing"),
+                    response_language=response_language,
+                ),
+            ]
+        )
+        feedback_rows.append(
+            [
+                competitor,
+                _feedback_summary(feedback_rows=feedback, response_language=response_language),
+                _status_label(
+                    status=_coverage_status(coverage=coverage, competitor=competitor, key="feedback"),
+                    response_language=response_language,
+                ),
+            ]
+        )
+    if not feature_rows:
+        feature_rows = [["-", "-", "insufficient_data"]]
+        pricing_rows = [["-", "-", "insufficient_data"]]
+        feedback_rows = [["-", "-", "insufficient_data"]]
+    lines = [
+        "### 功能矩阵" if response_language == "zh" else "### Feature Matrix",
+        _build_markdown_table(
+            headers=(
+                ["竞品", "核心功能摘要", "覆盖状态"]
+                if response_language == "zh"
+                else ["Competitor", "Feature Summary", "Coverage"]
+            ),
+            rows=feature_rows,
+        ),
+        "",
+        "### 定价对比" if response_language == "zh" else "### Pricing Comparison",
+        _build_markdown_table(
+            headers=(
+                ["竞品", "定价摘要", "覆盖状态"]
+                if response_language == "zh"
+                else ["Competitor", "Pricing Summary", "Coverage"]
+            ),
+            rows=pricing_rows,
+        ),
+        "",
+        "### 口碑矩阵" if response_language == "zh" else "### Feedback Matrix",
+        _build_markdown_table(
+            headers=(
+                ["竞品", "口碑摘要", "覆盖状态"]
+                if response_language == "zh"
+                else ["Competitor", "Feedback Summary", "Coverage"]
+            ),
+            rows=feedback_rows,
+        ),
+    ]
+    section_refs = _stable_unique(evidence_refs)[:12] or _fallback_evidence_refs(
+        allowed_evidence_ids=allowed_evidence_ids,
+    )
+    return {
+        "section_id": "comparison_matrix",
+        "title": _section_title("comparison_matrix", response_language=response_language),
+        "content_markdown": "\n".join(lines),
+        "evidence_refs": section_refs,
+        "insight_refs": [],
+    }
+
+
+def _build_competitor_profiles_section(
+    *,
+    profile_competitors: list[str],
+    knowledge_payload: dict[str, object],
+    coverage: dict[str, object],
+    response_language: str | None,
+    comparison_briefs: list[dict[str, object]],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+) -> dict[str, object]:
+    lines: list[str] = []
+    section_refs: list[str] = []
+    for competitor in profile_competitors:
+        features = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("features"),
+            competitor=competitor,
+        )
+        pricings = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("pricings"),
+            competitor=competitor,
+        )
+        feedback_rows = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("feedback"),
+            competitor=competitor,
+        )
+        competitor_refs = _collect_competitor_evidence_refs(
+            competitor=competitor,
+            knowledge_payload=knowledge_payload,
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+            limit=5,
+        )
+        section_refs.extend(competitor_refs)
+        weakness_dimensions = [
+            key
+            for key in ("feature", "pricing", "feedback")
+            if _coverage_status(coverage=coverage, competitor=competitor, key=key)
+            in {"partial", "insufficient_data", "missing"}
+        ]
+        weakness_summary = (
+            ", ".join(weakness_dimensions)
+            if weakness_dimensions
+            else ("关键维度覆盖完整" if response_language == "zh" else "coverage is complete on key triplet")
+        )
+        refs_text = ", ".join(f"[{item}]" for item in competitor_refs) if competitor_refs else "-"
+        lines.extend(
+            [
+                f"### {competitor}",
+                (
+                    f"- 定位: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
+                    if response_language == "zh"
+                    else (
+                        f"- Positioning: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
+                    )
+                ),
+                (
+                    f"- 优势: {_feature_summary(features=features, response_language=response_language)}"
+                    if response_language == "zh"
+                    else f"- Strengths: {_feature_summary(features=features, response_language=response_language)}"
+                ),
+                (
+                    f"- 劣势: {weakness_summary}"
+                    if response_language == "zh"
+                    else f"- Gaps: {weakness_summary}"
+                ),
+                (
+                    f"- 定价: {_pricing_summary(pricings=pricings, response_language=response_language)}"
+                    if response_language == "zh"
+                    else f"- Pricing: {_pricing_summary(pricings=pricings, response_language=response_language)}"
+                ),
+                (
+                    f"- 口碑: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
+                    if response_language == "zh"
+                    else f"- Feedback: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
+                ),
+                (
+                    f"- 代表证据: {refs_text}"
+                    if response_language == "zh"
+                    else f"- Key evidence: {refs_text}"
+                ),
+                "",
+            ]
+        )
+    if not lines:
+        lines = [
+            "- 暂无可用竞品画像，建议触发补充研究并优先补齐三件套证据。"
+            if response_language == "zh"
+            else "- No usable competitor profiles yet; trigger follow-up research to fill triplet evidence."
+        ]
+    return {
+        "section_id": "competitor_profiles",
+        "title": _section_title("competitor_profiles", response_language=response_language),
+        "content_markdown": "\n".join(lines).strip(),
+        "evidence_refs": _stable_unique(section_refs)[:12]
+        or _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
+        "insight_refs": [],
+    }
+
+
+def _build_positioning_map_section(
+    *,
+    competitors: list[str],
+    coverage: dict[str, object],
+    response_language: str | None,
+    knowledge_payload: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+) -> dict[str, object]:
+    def score(status: str) -> int:
+        if status == "complete":
+            return 2
+        if status == "partial":
+            return 1
+        return 0
+
+    quadrants: dict[str, list[str]] = {
+        "Q1": [],
+        "Q2": [],
+        "Q3": [],
+        "Q4": [],
+    }
+    refs: list[str] = []
+    for competitor in competitors:
+        capability = score(_coverage_status(coverage=coverage, competitor=competitor, key="feature")) + score(
+            _coverage_status(coverage=coverage, competitor=competitor, key="feedback")
+        )
+        commercialization = score(_coverage_status(coverage=coverage, competitor=competitor, key="pricing"))
+        if capability >= 2 and commercialization >= 1:
+            quadrants["Q1"].append(competitor)
+        elif capability >= 2 and commercialization < 1:
+            quadrants["Q2"].append(competitor)
+        elif capability < 2 and commercialization >= 1:
+            quadrants["Q3"].append(competitor)
+        else:
+            quadrants["Q4"].append(competitor)
+        refs.extend(
+            _collect_competitor_evidence_refs(
+                competitor=competitor,
+                knowledge_payload=knowledge_payload,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+                limit=3,
+            )
+        )
+    if response_language == "zh":
+        lines = [
+            "- 横轴: 商业化成熟度（定价与企业化可见度）",
+            "- 纵轴: 产品能力深度（功能与口碑证据）",
+            f"- Q1 高能力-高商业化: {', '.join(quadrants['Q1']) or '暂无'}",
+            f"- Q2 高能力-低商业化: {', '.join(quadrants['Q2']) or '暂无'}",
+            f"- Q3 低能力-高商业化: {', '.join(quadrants['Q3']) or '暂无'}",
+            f"- Q4 低能力-低商业化: {', '.join(quadrants['Q4']) or '暂无'}",
+        ]
+    else:
+        lines = [
+            "- X axis: commercial maturity (pricing and enterprise transparency)",
+            "- Y axis: capability depth (feature + feedback evidence)",
+            f"- Q1 high capability / high maturity: {', '.join(quadrants['Q1']) or 'none'}",
+            f"- Q2 high capability / low maturity: {', '.join(quadrants['Q2']) or 'none'}",
+            f"- Q3 low capability / high maturity: {', '.join(quadrants['Q3']) or 'none'}",
+            f"- Q4 low capability / low maturity: {', '.join(quadrants['Q4']) or 'none'}",
+        ]
+    return {
+        "section_id": "positioning_map",
+        "title": _section_title("positioning_map", response_language=response_language),
+        "content_markdown": "\n".join(lines),
+        "evidence_refs": _stable_unique(refs)[:10]
+        or _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
+        "insight_refs": [],
+    }
+
+
+def _build_landscape_map_section(
+    *,
+    ordered_competitors: list[str],
+    discovered_competitor_sources: dict[str, dict[str, object]] | None,
+    response_language: str | None,
+    knowledge_payload: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+) -> dict[str, object]:
+    role_labels = (
+        {
+            "direct_competitor": "直接竞品",
+            "adjacent_competitor": "相邻竞品",
+            "substitute": "替代方案",
+            "upstream_supplier": "上游供应商",
+            "trend_reference": "趋势参考",
+            "unknown": "未分类",
+        }
+        if response_language == "zh"
+        else {
+            "direct_competitor": "Direct",
+            "adjacent_competitor": "Adjacent",
+            "substitute": "Substitute",
+            "upstream_supplier": "Upstream",
+            "trend_reference": "Trend",
+            "unknown": "Unclassified",
+        }
+    )
+    role_map = discovered_competitor_sources or {}
+    grouped: dict[str, list[str]] = {key: [] for key in role_labels}
+    refs: list[str] = []
+    for competitor in ordered_competitors:
+        role = "unknown"
+        payload = role_map.get(competitor)
+        if isinstance(payload, dict):
+            role_raw = payload.get("candidate_role")
+            if isinstance(role_raw, str) and role_raw in grouped:
+                role = role_raw
+        grouped.setdefault(role, []).append(competitor)
+        refs.extend(
+            _collect_competitor_evidence_refs(
+                competitor=competitor,
+                knowledge_payload=knowledge_payload,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+                limit=2,
+            )
+        )
+    lines: list[str] = []
+    for role in (
+        "direct_competitor",
+        "adjacent_competitor",
+        "substitute",
+        "upstream_supplier",
+        "trend_reference",
+        "unknown",
+    ):
+        competitors = grouped.get(role, [])
+        lines.append(f"### {role_labels[role]} ({len(competitors)})")
+        lines.append(", ".join(competitors) if competitors else ("暂无" if response_language == "zh" else "none"))
+        lines.append("")
+    return {
+        "section_id": "market_landscape_map",
+        "title": _section_title("market_landscape_map", response_language=response_language),
+        "content_markdown": "\n".join(lines).strip(),
+        "evidence_refs": _stable_unique(refs)[:10]
+        or _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
+        "insight_refs": [],
+    }
+
+
+def _build_self_positioning_section(
+    *,
+    self_product: str | None,
+    competitors: list[str],
+    response_language: str | None,
+    allowed_evidence_ids: set[str],
+) -> dict[str, object]:
+    leaders = ", ".join(competitors[:2]) if competitors else ("关键竞品" if response_language == "zh" else "key competitors")
+    if response_language == "zh":
+        product_name = self_product or "我方产品"
+        content = "\n".join(
+            [
+                f"- 对照对象: {leaders}",
+                f"- 当前定位: {product_name} 需围绕功能深度与商业化成熟度建立稳定差异化。",
+                "- 建议动作: 以可验证的功能优势 + 可执行定价策略形成 why-win/why-lose 叙事闭环。",
+            ]
+        )
+    else:
+        product_name = self_product or "our product"
+        content = "\n".join(
+            [
+                f"- Reference set: {leaders}",
+                f"- Current position: {product_name} should build durable differentiation on capability depth and commercial maturity.",
+                "- Action focus: combine verifiable feature advantages with executable pricing strategy for clear why-win/why-lose narratives.",
+            ]
+        )
+    return {
+        "section_id": "self_positioning",
+        "title": _section_title("self_positioning", response_language=response_language),
+        "content_markdown": content,
+        "evidence_refs": _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
+        "insight_refs": [],
+    }
+
+
+def _placeholder_section_content(*, section_id: str, response_language: str | None) -> str:
+    if response_language == "zh":
+        return f"- 章节 {section_id} 暂缺足够证据，请触发补充研究后回填。"
+    return f"- Section {section_id} lacks enough grounded evidence; trigger follow-up research."
+
+
+def _apply_structured_writer_sections(
+    *,
+    report_content: dict[str, object],
+    target_sections: list[str],
+    analysis_archetype: str,
+    response_language: str | None,
+    report_depth: Literal["quick", "deep"],
+    knowledge_payload: dict[str, object],
+    comparison_briefs: list[dict[str, object]],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    state_competitors: list[str],
+    discovered_competitor_sources: dict[str, dict[str, object]] | None,
+    self_product: str | None,
+) -> dict[str, object]:
+    sections_raw = report_content.get("sections")
+    sections = [dict(item) for item in sections_raw if isinstance(item, dict)] if isinstance(sections_raw, list) else []
+    coverage_raw = knowledge_payload.get("coverage")
+    coverage = coverage_raw if isinstance(coverage_raw, dict) else {}
+    ordered_competitors = _ordered_competitors_for_report(
+        state_competitors=state_competitors,
+        evidence_briefs=evidence_briefs,
+        knowledge_payload=knowledge_payload,
+    )
+    profile_competitors = (
+        ordered_competitors
+        if analysis_archetype == "comparison"
+        else _landscape_profile_competitors(
+            ordered_competitors=ordered_competitors,
+            discovered_competitor_sources=discovered_competitor_sources,
+            report_depth=report_depth,
+        )
+    )
+    _upsert_section(
+        sections=sections,
+        section_payload=_build_competitor_profiles_section(
+            profile_competitors=profile_competitors,
+            knowledge_payload=knowledge_payload,
+            coverage=coverage,
+            response_language=response_language,
+            comparison_briefs=comparison_briefs,
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+        ),
+    )
+    _upsert_section(
+        sections=sections,
+        section_payload=_build_comparison_matrix_section(
+            competitors=profile_competitors if analysis_archetype == "landscape" else ordered_competitors,
+            knowledge_payload=knowledge_payload,
+            coverage=coverage,
+            response_language=response_language,
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+        ),
+    )
+    _upsert_section(
+        sections=sections,
+        section_payload=_build_positioning_map_section(
+            competitors=profile_competitors if analysis_archetype == "landscape" else ordered_competitors,
+            coverage=coverage,
+            response_language=response_language,
+            knowledge_payload=knowledge_payload,
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+        ),
+    )
+    if analysis_archetype == "landscape":
+        _upsert_section(
+            sections=sections,
+            section_payload=_build_landscape_map_section(
+                ordered_competitors=ordered_competitors,
+                discovered_competitor_sources=discovered_competitor_sources,
+                response_language=response_language,
+                knowledge_payload=knowledge_payload,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+            ),
+        )
+    else:
+        _upsert_section(
+            sections=sections,
+            section_payload=_build_self_positioning_section(
+                self_product=self_product,
+                competitors=ordered_competitors,
+                response_language=response_language,
+                allowed_evidence_ids=allowed_evidence_ids,
+            ),
+        )
+
+    section_ids = {
+        section.get("section_id")
+        for section in sections
+        if isinstance(section.get("section_id"), str)
+    }
+    for section_id in target_sections:
+        if section_id == "executive_summary":
+            continue
+        if section_id in section_ids:
+            continue
+        _upsert_section(
+            sections=sections,
+            section_payload={
+                "section_id": section_id,
+                "title": _section_title(section_id, response_language=response_language),
+                "content_markdown": _placeholder_section_content(
+                    section_id=section_id,
+                    response_language=response_language,
+                ),
+                "evidence_refs": _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
+                "insight_refs": [],
+            },
+        )
+
+    ordered_sections: list[dict[str, object]] = []
+    for section_id in target_sections:
+        if section_id == "executive_summary":
+            continue
+        for section in sections:
+            if not isinstance(section.get("section_id"), str):
+                continue
+            if section["section_id"] == section_id:
+                ordered_sections.append(section)
+                break
+    for section in sections:
+        section_id_raw = section.get("section_id")
+        if not isinstance(section_id_raw, str):
+            continue
+        if section_id_raw in target_sections:
+            continue
+        ordered_sections.append(section)
+
+    risk_callouts_raw = report_content.get("risk_callouts")
+    risk_callouts = (
+        [item for item in risk_callouts_raw if isinstance(item, str)]
+        if isinstance(risk_callouts_raw, list)
+        else []
+    )
+    if analysis_archetype == "landscape" and not profile_competitors:
+        risk_callouts.append("landscape_core_profiles_empty")
+    return {
+        **report_content,
+        "sections": ordered_sections,
+        "risk_callouts": _stable_unique(risk_callouts),
+    }
 
 
 def _build_fallback_report(
@@ -745,7 +1743,7 @@ async def writer_node(state: AgentState) -> AgentState:
         },
     )
     report_id = f"report_{uuid4().hex[:12]}"
-    evidence_rows, analyst_output = await _load_writer_inputs(
+    evidence_rows, analyst_output, knowledge_payload = await _load_writer_inputs(
         session_factory=session_factory,
         run_id=run_id,
     )
@@ -764,15 +1762,16 @@ async def writer_node(state: AgentState) -> AgentState:
         for item in insight_briefs
         if isinstance(item.get("insight_id"), str)
     }
+    intake_draft = coerce_intake_draft_or_default(state)
     execution_context = WriterExecutionContext.resolve(
         template_id=request.template_id,
         requested_sections=request.sections,
+        analysis_archetype=intake_draft.analysis_archetype,
         analyst_output=analyst_output,
         allowed_evidence_ids=allowed_evidence_ids,
         allowed_insight_ids=allowed_insight_ids,
     )
     target_sections = execution_context.target_sections
-    intake_draft = coerce_intake_draft_or_default(state)
     report_depth = _report_depth_from_state(state)
     analyst_summary = analyst_output.summary
     risk_flags = list(analyst_output.risk_flags)
@@ -855,6 +1854,34 @@ async def writer_node(state: AgentState) -> AgentState:
             evidence_briefs=evidence_briefs,
             risk_flags=risk_flags,
         )
+    discovered_competitor_sources_raw = state.get("discovered_competitor_sources")
+    discovered_competitor_sources = (
+        discovered_competitor_sources_raw
+        if isinstance(discovered_competitor_sources_raw, dict)
+        else None
+    )
+    state_competitors = [
+        item for item in state.get("competitors", []) if isinstance(item, str) and item.strip()
+    ]
+    report_content = _apply_structured_writer_sections(
+        report_content=report_content,
+        target_sections=target_sections,
+        analysis_archetype=intake_draft.analysis_archetype,
+        response_language=intake_draft.response_language,
+        report_depth=report_depth,
+        knowledge_payload=knowledge_payload,
+        comparison_briefs=comparison_briefs,
+        evidence_briefs=evidence_briefs,
+        allowed_evidence_ids=allowed_evidence_ids,
+        state_competitors=state_competitors,
+        discovered_competitor_sources=discovered_competitor_sources,
+        self_product=intake_draft.self_product,
+    )
+    report_content, numeric_guardrail_sections = _apply_numeric_claim_guardrail(
+        report_content=report_content,
+        unsupported_numeric_claims=request.unsupported_numeric_claims,
+        response_language=intake_draft.response_language,
+    )
     log.info(
         "writer.report_mode",
         report_mode=report_mode,
@@ -867,6 +1894,7 @@ async def writer_node(state: AgentState) -> AgentState:
         if isinstance(report_content.get("sections"), list)
         else 0,
         llm_fallback_used=llm_response.fallback_used,
+        numeric_guardrail_sections=numeric_guardrail_sections,
     )
     markdown = _render_report_markdown(
         report_content,
@@ -906,6 +1934,7 @@ async def writer_node(state: AgentState) -> AgentState:
                 "section_count": section_count,
                 "evidence_ref_count": evidence_ref_count,
                 "fallback_reason": fallback_reason,
+                "numeric_guardrail_sections": numeric_guardrail_sections,
                 "llm_provider": llm_response.provider,
                 "llm_prompt_preview": llm_response.prompt_preview,
                 "llm_fallback_used": llm_response.fallback_used,

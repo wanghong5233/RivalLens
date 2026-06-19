@@ -341,6 +341,72 @@ def test_filter_discovery_candidates_prioritizes_direct_candidates() -> None:
     ]
 
 
+def test_filter_discovery_candidates_does_not_pollute_role_with_global_trend_intent() -> None:
+    quote = "Meta Ray-Ban smart glasses are AI wearable products."
+    candidate = SimpleNamespace(
+        name="Meta Ray-Ban",
+        is_competitor=True,
+        relevance_reason="AI 眼镜产品，覆盖第一视角拍摄和语音助手。",
+        evidence_quote=quote,
+    )
+
+    discovered, filtered_out, relevance = _filter_discovery_candidates(
+        candidates=[candidate],
+        snippets=[quote],
+        snippet_rows=[],
+        domain_context="AI硬件发展趋势",
+        analysis_intent="分析发展趋势并寻找商业机会",
+        self_product="AI眼镜",
+        analysis_archetype="landscape",
+    )
+
+    assert discovered == ["Meta Ray-Ban"]
+    assert filtered_out == []
+    assert relevance[0]["candidate_role"] == "direct_competitor"
+
+
+def test_filter_discovery_candidates_landscape_promotes_non_media_when_core_missing() -> None:
+    product_quote = "Meta Ray-Ban smart glasses provide AI assistant and camera features."
+    media_quote = "IDC released an industry trend report for AI hardware growth."
+    upstream_quote = "NVIDIA provides GPU chips for AI smart glasses."
+    candidates = [
+        SimpleNamespace(
+            name="Meta Ray-Ban",
+            is_competitor=True,
+            candidate_role="trend_reference",
+            relevance_reason="智能眼镜产品，覆盖语音助手与拍摄能力。",
+            evidence_quote=product_quote,
+        ),
+        SimpleNamespace(
+            name="IDC",
+            is_competitor=True,
+            candidate_role="trend_reference",
+            relevance_reason="行业研究机构趋势报告。",
+            evidence_quote=media_quote,
+        ),
+        SimpleNamespace(
+            name="NVIDIA",
+            is_competitor=True,
+            candidate_role="upstream_supplier",
+            relevance_reason="上游芯片供应商。",
+            evidence_quote=upstream_quote,
+        ),
+    ]
+
+    discovered, filtered_out, relevance = _filter_discovery_candidates(
+        candidates=candidates,
+        snippets=[product_quote, media_quote, upstream_quote],
+        snippet_rows=[],
+        self_product="AI眼镜",
+        analysis_archetype="landscape",
+    )
+
+    assert filtered_out == []
+    assert discovered[0] == "Meta Ray-Ban"
+    assert relevance[0]["candidate_role"] == "adjacent_competitor"
+    assert any(item["candidate_role"] in {"direct_competitor", "adjacent_competitor", "substitute"} for item in relevance)
+
+
 @pytest.mark.asyncio
 async def test_discovery_node_passes_locale_to_search_router(
     monkeypatch: pytest.MonkeyPatch,

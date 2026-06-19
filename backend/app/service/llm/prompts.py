@@ -1255,15 +1255,13 @@ def build_compression_fallback_user_prompt(
 
 
 _ANALYST_SCHEMA_TASK_COMPARISON = (
-    " Focus on cross-competitor narrative analysis in this step; structured schema extraction runs "
-    "in a dedicated evidence-grounded stage."
+    " This is COMPARISON mode: cover all named competitors with head-to-head evidence on "
+    "feature/pricing/user_feedback, and surface why-win/why-lose signals for self-positioning."
 )
 _ANALYST_SCHEMA_TASK_LANDSCAPE = (
-    " This is a LANDSCAPE/opportunity scan: the entities are heterogeneous companies, products, or approaches, "
-    "NOT an apples-to-apples product set. Do NOT force per-competitor schema rows; put the value in "
-    "insights and comparisons "
-    "framed as opportunity dimensions (monetization paths, feasibility, segments/whitespace, "
-    "differentiation, risks)."
+    " This is LANDSCAPE mode: still produce battlecard-ready evidence for core top-N competitors "
+    "(feature/pricing/user_feedback) while adding layering, trend, and opportunity signals for "
+    "peripheral entities."
 )
 
 
@@ -1301,7 +1299,8 @@ def build_analyst_user_prompt(
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
         "Produce cross-competitor insights with explicit evidence_ids. "
         "For each focus dimension that has grounded evidence in evidence_briefs, produce at least one insight. "
-        "Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids."
+        "Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids. "
+        "Prioritize product-level facts that can later render competitor_profiles + comparison_matrix deterministically."
         + schema_task
     )
 
@@ -1472,12 +1471,13 @@ def build_writer_user_prompt(
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     framing = (
-        "Write an OPPORTUNITY/LANDSCAPE report (not a head-to-head battlecard): map the "
-        "monetization paths, feasibility, market segments/whitespace, differentiation levers, and "
-        "risks for the user's goal, using the discovered companies/products as illustrative evidence rather "
-        "than apples-to-apples comparison rows. "
+        "Write a commercial-grade landscape report using the unified skeleton: "
+        "competitor layering map + core competitor profiles + triplet comparison matrix "
+        "(feature/pricing/user_feedback) + 2x2 positioning + trend summary + opportunity map + actionable recommendations. "
         if analysis_archetype == "landscape"
-        else "Write a battlecard with grounded evidence refs. "
+        else "Write a commercial-grade comparison report using the unified skeleton: "
+        "all competitor profiles + triplet comparison matrix (feature/pricing/user_feedback) + "
+        "2x2 positioning + self positioning + actionable recommendations. "
     )
     return (
         "Writer context:\n"
@@ -1503,6 +1503,7 @@ def build_writer_user_prompt(
         f"- unsupported_numeric_claims: {_json(list(unsupported_numeric_claims)[:12])}\n\n"
         + framing
         + "section_id must exactly match target_sections entries. "
+        "Do not skip target sections even when evidence is partial; explicitly mark coverage gaps. "
         "Inline citations in content_markdown must use [ev_xxx] only from allowed_evidence_ids; "
         "never output bare ev_xxx or insight_x ids in markdown. "
         "If unsupported_numeric_claims is non-empty, do not repeat those exact numbers unless the "

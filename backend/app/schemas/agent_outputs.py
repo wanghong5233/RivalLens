@@ -15,6 +15,19 @@ DEFAULT_WRITER_SECTIONS: tuple[str, ...] = DEFAULT_FOCUS_DIMENSIONS
 MIN_WRITER_SECTION_CHARS = 60
 CoverageStatus = Literal["complete", "partial", "insufficient_data", "missing"]
 KnowledgeCoverage = dict[str, dict[str, CoverageStatus]]
+WRITER_SHARED_SKELETON_SECTIONS: tuple[str, ...] = (
+    "executive_summary",
+    "competitor_profiles",
+    "comparison_matrix",
+    "positioning_map",
+    "strategic_recommendations",
+)
+WRITER_LANDSCAPE_EXTRA_SECTIONS: tuple[str, ...] = (
+    "market_landscape_map",
+    "trend_summary",
+    "opportunity_map",
+)
+WRITER_COMPARISON_EXTRA_SECTIONS: tuple[str, ...] = ("self_positioning",)
 
 
 def stable_unique(values: list[str]) -> list[str]:
@@ -32,21 +45,25 @@ def resolve_writer_target_sections(
     *,
     requested_sections: list[str] | None,
     recommended_sections: list[str],
+    analysis_archetype: str = "comparison",
 ) -> list[str]:
     """Single source of truth for writer section targets across analyst → writer."""
-    targets: list[str] = []
-    if requested_sections:
-        for section_id in requested_sections:
-            try:
-                targets.append(validate_section_id(section_id))
-            except ValueError:
-                continue
-    if not targets:
-        for section_id in recommended_sections:
-            try:
-                targets.append(validate_section_id(section_id))
-            except ValueError:
-                continue
+    extras = (
+        WRITER_LANDSCAPE_EXTRA_SECTIONS
+        if analysis_archetype == "landscape"
+        else WRITER_COMPARISON_EXTRA_SECTIONS
+    )
+    targets: list[str] = [*WRITER_SHARED_SKELETON_SECTIONS, *extras]
+    for section_id in requested_sections or []:
+        try:
+            targets.append(validate_section_id(section_id))
+        except ValueError:
+            continue
+    for section_id in recommended_sections:
+        try:
+            targets.append(validate_section_id(section_id))
+        except ValueError:
+            continue
     if not targets:
         targets = list(DEFAULT_WRITER_SECTIONS)
     return stable_unique(targets)
@@ -681,6 +698,7 @@ class WriterExecutionContext(BaseModel):
         analyst_output: AnalystOutput,
         allowed_evidence_ids: set[str],
         allowed_insight_ids: set[str],
+        analysis_archetype: str = "comparison",
         default_risk_callouts: list[str] | None = None,
     ) -> WriterExecutionContext:
         return cls(
@@ -688,6 +706,7 @@ class WriterExecutionContext(BaseModel):
             target_sections=resolve_writer_target_sections(
                 requested_sections=requested_sections,
                 recommended_sections=analyst_output.recommended_sections,
+                analysis_archetype=analysis_archetype,
             ),
             allowed_evidence_ids=frozenset(allowed_evidence_ids),
             allowed_insight_ids=frozenset(allowed_insight_ids),

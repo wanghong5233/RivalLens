@@ -71,6 +71,7 @@ TriggerSource = Literal[
 ]
 FocusDimensionSource = Literal["upstream_task", "intake", "hints", "default", "llm_tool_output"]
 PlanTaskStage = Literal["discover", "research", "analyze", "write"]
+LandscapeTopicSignature = tuple[str, tuple[str, ...], int, int, bool]
 _DIMENSIONAL_SUPERVISOR_TOOLS = frozenset(
     {"ConductResearch", "ConductResearchBatch", "Analyze", "Write"}
 )
@@ -1321,6 +1322,7 @@ def _build_landscape_batch_topics(
     if not pending_competitors:
         return []
     task_focus_by_competitor: dict[str, list[str]] = {}
+    task_topic_by_competitor: dict[str, str] = {}
     tasks_raw = _get_object_field(plan_tree, "tasks")
     if isinstance(tasks_raw, list):
         for task in tasks_raw:
@@ -1344,18 +1346,40 @@ def _build_landscape_batch_topics(
             )
             if not normalized:
                 continue
+            title = _clean_optional_string(_get_object_field(task, "title"))
+            description = _clean_optional_string(_get_object_field(task, "description"))
+            topic_text = description or title
+            if topic_text is not None:
+                task_topic_by_competitor[competitor_id] = topic_text
             # Keep planner-provided per-competitor focus dimensions intact for
             # landscape runs, while preserving the schema trio when present.
             cap = profile.max_dimensions
             if all(dimension in normalized for dimension in COMPARISON_SCHEMA_BASE_DIMENSIONS):
                 cap = max(cap, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
             task_focus_by_competitor[competitor_id] = normalized[:cap]
+    source_context_by_competitor: dict[str, str] = {}
+    competitor_sources_raw = _get_object_field(plan_tree, "competitor_sources")
+    if isinstance(competitor_sources_raw, dict):
+        for competitor_id in pending_competitors:
+            payload = competitor_sources_raw.get(competitor_id)
+            if not isinstance(payload, dict):
+                continue
+            relevance_reason = _clean_optional_string(payload.get("relevance_reason"))
+            if relevance_reason is None:
+                continue
+            source_context_by_competitor[competitor_id] = " ".join(relevance_reason.split())[:240]
     topics: list[ConductResearch] = []
     for competitor_id in pending_competitors:
         competitor_focus = task_focus_by_competitor.get(competitor_id) or list(fallback_dimensions)
+        research_topic = task_topic_by_competitor.get(competitor_id) or (
+            f"{competitor_id} vs user_query={user_query}"
+        )
+        context = source_context_by_competitor.get(competitor_id)
+        if context and context not in research_topic:
+            research_topic = f"{research_topic}; context: {context}"
         topics.append(
             ConductResearch(
-                research_topic=f"{competitor_id} vs user_query={user_query}",
+                research_topic=research_topic,
                 competitor_id=competitor_id,
                 focus_dimensions=competitor_focus,
                 max_iterations=profile.react_turns,
@@ -1364,6 +1388,78 @@ def _build_landscape_batch_topics(
             )
         )
     return topics
+
+
+def _coerce_landscape_topic_signature(
+    *,
+    topic_raw: object,
+    profile: TierProfile,
+) -> LandscapeTopicSignature | None:
+    if not isinstance(topic_raw, dict):
+        return None
+    competitor_id = _clean_optional_string(topic_raw.get("competitor_id"))
+    if competitor_id is None:
+        return None
+    focus_raw = topic_raw.get("focus_dimensions")
+    focus_dimensions = (
+        normalize_dimensions(
+            [item for item in focus_raw if isinstance(item, str)],
+            allow_empty=True,
+        )
+        if isinstance(focus_raw, list)
+        else []
+    )
+    max_iterations_raw = topic_raw.get("max_iterations")
+    max_iterations = (
+        min(max_iterations_raw, profile.react_turns)
+        if isinstance(max_iterations_raw, int) and max_iterations_raw > 0
+        else profile.react_turns
+    )
+    search_max_results_raw = topic_raw.get("search_max_results")
+    search_max_results = (
+        min(search_max_results_raw, profile.search_max_results)
+        if isinstance(search_max_results_raw, int) and search_max_results_raw > 0
+        else profile.search_max_results
+    )
+    fallback_to_offline_raw = topic_raw.get("fallback_to_offline")
+    fallback_to_offline = (
+        bool(fallback_to_offline_raw)
+        if fallback_to_offline_raw is not None
+        else True
+    )
+    return (
+        competitor_id,
+        tuple(focus_dimensions),
+        max_iterations,
+        search_max_results,
+        fallback_to_offline,
+    )
+
+
+def _landscape_topic_signatures_for_decision(
+    *,
+    decision: SupervisorDecision,
+    profile: TierProfile,
+) -> list[LandscapeTopicSignature]:
+    if decision.chosen_tool == "ConductResearch":
+        signature = _coerce_landscape_topic_signature(
+            topic_raw=decision.tool_args,
+            profile=profile,
+        )
+        return [signature] if signature is not None else []
+    topics_raw = decision.tool_args.get("topics")
+    if not isinstance(topics_raw, list):
+        return []
+    signatures: list[LandscapeTopicSignature] = []
+    for topic_raw in topics_raw:
+        signature = _coerce_landscape_topic_signature(
+            topic_raw=topic_raw,
+            profile=profile,
+        )
+        if signature is None:
+            continue
+        signatures.append(signature)
+    return signatures
 
 
 def _enforce_landscape_batch_research(
@@ -1394,22 +1490,21 @@ def _enforce_landscape_batch_research(
     )
     if len(topics) <= 1:
         return decision
-    selected_competitors = [topic.competitor_id for topic in topics]
-    current_competitors: list[str] = []
-    if decision.chosen_tool == "ConductResearch":
-        competitor_id = _clean_optional_string(decision.tool_args.get("competitor_id"))
-        if competitor_id is not None:
-            current_competitors = [competitor_id]
-    else:
-        topics_raw = decision.tool_args.get("topics")
-        if isinstance(topics_raw, list):
-            for topic in topics_raw:
-                if not isinstance(topic, dict):
-                    continue
-                competitor_id = _clean_optional_string(topic.get("competitor_id"))
-                if competitor_id is not None:
-                    current_competitors.append(competitor_id)
-    if current_competitors == selected_competitors:
+    selected_topic_signatures: list[LandscapeTopicSignature] = [
+        (
+            topic.competitor_id,
+            tuple(normalize_dimensions(list(topic.focus_dimensions), allow_empty=True)),
+            topic.max_iterations,
+            topic.search_max_results,
+            bool(topic.fallback_to_offline),
+        )
+        for topic in topics
+    ]
+    current_topic_signatures = _landscape_topic_signatures_for_decision(
+        decision=decision,
+        profile=profile,
+    )
+    if current_topic_signatures == selected_topic_signatures:
         return decision
 
     now = _now_iso()

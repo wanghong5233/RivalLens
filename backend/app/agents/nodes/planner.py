@@ -417,21 +417,35 @@ def _select_discovered_competitors_for_research(
         return discovered_competitors[:max_competitors], set()
     core: list[str] = []
     non_core: list[str] = []
+    role_by_competitor: dict[str, str | None] = {}
     for competitor in discovered_competitors:
         role = _discovered_competitor_role(
             competitor=competitor,
             discovered_competitor_sources=discovered_competitor_sources,
         )
+        role_by_competitor[competitor] = role
         if role in _CORE_DISCOVERY_ROLES:
             core.append(competitor)
             continue
         non_core.append(competitor)
     deepdive_cap = max(0, min(max_competitors, landscape_core_deepdive_n))
     deepdive_core = core[:deepdive_cap]
+    if not deepdive_core and deepdive_cap > 0:
+        fallback_non_upstream = [
+            competitor
+            for competitor in non_core
+            if role_by_competitor.get(competitor) != "upstream_supplier"
+        ]
+        deepdive_core = fallback_non_upstream[:deepdive_cap]
+    deepdive_core_set = set(deepdive_core)
     remaining_slots = max(0, max_competitors - len(deepdive_core))
-    shallow_non_core = non_core[:remaining_slots]
+    shallow_non_core = [competitor for competitor in non_core if competitor not in deepdive_core_set][
+        :remaining_slots
+    ]
     remaining_slots -= len(shallow_non_core)
-    shallow_core = core[deepdive_cap : deepdive_cap + remaining_slots]
+    shallow_core = [competitor for competitor in core if competitor not in deepdive_core_set][
+        :remaining_slots
+    ]
     selected = [*deepdive_core, *shallow_non_core, *shallow_core]
     return selected, set(deepdive_core)
 

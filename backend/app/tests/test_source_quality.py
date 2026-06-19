@@ -38,5 +38,9 @@ def test_is_low_semantic_text_allows_substantive_quote() -> None:
 
 def test_source_blocklist_reason_flags_auth_and_linkedin_urls() -> None:
     assert source_blocklist_reason("https://www.linkedin.com/login") == "blocked_host"
+    assert source_blocklist_reason("https://x.com/search?q=ai+hardware") == "blocked_host"
     assert source_blocklist_reason("https://example.com/auth/login") == "blocked_auth_path"
+    assert source_blocklist_reason("https://example.com/search?q=cursor+pricing") == "blocked_search_or_directory_path"
+    assert source_blocklist_reason("https://example.com/webdir/tools/ai") == "blocked_search_or_directory_path"
+    assert source_blocklist_reason("https://cursor.com/") == "bare_homepage"
     assert source_blocklist_reason("https://cursor.com/pricing") is None

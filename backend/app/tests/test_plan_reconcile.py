@@ -173,6 +173,38 @@ def test_reconcile_plan_tree_landscape_core_tasks_keep_schema_dimensions() -> No
     assert "user_feedback" not in peripheral_dimensions
 
 
+def test_reconcile_plan_tree_landscape_backfills_core_deepdive_when_all_non_core() -> None:
+    plan = PlanTree(
+        tasks=[
+            PlanTask(stage="discover", title="发现竞品", description="discover"),
+            PlanTask(stage="analyze", title="分析", description="analyze"),
+        ],
+        version=1,
+    )
+    reconciled = reconcile_plan_tree_after_discovery(
+        plan_tree=plan,
+        discovered_competitors=["Meta Ray-Ban", "IDC", "NVIDIA", "Counterpoint"],
+        discovered_competitor_sources={
+            "Meta Ray-Ban": {"candidate_role": "trend_reference"},
+            "IDC": {"candidate_role": "trend_reference"},
+            "NVIDIA": {"candidate_role": "upstream_supplier"},
+            "Counterpoint": {"candidate_role": "trend_reference"},
+        },
+        analysis_archetype="landscape",
+        max_competitors=3,
+        max_dimensions=3,
+        landscape_core_deepdive_n=2,
+    )
+
+    research_tasks = [task for task in reconciled.tasks if task.stage == "research"]
+    assert [task.competitor_id for task in research_tasks] == ["Meta Ray-Ban", "IDC", "NVIDIA"]
+    for task in research_tasks[:2]:
+        assert task.focus_dimensions[:3] == list(COMPARISON_SCHEMA_BASE_DIMENSIONS)
+    assert "feature" not in (research_tasks[2].focus_dimensions or [])
+    assert "pricing" not in (research_tasks[2].focus_dimensions or [])
+    assert "user_feedback" not in (research_tasks[2].focus_dimensions or [])
+
+
 def test_reconcile_plan_tree_logs_authoritative_research_competitor_set(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

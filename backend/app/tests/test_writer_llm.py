@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from agents.nodes.writer import (
+    _apply_structured_writer_sections,
+    _apply_numeric_claim_guardrail,
     _build_fallback_report,
     _render_report_markdown,
 )
@@ -141,6 +143,57 @@ def test_writer_report_output_accepts_valid_payload() -> None:
     assert report["template_id"] == "battlecard_default"
     assert len(report["sections"]) == 1
     assert report["sections"][0]["evidence_refs"] == ["ev_001"]
+
+
+def test_numeric_claim_guardrail_downgrades_section_numbers() -> None:
+    report_content = {
+        "template_id": "default",
+        "title": "测试报告",
+        "executive_summary": "摘要。",
+        "sections": [
+            {
+                "section_id": "pricing_strategy",
+                "title": "定价策略",
+                "content_markdown": "旗舰版定价 3799 元，入门版 1899 元，预测区间 1500-2000 元。",
+                "evidence_refs": ["ev_001"],
+                "insight_refs": [],
+            },
+            {
+                "section_id": "product_positioning",
+                "title": "定位",
+                "content_markdown": "定位强调生态整合能力。",
+                "evidence_refs": ["ev_002"],
+                "insight_refs": [],
+            },
+        ],
+        "risk_callouts": [],
+    }
+    updated, downgraded_sections = _apply_numeric_claim_guardrail(
+        report_content=report_content,
+        unsupported_numeric_claims=[
+            {
+                "claim": "预测区间 1500-2000 元",
+                "section_id": "pricing_strategy",
+                "reason": "unsupported",
+            }
+        ],
+        response_language="zh",
+    )
+
+    assert downgraded_sections == ["pricing_strategy"]
+    pricing_section = updated["sections"][0]
+    assert isinstance(pricing_section, dict)
+    pricing_markdown = pricing_section["content_markdown"]
+    assert isinstance(pricing_markdown, str)
+    assert "3799" not in pricing_markdown
+    assert "1899" not in pricing_markdown
+    assert "1500" not in pricing_markdown
+    assert "2000" not in pricing_markdown
+    assert "若干" in pricing_markdown
+    assert "numeric_claims_downgraded:pricing_strategy" in updated["risk_callouts"]
+    positioning_section = updated["sections"][1]
+    assert isinstance(positioning_section, dict)
+    assert positioning_section["content_markdown"] == "定位强调生态整合能力。"
 
 
 def test_writer_report_output_counts_top_level_executive_summary_as_covered() -> None:
@@ -525,4 +578,88 @@ def test_resolve_writer_target_sections_uses_insight_derived_recommendations() -
         recommended_sections=["competitive_edge", "monetization_model"],
     )
 
-    assert targets == ["competitive_edge", "monetization_model"]
+    assert targets[:6] == [
+        "executive_summary",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
+        "strategic_recommendations",
+        "self_positioning",
+    ]
+    assert targets[-2:] == ["competitive_edge", "monetization_model"]
+
+
+def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() -> None:
+    updated = _apply_structured_writer_sections(
+        report_content={
+            "template_id": "default",
+            "title": "RivalLens",
+            "executive_summary": "summary",
+            "sections": [
+                {
+                    "section_id": "trend_summary",
+                    "title": "趋势综述",
+                    "content_markdown": "趋势段落 [ev_001]",
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": [],
+                }
+            ],
+            "risk_callouts": [],
+        },
+        target_sections=[
+            "executive_summary",
+            "competitor_profiles",
+            "comparison_matrix",
+            "positioning_map",
+            "strategic_recommendations",
+            "market_landscape_map",
+            "trend_summary",
+            "opportunity_map",
+        ],
+        analysis_archetype="landscape",
+        response_language="zh",
+        report_depth="quick",
+        knowledge_payload={
+            "schema_version": "schema_v0.2",
+            "features": [
+                {"competitor_id": "Meta", "name": "语音助手", "evidence_ids": ["ev_001"]},
+                {"competitor_id": "XREAL", "name": "空间显示", "evidence_ids": ["ev_002"]},
+            ],
+            "pricings": [
+                {"competitor_id": "Meta", "model": "subscription", "free_plan": False, "enterprise_plan": True, "evidence_ids": ["ev_001"]}
+            ],
+            "personas": [],
+            "feedback": [
+                {"competitor_id": "Meta", "sentiment": "positive", "topic": "续航", "summary": "续航较好", "evidence_ids": ["ev_003"]}
+            ],
+            "missing_reasons": {},
+            "coverage": {
+                "Meta": {"feature": "complete", "pricing": "complete", "feedback": "partial"},
+                "XREAL": {"feature": "partial", "pricing": "insufficient_data", "feedback": "insufficient_data"},
+            },
+        },
+        comparison_briefs=[],
+        evidence_briefs=[
+            {"evidence_id": "ev_001", "competitor_id": "Meta"},
+            {"evidence_id": "ev_002", "competitor_id": "XREAL"},
+            {"evidence_id": "ev_003", "competitor_id": "Meta"},
+        ],
+        allowed_evidence_ids={"ev_001", "ev_002", "ev_003"},
+        state_competitors=["Meta", "XREAL"],
+        discovered_competitor_sources={
+            "Meta": {"candidate_role": "direct_competitor"},
+            "XREAL": {"candidate_role": "adjacent_competitor"},
+        },
+        self_product=None,
+    )
+
+    sections = [item for item in updated["sections"] if isinstance(item, dict)]
+    section_ids = [item.get("section_id") for item in sections]
+    assert "competitor_profiles" in section_ids
+    assert "comparison_matrix" in section_ids
+    assert "positioning_map" in section_ids
+    assert "market_landscape_map" in section_ids
+    matrix_section = next(item for item in sections if item.get("section_id") == "comparison_matrix")
+    profile_section = next(item for item in sections if item.get("section_id") == "competitor_profiles")
+    assert "|竞品|核心功能摘要|覆盖状态|" in matrix_section["content_markdown"]
+    assert "### Meta" in profile_section["content_markdown"]

@@ -34,7 +34,10 @@ LOW_SEMANTIC_PHRASES = frozenset(
 BLOCKED_HOST_SUFFIXES = frozenset(
     {
         "linkedin.com",
-        "www.linkedin.com",
+        "x.com",
+        "twitter.com",
+        "book118.com",
+        "xun296.com",
     }
 )
 BLOCKED_PATH_MARKERS = frozenset(
@@ -44,6 +47,12 @@ BLOCKED_PATH_MARKERS = frozenset(
         "/auth",
         "/checkpoint",
         "/uas/login",
+    }
+)
+BLOCKED_DIRECTORY_PATH_MARKERS = frozenset(
+    {
+        "/search",
+        "/webdir",
     }
 )
 WORD_PATTERN = re.compile(r"[A-Za-z\u4e00-\u9fff][A-Za-z\u4e00-\u9fff0-9_-]*")
@@ -123,12 +132,25 @@ def source_blocklist_reason(source_url: str | None) -> str | None:
     if source_url is None:
         return None
     parsed = urlsplit(source_url)
-    host = parsed.netloc.lower()
+    host = parsed.netloc.lower().removeprefix("www.")
     path = parsed.path.lower()
+    query = parsed.query.lower()
     if not host:
         return None
     if host in BLOCKED_HOST_SUFFIXES or any(host.endswith(f".{suffix}") for suffix in BLOCKED_HOST_SUFFIXES):
         return "blocked_host"
     if any(marker in path for marker in BLOCKED_PATH_MARKERS):
         return "blocked_auth_path"
+    normalized_path = path.rstrip("/")
+    if any(
+        marker == normalized_path
+        or normalized_path.endswith(marker)
+        or f"{marker}/" in normalized_path
+        for marker in BLOCKED_DIRECTORY_PATH_MARKERS
+    ):
+        return "blocked_search_or_directory_path"
+    if query and ("q=" in query or "query=" in query) and "search" in normalized_path:
+        return "blocked_search_or_directory_path"
+    if path in {"", "/"} and not query:
+        return "bare_homepage"
     return None

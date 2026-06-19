@@ -46,6 +46,9 @@ _QA_SEMANTIC_DIMENSIONS: tuple[str, ...] = (
     "faithfulness",
     "instruction_following",
 )
+_CORE_DISCOVERY_ROLES: frozenset[str] = frozenset(
+    {"direct_competitor", "adjacent_competitor", "substitute"}
+)
 
 
 def _report_has_writer_fallback_mode(content_json: dict[str, object]) -> bool:
@@ -68,6 +71,10 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
         "evidence.source_url",
         "evidence.sanitized_text",
     ],
+    "rule_structured_sections_present": ["reports.content_json.sections[].section_id"],
+    "rule_triplet_coverage_for_profile_competitors": ["run_knowledge.coverage"],
+    "rule_evidence_balance_for_profile_competitors": ["evidence.span.competitor_id"],
+    "rule_source_quality_blocklist_share": ["evidence.source_url"],
     "rule_deep_report_min_char_count": ["reports.content_markdown"],
     "rule_deep_report_covers_target_sections": ["reports.content_json.sections[].section_id"],
     "rule_deep_sections_min_chars": ["reports.content_json.sections[].content_markdown"],
@@ -286,6 +293,58 @@ def _qa_reject_budget_from_run(run: Run | None) -> int:
     depth_raw = run.intake_draft.get("report_depth")
     depth = depth_raw if isinstance(depth_raw, str) else None
     return resolve_tier_profile(depth).qa_reject_budget
+
+
+def _analysis_archetype_from_run(run: Run | None) -> str:
+    if run is None or not isinstance(run.intake_draft, dict):
+        return "comparison"
+    archetype_raw = run.intake_draft.get("analysis_archetype")
+    return archetype_raw if archetype_raw in {"comparison", "landscape"} else "comparison"
+
+
+def _profile_competitors_for_qa(
+    *,
+    run: Run | None,
+    analysis_archetype: str,
+    report_depth: Literal["quick", "deep"],
+) -> list[str]:
+    if run is None:
+        return []
+    competitors = [
+        item.strip()
+        for item in run.competitors or []
+        if isinstance(item, str) and item.strip()
+    ]
+    if analysis_archetype != "landscape":
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for competitor in competitors:
+            if competitor in seen:
+                continue
+            seen.add(competitor)
+            ordered.append(competitor)
+        return ordered
+    plan_tree = run.plan_tree if isinstance(run.plan_tree, dict) else {}
+    competitor_sources_raw = plan_tree.get("competitor_sources")
+    competitor_sources = competitor_sources_raw if isinstance(competitor_sources_raw, dict) else {}
+    core = [
+        competitor
+        for competitor in competitors
+        if isinstance(competitor_sources.get(competitor), dict)
+        and competitor_sources[competitor].get("candidate_role") in _CORE_DISCOVERY_ROLES
+    ]
+    if not core:
+        non_upstream = [
+            competitor
+            for competitor in competitors
+            if not (
+                isinstance(competitor_sources.get(competitor), dict)
+                and competitor_sources[competitor].get("candidate_role") == "upstream_supplier"
+            )
+        ]
+        core = non_upstream or competitors
+    limit = 5 if report_depth == "deep" else 3
+    return core[:limit]
 
 
 def _extend_sections_from_values(*, sections: list[str], values: object) -> None:
@@ -688,8 +747,13 @@ async def evaluate_report(
         else {}
     )
     market_scope_raw = intake_draft.get("market_scope")
-    archetype_raw = intake_draft.get("analysis_archetype")
-    require_competitor_schema = archetype_raw != "landscape"
+    analysis_archetype = _analysis_archetype_from_run(run)
+    require_competitor_schema = analysis_archetype != "landscape"
+    profile_competitors = _profile_competitors_for_qa(
+        run=run,
+        analysis_archetype=analysis_archetype,
+        report_depth=report_depth,
+    )
     rule_results = evaluate_fast_path_rules(
         content_markdown=report.content_markdown,
         content_json=report.content_json,
@@ -698,6 +762,9 @@ async def evaluate_report(
         report_depth=report_depth,
         target_sections=target_sections,
         market_scope=market_scope_raw if isinstance(market_scope_raw, str) else None,
+        knowledge=knowledge,
+        analysis_archetype=analysis_archetype,
+        profile_competitors=profile_competitors,
     )
     promoted_rule_results, promoted_rule_metadata = _build_promoted_rule_results(
         promoted_qa_rules=promoted_rules,

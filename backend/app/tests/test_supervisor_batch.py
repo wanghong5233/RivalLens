@@ -821,7 +821,13 @@ async def test_supervisor_landscape_research_is_forced_to_batch(
                         "focus_dimensions": ["market_differences"],
                         "enabled": True,
                     },
-                ]
+                ],
+                "competitor_sources": {
+                    "NVIDIA": {
+                        "candidate_role": "upstream_supplier",
+                        "relevance_reason": "上游芯片供应商，提供 AI 眼镜核心算力与供应链约束。",
+                    }
+                },
             },
         },
     )
@@ -831,6 +837,112 @@ async def test_supervisor_landscape_research_is_forced_to_batch(
     topics = new_state["pending_tool_args"]["topics"]
     assert isinstance(topics, list)
     assert [item["competitor_id"] for item in topics] == ["Meta Ray-Ban", "XREAL", "NVIDIA"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_landscape_batch_rewrites_focus_dimension_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = SupervisorToolCallOutput.parse_llm_content(
+        {
+            "chosen_tool": "ConductResearchBatch",
+            "tool_args": {
+                "topics": [
+                    {
+                        "research_topic": "Meta Ray-Ban主流产品与发展趋势",
+                        "competitor_id": "Meta Ray-Ban",
+                        "focus_dimensions": ["product_lineup", "tech_specs", "market_trends"],
+                        "max_iterations": 3,
+                        "search_max_results": 5,
+                        "fallback_to_offline": False,
+                    },
+                    {
+                        "research_topic": "XREAL主流产品与发展趋势",
+                        "competitor_id": "XREAL",
+                        "focus_dimensions": ["product_lineup", "tech_specs", "market_trends"],
+                        "max_iterations": 3,
+                        "search_max_results": 5,
+                        "fallback_to_offline": False,
+                    },
+                    {
+                        "research_topic": "NVIDIA主流产品与发展趋势",
+                        "competitor_id": "NVIDIA",
+                        "focus_dimensions": ["product_lineup", "tech_specs", "market_trends"],
+                        "max_iterations": 3,
+                        "search_max_results": 5,
+                        "fallback_to_offline": False,
+                    },
+                ],
+                "parallelism_rationale": "llm output keeps same competitors but drifts dimensions",
+            },
+            "reasoning_summary": "LLM selected the same competitor set with drifted dimensions.",
+        }
+    )
+    new_state, captured = await _run_supervisor_node_with_output(
+        monkeypatch,
+        output=output,
+        step_id="step_supervisor_landscape_batch_dimension_guardrail",
+        state={
+            "run_id": "run_test",
+            "user_query": "AI 硬件 landscape",
+            "competitors": ["Meta Ray-Ban", "XREAL", "NVIDIA"],
+            "researched_competitors": [],
+            "analysis_done": False,
+            "report_draft_done": False,
+            "current_iteration": 0,
+            "decisions": [],
+            "intake_draft": {
+                "analysis_archetype": "landscape",
+                "focus_dimensions": ["market_differences"],
+            },
+            "plan_tree": {
+                "tasks": [
+                    {
+                        "stage": "research",
+                        "competitor_id": "Meta Ray-Ban",
+                        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                        "enabled": True,
+                    },
+                    {
+                        "stage": "research",
+                        "competitor_id": "XREAL",
+                        "focus_dimensions": ["feature", "pricing", "user_feedback"],
+                        "enabled": True,
+                    },
+                    {
+                        "stage": "research",
+                        "competitor_id": "NVIDIA",
+                        "focus_dimensions": ["market_differences"],
+                        "enabled": True,
+                    },
+                ],
+                "competitor_sources": {
+                    "NVIDIA": {
+                        "candidate_role": "upstream_supplier",
+                        "relevance_reason": "上游芯片供应商，提供 AI 眼镜核心算力与供应链约束。",
+                    }
+                },
+            },
+        },
+    )
+
+    assert new_state["next_action"] == "researcher"
+    assert captured[0][2]["chosen_tool"] == "ConductResearchBatch"
+    topics = new_state["pending_tool_args"]["topics"]
+    assert isinstance(topics, list)
+    by_competitor = {item["competitor_id"]: item for item in topics}
+    assert by_competitor["Meta Ray-Ban"]["focus_dimensions"] == [
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
+    assert by_competitor["XREAL"]["focus_dimensions"] == [
+        "feature",
+        "pricing",
+        "user_feedback",
+    ]
+    assert by_competitor["NVIDIA"]["focus_dimensions"] == ["market_differences"]
+    assert "上游芯片供应商" in by_competitor["NVIDIA"]["research_topic"]
 
 
 @pytest.mark.asyncio
