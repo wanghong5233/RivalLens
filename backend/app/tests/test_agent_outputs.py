@@ -114,6 +114,49 @@ def test_resolve_writer_target_sections_adds_landscape_required_sections() -> No
     ]
 
 
+def test_resolve_writer_target_sections_accepts_outline_sections_not_dimensions() -> None:
+    analyst = AnalystOutput.model_validate(
+        {
+            "summary": "Summary with enough analyst context.",
+            "insights": [
+                {
+                    "dimension": "competitive_edge",
+                    "finding": "Product A leads on context depth.",
+                    "evidence_ids": ["ev_001"],
+                    "confidence": "high",
+                }
+            ],
+            "risk_flags": [],
+            "recommended_sections": ["competitive_edge", "opportunity_map"],
+            "report_outline": [
+                {"section_id": "trend_summary"},
+                {"section_id": "pricing"},
+            ],
+        }
+    )
+
+    sections = resolve_writer_target_sections(
+        requested_sections=["feature", "pricing"],
+        recommended_sections=analyst.recommended_sections,
+        report_outline=analyst.report_outline,
+        analysis_archetype="comparison",
+    )
+
+    assert sections == [
+        "executive_summary",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
+        "self_positioning",
+        "strategic_recommendations",
+        "trend_summary",
+        "opportunity_map",
+    ]
+    assert "feature" not in sections
+    assert "pricing" not in sections
+    assert "competitive_edge" not in sections
+
+
 def test_writer_execution_context_aligns_with_analyst_output() -> None:
     analyst = AnalystOutput.model_validate(
         {

@@ -175,6 +175,7 @@ def test_decision_from_tool_output_preserves_topic_dimensions_when_valid() -> No
         iteration=1,
         output=output,
         triggered_by="user_query",
+        # Legacy dimension ids remain valid fallback dimensions for researcher routing.
         fallback_dimensions=["product_positioning", "pricing_strategy"],
         fallback_sections=["product_positioning", "pricing_strategy"],
     )
@@ -545,6 +546,8 @@ async def test_qa_writer_rewrite_reuses_prior_writer_contract() -> None:
         agent_name="writer",
         payload={
             "template_id": "executive_briefing",
+            # This test locks QA rewrite compatibility with historical writer
+            # payloads. New outline target parsing is covered in test_agent_outputs.
             "target_sections": ["product_positioning", "pricing_strategy"],
         },
     )

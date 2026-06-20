@@ -23,6 +23,7 @@ from schemas.ids import make_id
 from schemas.report_sections import (
     CORE_DISCOVERY_ROLES,
     SectionEvidenceContext,
+    get_section_spec,
     section_title,
     triage_outline_sections,
 )
@@ -362,11 +363,18 @@ def _apply_numeric_claim_guardrail(
         for claim in explicit_claims_by_section.get(section_id, []):
             if claim and claim in rewritten:
                 rewritten = rewritten.replace(claim, f"{placeholder}区间" if response_language == "zh" else "a qualitative range")
-        rewritten = NUMERIC_RANGE_PATTERN.sub(
-            f"{placeholder}区间" if response_language == "zh" else "a qualitative range",
-            rewritten,
-        )
-        rewritten = NUMERIC_LITERAL_PATTERN.sub(placeholder, rewritten)
+        # Deterministic blocks render evidence-linked structured data (each row
+        # carries evidence_ids), so blanket-erasing every digit would destroy
+        # verifiable dates/models/figures. Limit them to the exact QA-flagged
+        # claims above; keep the defensive whole-body sweep only for narrative
+        # prose, where unflagged numbers are unverifiable LLM output.
+        spec = get_section_spec(section_id)
+        if spec is None or spec.kind != "deterministic":
+            rewritten = NUMERIC_RANGE_PATTERN.sub(
+                f"{placeholder}区间" if response_language == "zh" else "a qualitative range",
+                rewritten,
+            )
+            rewritten = NUMERIC_LITERAL_PATTERN.sub(placeholder, rewritten)
         rewritten = re.sub(r"\s{2,}", " ", rewritten)
         rewritten = rewritten.strip()
         if rewritten == body_raw.strip():
@@ -767,12 +775,17 @@ def _normalized_coverage_for_triage(
 def _status_label(*, status: str, response_language: str | None) -> str:
     if response_language == "zh":
         return {
-            "complete": "complete",
-            "partial": "partial",
-            "insufficient_data": "insufficient_data",
-            "missing": "missing",
+            "complete": "完整",
+            "partial": "部分",
+            "insufficient_data": "数据不足",
+            "missing": "缺失",
         }.get(status, status)
-    return status
+    return {
+        "complete": "Complete",
+        "partial": "Partial",
+        "insufficient_data": "Insufficient data",
+        "missing": "Missing",
+    }.get(status, status)
 
 
 def _fallback_evidence_refs(*, allowed_evidence_ids: set[str], limit: int = 4) -> list[str]:

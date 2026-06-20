@@ -8,7 +8,7 @@ from typing import Literal
 # how they render (kind), which intents must contain them (required_for), the data
 # predicate that gates a deterministic block (requires), and user-facing titles.
 #
-# This module is intentionally writer-free: `resolve_report_outline` (schemas) and the
+# This module is intentionally writer-free: `resolve_writer_target_sections` (schemas) and the
 # writer node both import it, so it must not import either to stay acyclic. The builder
 # dispatch (section_id -> render function) lives in the writer node, keyed by these ids.
 

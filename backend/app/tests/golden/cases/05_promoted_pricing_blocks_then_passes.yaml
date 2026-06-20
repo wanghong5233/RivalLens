@@ -6,21 +6,18 @@ setup:
       rule_yaml: |
         id: rule_pricing_retry_demo
         when:
-          section_title_contains: ["Pricing"]
+          section_title_contains: ["Actionable"]
         require:
           section_content_min_chars: 120
         severity: blocking
         reject_to: writer
         message: "Writer must provide enough detail in pricing section."
-      candidate_id: skill_retry_demo
-      approved_by: owner_wh
-      approved_at: "2026-05-27T16:54:08.244952+00:00"
-      supporting_run_ids:
-        - run_retry_demo
+  llm_profile: retry
 input:
-  user_query: "promoted retry-demo length gate"
+  user_query: "promoted QA rule should trigger one writer retry"
   competitors:
     - comp_cursor
+    - comp_windsurf
   domain_hint: ai coding assistants
   reference_urls: []
   target_roles:
@@ -28,5 +25,4 @@ input:
 assertions:
   final_qa_outcome: approved
   qa_rejection_count_gte: 1
-  qa_reject_to_includes: []
 

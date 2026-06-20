@@ -104,9 +104,9 @@ def test_golden_case_schema_accepts_trajectory_assertions() -> None:
                 "competitors_discovery_mode": True,
             },
             "assertions": {
-                "supervisor_iterations_lt": 8,
-                "analyze_count_lte": 2,
-                "report_section_count_gte": 4,
+                "report_section_ids_include": ["market_landscape_map", "trend_summary"],
+                "report_degraded_required_sections_count_lte": 0,
+                "evidence_floor_count_lte": 0,
                 "source_authority_distribution_includes": ["official"],
                 "qa_warnings_count_gte": 1,
             },
@@ -115,9 +115,9 @@ def test_golden_case_schema_accepts_trajectory_assertions() -> None:
 
     assert case.input.self_product == "AI眼镜"
     assert case.input.competitors_discovery_mode is True
-    assert case.assertions.supervisor_iterations_lt == 8
-    assert case.assertions.analyze_count_lte == 2
-    assert case.assertions.report_section_count_gte == 4
+    assert case.assertions.report_section_ids_include == ["market_landscape_map", "trend_summary"]
+    assert case.assertions.report_degraded_required_sections_count_lte == 0
+    assert case.assertions.evidence_floor_count_lte == 0
     assert case.assertions.source_authority_distribution_includes == ["official"]
     assert case.assertions.qa_warnings_count_gte == 1
 
@@ -199,6 +199,28 @@ def test_to_dict_rows_returns_serializable_shape() -> None:
     assert len(rows) == 1
     assert rows[0]["case_id"] == "case_2"
     assert rows[0]["passed"] is False
+
+
+@pytest.mark.parametrize(
+    "case_filename",
+    [
+        "02_baseline_two_competitors.yaml",
+        "03_reject_writer_no_evidence.yaml",
+        "05_promoted_pricing_blocks_then_passes.yaml",
+        "06_promoted_warning_observed_only.yaml",
+        "10_qa_semantic_reject_then_approve.yaml",
+        "12_load_skill_progressive_disclosure.yaml",
+    ],
+)
+def test_core_golden_yaml_cases_pass(
+    test_client: TestClient,
+    case_filename: str,
+) -> None:
+    case_path = Path(__file__).parent / "golden" / "cases" / case_filename
+    loaded = yaml.safe_load(case_path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
+    assert result.passed is True, result.failures
 
 
 def test_deep_short_report_golden_case_blocks(test_client: TestClient) -> None:

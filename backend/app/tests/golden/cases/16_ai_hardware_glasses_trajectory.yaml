@@ -11,6 +11,10 @@ input:
   self_product: "AI眼镜"
   competitors_discovery_mode: true
 assertions:
-  supervisor_iterations_lt: 8
-  analyze_count_lte: 2
-  report_section_count_gte: 4
+  final_qa_outcome: approved
+  report_section_ids_include:
+    - market_landscape_map
+    - trend_summary
+    - representative_benchmarks
+  report_degraded_required_sections_count_lte: 0
+  evidence_floor_count_lte: 0

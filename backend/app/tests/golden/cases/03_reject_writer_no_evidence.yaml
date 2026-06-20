@@ -2,10 +2,12 @@ id: 03_reject_writer_no_evidence
 description: Writer output without sufficient evidence should be rejected at least once.
 setup:
   promoted_qa_rules: []
+  llm_profile: writer_no_evidence
 input:
-  user_query: "writer-no-evidence-demo"
+  user_query: "writer evidence retry comparison"
   competitors:
     - comp_cursor
+    - comp_windsurf
   domain_hint: ai coding assistants
   reference_urls: []
   target_roles:

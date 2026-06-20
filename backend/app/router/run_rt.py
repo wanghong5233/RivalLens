@@ -1503,6 +1503,9 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             and payload.target_roles[0] in {"pm", "founder", "sales", "investor"}
             else None
         )
+        direct_analysis_archetype = (
+            "landscape" if payload.self_product is not None or not normalized_competitors else "comparison"
+        )
         direct_intake_draft = RunIntakeDraft(
             user_query=payload.user_query,
             user_role=direct_user_role,
@@ -1516,6 +1519,7 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             self_product=payload.self_product,
             market_scope=payload.market_scope,
             time_context=payload.time_context,
+            analysis_archetype=direct_analysis_archetype,
             response_language=detect_language(payload.user_query),
         )
 

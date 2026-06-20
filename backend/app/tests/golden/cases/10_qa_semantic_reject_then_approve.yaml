@@ -2,10 +2,12 @@ id: 10_qa_semantic_reject_then_approve
 description: Semantic QA rejects first then approves after writer rewrite.
 setup:
   promoted_qa_rules: []
+  llm_profile: semantic_reject
 input:
-  user_query: "semantic-reject-demo"
+  user_query: "semantic QA should reject once then approve after rewrite"
   competitors:
     - comp_cursor
+    - comp_windsurf
   domain_hint: ai coding assistants
   reference_urls: []
   target_roles:

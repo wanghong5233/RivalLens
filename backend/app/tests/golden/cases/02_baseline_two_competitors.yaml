@@ -13,5 +13,4 @@ input:
     - founder
 assertions:
   final_qa_outcome: approved
-  qa_rejection_count_gte: 0
 

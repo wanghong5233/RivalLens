@@ -6,12 +6,7 @@ from agents.nodes.writer import (
     _build_fallback_report,
     _render_report_markdown,
 )
-from schemas.agent_outputs import (
-    AnalystOutput,
-    WriterExecutionContext,
-    WriterReportOutput,
-    resolve_writer_target_sections,
-)
+from schemas.agent_outputs import WriterExecutionContext, WriterReportOutput
 from schemas.report_sections import default_outline_for_archetype
 from service.llm.prompts import (
     WRITER_SYSTEM_PROMPT,
@@ -200,6 +195,47 @@ def test_numeric_claim_guardrail_downgrades_section_numbers() -> None:
     positioning_section = updated["sections"][1]
     assert isinstance(positioning_section, dict)
     assert positioning_section["content_markdown"] == "定位强调生态整合能力。"
+
+
+def test_numeric_claim_guardrail_preserves_verifiable_numbers_in_deterministic_block() -> None:
+    report_content = {
+        "template_id": "default",
+        "title": "测试报告",
+        "executive_summary": "摘要。",
+        "sections": [
+            {
+                "section_id": "representative_benchmarks",
+                "title": "代表标杆",
+                "content_markdown": "小米目标 2025 年 Q2 发布，预期出货量超 100 万台，预测区间 1500-2000 元。",
+                "evidence_refs": ["ev_001"],
+                "insight_refs": [],
+            },
+        ],
+        "risk_callouts": [],
+    }
+    updated, downgraded_sections = _apply_numeric_claim_guardrail(
+        report_content=report_content,
+        unsupported_numeric_claims=[
+            {
+                "claim": "预测区间 1500-2000 元",
+                "section_id": "representative_benchmarks",
+                "reason": "unsupported",
+            }
+        ],
+        response_language="zh",
+    )
+
+    assert downgraded_sections == ["representative_benchmarks"]
+    benchmark_markdown = updated["sections"][0]["content_markdown"]
+    assert isinstance(benchmark_markdown, str)
+    # Only the QA-flagged claim is downgraded.
+    assert "1500" not in benchmark_markdown
+    assert "2000" not in benchmark_markdown
+    # Verifiable structured numbers in a deterministic block survive instead of
+    # being blanket-erased to placeholders.
+    assert "2025" in benchmark_markdown
+    assert "100" in benchmark_markdown
+    assert "numeric_claims_downgraded:representative_benchmarks" in updated["risk_callouts"]
 
 
 def test_writer_report_output_counts_top_level_executive_summary_as_covered() -> None:
@@ -552,51 +588,6 @@ def test_writer_report_output_allows_template_auto_mode() -> None:
     assert report["sections"][0]["section_id"] == "go_to_market"
 
 
-def test_analyst_output_derives_sections_from_insights() -> None:
-    output = AnalystOutput.model_validate(
-        {
-            "summary": "Analyst summary with enough context.",
-            "insights": [
-                {
-                    "dimension": "competitive_edge",
-                    "finding": "Product A leads on context depth.",
-                    "evidence_ids": ["ev_001"],
-                    "confidence": "high",
-                },
-                {
-                    "dimension": "monetization_model",
-                    "finding": "Subscription tiers vary widely.",
-                    "evidence_ids": ["ev_002"],
-                    "confidence": "medium",
-                },
-            ],
-            "risk_flags": ["pricing volatility"],
-            "recommended_sections": [
-                "Competitive positioning gap analysis report",
-                "Monetization model benchmarking comparison",
-            ],
-        }
-    )
-
-    assert output.recommended_sections == ["competitive_edge", "monetization_model"]
-
-
-def test_resolve_writer_target_sections_uses_insight_derived_recommendations() -> None:
-    targets = resolve_writer_target_sections(
-        requested_sections=None,
-        recommended_sections=["competitive_edge", "monetization_model"],
-    )
-
-    assert targets == [
-        "executive_summary",
-        "competitor_profiles",
-        "comparison_matrix",
-        "positioning_map",
-        "self_positioning",
-        "strategic_recommendations",
-    ]
-
-
 def test_apply_structured_writer_sections_landscape_prioritizes_trend_outline() -> None:
     updated = _apply_structured_writer_sections(
         report_content={
@@ -681,6 +672,9 @@ def test_apply_structured_writer_sections_landscape_prioritizes_trend_outline() 
     assert "### Meta" in representative_section["content_markdown"]
     assert "### NVIDIA" not in representative_section["content_markdown"]
     assert "暂缺足够证据" not in representative_section["content_markdown"]
+    # Coverage statuses render as localized labels, never raw internal enums.
+    assert "维度覆盖: 完整/完整/部分" in representative_section["content_markdown"]
+    assert "insufficient_data" not in representative_section["content_markdown"]
     assert updated["report_degraded_required_sections"] == []
     # Fallback path (no LLM summary preserved) synthesizes the deterministic
     # positioning signal so positioning_map and executive_summary stay consistent.

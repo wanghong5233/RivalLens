@@ -33,6 +33,9 @@ class GoldenCaseAssertions(BaseModel):
     supervisor_iterations_lt: int | None = None
     analyze_count_lte: int | None = None
     report_section_count_gte: int | None = None
+    report_section_ids_include: list[str] = Field(default_factory=list)
+    report_degraded_required_sections_count_lte: int | None = None
+    evidence_floor_count_lte: int | None = None
     source_authority_distribution_includes: list[str] = Field(default_factory=list)
     qa_warnings_count_gte: int | None = None
 
@@ -44,6 +47,7 @@ class PromotedQARuleFixture(BaseModel):
 
 class GoldenCaseSetup(BaseModel):
     promoted_qa_rules: list[PromotedQARuleFixture] = Field(default_factory=list)
+    llm_profile: str | None = None
 
 
 class GoldenCaseInput(BaseModel):
@@ -64,6 +68,15 @@ class GoldenCase(BaseModel):
     setup: GoldenCaseSetup = Field(default_factory=GoldenCaseSetup)
     input: GoldenCaseInput
     assertions: GoldenCaseAssertions = Field(default_factory=GoldenCaseAssertions)
+
+
+def _query_with_llm_profile(*, user_query: str, llm_profile: str | None) -> str:
+    if llm_profile is None:
+        return user_query
+    profile = llm_profile.strip()
+    if not profile:
+        return user_query
+    return f"{user_query} test-profile:{profile}"
 
 
 @dataclass(slots=True)
@@ -91,6 +104,9 @@ class GoldenCaseResult:
     report_section_count: int | None = None
     source_authority_distribution: dict[str, int] | None = None
     qa_warnings_count: int | None = None
+    report_section_ids: list[str] = field(default_factory=list)
+    report_degraded_required_sections: list[str] = field(default_factory=list)
+    evidence_floor_count: int | None = None
 
 
 def _load_case(path: Path) -> GoldenCase:
@@ -261,6 +277,40 @@ def _run_trajectory_snapshot(*, run_id: str) -> dict[str, object]:
     }
 
 
+def _final_report_snapshot(*, run_id: str) -> dict[str, object]:
+    engine = create_engine(settings.DATABASE_URL_SYNC)
+    try:
+        with engine.connect() as connection:
+            report_row = connection.execute(
+                text(
+                    "SELECT content_json FROM reports "
+                    "WHERE run_id = :run_id ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"run_id": run_id},
+            ).mappings().first()
+    finally:
+        engine.dispose()
+    content_json = report_row["content_json"] if report_row is not None else {}
+    if not isinstance(content_json, dict):
+        content_json = {}
+    sections_raw = content_json.get("sections")
+    section_ids = [
+        str(item.get("section_id"))
+        for item in sections_raw
+        if isinstance(item, dict) and isinstance(item.get("section_id"), str)
+    ] if isinstance(sections_raw, list) else []
+    degraded_required_raw = content_json.get("report_degraded_required_sections")
+    degraded_required = [
+        str(item)
+        for item in degraded_required_raw
+        if isinstance(item, str)
+    ] if isinstance(degraded_required_raw, list) else []
+    return {
+        "report_section_ids": section_ids,
+        "report_degraded_required_sections": degraded_required,
+    }
+
+
 def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
     invoked_actions: list[str] = []
     registry = get_channel_registry()
@@ -287,7 +337,10 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
             response = client.post(
                 "/api/runs",
                 json={
-                    "user_query": case.input.user_query,
+                    "user_query": _query_with_llm_profile(
+                        user_query=case.input.user_query,
+                        llm_profile=case.setup.llm_profile,
+                    ),
                     "competitors": case.input.competitors,
                     "domain_hint": case.input.domain_hint,
                     "reference_urls": list(case.input.reference_urls),
@@ -326,7 +379,11 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         )
 
     run_id = str(response.json()["run_id"])
-    _wait_for_run_terminal(run_id)
+    registry.invoke = _tracking_invoke
+    try:
+        _wait_for_run_terminal(run_id)
+    finally:
+        registry.invoke = original_invoke
     qa_payloads = _qa_payloads_for_run(run_id)
     qa_outcome = _last_qa_outcome(qa_payloads)
     qa_reject_to = _last_qa_reject_to(qa_payloads)
@@ -363,6 +420,7 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
             )
     run_metrics = _run_metrics_snapshot(run_id=run_id, client=client)
     trajectory = _run_trajectory_snapshot(run_id=run_id)
+    final_report = _final_report_snapshot(run_id=run_id)
     coverage_rate_raw = run_metrics.get("coverage_rate")
     llm_token_total_raw = run_metrics.get("llm_token_total")
     wall_clock_raw = run_metrics.get("run_wall_clock_seconds")
@@ -373,8 +431,11 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
     supervisor_iterations_raw = run_metrics.get("supervisor_iterations")
     report_section_count_raw = run_metrics.get("report_section_count")
     source_authority_distribution_raw = run_metrics.get("source_authority_distribution")
+    evidence_floor_count_raw = run_metrics.get("evidence_floor_count")
     analyze_count_raw = trajectory.get("analyze_count")
     qa_warnings_count_raw = trajectory.get("qa_warnings_count")
+    report_section_ids_raw = final_report.get("report_section_ids")
+    degraded_required_sections_raw = final_report.get("report_degraded_required_sections")
     coverage_rate = (
         float(coverage_rate_raw)
         if isinstance(coverage_rate_raw, (int, float))
@@ -425,6 +486,21 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         int(qa_warnings_count_raw)
         if isinstance(qa_warnings_count_raw, (int, float))
         else None
+    )
+    evidence_floor_count = (
+        int(evidence_floor_count_raw)
+        if isinstance(evidence_floor_count_raw, (int, float))
+        else None
+    )
+    report_section_ids = (
+        [item for item in report_section_ids_raw if isinstance(item, str)]
+        if isinstance(report_section_ids_raw, list)
+        else []
+    )
+    report_degraded_required_sections = (
+        [item for item in degraded_required_sections_raw if isinstance(item, str)]
+        if isinstance(degraded_required_sections_raw, list)
+        else []
     )
     source_authority_distribution = (
         {
@@ -551,6 +627,29 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         )
         if failed is not None:
             failures.append(failed)
+    if case.assertions.report_section_ids_include:
+        for expected in case.assertions.report_section_ids_include:
+            failed = assert_contains(
+                values=report_section_ids,
+                expected=expected,
+                field="report_section_ids",
+            )
+            if failed is not None:
+                failures.append(failed)
+    if case.assertions.report_degraded_required_sections_count_lte is not None:
+        actual = len(report_degraded_required_sections)
+        if actual > case.assertions.report_degraded_required_sections_count_lte:
+            failures.append(
+                "report_degraded_required_sections count expected <= "
+                f"{case.assertions.report_degraded_required_sections_count_lte}, got {actual}: "
+                f"{report_degraded_required_sections!r}"
+            )
+    if case.assertions.evidence_floor_count_lte is not None:
+        actual = evidence_floor_count if evidence_floor_count is not None else 10**9
+        if actual > case.assertions.evidence_floor_count_lte:
+            failures.append(
+                f"evidence_floor_count expected <= {case.assertions.evidence_floor_count_lte}, got {actual}"
+            )
     if case.assertions.source_authority_distribution_includes:
         authority_keys = set((source_authority_distribution or {}).keys())
         for expected in case.assertions.source_authority_distribution_includes:
@@ -592,6 +691,9 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         report_section_count=report_section_count,
         source_authority_distribution=source_authority_distribution,
         qa_warnings_count=qa_warnings_count,
+        report_section_ids=report_section_ids,
+        report_degraded_required_sections=report_degraded_required_sections,
+        evidence_floor_count=evidence_floor_count,
     )
 
 
@@ -632,6 +734,11 @@ def dump_markdown_report(*, results: list[GoldenCaseResult], report_path: Path) 
         lines.append(f"- supervisor_iterations: {item.supervisor_iterations}")
         lines.append(f"- analyze_count: {item.analyze_count}")
         lines.append(f"- report_section_count: {item.report_section_count}")
+        lines.append(f"- report_section_ids: {item.report_section_ids}")
+        lines.append(
+            f"- report_degraded_required_sections: {item.report_degraded_required_sections}"
+        )
+        lines.append(f"- evidence_floor_count: {item.evidence_floor_count}")
         lines.append(f"- source_authority_distribution: {item.source_authority_distribution}")
         lines.append(f"- qa_warnings_count: {item.qa_warnings_count}")
         if item.failures:

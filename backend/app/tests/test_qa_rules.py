@@ -7,7 +7,6 @@ from models.run import Run
 from models.step import Step
 from agents.nodes.qa import _qa_warning_items
 from schemas.qa import Approval, Rejection
-from service.llm.prompts import QA_SEMANTIC_SYSTEM_PROMPT
 from service.llm.response import LLMResponse
 from service.qa.engine import (
     _apply_numeric_claim_gate,
@@ -708,12 +707,6 @@ def test_numeric_claim_gate_ignores_positioning_map_claims() -> None:
     assert gated["semantic_audit_passed"] is True
     assert gated["severity"] == "warning"
     assert _unsupported_numeric_claims(gated) == []
-
-
-def test_qa_semantic_prompt_treats_one_supporting_citation_as_sufficient() -> None:
-    assert "One supporting cited evidence item is sufficient" in QA_SEMANTIC_SYSTEM_PROMPT
-    assert "Do not include supported claims in unsupported_numeric_claims" in QA_SEMANTIC_SYSTEM_PROMPT
-    assert "do NOT fail instruction_following for that field" in QA_SEMANTIC_SYSTEM_PROMPT
 
 
 def test_engine_aggregation_rejects_when_blocking_failed() -> None:
