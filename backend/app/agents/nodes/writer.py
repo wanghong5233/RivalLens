@@ -20,7 +20,12 @@ from models.report import Report
 from models.step import Step
 from schemas.agent_outputs import AnalystOutput, WriterExecutionContext, WriterReportOutput
 from schemas.ids import make_id
-from schemas.report_sections import CORE_DISCOVERY_ROLES, section_title
+from schemas.report_sections import (
+    CORE_DISCOVERY_ROLES,
+    SectionEvidenceContext,
+    section_title,
+    triage_outline_sections,
+)
 from schemas.supervisor import Write
 from schemas.contracts import validate_section_id
 from service.comparison import load_comparisons_for_run
@@ -738,6 +743,27 @@ def _coverage_status(
     return "insufficient_data"
 
 
+def _normalized_coverage_for_triage(
+    coverage: dict[str, object],
+) -> dict[str, dict[str, str]]:
+    normalized: dict[str, dict[str, str]] = {}
+    for competitor_raw, dims_raw in coverage.items():
+        if not isinstance(competitor_raw, str) or not isinstance(dims_raw, dict):
+            continue
+        dims: dict[str, str] = {}
+        for dim_raw, status_raw in dims_raw.items():
+            if (
+                isinstance(dim_raw, str)
+                and dim_raw.strip()
+                and isinstance(status_raw, str)
+                and status_raw.strip()
+            ):
+                dims[dim_raw.strip()] = status_raw.strip()
+        if dims:
+            normalized[competitor_raw] = dims
+    return normalized
+
+
 def _status_label(*, status: str, response_language: str | None) -> str:
     if response_language == "zh":
         return {
@@ -1304,6 +1330,100 @@ def _build_landscape_map_section(
     }
 
 
+def _build_representative_benchmarks_section(
+    *,
+    profile_competitors: list[str],
+    response_language: str | None,
+    knowledge_payload: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    comparison_briefs: list[dict[str, object]],
+    coverage: dict[str, object],
+) -> dict[str, object]:
+    lines: list[str] = []
+    refs: list[str] = []
+    for competitor in profile_competitors:
+        competitor_refs = _collect_competitor_evidence_refs(
+            competitor=competitor,
+            knowledge_payload=knowledge_payload,
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+            limit=3,
+        )
+        refs.extend(competitor_refs)
+        features = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("features"),
+            competitor=competitor,
+        )
+        pricings = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("pricings"),
+            competitor=competitor,
+        )
+        feedback_rows = _knowledge_rows_for_competitor(
+            rows=knowledge_payload.get("feedback"),
+            competitor=competitor,
+        )
+        refs_text = ", ".join(f"[{item}]" for item in competitor_refs) if competitor_refs else "-"
+        lines.extend(
+            [
+                f"### {competitor}",
+                (
+                    f"- 定位: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
+                    if response_language == "zh"
+                    else f"- Positioning: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
+                ),
+                (
+                    f"- 代表能力: {_feature_summary(features=features, response_language=response_language)}"
+                    if response_language == "zh"
+                    else f"- Representative capability: {_feature_summary(features=features, response_language=response_language)}"
+                ),
+                (
+                    f"- 商业化: {_pricing_summary(pricings=pricings, response_language=response_language)}"
+                    if response_language == "zh"
+                    else f"- Commercialization: {_pricing_summary(pricings=pricings, response_language=response_language)}"
+                ),
+                (
+                    f"- 反馈信号: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
+                    if response_language == "zh"
+                    else f"- Feedback signal: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
+                ),
+                (
+                    f"- 维度覆盖: "
+                    f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feature'), response_language=response_language)}/"
+                    f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='pricing'), response_language=response_language)}/"
+                    f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feedback'), response_language=response_language)}"
+                    if response_language == "zh"
+                    else (
+                        "- Dimension coverage: "
+                        f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feature'), response_language=response_language)}/"
+                        f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='pricing'), response_language=response_language)}/"
+                        f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feedback'), response_language=response_language)}"
+                    )
+                ),
+                (
+                    f"- 代表证据: {refs_text}"
+                    if response_language == "zh"
+                    else f"- Key evidence: {refs_text}"
+                ),
+                "",
+            ]
+        )
+    if not lines:
+        lines = [
+            "- 暂无可用代表标杆，当前证据不足以支撑横向论证。"
+            if response_language == "zh"
+            else "- No representative benchmarks available yet; grounded comparative evidence is insufficient."
+        ]
+    return {
+        "section_id": "representative_benchmarks",
+        "title": _section_title("representative_benchmarks", response_language=response_language),
+        "content_markdown": "\n".join(lines).strip(),
+        "evidence_refs": _stable_unique(refs)[:12]
+        or _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
+        "insight_refs": [],
+    }
+
+
 def _build_self_positioning_section(
     *,
     self_product: str | None,
@@ -1339,12 +1459,6 @@ def _build_self_positioning_section(
     }
 
 
-def _placeholder_section_content(*, section_id: str, response_language: str | None) -> str:
-    if response_language == "zh":
-        return f"- 章节 {section_id} 暂缺足够证据，请触发补充研究后回填。"
-    return f"- Section {section_id} lacks enough grounded evidence; trigger follow-up research."
-
-
 def _apply_structured_writer_sections(
     *,
     report_content: dict[str, object],
@@ -1362,9 +1476,14 @@ def _apply_structured_writer_sections(
     preserve_llm_executive_summary: bool,
 ) -> dict[str, object]:
     sections_raw = report_content.get("sections")
-    sections = [dict(item) for item in sections_raw if isinstance(item, dict)] if isinstance(sections_raw, list) else []
+    sections = (
+        [dict(item) for item in sections_raw if isinstance(item, dict)]
+        if isinstance(sections_raw, list)
+        else []
+    )
     coverage_raw = knowledge_payload.get("coverage")
     coverage = coverage_raw if isinstance(coverage_raw, dict) else {}
+    normalized_coverage = _normalized_coverage_for_triage(coverage)
     ordered_competitors = _ordered_competitors_for_report(
         state_competitors=state_competitors,
         evidence_briefs=evidence_briefs,
@@ -1386,41 +1505,60 @@ def _apply_structured_writer_sections(
         competitors=positioning_competitors,
         coverage=coverage,
     )
-    _upsert_section(
-        sections=sections,
-        section_payload=_build_competitor_profiles_section(
-            profile_competitors=profile_competitors,
-            knowledge_payload=knowledge_payload,
-            coverage=coverage,
-            response_language=response_language,
-            comparison_briefs=comparison_briefs,
-            evidence_briefs=evidence_briefs,
-            allowed_evidence_ids=allowed_evidence_ids,
+    triage_result = triage_outline_sections(
+        target_sections=target_sections,
+        archetype=analysis_archetype,
+        ctx=SectionEvidenceContext(
+            coverage=normalized_coverage,
+            competitors=tuple(ordered_competitors),
+            core_competitors=tuple(
+                profile_competitors if analysis_archetype == "landscape" else ordered_competitors
+            ),
         ),
     )
-    _upsert_section(
-        sections=sections,
-        section_payload=_build_comparison_matrix_section(
-            competitors=profile_competitors if analysis_archetype == "landscape" else ordered_competitors,
-            knowledge_payload=knowledge_payload,
-            coverage=coverage,
-            response_language=response_language,
-            evidence_briefs=evidence_briefs,
-            allowed_evidence_ids=allowed_evidence_ids,
-        ),
-    )
-    _upsert_section(
-        sections=sections,
-        section_payload=_build_positioning_map_section(
-            competitors=positioning_competitors,
-            response_language=response_language,
-            knowledge_payload=knowledge_payload,
-            evidence_briefs=evidence_briefs,
-            allowed_evidence_ids=allowed_evidence_ids,
-            clusters=positioning_clusters,
-        ),
-    )
-    if analysis_archetype == "landscape":
+    renderable_sections = list(triage_result.renderable)
+    renderable_set = set(renderable_sections)
+
+    if "competitor_profiles" in renderable_set:
+        _upsert_section(
+            sections=sections,
+            section_payload=_build_competitor_profiles_section(
+                profile_competitors=profile_competitors,
+                knowledge_payload=knowledge_payload,
+                coverage=coverage,
+                response_language=response_language,
+                comparison_briefs=comparison_briefs,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+            ),
+        )
+    if "comparison_matrix" in renderable_set:
+        _upsert_section(
+            sections=sections,
+            section_payload=_build_comparison_matrix_section(
+                competitors=(
+                    profile_competitors if analysis_archetype == "landscape" else ordered_competitors
+                ),
+                knowledge_payload=knowledge_payload,
+                coverage=coverage,
+                response_language=response_language,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+            ),
+        )
+    if "positioning_map" in renderable_set:
+        _upsert_section(
+            sections=sections,
+            section_payload=_build_positioning_map_section(
+                competitors=positioning_competitors,
+                response_language=response_language,
+                knowledge_payload=knowledge_payload,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+                clusters=positioning_clusters,
+            ),
+        )
+    if "market_landscape_map" in renderable_set:
         _upsert_section(
             sections=sections,
             section_payload=_build_landscape_map_section(
@@ -1432,7 +1570,20 @@ def _apply_structured_writer_sections(
                 allowed_evidence_ids=allowed_evidence_ids,
             ),
         )
-    else:
+    if "representative_benchmarks" in renderable_set:
+        _upsert_section(
+            sections=sections,
+            section_payload=_build_representative_benchmarks_section(
+                profile_competitors=profile_competitors,
+                response_language=response_language,
+                knowledge_payload=knowledge_payload,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+                comparison_briefs=comparison_briefs,
+                coverage=coverage,
+            ),
+        )
+    if "self_positioning" in renderable_set:
         _upsert_section(
             sections=sections,
             section_payload=_build_self_positioning_section(
@@ -1443,56 +1594,37 @@ def _apply_structured_writer_sections(
             ),
         )
 
-    section_ids = {
-        section.get("section_id")
+    section_by_id = {
+        section_id: section
         for section in sections
-        if isinstance(section.get("section_id"), str)
+        for section_id in [section.get("section_id")]
+        if isinstance(section_id, str)
     }
-    for section_id in target_sections:
-        if section_id == "executive_summary":
-            continue
-        if section_id in section_ids:
-            continue
-        _upsert_section(
-            sections=sections,
-            section_payload={
-                "section_id": section_id,
-                "title": _section_title(section_id, response_language=response_language),
-                "content_markdown": _placeholder_section_content(
-                    section_id=section_id,
-                    response_language=response_language,
-                ),
-                "evidence_refs": _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
-                "insight_refs": [],
-            },
-        )
-
     ordered_sections: list[dict[str, object]] = []
-    for section_id in target_sections:
+    for section_id in renderable_sections:
         if section_id == "executive_summary":
             continue
-        for section in sections:
-            if not isinstance(section.get("section_id"), str):
-                continue
-            if section["section_id"] == section_id:
-                ordered_sections.append(section)
-                break
-    for section in sections:
-        section_id_raw = section.get("section_id")
-        if not isinstance(section_id_raw, str):
-            continue
-        if section_id_raw in target_sections:
-            continue
-        ordered_sections.append(section)
+        section = section_by_id.get(section_id)
+        if isinstance(section, dict):
+            ordered_sections.append(section)
 
     risk_callouts_raw = report_content.get("risk_callouts")
-    risk_callouts = (
-        [item for item in risk_callouts_raw if isinstance(item, str)]
-        if isinstance(risk_callouts_raw, list)
-        else []
-    )
+    risk_callouts: list[str] = []
+    if isinstance(risk_callouts_raw, list):
+        for item in risk_callouts_raw:
+            if not isinstance(item, str):
+                continue
+            if item.startswith("uncovered_section:"):
+                section_id = item.split(":", 1)[1].strip()
+                if section_id and section_id not in renderable_set:
+                    continue
+            risk_callouts.append(item)
     if analysis_archetype == "landscape" and not profile_competitors:
         risk_callouts.append("landscape_core_profiles_empty")
+    degraded_required_sections = list(triage_result.degraded_required)
+    risk_callouts.extend(
+        [f"report_degraded_required_section:{section_id}" for section_id in degraded_required_sections]
+    )
     existing_summary_raw = report_content.get("executive_summary")
     existing_summary = (
         existing_summary_raw.strip() if isinstance(existing_summary_raw, str) else ""
@@ -1513,6 +1645,9 @@ def _apply_structured_writer_sections(
         "executive_summary": executive_summary,
         "sections": ordered_sections,
         "risk_callouts": _stable_unique(risk_callouts),
+        "report_renderable_sections": renderable_sections,
+        "report_omitted_sections": list(triage_result.omitted),
+        "report_degraded_required_sections": degraded_required_sections,
     }
 
 
@@ -1740,8 +1875,17 @@ def _render_report_markdown(
             markdown_lines.append("")
 
     risk_callouts_raw = report_content.get("risk_callouts")
+    internal_risk_prefixes = (
+        "uncovered_section:",
+        "numeric_claims_downgraded:",
+        "report_degraded_required_section:",
+    )
     if isinstance(risk_callouts_raw, list):
-        risk_callouts = [item for item in risk_callouts_raw if isinstance(item, str)]
+        risk_callouts = [
+            item
+            for item in risk_callouts_raw
+            if isinstance(item, str) and not item.startswith(internal_risk_prefixes)
+        ]
     else:
         risk_callouts = []
     if risk_callouts:
@@ -1940,6 +2084,7 @@ async def writer_node(state: AgentState) -> AgentState:
         section_count=len(report_content.get("sections", []))
         if isinstance(report_content.get("sections"), list)
         else 0,
+        degraded_required_sections=report_content.get("report_degraded_required_sections"),
         llm_fallback_used=llm_response.fallback_used,
         numeric_guardrail_sections=numeric_guardrail_sections,
     )
@@ -1954,6 +2099,12 @@ async def writer_node(state: AgentState) -> AgentState:
         len(report_content["sections"])
         if isinstance(report_content.get("sections"), list)
         else 0
+    )
+    degraded_required_sections_raw = report_content.get("report_degraded_required_sections")
+    degraded_required_sections = (
+        [item for item in degraded_required_sections_raw if isinstance(item, str)]
+        if isinstance(degraded_required_sections_raw, list)
+        else []
     )
     evidence_ref_count = 0
     sections_raw = report_content.get("sections")
@@ -1986,6 +2137,7 @@ async def writer_node(state: AgentState) -> AgentState:
                 "llm_prompt_preview": llm_response.prompt_preview,
                 "llm_fallback_used": llm_response.fallback_used,
                 "llm_fallback_reason": llm_response.fallback_reason,
+                "report_degraded_required_sections": degraded_required_sections,
             },
         )
         session.add(step)
@@ -2036,5 +2188,6 @@ async def writer_node(state: AgentState) -> AgentState:
         "pending_tool_args": {},
         "pending_review_target_step_id": step_id,
         "writer_report_fallback_mode": writer_mode == "fallback",
+        "report_degraded_required_sections": degraded_required_sections,
         "status": "running",
     }

@@ -12,6 +12,7 @@ from schemas.agent_outputs import (
     WriterReportOutput,
     resolve_writer_target_sections,
 )
+from schemas.report_sections import default_outline_for_archetype
 from service.llm.prompts import (
     WRITER_SYSTEM_PROMPT,
     build_writer_fallback_user_prompt,
@@ -592,7 +593,7 @@ def test_resolve_writer_target_sections_uses_insight_derived_recommendations() -
     ]
 
 
-def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() -> None:
+def test_apply_structured_writer_sections_landscape_prioritizes_trend_outline() -> None:
     updated = _apply_structured_writer_sections(
         report_content={
             "template_id": "default",
@@ -605,20 +606,25 @@ def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() 
                     "content_markdown": "趋势段落 [ev_001]",
                     "evidence_refs": ["ev_001"],
                     "insight_refs": [],
+                },
+                {
+                    "section_id": "opportunity_map",
+                    "title": "机会地图",
+                    "content_markdown": "机会段落 [ev_001]",
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": [],
+                },
+                {
+                    "section_id": "strategic_recommendations",
+                    "title": "建议",
+                    "content_markdown": "建议段落 [ev_001]",
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": [],
                 }
             ],
             "risk_callouts": [],
         },
-        target_sections=[
-            "executive_summary",
-            "competitor_profiles",
-            "comparison_matrix",
-            "positioning_map",
-            "strategic_recommendations",
-            "market_landscape_map",
-            "trend_summary",
-            "opportunity_map",
-        ],
+        target_sections=list(default_outline_for_archetype("landscape")),
         analysis_archetype="landscape",
         response_language="zh",
         report_depth="quick",
@@ -626,7 +632,7 @@ def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() 
             "schema_version": "schema_v0.2",
             "features": [
                 {"competitor_id": "Meta", "name": "语音助手", "evidence_ids": ["ev_001"]},
-                {"competitor_id": "XREAL", "name": "空间显示", "evidence_ids": ["ev_002"]},
+                {"competitor_id": "NVIDIA", "name": "端侧芯片生态", "evidence_ids": ["ev_002"]},
             ],
             "pricings": [
                 {"competitor_id": "Meta", "model": "subscription", "free_plan": False, "enterprise_plan": True, "evidence_ids": ["ev_001"]}
@@ -638,20 +644,20 @@ def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() 
             "missing_reasons": {},
             "coverage": {
                 "Meta": {"feature": "complete", "pricing": "complete", "feedback": "partial"},
-                "XREAL": {"feature": "partial", "pricing": "insufficient_data", "feedback": "insufficient_data"},
+                "NVIDIA": {"feature": "partial", "pricing": "insufficient_data", "feedback": "insufficient_data"},
             },
         },
         comparison_briefs=[],
         evidence_briefs=[
             {"evidence_id": "ev_001", "competitor_id": "Meta"},
-            {"evidence_id": "ev_002", "competitor_id": "XREAL"},
+            {"evidence_id": "ev_002", "competitor_id": "NVIDIA"},
             {"evidence_id": "ev_003", "competitor_id": "Meta"},
         ],
         allowed_evidence_ids={"ev_001", "ev_002", "ev_003"},
-        state_competitors=["Meta", "XREAL"],
+        state_competitors=["Meta", "NVIDIA"],
         discovered_competitor_sources={
             "Meta": {"candidate_role": "direct_competitor"},
-            "XREAL": {"candidate_role": "adjacent_competitor"},
+            "NVIDIA": {"candidate_role": "upstream_supplier"},
         },
         self_product=None,
         preserve_llm_executive_summary=False,
@@ -659,21 +665,88 @@ def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() 
 
     sections = [item for item in updated["sections"] if isinstance(item, dict)]
     section_ids = [item.get("section_id") for item in sections]
-    assert "competitor_profiles" in section_ids
-    assert "comparison_matrix" in section_ids
-    assert "positioning_map" in section_ids
+    assert "comparison_matrix" not in section_ids
+    assert "competitor_profiles" not in section_ids
+    assert "positioning_map" not in section_ids
     assert "market_landscape_map" in section_ids
-    matrix_section = next(item for item in sections if item.get("section_id") == "comparison_matrix")
-    profile_section = next(item for item in sections if item.get("section_id") == "competitor_profiles")
-    positioning_section = next(item for item in sections if item.get("section_id") == "positioning_map")
-    assert "|竞品|核心功能摘要|覆盖状态|" in matrix_section["content_markdown"]
-    assert "### Meta" in profile_section["content_markdown"]
-    assert "领先梯队（能力深、商业化强）" in positioning_section["content_markdown"]
-    assert "Q1" not in positioning_section["content_markdown"]
+    assert "trend_summary" in section_ids
+    assert "representative_benchmarks" in section_ids
+    representative_section = next(
+        item for item in sections if item.get("section_id") == "representative_benchmarks"
+    )
+    assert "### Meta" in representative_section["content_markdown"]
+    assert "### NVIDIA" not in representative_section["content_markdown"]
+    assert "暂缺足够证据" not in representative_section["content_markdown"]
+    assert updated["report_degraded_required_sections"] == []
     # Fallback path (no LLM summary preserved) synthesizes the deterministic
     # positioning signal so positioning_map and executive_summary stay consistent.
     assert "领先梯队 Meta" in updated["executive_summary"]
-    assert "观察梯队 XREAL" in updated["executive_summary"]
+    assert "观察梯队 暂无" in updated["executive_summary"]
+
+
+def test_apply_structured_writer_sections_records_degraded_required_sections() -> None:
+    updated = _apply_structured_writer_sections(
+        report_content={
+            "template_id": "default",
+            "title": "RivalLens",
+            "executive_summary": "summary",
+            "sections": [
+                {
+                    "section_id": "opportunity_map",
+                    "title": "机会地图",
+                    "content_markdown": "机会段落 [ev_001]",
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": [],
+                },
+                {
+                    "section_id": "strategic_recommendations",
+                    "title": "建议",
+                    "content_markdown": "建议段落 [ev_001]",
+                    "evidence_refs": ["ev_001"],
+                    "insight_refs": [],
+                },
+            ],
+            "risk_callouts": [],
+        },
+        target_sections=list(default_outline_for_archetype("landscape")),
+        analysis_archetype="landscape",
+        response_language="zh",
+        report_depth="quick",
+        knowledge_payload={
+            "schema_version": "schema_v0.2",
+            "features": [],
+            "pricings": [],
+            "personas": [],
+            "feedback": [],
+            "missing_reasons": {},
+            "coverage": {},
+        },
+        comparison_briefs=[],
+        evidence_briefs=[],
+        allowed_evidence_ids=set(),
+        state_competitors=["Meta"],
+        discovered_competitor_sources={
+            "Meta": {"candidate_role": "direct_competitor"},
+        },
+        self_product=None,
+        preserve_llm_executive_summary=True,
+    )
+
+    assert updated["report_degraded_required_sections"] == [
+        "trend_summary",
+        "representative_benchmarks",
+    ]
+    risk_callouts = updated["risk_callouts"]
+    assert isinstance(risk_callouts, list)
+    assert "report_degraded_required_section:trend_summary" in risk_callouts
+    assert "report_degraded_required_section:representative_benchmarks" in risk_callouts
+    section_ids = [
+        section.get("section_id")
+        for section in updated["sections"]
+        if isinstance(section, dict)
+    ]
+    assert "trend_summary" not in section_ids
+    assert "representative_benchmarks" not in section_ids
 
 
 def test_apply_structured_writer_sections_preserves_llm_executive_summary() -> None:
