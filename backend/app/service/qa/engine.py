@@ -370,6 +370,10 @@ def _extend_sections_from_plan_tree(*, sections: list[str], plan_tree: dict[str,
 def _target_sections_for_report(*, run: Run | None, writer_step: Step | None) -> list[str]:
     sections: list[str] = []
     if writer_step is not None and isinstance(writer_step.payload, dict):
+        renderable_sections_raw = writer_step.payload.get("renderable_sections")
+        if isinstance(renderable_sections_raw, list):
+            _extend_sections_from_values(sections=sections, values=renderable_sections_raw)
+            return sections
         target_sections_raw = writer_step.payload.get("target_sections")
         if isinstance(target_sections_raw, list):
             _extend_sections_from_values(sections=sections, values=target_sections_raw)

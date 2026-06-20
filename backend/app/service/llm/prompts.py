@@ -146,6 +146,8 @@ Rules:
       "where is the opportunity", "市场全景". When in doubt between the two and the
       user is asking what to BUILD/PURSUE rather than which product to PICK, choose
       "landscape". This selection changes downstream output form, so do not skip it.
+- If user intent is trend/opportunity/landscape scanning without a fixed comparable
+  product shortlist, you MUST set analysis_archetype="landscape" (never "comparison").
 - BREADTH-FIRST FOR BROAD TOPICS. When user_query signals a broad / whole-track
   intent ("主流产品", "发展趋势", "整体格局", "赛道全景", "有哪些", "trends in X",
   "market overview"), do NOT force the user to collapse the scope into a single
@@ -1708,8 +1710,9 @@ def build_discovery_extract_user_prompt(
         '"official_url":"Optional official website/product URL from search_results or null",'
         '"source_domain":"Optional domain of official_url or null"}]}\n'
         "- candidate_role must be one of: direct_competitor, adjacent_competitor, substitute, upstream_supplier, trend_reference.\n"
+        "- Assign direct_competitor ONLY when the candidate competes on the same end-user job/product category.\n"
         "- When self_product is provided, prioritize direct_competitor and adjacent_competitor candidates that solve the same user job or product category.\n"
-        "- Mark upstream suppliers, infrastructure vendors, reports, and media as upstream_supplier or trend_reference; do not label them direct competitors.\n"
+        "- Mark heterogeneous entities (chip vendors, infrastructure providers, media/research reports, ecosystems) as upstream_supplier/trend_reference/substitute; do not label them direct competitors.\n"
         "- Include only products or companies mentioned in search_results.\n"
         "- Set is_competitor=false when a mentioned entity is adjacent, media-only, or not a direct competitor.\n"
         "- evidence_quote must be an exact short substring copied from search_results.\n"

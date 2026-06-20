@@ -25,6 +25,11 @@ _TRIPLET_FIELDS: tuple[str, ...] = ("feature", "pricing", "feedback")
 _TRIPLET_MIN_SUPPORTED_DIMENSIONS = 2
 _MAX_SINGLE_COMPETITOR_EVIDENCE_SHARE = 0.60
 _MAX_BLOCKLIST_EVIDENCE_SHARE = 0.20
+_PLACEHOLDER_SECTION_MARKERS: tuple[str, ...] = (
+    "暂缺足够证据",
+    "lacks enough grounded evidence",
+    "no grounded evidence matched this section",
+)
 
 
 @dataclass(frozen=True)
@@ -102,6 +107,25 @@ def rule_writer_sections_must_have_content(content_json: dict[str, object]) -> R
         severity="blocking",
         reject_to="writer",
         message="Every section must include substantial content_markdown.",
+    )
+
+
+def rule_writer_no_placeholder_scaffolding(content_json: dict[str, object]) -> RuleResult:
+    scaffold_sections: list[str] = []
+    for section in _iter_report_sections(content_json):
+        section_id = _section_id(section) or "unknown"
+        markdown = _section_markdown(section).casefold()
+        if any(marker in markdown for marker in _PLACEHOLDER_SECTION_MARKERS):
+            scaffold_sections.append(section_id)
+    return RuleResult(
+        rule_id="rule_writer_no_placeholder_scaffolding",
+        passed=not scaffold_sections,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            "Report body must not contain placeholder scaffolding "
+            f"(sections={scaffold_sections})."
+        ),
     )
 
 
@@ -456,22 +480,17 @@ def rule_structured_sections_present(
     content_json: dict[str, object],
     analysis_archetype: str,
 ) -> RuleResult:
-    required_registry_sections = set(required_sections_for_archetype(analysis_archetype))
-    structured_sections = (
-        "competitor_profiles",
-        "comparison_matrix",
-        "positioning_map",
-        "market_landscape_map" if analysis_archetype == "landscape" else "self_positioning",
+    required_sections = list(required_sections_for_archetype(analysis_archetype))
+    degraded_required_raw = content_json.get("report_degraded_required_sections")
+    degraded_required = (
+        {item for item in degraded_required_raw if isinstance(item, str)}
+        if isinstance(degraded_required_raw, list)
+        else set()
     )
     required_sections = [
-        section_id for section_id in structured_sections if section_id in required_registry_sections
+        section_id for section_id in required_sections if section_id not in degraded_required
     ]
-    present = {
-        section_id
-        for section in _iter_report_sections(content_json)
-        for section_id in [_section_id(section)]
-        if section_id is not None
-    }
+    present = _covered_report_section_ids(content_json)
     missing = [section_id for section_id in required_sections if section_id not in present]
     return RuleResult(
         rule_id="rule_structured_sections_present",
@@ -918,6 +937,7 @@ def evaluate_fast_path_rules(
         rule_report_must_have_at_least_one_section(content_json),
         rule_report_section_count_in_bounds(content_json),
         rule_writer_sections_must_have_content(content_json),
+        rule_writer_no_placeholder_scaffolding(content_json),
         rule_writer_must_cite_evidence(
             content_json=content_json,
             allowed_evidence_ids=allowed_evidence_ids,

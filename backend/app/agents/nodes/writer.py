@@ -2127,6 +2127,7 @@ async def writer_node(state: AgentState) -> AgentState:
                 **request.model_dump(),
                 "report_depth": report_depth,
                 "target_sections": target_sections,
+                "renderable_sections": report_content.get("report_renderable_sections", target_sections),
                 "writer_mode": writer_mode,
                 "report_title": report_content.get("title"),
                 "section_count": section_count,
@@ -2188,6 +2189,7 @@ async def writer_node(state: AgentState) -> AgentState:
         "pending_tool_args": {},
         "pending_review_target_step_id": step_id,
         "writer_report_fallback_mode": writer_mode == "fallback",
+        "report_renderable_sections": report_content.get("report_renderable_sections", []),
         "report_degraded_required_sections": degraded_required_sections,
         "status": "running",
     }

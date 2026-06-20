@@ -695,6 +695,8 @@ async def _decision_from_qa_feedback(
     qa_outcome: Literal["approved", "rejected", "force_degraded"] | None,
     qa_reject_to: Literal["researcher", "analyst", "writer", "supervisor"] | None,
     qa_reasons: list[str],
+    qa_degrade_reason: str | None,
+    qa_degraded_required_sections: list[str],
     qa_unsupported_numeric_claims: list[dict[str, object]],
     user_query: str,
     competitors: list[str],
@@ -709,7 +711,18 @@ async def _decision_from_qa_feedback(
 
     now = _now_iso()
     if qa_outcome == "force_degraded":
-        note = "QA max retries hit; force finalize in degraded mode."
+        if qa_degrade_reason == "report_degraded_required_sections":
+            degraded_sections = ", ".join(qa_degraded_required_sections) or "unknown"
+            note = (
+                "Writer reported required sections with insufficient grounded evidence; "
+                f"finalize in degraded mode (degraded_required={degraded_sections})."
+            )
+            prompt_preview = "qa_data_degraded"
+            error_code = "qa_data_degraded"
+        else:
+            note = "QA max retries hit; force finalize in degraded mode."
+            prompt_preview = "qa_force_degraded"
+            error_code = "qa_force_degraded"
         decision = SupervisorDecision(
             id=make_id("decision_"),
             run_id=run_id,
@@ -730,8 +743,8 @@ async def _decision_from_qa_feedback(
             _pseudo_llm_response(
                 provider="qa_guardrail",
                 model_name="qa_guardrail",
-                prompt_preview="qa_force_degraded",
-                error="qa_force_degraded",
+                prompt_preview=prompt_preview,
+                error=error_code,
             ),
             True,
         )
@@ -1651,6 +1664,17 @@ async def supervisor_node(state: AgentState) -> AgentState:
     qa_reject_to = state.get("qa_reject_to")
     pending_review_target_step_id = state.get("pending_review_target_step_id")
     qa_reasons = list(state.get("qa_reasons", []))
+    qa_degrade_reason_raw = state.get("qa_degrade_reason")
+    qa_degrade_reason = (
+        qa_degrade_reason_raw
+        if isinstance(qa_degrade_reason_raw, str) and qa_degrade_reason_raw.strip()
+        else None
+    )
+    qa_degraded_required_sections = [
+        item
+        for item in state.get("qa_degraded_required_sections", [])
+        if isinstance(item, str)
+    ]
     qa_unsupported_numeric_claims = [
         item
         for item in state.get("qa_unsupported_numeric_claims", [])
@@ -1696,6 +1720,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
         qa_outcome=qa_outcome,
         qa_reject_to=qa_reject_to,
         qa_reasons=qa_reasons,
+        qa_degrade_reason=qa_degrade_reason,
+        qa_degraded_required_sections=qa_degraded_required_sections,
         qa_unsupported_numeric_claims=qa_unsupported_numeric_claims,
         user_query=user_query,
         competitors=competitors,
@@ -2102,6 +2128,8 @@ async def supervisor_node(state: AgentState) -> AgentState:
         "qa_outcome": None,
         "qa_reject_to": None,
         "qa_reasons": [],
+        "qa_degrade_reason": None,
+        "qa_degraded_required_sections": [],
         "qa_unsupported_numeric_claims": [],
         "status": status,
     }

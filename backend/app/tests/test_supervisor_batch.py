@@ -567,6 +567,8 @@ async def test_qa_writer_rewrite_reuses_prior_writer_contract() -> None:
         qa_outcome="rejected",
         qa_reject_to="writer",
         qa_reasons=["Unsupported numeric claims."],
+        qa_degrade_reason=None,
+        qa_degraded_required_sections=[],
         qa_unsupported_numeric_claims=[{"claim": "$40/seat"}],
         user_query="compare coding assistants",
         competitors=["Cursor"],
@@ -582,6 +584,44 @@ async def test_qa_writer_rewrite_reuses_prior_writer_contract() -> None:
     assert decision.tool_args["template_id"] == "executive_briefing"
     assert decision.tool_args["sections"] == ["product_positioning", "pricing_strategy"]
     assert decision.tool_args["unsupported_numeric_claims"] == [{"claim": "$40/seat"}]
+
+
+@pytest.mark.asyncio
+async def test_qa_data_degraded_force_finalize_uses_data_gap_reason() -> None:
+    class _FakeSession:
+        async def __aenter__(self) -> "_FakeSession":
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def get(self, *_: object) -> object:
+            return None
+
+    decision_bundle = await _decision_from_qa_feedback(
+        session_factory=lambda: _FakeSession(),  # type: ignore[arg-type]
+        run_id="run_test",
+        iteration=2,
+        triggered_by="qa_rejection",
+        qa_outcome="force_degraded",
+        qa_reject_to="supervisor",
+        qa_reasons=["Required sections lack grounded evidence."],
+        qa_degrade_reason="report_degraded_required_sections",
+        qa_degraded_required_sections=["trend_summary", "representative_benchmarks"],
+        qa_unsupported_numeric_claims=[],
+        user_query="landscape ai hardware",
+        competitors=["Meta", "NVIDIA"],
+        fallback_dimensions=["feature"],
+        fallback_sections=["trend_summary"],
+        pending_review_target_step_id="step_writer_v2",
+    )
+
+    assert decision_bundle is not None
+    decision, llm_response, forced_degraded = decision_bundle
+    assert forced_degraded is True
+    assert decision.chosen_tool == "Finalize"
+    assert "degraded_required=trend_summary, representative_benchmarks" in decision.reasoning_summary
+    assert llm_response.prompt_preview == "qa_data_degraded"
 
 
 def test_fallback_decision_prefers_batch_when_multiple_competitors_pending() -> None:

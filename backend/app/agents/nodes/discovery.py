@@ -255,7 +255,21 @@ def _reconcile_candidate_role(
     analysis_intent: str | None = None,
     self_product: str | None,
 ) -> str:
-    del domain_context, analysis_intent
+    context_text = " ".join(
+        item for item in [domain_context, analysis_intent] if isinstance(item, str) and item.strip()
+    ).casefold()
+    landscape_signal = any(
+        hint in context_text
+        for hint in (
+            "trend",
+            "landscape",
+            "opportunity",
+            "全景",
+            "趋势",
+            "机会",
+            "赛道",
+        )
+    )
     inferred_role = _infer_candidate_role(
         candidate_name=candidate_name,
         relevance_reason=relevance_reason,
@@ -264,13 +278,20 @@ def _reconcile_candidate_role(
     if llm_candidate_role is None:
         return inferred_role
     if (
-        llm_candidate_role == "direct_competitor"
+        llm_candidate_role in {"direct_competitor", "adjacent_competitor", "substitute"}
         and inferred_role in {"upstream_supplier", "trend_reference"}
     ):
-        # Discovery extraction frequently collapses broad landscape entities into
-        # "direct_competitor". Preserve explicit role separation for downstream
-        # ranking/reporting when strong lexical signals indicate upstream/trend.
+        # Guardrail: heterogeneous entities should not be promoted into comparable
+        # competitor roles by extraction noise.
         return inferred_role
+    if llm_candidate_role == "direct_competitor" and inferred_role == "substitute":
+        return "substitute"
+    if (
+        llm_candidate_role == "direct_competitor"
+        and inferred_role == "adjacent_competitor"
+        and landscape_signal
+    ):
+        return "adjacent_competitor"
     return llm_candidate_role
 
 

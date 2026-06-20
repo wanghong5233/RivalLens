@@ -36,6 +36,7 @@ from service.qa.rules import (
     rule_triplet_coverage_for_profile_competitors,
     rule_writer_must_cite_evidence,
     rule_writer_no_fallback_mode,
+    rule_writer_no_placeholder_scaffolding,
     rule_writer_sections_must_have_content,
 )
 
@@ -257,6 +258,31 @@ def test_rule_writer_sections_must_have_content_pass_and_fail() -> None:
     assert rule_writer_sections_must_have_content(failing_content_json).passed is False
 
 
+def test_rule_writer_no_placeholder_scaffolding_blocks_scaffold_text() -> None:
+    passing_content_json = {
+        "sections": [
+            {
+                "section_id": "trend_summary",
+                "title": "Trend Summary",
+                "content_markdown": "This trend section contains grounded observations and concrete evidence.",
+                "evidence_refs": ["ev_test_001"],
+            }
+        ]
+    }
+    failing_content_json = {
+        "sections": [
+            {
+                "section_id": "trend_summary",
+                "title": "Trend Summary",
+                "content_markdown": "Section trend_summary lacks enough grounded evidence; trigger follow-up research.",
+                "evidence_refs": ["ev_test_001"],
+            }
+        ]
+    }
+    assert rule_writer_no_placeholder_scaffolding(passing_content_json).passed is True
+    assert rule_writer_no_placeholder_scaffolding(failing_content_json).passed is False
+
+
 def test_rule_writer_must_cite_evidence_pass_and_fail() -> None:
     passing_content_json = {
         "sections": [
@@ -332,18 +358,21 @@ def test_rule_writer_no_fallback_mode_pass_and_fail() -> None:
 
 def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
     landscape_json = {
+        "executive_summary": "summary",
         "sections": [
-            {"section_id": "competitor_profiles"},
-            {"section_id": "comparison_matrix"},
-            {"section_id": "positioning_map"},
+            {"section_id": "market_landscape_map"},
+            {"section_id": "trend_summary"},
+            {"section_id": "strategic_recommendations"},
         ]
     }
     comparison_json = {
+        "executive_summary": "summary",
         "sections": [
             {"section_id": "competitor_profiles"},
             {"section_id": "comparison_matrix"},
             {"section_id": "positioning_map"},
             {"section_id": "self_positioning"},
+            {"section_id": "strategic_recommendations"},
         ]
     }
 
@@ -357,8 +386,25 @@ def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
     )
 
     assert landscape_result.passed is False
-    assert "market_landscape_map" in landscape_result.message
+    assert "representative_benchmarks" in landscape_result.message
     assert comparison_result.passed is True
+
+
+def test_rule_structured_sections_present_ignores_degraded_required_sections() -> None:
+    landscape_json = {
+        "executive_summary": "summary",
+        "report_degraded_required_sections": ["trend_summary", "representative_benchmarks"],
+        "sections": [
+            {"section_id": "market_landscape_map"},
+            {"section_id": "strategic_recommendations"},
+        ],
+    }
+    result = rule_structured_sections_present(
+        content_json=landscape_json,
+        analysis_archetype="landscape",
+    )
+
+    assert result.passed is True
 
 
 def test_rule_triplet_coverage_for_profile_competitors_blocks_thin_coverage() -> None:
@@ -538,6 +584,34 @@ def test_target_sections_prefers_writer_resolved_targets_over_plan_and_intake() 
         "security",
         "support",
         "implementation",
+    ]
+
+
+def test_target_sections_prefers_writer_renderable_sections_when_available() -> None:
+    run = Run(
+        run_id="run_qa_targets_renderable",
+        user_query="qa targets",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_a"],
+        intake_draft={"focus_dimensions": ["phantom_1"]},
+        plan_tree=None,
+    )
+    writer_step = Step(
+        step_id="step_writer_targets_renderable",
+        run_id=run.run_id,
+        agent_name="writer",
+        status="completed",
+        retry_count=0,
+        payload={
+            "renderable_sections": ["executive_summary", "trend_summary"],
+            "target_sections": ["executive_summary", "trend_summary", "comparison_matrix"],
+        },
+    )
+
+    assert _target_sections_for_report(run=run, writer_step=writer_step) == [
+        "executive_summary",
+        "trend_summary",
     ]
 
 
