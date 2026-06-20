@@ -65,6 +65,8 @@ class RunMetricsSnapshot:
     manual_review_rate: float
     manual_review_is_proxy: bool
     run_wall_clock_seconds: int | None
+    evidence_floor_count: int = 0
+    non_floor_grounded_count: int = 0
 
 
 def _extract_competitor_id(span: dict[str, object] | None) -> str | None:
@@ -88,6 +90,11 @@ def _extract_source_authority(span: dict[str, object] | None) -> str:
     if isinstance(source_authority, str) and source_authority:
         return source_authority
     return "unknown"
+
+
+def _is_evidence_floor_row(span: dict[str, object] | None) -> bool:
+    """A floor row is a placeholder persisted when a competitor had no real grounded evidence."""
+    return isinstance(span, dict) and span.get("evidence_floor") is True
 
 
 def _expected_dimensions_from_plan_tree(plan_tree: dict[str, object] | None) -> set[str]:
@@ -618,6 +625,11 @@ def build_run_metrics_snapshot(
         delta = int((run.finished_at - run.started_at).total_seconds())
         run_wall_clock_seconds = max(delta, 0)
 
+    evidence_floor_count = sum(
+        1 for row in evidence_rows if _is_evidence_floor_row(row.span)
+    )
+    non_floor_grounded_count = len(evidence_rows) - evidence_floor_count
+
     return RunMetricsSnapshot(
         run_id=run.run_id,
         coverage_rate=coverage_rate,
@@ -654,6 +666,8 @@ def build_run_metrics_snapshot(
         manual_review_rate=manual_review_rate,
         manual_review_is_proxy=True,
         run_wall_clock_seconds=run_wall_clock_seconds,
+        evidence_floor_count=evidence_floor_count,
+        non_floor_grounded_count=non_floor_grounded_count,
     )
 
 

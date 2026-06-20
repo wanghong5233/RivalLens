@@ -14,6 +14,7 @@ from agents.tools.parse_page import (
     source_matches_competitor,
 )
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
+from core.tiers import resolve_tier_profile
 from db.engine import get_session_factory
 from models.artifact import Artifact
 from models.evidence import EvidenceRecord
@@ -218,8 +219,15 @@ def _build_initial_substate(
     resolved_official_urls: list[str],
     resolved_official_hosts: list[str],
     resolved_source_pages: list[dict[str, str]],
+    search_attempts_per_dim: int,
 ) -> ResearcherSubState:
-    max_turns = max(request.max_iterations or MAX_REACT_TURNS, len(focus_dimensions))
+    # Reserve search_attempts_per_dim searches + 1 fetch per dimension, with the
+    # tier's react_turns as the floor, so every dimension can search to budget.
+    per_dim_tool_budget = search_attempts_per_dim + 1
+    max_turns = max(
+        request.max_iterations or MAX_REACT_TURNS,
+        len(focus_dimensions) * per_dim_tool_budget,
+    )
     return {
         "run_id": run_id,
         "step_id": step_id,
@@ -232,6 +240,7 @@ def _build_initial_substate(
         "turn_count": 0,
         "max_turns": max_turns,
         "search_max_results": request.search_max_results,
+        "search_attempts_per_dim": search_attempts_per_dim,
         "compression_count": 0,
         "last_compressed_turn": -1,
         "messages": [],
@@ -842,12 +851,20 @@ def _build_evidence_rows(
             dimension=normalized_dimension,
             stage="post_quality",
         )
-        grounded = _text_mentions_candidate(
-            candidate_name=competitor_id_raw,
-            text=sanitized_text,
-        ) or _text_mentions_candidate(
-            candidate_name=competitor_id_raw,
-            text=source_title,
+        # A page on the competitor's own official host is grounded by attribution
+        # even when the body never repeats the vendor name (pricing/docs pages
+        # rarely do). source_authority == "official" already required host match +
+        # official source type, so this stays a hard signal, not similarity slop.
+        grounded = (
+            source_authority == "official"
+            or _text_mentions_candidate(
+                candidate_name=competitor_id_raw,
+                text=sanitized_text,
+            )
+            or _text_mentions_candidate(
+                candidate_name=competitor_id_raw,
+                text=source_title,
+            )
         )
         if not grounded:
             record_drop_for_bucket(
@@ -903,6 +920,21 @@ def _build_evidence_rows(
         floor_reason = (
             floor_reason_raw if isinstance(floor_reason_raw, str) else "unknown"
         )
+        floor_competitor_raw = floor_candidate.get("competitor_id")
+        floor_competitor = (
+            floor_competitor_raw if isinstance(floor_competitor_raw, str) else default_competitor_id
+        )
+        floor_dimension_raw = floor_candidate.get("dimension")
+        floor_dimension = floor_dimension_raw if isinstance(floor_dimension_raw, str) else None
+        # Floor fallback means a competitor produced zero real grounded evidence:
+        # surface it loudly instead of silently persisting a placeholder row.
+        log.warning(
+            "researcher.evidence_floor",
+            competitor_id=floor_competitor,
+            dimension=floor_dimension,
+            floor_reason=floor_reason,
+            floor_candidate_count=len(floor_candidates),
+        )
         append_evidence_row(
             {
                 **floor_candidate,
@@ -915,6 +947,12 @@ def _build_evidence_rows(
                 },
             }
         )
+    floor_count = sum(
+        1
+        for row in evidence_rows
+        if isinstance(row.span, dict) and row.span.get("evidence_floor") is True
+    )
+    non_floor_grounded_count = len(evidence_rows) - floor_count
     if funnel_metrics is not None:
         funnel_metrics.clear()
         funnel_metrics.update(
@@ -922,6 +960,8 @@ def _build_evidence_rows(
                 "overall": funnel_overall,
                 "by_competitor": funnel_by_competitor,
                 "drop_reasons": dropped_reasons,
+                "floor_count": floor_count,
+                "non_floor_grounded_count": non_floor_grounded_count,
             }
         )
     return (
@@ -1016,6 +1056,9 @@ async def researcher_node(state: AgentState) -> AgentState:
         )
 
     focus_dimensions = _resolve_focus_dimensions(request=request)
+    tier_profile = resolve_tier_profile(
+        _state_or_intake_string(state, "report_depth", intake_draft=intake_draft)
+    )
     step_id = make_id("step_")
     await emit_run_event(
         run_id=run_id,
@@ -1046,8 +1089,16 @@ async def researcher_node(state: AgentState) -> AgentState:
             }
             for page in resolved_sources.key_pages
         ],
+        search_attempts_per_dim=tier_profile.search_attempts_per_dim,
     )
-    subgraph_output = await subgraph.ainvoke(subgraph_input)
+    # Each ReAct turn costs ~2 super-steps (llm_decide + tool_exec); give the
+    # subgraph headroom above max_turns so it self-finalizes on turn budget
+    # instead of tripping LangGraph's default recursion_limit (25).
+    subgraph_recursion_limit = int(subgraph_input["max_turns"]) * 4 + 10
+    subgraph_output = await subgraph.ainvoke(
+        subgraph_input,
+        config={"recursion_limit": subgraph_recursion_limit},
+    )
 
     collected_at = datetime.now(timezone.utc)
     evidence_funnel: dict[str, object] = {}

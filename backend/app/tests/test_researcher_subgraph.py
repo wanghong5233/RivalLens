@@ -243,6 +243,39 @@ def test_pending_dimensions_keep_feedback_when_no_evidence_even_after_attempts()
     assert pending == ["user_feedback"]
 
 
+def test_pending_dimensions_keep_searching_until_attempt_budget() -> None:
+    # search_attempts_per_dim=2: a zero-evidence non-feedback dimension stays
+    # pending after a single search and is only exhausted once the budget is spent.
+    after_one_search: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["feature"],
+        "search_attempts_per_dim": 2,
+        "observations_log": [
+            {"tool": "search_web", "args": {"dimension": "feature"}},
+        ],
+    }
+    pending = _pending_dimensions_from_coverage(
+        focus_dimensions=["feature"],
+        coverage_matrix={"feature": {"covered": False, "evidence_count": 0}},
+        state=after_one_search,
+    )
+    assert pending == ["feature"]
+
+    after_budget_spent: ResearcherSubState = {  # type: ignore[typeddict-item]
+        "focus_dimensions": ["feature"],
+        "search_attempts_per_dim": 2,
+        "observations_log": [
+            {"tool": "search_web", "args": {"dimension": "feature"}},
+            {"tool": "search_web", "args": {"dimension": "feature"}},
+        ],
+    }
+    pending_after = _pending_dimensions_from_coverage(
+        focus_dimensions=["feature"],
+        coverage_matrix={"feature": {"covered": False, "evidence_count": 0}},
+        state=after_budget_spent,
+    )
+    assert pending_after == []
+
+
 def test_pending_dimensions_exhaust_feedback_after_evidence_exists() -> None:
     state: ResearcherSubState = {  # type: ignore[typeddict-item]
         "focus_dimensions": ["user_feedback"],

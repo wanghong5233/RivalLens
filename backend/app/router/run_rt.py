@@ -437,6 +437,8 @@ class RunMetricsResponse(BaseModel):
     manual_review_rate: float
     manual_review_is_proxy: bool
     run_wall_clock_seconds: int | None
+    evidence_floor_count: int = 0
+    non_floor_grounded_count: int = 0
 
 
 class ConclusionItemResponse(BaseModel):

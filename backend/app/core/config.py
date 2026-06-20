@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     LLM_TPM_BUDGET: int = 0
     LLM_JSON_MODE_ENABLED: bool = True
     ORPHAN_RUN_SWEEP_GRACE_SECONDS: int = 300
-    COLLECTOR_PER_HOST_QPS: int = 1
+    COLLECTOR_PER_HOST_QPS: int = 2
     COLLECTOR_USER_AGENT: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED: bool = True
     COLLECTOR_FETCH_SEARCH_FALLBACK_ENABLED: bool = True
     COLLECTOR_SEARCH_BREADTH_ENABLED: bool = True
-    COLLECTOR_PROVIDER_COOLDOWN_SECONDS: int = 600
+    COLLECTOR_PROVIDER_COOLDOWN_SECONDS: int = 120
     TAVILY_API_KEY: str | None = None
     SERPER_API_KEY: str | None = None
     BOCHA_API_KEY: str | None = None

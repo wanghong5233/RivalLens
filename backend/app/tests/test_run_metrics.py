@@ -700,3 +700,73 @@ def test_get_run_metrics_for_empty_run(test_client: TestClient) -> None:
         with engine.begin() as connection:
             connection.execute(text("DELETE FROM runs WHERE run_id = :run_id"), {"run_id": run_id})
         engine.dispose()
+
+
+def test_build_run_metrics_snapshot_counts_evidence_floor_rows() -> None:
+    run = Run(
+        run_id="run_floor_metrics",
+        user_query="floor metrics",
+        status="completed",
+        target_roles=["pm"],
+        competitors=["comp_cursor", "comp_copilot"],
+        plan_tree={
+            "tasks": [
+                {
+                    "stage": "research",
+                    "focus_dimensions": ["pricing"],
+                }
+            ]
+        },
+    )
+    collected_at = datetime.now(timezone.utc)
+    evidence_rows = [
+        EvidenceRecord(
+            id="ev_grounded",
+            run_id=run.run_id,
+            source_type="pricing_page",
+            source_url="https://cursor.com/pricing",
+            source_title="Cursor Pricing",
+            quote="Cursor publishes pricing details.",
+            sanitized_text="Cursor publishes pricing details.",
+            span={
+                "dimension": "pricing",
+                "competitor_id": "comp_cursor",
+                "source_authority": "official",
+            },
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        ),
+        EvidenceRecord(
+            id="ev_floor",
+            run_id=run.run_id,
+            source_type="article",
+            source_url="https://example.com/copilot",
+            source_title="Copilot mention",
+            quote="placeholder",
+            sanitized_text="placeholder",
+            span={
+                "dimension": "pricing",
+                "competitor_id": "comp_copilot",
+                "evidence_floor": True,
+                "evidence_floor_reason": "competitor_grounding_miss",
+            },
+            collected_by="step_researcher",
+            collected_at=collected_at,
+            desensitized=True,
+        ),
+    ]
+
+    snapshot = build_run_metrics_snapshot(
+        run=run,
+        evidence_rows=evidence_rows,
+        step_rows=[],
+        llm_rows=[],
+        decision_rows=[],
+        candidate_rows=[],
+        comparison_rows=[],
+    )
+
+    assert snapshot.evidence_count_total == 2
+    assert snapshot.evidence_floor_count == 1
+    assert snapshot.non_floor_grounded_count == 1

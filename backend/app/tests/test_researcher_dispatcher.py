@@ -387,6 +387,60 @@ async def test_researcher_dispatcher_uses_registry_and_collects_source_type(
 
 
 @pytest.mark.asyncio
+async def test_llm_search_web_receives_injected_query_variants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_researcher_subgraph.cache_clear()
+    fake_client = _FakeSequentialLLMClient(
+        responses_by_slot={
+            "research": [
+                _llm_response(
+                    "research",
+                    {
+                        "action": "search_web",
+                        "action_args": {"query": "cursor pricing", "dimension": "pricing"},
+                        "reasoning_summary": "search with bare query",
+                    },
+                ),
+                _llm_response(
+                    "research",
+                    {
+                        "action": "finalize",
+                        "action_args": {"summary": "done"},
+                        "reasoning_summary": "enough",
+                    },
+                ),
+            ]
+        }
+    )
+    monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
+
+    captured: dict[str, object] = {}
+
+    class _CapturingRegistry:
+        async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
+            assert action == "search_web"
+            captured.update(args)
+            return CollectorObservation(
+                channel="search_web",
+                args=args,
+                result=ToolObservationResult(snippets=[], metadata={}),
+            )
+
+    monkeypatch.setattr(
+        "agents.subgraphs.researcher.get_channel_registry", lambda: _CapturingRegistry()
+    )
+    state = {**_base_state(), "response_language": "en"}
+
+    await get_researcher_subgraph().ainvoke(state)
+
+    variants = captured.get("query_variants")
+    assert isinstance(variants, list)
+    assert "cursor pricing" in variants
+    assert len(variants) >= 2
+
+
+@pytest.mark.asyncio
 async def test_researcher_dispatcher_channel_failure_does_not_abort_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -193,6 +193,7 @@ class ResearcherSubState(TypedDict, total=False):
     official_fetch_count: int
     coverage_matrix: dict[str, dict[str, object]]
     rerank_reflected_dimensions: list[FocusDimension]
+    search_attempts_per_dim: int
 
 
 def _state_search_max_results(state: ResearcherSubState) -> int:
@@ -200,6 +201,18 @@ def _state_search_max_results(state: ResearcherSubState) -> int:
     if isinstance(max_results_raw, int) and max_results_raw > 0:
         return min(max_results_raw, 15)
     return 5
+
+
+# States built outside researcher_node (narrow unit tests) may omit the budget;
+# fall back to a single search so legacy single-attempt behavior is preserved.
+_FALLBACK_SEARCH_ATTEMPTS_PER_DIM = 1
+
+
+def _state_search_attempts_per_dim(state: ResearcherSubState) -> int:
+    value_raw = state.get("search_attempts_per_dim")
+    if isinstance(value_raw, int) and value_raw > 0:
+        return value_raw
+    return _FALLBACK_SEARCH_ATTEMPTS_PER_DIM
 
 
 def _approx_chars(messages: list[dict[str, str]]) -> int:
@@ -585,14 +598,14 @@ def _pending_dimensions_from_coverage(
                 tool_name="fetch_url",
                 dimension=dimension,
             )
-            # Avoid endless loops in deterministic test/offline modes:
-            # after one search + configured source-first fetch attempts, mark
-            # the dimension exhausted and let downstream QA/reporting decide quality.
-            if (
-                allow_feedback_exhaustion
-                and
-                search_attempt_count >= 1
-                and fetch_attempt_count >= _MAX_SOURCE_FIRST_ATTEMPTS_PER_DIMENSION
+            # Stop a dimension once it yields >=1 evidence draft; otherwise keep
+            # searching until the per-dimension attempt budget is spent. Never
+            # give up after a single search (the old "1 search + 2 fetch" rule
+            # converged far too early and starved zero-evidence dimensions).
+            search_attempts_budget = _state_search_attempts_per_dim(state)
+            if allow_feedback_exhaustion and (
+                evidence_count >= _QUALITY_MIN_EVIDENCE_COUNT_PER_DIMENSION
+                or search_attempt_count >= search_attempts_budget
             ):
                 covered = True
             # Deterministic/offline test mode can emit extract-only traces without
@@ -827,7 +840,7 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
                 },
             )
 
-    if search_attempt_count == 0:
+    if search_attempt_count < _state_search_attempts_per_dim(state):
         search_max_results = _state_search_max_results(state)
         query_prefix = f"{domain_hint} " if domain_hint else ""
         base_query = f"{query_prefix}{state['competitor_id']} {dimension} {state['research_topic']}"
@@ -1644,6 +1657,25 @@ async def tool_exec(state: ResearcherSubState) -> ResearcherSubState:
         official_hosts = sorted(_state_official_hosts(state))
         if official_hosts:
             action_args.setdefault("official_hosts", official_hosts)
+        # LLM-issued searches arrive without query_variants; widen recall with the
+        # same locale + dimension-synonym variants the fallback dispatcher uses, so
+        # same-language pages that literally name the vendor surface (absorbs most
+        # cross-language alias misses without a dedicated alias pipeline).
+        query_raw = action_args.get("query")
+        dimension_for_variants = action_args.get("dimension")
+        if (
+            not action_args.get("query_variants")
+            and isinstance(query_raw, str)
+            and query_raw.strip()
+            and isinstance(dimension_for_variants, str)
+            and dimension_for_variants.strip()
+        ):
+            action_args["query_variants"] = _fallback_query_variants(
+                state=state,
+                dimension=dimension_for_variants,
+                primary_query=query_raw.strip(),
+                base_query=query_raw.strip(),
+            )
     if action_raw == "fetch_url":
         competitor_id_raw = state.get("competitor_id")
         if isinstance(competitor_id_raw, str) and competitor_id_raw.strip():

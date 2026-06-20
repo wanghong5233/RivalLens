@@ -65,9 +65,12 @@ def test_initial_researcher_substate_raises_turn_budget_to_cover_focus_dimension
         resolved_official_urls=[],
         resolved_official_hosts=[],
         resolved_source_pages=[],
+        search_attempts_per_dim=2,
     )
 
-    assert substate["max_turns"] == 4
+    # 4 dimensions x (2 searches + 1 fetch) = 12 turns, well above max_iterations.
+    assert substate["max_turns"] == 12
+    assert substate["search_attempts_per_dim"] == 2
     assert substate["market_scope"] == "中国市场"
     assert substate["response_language"] == "zh"
 
@@ -535,6 +538,58 @@ def test_build_evidence_rows_uses_runtime_resolved_official_hosts_for_match() ->
     assert row.span["source_authority"] == "official"
 
 
+def test_build_evidence_rows_grounds_official_host_page_without_name_mention() -> None:
+    rows, _, dropped = _build_evidence_rows(
+        run_id="run_official_grounding",
+        step_id="step_official_grounding",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "NewVendor",
+                # Body never repeats the vendor name; only the official host attributes it.
+                "quote": "Team plans start at $20 per seat.",
+                "sanitized_text": (
+                    "Team plans start at $20 per seat with enterprise controls, SSO, "
+                    "audit logs, and dedicated onboarding included for procurement and "
+                    "administration teams evaluating a company-wide rollout this quarter."
+                ),
+                "source_type": "pricing_page",
+                "source_url": "https://newvendor.ai/pricing",
+                "source_title": "Pricing",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "NewVendor",
+                # Third-party page with no name mention stays an ungrounded miss.
+                "quote": "Generic market commentary.",
+                "sanitized_text": (
+                    "An independent blog discusses developer tooling budgets, seat-based "
+                    "billing trends, and enterprise procurement cycles without ever naming "
+                    "the specific vendor under review in this lengthy editorial overview."
+                ),
+                "source_type": "article",
+                "source_url": "https://news.example.com/tooling-budgets",
+                "source_title": "Tooling budgets",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="NewVendor",
+        resolved_official_hosts={"newvendor.ai"},
+    )
+
+    assert len(rows) == 1
+    assert rows[0].source_url == "https://newvendor.ai/pricing"
+    assert rows[0].span["source_authority"] == "official"
+    assert rows[0].span.get("evidence_floor") is not True
+    assert dropped["reasons"]["competitor_grounding_miss"] == 1
+
+
 def test_build_evidence_rows_marks_market_report_as_authoritative() -> None:
     rows, _, _ = _build_evidence_rows(
         run_id="run_market_report_authority",
@@ -640,7 +695,7 @@ async def test_researcher_node_enriches_candidate_urls_with_official_search(
             return None
 
     class _FakeSubgraph:
-        async def ainvoke(self, _: object) -> dict[str, object]:
+        async def ainvoke(self, _: object, *, config: object | None = None) -> dict[str, object]:
             return {
                 "evidence_drafts": [],
                 "observations_log": [],
@@ -754,7 +809,7 @@ async def test_researcher_node_falls_back_to_intake_locale_context(
             return None
 
     class _FakeSubgraph:
-        async def ainvoke(self, _: object) -> dict[str, object]:
+        async def ainvoke(self, _: object, *, config: object | None = None) -> dict[str, object]:
             return {
                 "evidence_drafts": [],
                 "observations_log": [],
@@ -875,7 +930,7 @@ async def test_researcher_node_loads_intake_locale_context_from_run_row(
             return None
 
     class _FakeSubgraph:
-        async def ainvoke(self, _: object) -> dict[str, object]:
+        async def ainvoke(self, _: object, *, config: object | None = None) -> dict[str, object]:
             return {
                 "evidence_drafts": [],
                 "observations_log": [],
@@ -991,7 +1046,7 @@ async def test_researcher_node_merges_partial_state_intake_with_persisted_draft(
             return None
 
     class _FakeSubgraph:
-        async def ainvoke(self, _: object) -> dict[str, object]:
+        async def ainvoke(self, _: object, *, config: object | None = None) -> dict[str, object]:
             return {
                 "evidence_drafts": [],
                 "observations_log": [],
@@ -1221,7 +1276,7 @@ async def test_researcher_node_degrades_zero_evidence_without_requeue(
             return None
 
     class _FakeSubgraph:
-        async def ainvoke(self, _: object) -> dict[str, object]:
+        async def ainvoke(self, _: object, *, config: object | None = None) -> dict[str, object]:
             return {
                 "evidence_drafts": [],
                 "observations_log": [],
