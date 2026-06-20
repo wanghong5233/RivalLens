@@ -181,6 +181,7 @@ async def analyst_node(state: AgentState) -> AgentState:
         response_language=intake_draft.response_language,
         analysis_intent=intake_draft.analysis_intent,
         evidence_briefs=evidence_briefs,
+        analysis_archetype=intake_draft.analysis_archetype,
     )
     harness_result = await complete_structured(
         model_slot="summarization",
@@ -200,6 +201,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             validation_errors=errors,
             focus_dimensions=focus_dimensions,
             evidence_ids=sorted(allowed_evidence_ids),
+            analysis_archetype=intake_draft.analysis_archetype,
         ),
         log_event="analyst.harness.finish",
     )
@@ -219,6 +221,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             focus_dimensions=focus_dimensions,
             evidence_briefs=evidence_briefs,
             competitors=[item for item in competitors if isinstance(item, str)],
+            analysis_archetype=intake_draft.analysis_archetype,
         )
     analysis_result = analysis_output.to_persisted_dict()
     analysis_insights = (

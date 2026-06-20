@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
+from schemas.report_sections import SECTION_REGISTRY, default_outline_for_archetype
 from service.skill_store import get_skill_store
 
 QA_SEMANTIC_ALLOWED_REJECT_TO: tuple[str, ...] = (
@@ -480,7 +481,13 @@ Output JSON schema:
   ],
   "schema_version": "schema_v0.2",
   "risk_flags": list[str],
-  "recommended_sections": list[str]
+  "recommended_sections": list[str],
+  "report_outline": [
+    {
+      "section_id": str,
+      "directive": str | null
+    }
+  ]
 }
 
 Rules:
@@ -498,6 +505,8 @@ Rules:
 - Keep this step focused on narrative analysis. Structured knowledge
   (features/pricings/personas/coverage) is extracted downstream from evidence.
 - recommended_sections must use snake_case section ids that match insight dimension values.
+- report_outline must be an ordered list of section objects using known section_id values from the user prompt.
+- Keep executive_summary first in report_outline, and preserve required sections for the current analysis_archetype.
 - Do not fabricate competitor facts.
 - Return JSON object only.
 """
@@ -1267,6 +1276,26 @@ _ANALYST_SCHEMA_TASK_LANDSCAPE = (
 )
 
 
+def build_report_outline_instruction(*, analysis_archetype: str) -> str:
+    default_outline = list(default_outline_for_archetype(analysis_archetype))
+    section_library = [
+        {
+            "section_id": item.section_id,
+            "kind": item.kind,
+            "required_for": sorted(item.required_for),
+        }
+        for item in SECTION_REGISTRY.values()
+    ]
+    return (
+        "Report outline contract:\n"
+        f"- section_library: {_json(section_library)}\n"
+        f"- default_outline_for_archetype: {_json(default_outline)}\n"
+        "- report_outline must be an ordered list of objects with section_id and optional directive.\n"
+        "- section_id must come from section_library only.\n"
+        "- Keep executive_summary first and include all default outline sections unless evidence is truly unavailable.\n"
+    )
+
+
 def build_analyst_user_prompt(
     *,
     user_query: str,
@@ -1288,6 +1317,9 @@ def build_analyst_user_prompt(
         if analysis_archetype == "landscape"
         else _ANALYST_SCHEMA_TASK_COMPARISON
     )
+    outline_instruction = build_report_outline_instruction(
+        analysis_archetype=analysis_archetype
+    )
     return (
         "Analysis context:\n"
         f"- user_query: {user_query}\n"
@@ -1304,6 +1336,8 @@ def build_analyst_user_prompt(
         "Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids. "
         "Prioritize product-level facts that can later render competitor_profiles + comparison_matrix deterministically."
         + schema_task
+        + "\n\n"
+        + outline_instruction
     )
 
 
@@ -1316,6 +1350,7 @@ def build_analyst_fallback_user_prompt(
     response_language: str | None = None,
     analysis_intent: str | None = None,
     evidence_briefs: Sequence[dict[str, object]] = (),
+    analysis_archetype: str = "comparison",
 ) -> str:
     # Defense-in-depth twin of the writer fallback: a degraded analyst pass must
     # stay in response_language and stay grounded in real evidence.
@@ -1327,11 +1362,13 @@ def build_analyst_fallback_user_prompt(
         f"- analysis_intent: {analysis_intent}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- analysis_archetype: {analysis_archetype}\n"
+        f"- default_report_outline: {_json(list(default_outline_for_archetype(analysis_archetype)))}\n"
         f"- allowed_evidence_ids: {_json(list(evidence_ids))}\n"
         f"- evidence_briefs: {_json(grounded_briefs)}\n\n"
         "Write all analysis in response_language (zh = Chinese, en = English); when it is "
         "absent, match the language of user_query. Every insight must cite evidence_ids above. "
-        "Return minimal valid JSON with at least one grounded insight and comparisons when possible."
+        "Return minimal valid JSON with at least one grounded insight, comparisons when possible, and a report_outline aligned with default_report_outline."
     )
 
 
@@ -1340,14 +1377,18 @@ def build_analyst_repair_user_prompt(
     validation_errors: Sequence[str],
     focus_dimensions: Sequence[str],
     evidence_ids: Sequence[str],
+    analysis_archetype: str = "comparison",
 ) -> str:
     return (
         "Repair analysis JSON to satisfy schema validation.\n"
         f"- validation_errors: {_json(list(validation_errors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
+        f"- analysis_archetype: {analysis_archetype}\n"
+        f"- allowed_report_outline: {_json(list(default_outline_for_archetype(analysis_archetype)))}\n\n"
         "Rules:\n"
         "- recommended_sections must be snake_case ids matching insight dimension values.\n"
+        "- report_outline must use allowed_report_outline section ids and keep executive_summary first.\n"
         "- Every insight must cite only evidence_ids listed above.\n"
         "- Keep valid insights/comparisons unchanged; repair only fields named in validation_errors.\n"
         "- Return JSON object only."

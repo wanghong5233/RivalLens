@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app_main import app
 from core.config import settings
+from schemas.report_sections import default_outline_for_archetype
 from service.llm.response import LLMResponse
 
 
@@ -447,6 +448,12 @@ class _FakeLLMClient:
     def _build_analyst_response(self, user_prompt: str) -> LLMResponse:
         focus_dimensions = self._extract_json_list(user_prompt, "focus_dimensions")
         competitors = self._extract_json_list(user_prompt, "competitors")
+        archetype_match = re.search(r"- analysis_archetype: ([^\n]+)", user_prompt)
+        analysis_archetype = (
+            archetype_match.group(1).strip()
+            if archetype_match is not None and archetype_match.group(1).strip()
+            else "comparison"
+        )
         evidence_briefs_raw = self._extract_json_value(user_prompt, "evidence_briefs")
         evidence_briefs = (
             [item for item in evidence_briefs_raw if isinstance(item, dict)]
@@ -517,6 +524,10 @@ class _FakeLLMClient:
             "comparisons": comparisons,
             "risk_flags": [],
             "recommended_sections": focus_dimensions,
+            "report_outline": [
+                {"section_id": section_id}
+                for section_id in default_outline_for_archetype(analysis_archetype)
+            ],
         }
         return self._build_response(model_slot="summarization", content=content)
 
