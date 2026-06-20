@@ -81,7 +81,7 @@ export function MetricsPanel({ runId, isRunActive }: MetricsPanelProps): JSX.Ele
       },
       {
         key: "knowledge_schema_coverage",
-        label: "三件套覆盖率",
+        label: "功能/定价/口碑覆盖率",
         value: formatPercent(metrics.knowledge_schema_coverage_rate),
         hint: "run_knowledge coverage 中 complete/partial 的占比",
       },
