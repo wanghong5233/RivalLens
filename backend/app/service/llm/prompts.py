@@ -634,7 +634,7 @@ Rules:
 - Exact numbers such as percentages, prices, counts, dates, and time savings must be directly supported by cited evidence containing the same number or a directly computable equivalent.
 - If QA feedback lists unsupported_numeric_claims, remove those exact numbers, rewrite them as qualitative statements, or label them clearly as proposals instead of factual claims.
 - During QA rewrites, avoid introducing new exact funding amounts, market-share percentages, acceptance rates, or time windows unless the exact value appears verbatim in evidence_briefs.
-- For report_depth=deep, write a materially deeper report: cover every target section, cite evidence in each section, and include concrete competitor comparisons.
+- For report_depth=deep, write a materially deeper report for sections with grounded evidence; avoid placeholder sections and keep citations concrete.
 - Do not fabricate evidence ids or insight refs.
 - section_id must be snake_case and meaningful for the user query.
 - Return JSON object only.
@@ -1473,13 +1473,11 @@ def build_writer_user_prompt(
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     framing = (
-        "Write a commercial-grade landscape report using the unified skeleton: "
-        "competitor layering map + core competitor profiles + triplet comparison matrix "
-        "(feature/pricing/user_feedback) + 2x2 positioning + trend summary + opportunity map + actionable recommendations. "
+        "Write a commercial-grade landscape report. Prioritize market layering and trend narrative, "
+        "and include evidence-backed competitor comparisons only when target_sections requires them. "
         if analysis_archetype == "landscape"
-        else "Write a commercial-grade comparison report using the unified skeleton: "
-        "all competitor profiles + triplet comparison matrix (feature/pricing/user_feedback) + "
-        "2x2 positioning + self positioning + actionable recommendations. "
+        else "Write a commercial-grade comparison report focused on evidence-backed differences "
+        "across capabilities, pricing, and user feedback. "
     )
     return (
         "Writer context:\n"
@@ -1505,7 +1503,7 @@ def build_writer_user_prompt(
         f"- unsupported_numeric_claims: {_json(list(unsupported_numeric_claims)[:12])}\n\n"
         + framing
         + "section_id must exactly match target_sections entries. "
-        "Do not skip target sections even when evidence is partial; explicitly mark coverage gaps. "
+        "Do not invent placeholder sections: when evidence is insufficient, omit non-required sections and keep required sections explicit about limits. "
         "Inline citations in content_markdown must use [ev_xxx] only from allowed_evidence_ids; "
         "never output bare ev_xxx or insight_x ids in markdown. "
         "If unsupported_numeric_claims is non-empty, do not repeat those exact numbers unless the "
@@ -1513,7 +1511,7 @@ def build_writer_user_prompt(
         "estimates as proposals. "
         "Use business-report wording; in Chinese output, prefer 竞品/厂商/产品/企业 and avoid colloquial labels such as 玩家、玩具、玩具型; use neutral terms like 轻量级工具 or 非生产级工具 when needed. "
         "Do not create a section titled Executive Summary or 执行摘要; use the top-level executive_summary field only. "
-        "For report_depth=deep, each target section needs enough concrete, cited analysis to pass deep QA gates."
+        "For report_depth=deep, each included section needs concrete, cited analysis to pass deep QA gates."
     )
 
 

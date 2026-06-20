@@ -135,7 +135,7 @@ def _canonical_focus_dimensions(
             if dimension not in _COMPARISON_SCHEMA_DIMENSIONS_SET
         ]
         ordered = [*COMPARISON_SCHEMA_BASE_DIMENSIONS, *extras]
-        # Focused comparison runs must keep the schema triplet intact even when
+        # Focused comparison runs must keep the schema core dimensions intact even when
         # max_dimensions is configured to a lower cap.
         cap = max(max_dimensions, len(COMPARISON_SCHEMA_BASE_DIMENSIONS))
         return ordered[:cap]
@@ -344,7 +344,7 @@ def _research_description_for_discovered_competitor(
     is_landscape_core_deepdive: bool,
 ) -> str:
     if is_landscape_core_deepdive:
-        return f"按三件套深挖 {competitor}（功能、定价、用户反馈），用于核心代表层对比。"
+        return f"按关键维度深挖 {competitor}（功能、定价、用户反馈），用于核心代表层对比。"
     role_raw = source_payload.get("candidate_role") if isinstance(source_payload, dict) else None
     role_label = _COMPETITOR_ROLE_LABELS.get(role_raw or "")
     if role_label is None:

@@ -545,11 +545,11 @@ export function NewRunChatPage(): JSX.Element {
     const focusTargets = inheritedSeedCompetitors.slice(0, 5);
     if (focusTargets.length > 0) {
       setComposerText(
-        `基于上次结果，聚焦分析 ${focusTargets.join("、")}，输出功能、定价与用户反馈三件套对比。`,
+        `基于上次结果，聚焦分析 ${focusTargets.join("、")}，输出功能、定价与用户反馈对比。`,
       );
       return;
     }
-    setComposerText("基于上次结果做一轮更聚焦的竞品对比，输出功能、定价与用户反馈三件套。");
+    setComposerText("基于上次结果做一轮更聚焦的竞品对比，输出功能、定价与用户反馈分析。");
   }, [
     composerText,
     fromRunId,
@@ -1072,7 +1072,7 @@ export function NewRunChatPage(): JSX.Element {
         </p>
         {fromRunId !== null ? (
           <p className="text-xs text-primary">
-            当前为聚焦模式：继承 run {fromRunId} 的上下文，默认会按 comparison 生成三件套分析。
+            当前为聚焦模式：继承 run {fromRunId} 的上下文，默认会按 comparison 生成关键维度分析。
           </p>
         ) : null}
       </header>

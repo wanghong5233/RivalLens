@@ -31,7 +31,7 @@ export function RoleLayerMap({
             赛道角色分层
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            核心层挂三件套画像，外围层保留简介与趋势线索，可继续发起聚焦分析。
+            核心层输出结构化画像，外围层保留简介与趋势线索，可继续发起聚焦分析。
           </p>
         </div>
       </div>

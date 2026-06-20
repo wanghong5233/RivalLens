@@ -455,7 +455,7 @@ export function KnowledgePanel({
       </div>
       {isLandscape ? (
         <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground">
-          本次为趋势/全景分析，竞品知识三件套为辅助视图；若需完整功能树/定价/画像，请在下一步发起聚焦到具体产品的对比分析。
+          本次为趋势/全景分析，竞品知识矩阵为辅助视图；若需完整功能树/定价/画像，请在下一步发起聚焦到具体产品的对比分析。
         </div>
       ) : null}
       {isLandscape && roleGroups.length > 0 ? (

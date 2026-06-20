@@ -73,7 +73,7 @@ def _section_title(section_id: str, *, response_language: str | None) -> str:
     titles = (
         {
             "competitor_profiles": "逐竞品画像",
-            "comparison_matrix": "三件套对比矩阵（功能/定价/口碑）",
+            "comparison_matrix": "对比矩阵（功能/定价/用户反馈）",
             "positioning_map": "2x2 定位图（结构化）",
             "market_landscape_map": "竞品分层地图",
             "self_positioning": "我方位置与差异化",
@@ -84,7 +84,7 @@ def _section_title(section_id: str, *, response_language: str | None) -> str:
         if response_language == "zh"
         else {
             "competitor_profiles": "Competitor Profiles",
-            "comparison_matrix": "Triplet Comparison Matrix (Feature/Pricing/Feedback)",
+            "comparison_matrix": "Comparison Matrix (Feature/Pricing/User Feedback)",
             "positioning_map": "2x2 Positioning Map (Structured)",
             "market_landscape_map": "Competitor Layering Map",
             "self_positioning": "Self Positioning and Differentiation",
@@ -1081,7 +1081,7 @@ def _build_competitor_profiles_section(
         weakness_summary = (
             ", ".join(weakness_dimensions)
             if weakness_dimensions
-            else ("关键维度覆盖完整" if response_language == "zh" else "coverage is complete on key triplet")
+            else ("关键维度覆盖完整" if response_language == "zh" else "coverage is complete on key dimensions")
         )
         refs_text = ", ".join(f"[{item}]" for item in competitor_refs) if competitor_refs else "-"
         lines.extend(
@@ -1124,9 +1124,9 @@ def _build_competitor_profiles_section(
         )
     if not lines:
         lines = [
-            "- 暂无可用竞品画像，建议触发补充研究并优先补齐三件套证据。"
+            "- 暂无可用竞品画像，建议触发补充研究并优先补齐关键维度证据。"
             if response_language == "zh"
-            else "- No usable competitor profiles yet; trigger follow-up research to fill triplet evidence."
+            else "- No usable competitor profiles yet; trigger follow-up research to fill key-dimension evidence."
         ]
     return {
         "section_id": "competitor_profiles",
