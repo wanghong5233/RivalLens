@@ -119,8 +119,8 @@ _SECTION_SPECS: tuple[SectionSpec, ...] = (
         kind="deterministic",
         required_for=_COMPARISON_AND_MIXED,
         requires=_requires_at_least_two_substantive,
-        title_zh="对比矩阵（功能·定价·口碑）",
-        title_en="Comparison Matrix (Feature/Pricing/Feedback)",
+        title_zh="对比矩阵（功能/定价/用户反馈）",
+        title_en="Comparison Matrix (Feature/Pricing/User Feedback)",
     ),
     SectionSpec(
         section_id="positioning_map",

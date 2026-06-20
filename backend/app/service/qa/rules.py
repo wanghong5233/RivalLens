@@ -11,6 +11,7 @@ from core.defaults import (
 )
 from models.evidence import EvidenceRecord
 from schemas.contracts import validate_section_id
+from schemas.report_sections import required_sections_for_archetype
 from service.collector.source_quality import source_blocklist_reason
 from service.locale import source_locale, target_country_from_scope
 
@@ -20,13 +21,6 @@ _HONEST_INCOMPLETE_COVERAGE = {"partial", "insufficient_data", "missing"}
 # Coverage floor, NOT a dominance target: an explicitly China-scoped analysis should have
 # at least some domestic firsthand grounding. Foreign sources stay valid for breadth.
 _MIN_DOMESTIC_COVERAGE_RATE = 0.20
-_STRUCTURED_REQUIRED_SECTIONS: tuple[str, ...] = (
-    "competitor_profiles",
-    "comparison_matrix",
-    "positioning_map",
-)
-_LANDSCAPE_REQUIRED_SECTIONS: tuple[str, ...] = ("market_landscape_map",)
-_COMPARISON_REQUIRED_SECTIONS: tuple[str, ...] = ("self_positioning",)
 _TRIPLET_FIELDS: tuple[str, ...] = ("feature", "pricing", "feedback")
 _TRIPLET_MIN_SUPPORTED_DIMENSIONS = 2
 _MAX_SINGLE_COMPETITOR_EVIDENCE_SHARE = 0.60
@@ -462,13 +456,15 @@ def rule_structured_sections_present(
     content_json: dict[str, object],
     analysis_archetype: str,
 ) -> RuleResult:
+    required_registry_sections = set(required_sections_for_archetype(analysis_archetype))
+    structured_sections = (
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
+        "market_landscape_map" if analysis_archetype == "landscape" else "self_positioning",
+    )
     required_sections = [
-        *_STRUCTURED_REQUIRED_SECTIONS,
-        *(
-            _LANDSCAPE_REQUIRED_SECTIONS
-            if analysis_archetype == "landscape"
-            else _COMPARISON_REQUIRED_SECTIONS
-        ),
+        section_id for section_id in structured_sections if section_id in required_registry_sections
     ]
     present = {
         section_id

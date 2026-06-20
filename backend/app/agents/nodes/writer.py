@@ -20,6 +20,7 @@ from models.report import Report
 from models.step import Step
 from schemas.agent_outputs import AnalystOutput, WriterExecutionContext, WriterReportOutput
 from schemas.ids import make_id
+from schemas.report_sections import CORE_DISCOVERY_ROLES, section_title
 from schemas.supervisor import Write
 from schemas.contracts import validate_section_id
 from service.comparison import load_comparisons_for_run
@@ -52,11 +53,6 @@ NUMERIC_LITERAL_PATTERN = re.compile(
     r"(?:\s*(?:%|％|元|美元|人民币|cny|rmb|usd))?(?![A-Za-z0-9_])",
     flags=re.IGNORECASE,
 )
-_CORE_DISCOVERY_ROLES: frozenset[str] = frozenset(
-    {"direct_competitor", "adjacent_competitor", "substitute"}
-)
-
-
 def _copy_empty_knowledge_payload() -> dict[str, object]:
     return {
         "schema_version": EMPTY_RUN_KNOWLEDGE.get("schema_version", "schema_v0.2"),
@@ -70,30 +66,7 @@ def _copy_empty_knowledge_payload() -> dict[str, object]:
 
 
 def _section_title(section_id: str, *, response_language: str | None) -> str:
-    titles = (
-        {
-            "competitor_profiles": "逐竞品画像",
-            "comparison_matrix": "对比矩阵（功能/定价/用户反馈）",
-            "positioning_map": "2x2 定位图（结构化）",
-            "market_landscape_map": "竞品分层地图",
-            "self_positioning": "我方位置与差异化",
-            "trend_summary": "趋势综述",
-            "opportunity_map": "机会地图",
-            "strategic_recommendations": "可执行建议",
-        }
-        if response_language == "zh"
-        else {
-            "competitor_profiles": "Competitor Profiles",
-            "comparison_matrix": "Comparison Matrix (Feature/Pricing/User Feedback)",
-            "positioning_map": "2x2 Positioning Map (Structured)",
-            "market_landscape_map": "Competitor Layering Map",
-            "self_positioning": "Self Positioning and Differentiation",
-            "trend_summary": "Trend Summary",
-            "opportunity_map": "Opportunity Map",
-            "strategic_recommendations": "Actionable Recommendations",
-        }
-    )
-    return titles.get(section_id, section_id.replace("_", " ").title())
+    return section_title(section_id, response_language=response_language)
 
 
 def _markdown_cell(value: object) -> str:
@@ -717,7 +690,7 @@ def _landscape_profile_competitors(
         competitor
         for competitor in ordered_competitors
         if isinstance(role_map.get(competitor), dict)
-        and role_map[competitor].get("candidate_role") in _CORE_DISCOVERY_ROLES
+        and role_map[competitor].get("candidate_role") in CORE_DISCOVERY_ROLES
     ]
     if not core:
         non_upstream = [

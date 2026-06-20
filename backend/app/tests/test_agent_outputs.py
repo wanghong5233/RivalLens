@@ -19,6 +19,7 @@ from schemas.agent_outputs import (
 from schemas.agent_outputs_pipeline import INTAKE_PATCHABLE_FIELDS, IntakeTurnOutput as PipelineIntakeTurnOutput
 from schemas.contracts import validate_dimension
 from schemas.intake import RunIntakeDraft
+from schemas.report_sections import default_outline_for_archetype
 
 
 def test_analyst_output_canonicalizes_recommended_sections_from_insights() -> None:
@@ -38,6 +39,46 @@ def test_analyst_output_canonicalizes_recommended_sections_from_insights() -> No
     )
 
     assert output.recommended_sections == ["competitive_edge"]
+
+
+def test_analyst_output_normalizes_report_outline_items() -> None:
+    output = AnalystOutput.model_validate(
+        {
+            "summary": "Summary with enough analyst context.",
+            "insights": [
+                {
+                    "dimension": "feature",
+                    "finding": "Product A offers broader capability coverage.",
+                    "evidence_ids": ["ev_001"],
+                }
+            ],
+            "report_outline": [
+                {"section_id": "executive_summary", "directive": "focus on outcomes"},
+                "comparison_matrix",
+                {"section_id": "unknown_outline_item"},
+                {"section_id": "comparison_matrix", "directive": "duplicate should be removed"},
+            ],
+        }
+    )
+
+    assert [item.section_id for item in output.report_outline] == [
+        "executive_summary",
+        "comparison_matrix",
+    ]
+    assert output.report_outline[0].directive == "focus on outcomes"
+    assert output.report_outline[1].directive is None
+
+
+def test_analyst_fallback_sets_default_report_outline_for_archetype() -> None:
+    analyst = AnalystOutput.build_fallback(
+        focus_dimensions=["feature", "pricing"],
+        evidence_briefs=[],
+        analysis_archetype="landscape",
+    )
+
+    assert [item.section_id for item in analyst.report_outline] == list(
+        default_outline_for_archetype("landscape")
+    )
 
 
 def test_resolve_writer_target_sections_prefers_analyst_dimensions() -> None:

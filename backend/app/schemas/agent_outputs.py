@@ -8,6 +8,7 @@ from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from schemas.business import Feature, Persona, Pricing, UserFeedback
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_section_id, validate_template_id
 from schemas.ids import make_id
+from schemas.report_sections import default_outline_for_archetype, is_known_section
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 ComparisonStance = Literal["leader", "competitive", "laggard", "unknown"]
@@ -83,6 +84,42 @@ def _filter_valid_section_ids(values: list[str]) -> list[str]:
             continue
         normalized.append(canonical)
     return stable_unique(normalized)
+
+
+def _normalize_outline_items(value: object) -> list[dict[str, str | None]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, str | None]] = []
+    seen: set[str] = set()
+    for item in value:
+        section_raw: object
+        directive_raw: object = None
+        if isinstance(item, str):
+            section_raw = item
+        elif isinstance(item, dict):
+            section_raw = item.get("section_id")
+            directive_raw = item.get("directive")
+        else:
+            continue
+        if not isinstance(section_raw, str):
+            continue
+        section_candidate = section_raw.strip()
+        if not section_candidate:
+            continue
+        try:
+            section_id = validate_section_id(section_candidate)
+        except ValueError:
+            continue
+        if not is_known_section(section_id) or section_id in seen:
+            continue
+        seen.add(section_id)
+        directive = (
+            directive_raw.strip()
+            if isinstance(directive_raw, str) and directive_raw.strip()
+            else None
+        )
+        normalized.append({"section_id": section_id, "directive": directive})
+    return normalized
 
 
 def _normalize_allowed_competitors(competitors: set[str] | None) -> set[str]:
@@ -368,6 +405,27 @@ class DimensionComparison(BaseModel):
         return validate_dimension(value)
 
 
+class OutlineItem(BaseModel):
+    section_id: str
+    directive: str | None = None
+
+    @field_validator("section_id")
+    @classmethod
+    def _validate_known_section_id(cls, value: str) -> str:
+        section_id = validate_section_id(value)
+        if not is_known_section(section_id):
+            raise ValueError(f"Unsupported outline section_id: {section_id}")
+        return section_id
+
+    @field_validator("directive", mode="before")
+    @classmethod
+    def _normalize_directive(cls, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
 class AnalystOutput(BaseModel):
     """Canonical analyst artifact consumed by writer and QA."""
 
@@ -377,12 +435,34 @@ class AnalystOutput(BaseModel):
     comparisons: list[DimensionComparison] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     recommended_sections: list[str] = Field(default_factory=list)
+    report_outline: list[OutlineItem] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_outline_payload(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        if "report_outline" not in value:
+            return value
+        return {
+            **value,
+            "report_outline": _normalize_outline_items(value.get("report_outline")),
+        }
 
     @model_validator(mode="after")
     def _canonicalize_recommended_sections(self) -> Self:
         from_insights = stable_unique([insight.dimension for insight in self.insights])
         from_llm = _filter_valid_section_ids(self.recommended_sections)
         self.recommended_sections = from_llm or from_insights
+        if self.report_outline:
+            deduped_outline: list[OutlineItem] = []
+            seen_sections: set[str] = set()
+            for item in self.report_outline:
+                if item.section_id in seen_sections:
+                    continue
+                seen_sections.add(item.section_id)
+                deduped_outline.append(item)
+            self.report_outline = deduped_outline
         return self
 
     @classmethod
@@ -502,6 +582,7 @@ class AnalystOutput(BaseModel):
             "recommended_sections": content.get("recommended_sections")
             if isinstance(content.get("recommended_sections"), list)
             else [],
+            "report_outline": _normalize_outline_items(content.get("report_outline")),
         }
         return cls.model_validate(payload)
 
@@ -512,8 +593,12 @@ class AnalystOutput(BaseModel):
         insights_raw = payload.get("insights")
         if not isinstance(insights_raw, list) or not insights_raw:
             return None
+        normalized_payload = {
+            **payload,
+            "report_outline": _normalize_outline_items(payload.get("report_outline")),
+        }
         try:
-            return cls.model_validate(payload)
+            return cls.model_validate(normalized_payload)
         except ValidationError:
             return None
 
@@ -527,6 +612,7 @@ class AnalystOutput(BaseModel):
         focus_dimensions: list[str],
         evidence_briefs: list[dict[str, object]],
         competitors: list[str] | None = None,
+        analysis_archetype: str = "comparison",
     ) -> AnalystOutput:
         covered_dimensions = stable_unique(
             [
@@ -606,6 +692,10 @@ class AnalystOutput(BaseModel):
             comparisons=[],
             risk_flags=risk_flags,
             recommended_sections=covered_dimensions or focus_dimensions or [dimension],
+            report_outline=[
+                {"section_id": section_id}
+                for section_id in default_outline_for_archetype(analysis_archetype)
+            ],
         )
 
 
@@ -841,6 +931,7 @@ __all__ = [
     "IntakeTurnOutput",
     "KnowledgeExtractionOutput",
     "MIN_WRITER_SECTION_CHARS",
+    "OutlineItem",
     "PlannerOutput",
     "QASemanticOutput",
     "ReplannerOutput",
