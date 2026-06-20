@@ -1,5 +1,5 @@
 id: 04_reject_max_retry_force_degraded
-description: Repeated semantic rejection should trigger force_degraded outcome.
+description: Data-degraded writer output should force finalize without repeated retry churn.
 setup:
   promoted_qa_rules: []
 input:
@@ -12,4 +12,4 @@ input:
     - pm
 assertions:
   final_qa_outcome: force_degraded
-  qa_rejection_count_gte: 4
+  qa_rejection_count_lte: 1

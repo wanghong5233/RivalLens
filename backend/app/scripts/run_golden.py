@@ -52,6 +52,7 @@ def _install_fake_llm_for_golden() -> None:
     for module_name in patch_targets:
         module = importlib.import_module(module_name)
         setattr(module, "get_llm_client", fake_getter)
+    conftest_module.install_fake_collector_for_golden()
 
 
 def main() -> int:

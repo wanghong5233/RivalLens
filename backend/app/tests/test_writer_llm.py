@@ -95,10 +95,14 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "unsupported_numeric_claims" in user_prompt
     assert "$40/seat" in user_prompt
     assert "Do not create a section titled Executive Summary or 执行摘要" in user_prompt
+    assert "If trend_summary is in target_sections" in user_prompt
+    assert "organize by stakeholder" in user_prompt
     assert "[ev_xxx]" in WRITER_SYSTEM_PROMPT
     assert "Never emit bare ev_xxx ids" in WRITER_SYSTEM_PROMPT
     assert "Write all report output in response_language" in WRITER_SYSTEM_PROMPT
     assert "Exact numbers" in WRITER_SYSTEM_PROMPT
+    assert "theme -> representative benchmark -> business implication" in WRITER_SYSTEM_PROMPT
+    assert "Keep tone deterministic and factual" in WRITER_SYSTEM_PROMPT
     assert "During QA rewrites" in WRITER_SYSTEM_PROMPT
     assert "Fallback writer request" in fallback_prompt
     assert "- allowed_evidence_ids:" in fallback_prompt

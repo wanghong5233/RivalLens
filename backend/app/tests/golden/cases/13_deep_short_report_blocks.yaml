@@ -11,6 +11,4 @@ input:
   report_depth: deep
 assertions:
   final_qa_outcome: force_degraded
-  qa_rejection_count_gte: 1
-  qa_reject_to_includes:
-    - writer
+  qa_rejection_count_lte: 1

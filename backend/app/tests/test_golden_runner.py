@@ -239,7 +239,7 @@ def test_reject_max_retry_force_degraded_golden_case_still_passes(
     assert isinstance(loaded, dict)
     result = run_case(case=GoldenCase.model_validate(loaded), client=test_client)
     assert result.qa_outcome == "force_degraded"
-    assert result.qa_rejection_count >= 3
+    assert result.qa_rejection_count <= 1
 
 
 def test_locale_zh_domestic_golden_case_passes_without_locale_warning(

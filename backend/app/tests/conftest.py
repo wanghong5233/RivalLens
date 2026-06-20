@@ -6,6 +6,7 @@ import re
 import sys
 from collections.abc import Generator
 from typing import Callable
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,8 @@ from fastapi.testclient import TestClient
 from app_main import app
 from core.config import settings
 from schemas.report_sections import default_outline_for_archetype
+from service.collector.base import CollectorObservation, CollectorSnippet, ToolObservationResult
+from service.collector.registry import get_channel_registry as _get_real_channel_registry
 from service.llm.response import LLMResponse
 
 
@@ -39,6 +42,230 @@ def _windows_selector_event_loop_policy() -> None:
     if sys.platform != "win32":
         return
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_GOLDEN_PROFILE_LIBRARY: tuple[dict[str, object], ...] = (
+    {
+        "name": "Cursor",
+        "track": "coding",
+        "candidate_role": "direct_competitor",
+        "official_url": "https://www.cursor.com/pricing",
+        "evidence_quote": "Cursor 在目标市场提供可落地产品并持续迭代核心功能。",
+        "aliases": ("cursor", "comp_cursor", "ai coding assistants"),
+    },
+    {
+        "name": "Windsurf",
+        "track": "coding",
+        "candidate_role": "direct_competitor",
+        "official_url": "https://windsurf.com/pricing",
+        "evidence_quote": "Windsurf 在目标市场提供可落地产品并持续迭代核心功能。",
+        "aliases": ("windsurf", "comp_windsurf"),
+    },
+    {
+        "name": "TRAE",
+        "track": "coding",
+        "candidate_role": "direct_competitor",
+        "official_url": "https://www.trae.ai",
+        "evidence_quote": "TRAE 在目标市场提供可落地产品并持续迭代核心功能。",
+        "aliases": ("trae", "comp_trae"),
+    },
+    {
+        "name": "Claude Code",
+        "track": "coding",
+        "candidate_role": "adjacent_competitor",
+        "official_url": "https://www.anthropic.com/claude-code",
+        "evidence_quote": "Claude Code 在目标市场提供可落地产品并持续迭代核心功能。",
+        "aliases": ("claude code", "comp_claude_code"),
+    },
+    {
+        "name": "Meta Ray-Ban",
+        "track": "hardware",
+        "candidate_role": "direct_competitor",
+        "official_url": "https://www.meta.com/smart-glasses",
+        "evidence_quote": "Meta Ray-Ban 在目标市场提供可落地产品并持续迭代核心功能。",
+        "aliases": ("meta ray-ban", "ray-ban", "smart glasses"),
+    },
+    {
+        "name": "XREAL",
+        "track": "hardware",
+        "candidate_role": "direct_competitor",
+        "official_url": "https://www.xreal.com",
+        "evidence_quote": "XREAL 在目标市场提供可落地产品并持续迭代核心功能。",
+        "aliases": ("xreal",),
+    },
+    {
+        "name": "Rokid",
+        "track": "hardware",
+        "candidate_role": "adjacent_competitor",
+        "official_url": "https://global.rokid.com",
+        "evidence_quote": "Rokid 在目标市场提供可落地产品并持续迭代核心功能。",
+        "aliases": ("rokid", "ai 硬件", "眼镜"),
+    },
+)
+_GOLDEN_TRACK_HINTS: dict[str, tuple[str, ...]] = {
+    "coding": ("ai coding", "coding assistants", "cursor", "windsurf", "claude code", "trae"),
+    "hardware": ("ai 硬件", "smart glasses", "眼镜", "ray-ban", "xreal", "rokid"),
+}
+
+
+def _profile_source_domain(official_url: str) -> str:
+    parsed = urlsplit(official_url)
+    return parsed.netloc.lower().removeprefix("www.")
+
+
+def _profile_matches_prompt(profile: dict[str, object], prompt_lower: str) -> bool:
+    aliases = profile.get("aliases", ())
+    if not isinstance(aliases, tuple):
+        return False
+    return any(alias in prompt_lower for alias in aliases if isinstance(alias, str))
+
+
+def _select_golden_profiles(prompt_text: str) -> list[dict[str, object]]:
+    prompt_lower = prompt_text.casefold()
+    explicit_matches = [
+        profile
+        for profile in _GOLDEN_PROFILE_LIBRARY
+        if _profile_matches_prompt(profile, prompt_lower)
+    ]
+    if explicit_matches:
+        return explicit_matches
+    for track, hints in _GOLDEN_TRACK_HINTS.items():
+        if any(hint in prompt_lower for hint in hints):
+            return [
+                profile
+                for profile in _GOLDEN_PROFILE_LIBRARY
+                if isinstance(profile.get("track"), str) and profile["track"] == track
+            ]
+    return [profile for profile in _GOLDEN_PROFILE_LIBRARY if profile.get("track") == "coding"][:2]
+
+
+def _build_golden_snippet_text(profile: dict[str, object]) -> str:
+    quote = str(profile.get("evidence_quote") or "").strip()
+    return (
+        f"{quote} 公开资料显示该产品覆盖功能能力、商业化定价与用户反馈信号，"
+        "并在最近版本中强调生态集成、行业场景落地与持续发布节奏；"
+        "这些信息可以直接用于后续结构化对比、证据引用与风险评估，"
+        "避免出现空洞占位段落或无法落地的泛化结论。"
+    )
+
+
+def _build_discovery_candidates_for_prompt(prompt_text: str) -> list[dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    for profile in _select_golden_profiles(prompt_text)[:10]:
+        official_url = str(profile.get("official_url") or "")
+        role = str(profile.get("candidate_role") or "adjacent_competitor")
+        track = str(profile.get("track") or "coding")
+        candidates.append(
+            {
+                "name": str(profile.get("name") or ""),
+                "is_competitor": True,
+                "candidate_role": role,
+                "relevance_reason": (
+                    "同类 AI 编码产品，服务相近开发效率与工程协作场景。"
+                    if track == "coding"
+                    else "同类 AI 眼镜产品，服务相近终端使用与交互场景。"
+                ),
+                "evidence_quote": str(profile.get("evidence_quote") or ""),
+                "official_url": official_url,
+                "source_domain": _profile_source_domain(official_url),
+            }
+        )
+    return candidates
+
+
+class _GoldenDeterministicRegistry:
+    def __init__(self) -> None:
+        self._delegate = _get_real_channel_registry()
+
+    def has(self, action: str) -> bool:
+        return self._delegate.has(action)
+
+    def list_actions(self) -> list[str]:
+        return self._delegate.list_actions()
+
+    async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
+        if action in {"search_web", "bocha_search"}:
+            return self._fake_search_observation(action=action, args=args)
+        if action == "fetch_url":
+            return self._fake_fetch_observation(args=args)
+        return await self._delegate.invoke(action, args=args)
+
+    def _fake_search_observation(
+        self,
+        *,
+        action: str,
+        args: dict[str, object],
+    ) -> CollectorObservation:
+        query_raw = args.get("query")
+        query = query_raw.strip() if isinstance(query_raw, str) and query_raw.strip() else "market"
+        max_results_raw = args.get("max_results", 5)
+        max_results = max_results_raw if isinstance(max_results_raw, int) and max_results_raw > 0 else 5
+        snippets: list[CollectorSnippet] = []
+        for profile in _select_golden_profiles(query)[: min(max_results, 10)]:
+            snippet_text = _build_golden_snippet_text(profile)
+            source_url = str(profile.get("official_url") or "")
+            snippets.append(
+                CollectorSnippet(
+                    quote=snippet_text,
+                    sanitized_text=snippet_text,
+                    source_url=source_url,
+                    source_title=f"{profile.get('name')} official update",
+                    source_type="official_site",
+                    desensitized=True,
+                    metadata={"source": "golden_fake_search", "query": query},
+                )
+            )
+        return CollectorObservation(
+            channel=action,
+            args={"query": query, "max_results": max_results},
+            result=ToolObservationResult(
+                snippets=snippets,
+                metadata={"provider": "golden_fake", "result_count": len(snippets)},
+            ),
+        )
+
+    def _fake_fetch_observation(self, *, args: dict[str, object]) -> CollectorObservation:
+        url_raw = args.get("url")
+        url = url_raw.strip() if isinstance(url_raw, str) and url_raw.strip() else "https://example.com"
+        selected = _select_golden_profiles(url)[0]
+        snippet_text = _build_golden_snippet_text(selected)
+        snippet = CollectorSnippet(
+            quote=snippet_text,
+            sanitized_text=snippet_text,
+            source_url=url,
+            source_title=f"{selected.get('name')} evidence page",
+            source_type="official_doc",
+            desensitized=True,
+            metadata={"source": "golden_fake_fetch"},
+        )
+        return CollectorObservation(
+            channel="fetch_url",
+            args={"url": url},
+            result=ToolObservationResult(
+                snippets=[snippet],
+                metadata={"source": "golden_fake_fetch", "host": _profile_source_domain(url)},
+            ),
+        )
+
+
+def install_fake_collector_for_golden() -> _GoldenDeterministicRegistry:
+    fake_registry = _GoldenDeterministicRegistry()
+    fake_getter: Callable[[], object] = lambda: fake_registry
+
+    import agents.nodes.discovery as discovery_module
+    import agents.nodes.researcher as researcher_node_module
+    import agents.subgraphs.researcher as researcher_subgraph_module
+    import agents.tools as tools_module
+    import service.collector.registry as collector_registry_module
+    import tests.golden.runner as golden_runner_module
+
+    collector_registry_module.get_channel_registry = fake_getter
+    tools_module.get_channel_registry = fake_getter
+    discovery_module.get_channel_registry = fake_getter
+    researcher_node_module.get_channel_registry = fake_getter
+    researcher_subgraph_module.get_channel_registry = fake_getter
+    golden_runner_module.get_channel_registry = fake_getter
+    return fake_registry
 
 
 class _FakeLLMClient:
@@ -416,15 +643,25 @@ class _FakeLLMClient:
                     "reasoning_summary": "Load reusable QA knowledge before collecting evidence.",
                 }
                 return self._build_response(model_slot="research", content=content)
+            base_evidence_text = (
+                f"{competitor_id} {pending_dimensions[0]} signal extracted in deterministic test mode. "
+                "Public sources describe concrete product capabilities, commercial packaging, "
+                "and user feedback patterns with release cadence, integration examples, and target "
+                "segment context, so the evidence can be reused for grounded comparisons and "
+                "section-level citations without placeholder scaffolding."
+            )
             content = {
                 "action": "extract_structured",
                 "action_args": {
                     "text": (
                         f"{competitor_id} {pending_dimensions[0]} 中文资料，"
-                        "用于国内市场竞品分析。"
+                        "用于国内市场竞品分析，并包含功能、定价与口碑的可验证描述，"
+                        "覆盖发布节奏、目标客群和商业化策略等核心字段；"
+                        "同时补充生态合作、典型场景落地和版本迭代事实，"
+                        "确保该证据文本可以通过语义质量阈值并用于后续结构化对比。"
                     )
                     if "locale-zh-demo" in prompt_lower
-                    else f"{competitor_id} {pending_dimensions[0]} signal extracted in deterministic test mode.",
+                    else base_evidence_text,
                     "source_url": (
                         f"https://example.cn/{competitor_id}/{pending_dimensions[0]}"
                         if "locale-zh-demo" in prompt_lower
@@ -530,6 +767,15 @@ class _FakeLLMClient:
             ],
         }
         return self._build_response(model_slot="summarization", content=content)
+
+    def _build_discovery_extract_response(self, user_prompt: str) -> LLMResponse:
+        if "Fallback competitor extraction request" in user_prompt:
+            return self._build_response(model_slot="research", content={"candidates": []})
+        candidates = _build_discovery_candidates_for_prompt(user_prompt)
+        return self._build_response(
+            model_slot="research",
+            content={"candidates": candidates},
+        )
 
     def _build_knowledge_extraction_response(self, user_prompt: str) -> LLMResponse:
         competitors = self._extract_json_list(user_prompt, "competitors")
@@ -659,6 +905,8 @@ class _FakeLLMClient:
             else "default"
         )
         requested_sections = self._extract_json_list(user_prompt, "requested_sections")
+        if not requested_sections:
+            requested_sections = self._extract_json_list(user_prompt, "target_sections")
         evidence_briefs_raw = self._extract_json_value(user_prompt, "evidence_briefs")
         if isinstance(evidence_briefs_raw, list):
             evidence_ids = [
@@ -1024,11 +1272,22 @@ class _FakeLLMClient:
         ):
             return self._build_researcher_response(user_prompt)
         if (
+            model_slot == "research"
+            and isinstance(system_prompt, str)
+            and "extract grounded competitor candidates" in system_prompt
+            and isinstance(user_prompt, str)
+        ):
+            return self._build_discovery_extract_response(user_prompt)
+        if (
             model_slot == "summarization"
             and isinstance(system_prompt, str)
             and "RivalLens Analyst" in system_prompt
             and isinstance(user_prompt, str)
-            and "Analysis context" in user_prompt
+            and (
+                "Analysis context" in user_prompt
+                or "Fallback analysis request" in user_prompt
+                or "Repair analysis JSON" in user_prompt
+            )
         ):
             return self._build_analyst_response(user_prompt)
         if (
@@ -1048,7 +1307,6 @@ class _FakeLLMClient:
             and isinstance(system_prompt, str)
             and "RivalLens Writer" in system_prompt
             and isinstance(user_prompt, str)
-            and "Writer context" in user_prompt
         ):
             return self._build_writer_response(user_prompt)
         if (
@@ -1110,6 +1368,25 @@ def fake_llm_client(
     monkeypatch.setattr("service.llm.client.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
     return fake_client
+
+
+@pytest.fixture(autouse=True)
+def fake_collector_registry_for_golden(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> _GoldenDeterministicRegistry | None:
+    node_path = str(request.node.path)
+    if "test_golden_runner.py" not in node_path:
+        return None
+    fake_registry = _GoldenDeterministicRegistry()
+    fake_getter: Callable[[], object] = lambda: fake_registry
+    monkeypatch.setattr("service.collector.registry.get_channel_registry", fake_getter)
+    monkeypatch.setattr("agents.tools.get_channel_registry", fake_getter)
+    monkeypatch.setattr("agents.nodes.discovery.get_channel_registry", fake_getter)
+    monkeypatch.setattr("agents.nodes.researcher.get_channel_registry", fake_getter)
+    monkeypatch.setattr("agents.subgraphs.researcher.get_channel_registry", fake_getter)
+    monkeypatch.setattr("tests.golden.runner.get_channel_registry", fake_getter)
+    return fake_registry
 
 
 @pytest.fixture()

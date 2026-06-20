@@ -20,6 +20,7 @@ from tests.golden.assertions import assert_contains, assert_equals, assert_gte
 class GoldenCaseAssertions(BaseModel):
     final_qa_outcome: str | None = None
     qa_rejection_count_gte: int | None = None
+    qa_rejection_count_lte: int | None = None
     qa_reject_to_includes: list[str] = Field(default_factory=list)
     warning_rule_ids_includes: list[str] = Field(default_factory=list)
     warning_rule_ids_excludes: list[str] = Field(default_factory=list)
@@ -452,6 +453,12 @@ def run_case(*, case: GoldenCase, client: TestClient) -> GoldenCaseResult:
         )
         if failed is not None:
             failures.append(failed)
+    if case.assertions.qa_rejection_count_lte is not None:
+        if qa_rejection_count > case.assertions.qa_rejection_count_lte:
+            failures.append(
+                "qa_rejection_count expected <= "
+                f"{case.assertions.qa_rejection_count_lte}, got {qa_rejection_count}"
+            )
     if case.assertions.qa_reject_to_includes:
         for expected in case.assertions.qa_reject_to_includes:
             failed = assert_contains(

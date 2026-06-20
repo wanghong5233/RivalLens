@@ -646,6 +646,9 @@ Rules:
 - If QA feedback lists unsupported_numeric_claims, remove those exact numbers, rewrite them as qualitative statements, or label them clearly as proposals instead of factual claims.
 - During QA rewrites, avoid introducing new exact funding amounts, market-share percentages, acceptance rates, or time windows unless the exact value appears verbatim in evidence_briefs.
 - For report_depth=deep, write a materially deeper report for sections with grounded evidence; avoid placeholder sections and keep citations concrete.
+- If trend_summary is present, make it the narrative center: theme -> representative benchmark -> business implication, with grounded citations.
+- If strategic_recommendations is present, organize recommendations by stakeholder and make each recommendation executable and evidence-linked.
+- Keep tone deterministic and factual; avoid speculative flourish and random phrasing shifts across retries.
 - Do not fabricate evidence ids or insight refs.
 - section_id must be snake_case and meaningful for the user query.
 - Return JSON object only.
@@ -1516,7 +1519,7 @@ def build_writer_user_prompt(
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     framing = (
-        "Write a commercial-grade landscape report. Prioritize market layering and trend narrative, "
+        "Write a commercial-grade landscape report. Make trend_summary the narrative core, tie trends to representative benchmarks, "
         "and include evidence-backed competitor comparisons only when target_sections requires them. "
         if analysis_archetype == "landscape"
         else "Write a commercial-grade comparison report focused on evidence-backed differences "
@@ -1547,12 +1550,15 @@ def build_writer_user_prompt(
         + framing
         + "section_id must exactly match target_sections entries. "
         "Do not invent placeholder sections: when evidence is insufficient, omit non-required sections and keep required sections explicit about limits. "
+        "If trend_summary is in target_sections, structure it as trend theme -> representative benchmark -> implication with [ev] citations. "
+        "If strategic_recommendations is in target_sections, organize by stakeholder (e.g., product/strategy/sales/operations/investor) and make each action concrete. "
         "Inline citations in content_markdown must use [ev_xxx] only from allowed_evidence_ids; "
         "never output bare ev_xxx or insight_x ids in markdown. "
         "If unsupported_numeric_claims is non-empty, do not repeat those exact numbers unless the "
         "current evidence_briefs directly support them; use qualitative wording or mark strategic "
         "estimates as proposals. "
         "Use business-report wording; in Chinese output, prefer 竞品/厂商/产品/企业 and avoid colloquial labels such as 玩家、玩具、玩具型; use neutral terms like 轻量级工具 or 非生产级工具 when needed. "
+        "Use stable, low-variance wording; prioritize deterministic structure over stylistic creativity. "
         "Do not create a section titled Executive Summary or 执行摘要; use the top-level executive_summary field only. "
         "For report_depth=deep, each included section needs concrete, cited analysis to pass deep QA gates."
     )
