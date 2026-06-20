@@ -4,7 +4,6 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
-from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from schemas.business import Feature, Persona, Pricing, UserFeedback
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_section_id, validate_template_id
 from schemas.ids import make_id
@@ -12,23 +11,10 @@ from schemas.report_sections import default_outline_for_archetype, is_known_sect
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 ComparisonStance = Literal["leader", "competitive", "laggard", "unknown"]
-DEFAULT_WRITER_SECTIONS: tuple[str, ...] = DEFAULT_FOCUS_DIMENSIONS
+DEFAULT_WRITER_SECTIONS: tuple[str, ...] = default_outline_for_archetype("comparison")
 MIN_WRITER_SECTION_CHARS = 60
 CoverageStatus = Literal["complete", "partial", "insufficient_data", "missing"]
 KnowledgeCoverage = dict[str, dict[str, CoverageStatus]]
-WRITER_SHARED_SKELETON_SECTIONS: tuple[str, ...] = (
-    "executive_summary",
-    "competitor_profiles",
-    "comparison_matrix",
-    "positioning_map",
-    "strategic_recommendations",
-)
-WRITER_LANDSCAPE_EXTRA_SECTIONS: tuple[str, ...] = (
-    "market_landscape_map",
-    "trend_summary",
-    "opportunity_map",
-)
-WRITER_COMPARISON_EXTRA_SECTIONS: tuple[str, ...] = ("self_positioning",)
 
 
 def stable_unique(values: list[str]) -> list[str]:
@@ -46,28 +32,35 @@ def resolve_writer_target_sections(
     *,
     requested_sections: list[str] | None,
     recommended_sections: list[str],
+    report_outline: list[OutlineItem] | None = None,
     analysis_archetype: str = "comparison",
 ) -> list[str]:
     """Single source of truth for writer section targets across analyst → writer."""
-    extras = (
-        WRITER_LANDSCAPE_EXTRA_SECTIONS
-        if analysis_archetype == "landscape"
-        else WRITER_COMPARISON_EXTRA_SECTIONS
-    )
-    targets: list[str] = [*WRITER_SHARED_SKELETON_SECTIONS, *extras]
+    targets: list[str] = list(default_outline_for_archetype(analysis_archetype))
+    for item in report_outline or []:
+        if is_known_section(item.section_id):
+            targets.append(item.section_id)
     for section_id in requested_sections or []:
         try:
-            targets.append(validate_section_id(section_id))
+            canonical = validate_section_id(section_id)
         except ValueError:
             continue
+        if is_known_section(canonical):
+            targets.append(canonical)
     for section_id in recommended_sections:
         try:
-            targets.append(validate_section_id(section_id))
+            canonical = validate_section_id(section_id)
         except ValueError:
             continue
-    if not targets:
-        targets = list(DEFAULT_WRITER_SECTIONS)
-    return stable_unique(targets)
+        if is_known_section(canonical):
+            targets.append(canonical)
+    normalized_targets = stable_unique([item for item in targets if is_known_section(item)])
+    if not normalized_targets:
+        normalized_targets = list(DEFAULT_WRITER_SECTIONS)
+    if "executive_summary" not in normalized_targets:
+        normalized_targets.insert(0, "executive_summary")
+    without_summary = [item for item in normalized_targets if item != "executive_summary"]
+    return ["executive_summary", *without_summary]
 
 
 def _filter_valid_section_ids(values: list[str]) -> list[str]:
@@ -775,6 +768,7 @@ class WriterExecutionContext(BaseModel):
 
     template_id: str | None
     target_sections: list[str]
+    renderable_sections: list[str]
     allowed_evidence_ids: frozenset[str]
     allowed_insight_ids: frozenset[str]
     default_risk_callouts: tuple[str, ...] = Field(default_factory=tuple)
@@ -791,13 +785,16 @@ class WriterExecutionContext(BaseModel):
         analysis_archetype: str = "comparison",
         default_risk_callouts: list[str] | None = None,
     ) -> WriterExecutionContext:
+        target_sections = resolve_writer_target_sections(
+            requested_sections=requested_sections,
+            recommended_sections=analyst_output.recommended_sections,
+            report_outline=analyst_output.report_outline,
+            analysis_archetype=analysis_archetype,
+        )
         return cls(
             template_id=template_id,
-            target_sections=resolve_writer_target_sections(
-                requested_sections=requested_sections,
-                recommended_sections=analyst_output.recommended_sections,
-                analysis_archetype=analysis_archetype,
-            ),
+            target_sections=target_sections,
+            renderable_sections=target_sections,
             allowed_evidence_ids=frozenset(allowed_evidence_ids),
             allowed_insight_ids=frozenset(allowed_insight_ids),
             default_risk_callouts=tuple(default_risk_callouts or analyst_output.risk_flags),
@@ -822,6 +819,7 @@ class WriterReportOutput(BaseModel):
         allowed_evidence_ids: set[str] = context.get("allowed_evidence_ids", set())
         allowed_insight_ids: set[str] = context.get("allowed_insight_ids", set())
         target_sections: list[str] = context.get("target_sections", [])
+        renderable_sections: list[str] = context.get("renderable_sections", target_sections)
         expected_template_id: str | None = context.get("template_id")
 
         if expected_template_id is not None and self.template_id != expected_template_id:
@@ -854,11 +852,11 @@ class WriterReportOutput(BaseModel):
         if not normalized_sections:
             raise ValueError("No sections remain after evidence grounding.")
 
-        if target_sections:
+        if renderable_sections:
             present = {section.section_id for section in normalized_sections}
             if self.executive_summary.strip():
                 present.add("executive_summary")
-            missing = [section_id for section_id in target_sections if section_id not in present]
+            missing = [section_id for section_id in renderable_sections if section_id not in present]
             if missing:
                 self.risk_callouts = stable_unique(
                     [
@@ -898,6 +896,7 @@ class WriterReportOutput(BaseModel):
                 "allowed_evidence_ids": set(execution_context.allowed_evidence_ids),
                 "allowed_insight_ids": set(execution_context.allowed_insight_ids),
                 "target_sections": execution_context.target_sections,
+                "renderable_sections": execution_context.renderable_sections,
                 "template_id": execution_context.template_id,
             },
         )

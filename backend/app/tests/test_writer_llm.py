@@ -114,6 +114,7 @@ def test_writer_report_output_accepts_valid_payload() -> None:
     context = WriterExecutionContext(
         template_id="battlecard_default",
         target_sections=["feature"],
+        renderable_sections=["feature"],
         allowed_evidence_ids=frozenset({"ev_001"}),
         allowed_insight_ids=frozenset({"insight_1"}),
     )
@@ -200,6 +201,7 @@ def test_writer_report_output_counts_top_level_executive_summary_as_covered() ->
     context = WriterExecutionContext(
         template_id="battlecard_default",
         target_sections=["executive_summary", "feature"],
+        renderable_sections=["executive_summary", "feature"],
         allowed_evidence_ids=frozenset({"ev_001"}),
         allowed_insight_ids=frozenset({"insight_1"}),
     )
@@ -231,6 +233,7 @@ def test_writer_report_output_rejects_invalid_evidence_refs() -> None:
     context = WriterExecutionContext(
         template_id="battlecard_default",
         target_sections=["feature"],
+        renderable_sections=["feature"],
         allowed_evidence_ids=frozenset({"ev_001"}),
         allowed_insight_ids=frozenset({"insight_1"}),
     )
@@ -513,6 +516,7 @@ def test_writer_report_output_allows_template_auto_mode() -> None:
     context = WriterExecutionContext(
         template_id=None,
         target_sections=["go_to_market"],
+        renderable_sections=["go_to_market"],
         allowed_evidence_ids=frozenset({"ev_001"}),
         allowed_insight_ids=frozenset(),
     )
@@ -578,15 +582,14 @@ def test_resolve_writer_target_sections_uses_insight_derived_recommendations() -
         recommended_sections=["competitive_edge", "monetization_model"],
     )
 
-    assert targets[:6] == [
+    assert targets == [
         "executive_summary",
         "competitor_profiles",
         "comparison_matrix",
         "positioning_map",
-        "strategic_recommendations",
         "self_positioning",
+        "strategic_recommendations",
     ]
-    assert targets[-2:] == ["competitive_edge", "monetization_model"]
 
 
 def test_apply_structured_writer_sections_renders_triplet_matrix_and_profiles() -> None:

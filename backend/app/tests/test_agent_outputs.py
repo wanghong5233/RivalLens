@@ -87,15 +87,14 @@ def test_resolve_writer_target_sections_prefers_analyst_dimensions() -> None:
         recommended_sections=["competitive_edge", "monetization_model"],
     )
 
-    assert sections[:6] == [
+    assert sections == [
         "executive_summary",
         "competitor_profiles",
         "comparison_matrix",
         "positioning_map",
-        "strategic_recommendations",
         "self_positioning",
+        "strategic_recommendations",
     ]
-    assert sections[-2:] == ["competitive_edge", "monetization_model"]
 
 
 def test_resolve_writer_target_sections_adds_landscape_required_sections() -> None:
@@ -105,15 +104,13 @@ def test_resolve_writer_target_sections_adds_landscape_required_sections() -> No
         analysis_archetype="landscape",
     )
 
-    assert sections[:8] == [
+    assert sections == [
         "executive_summary",
-        "competitor_profiles",
-        "comparison_matrix",
-        "positioning_map",
-        "strategic_recommendations",
         "market_landscape_map",
         "trend_summary",
+        "representative_benchmarks",
         "opportunity_map",
+        "strategic_recommendations",
     ]
 
 
@@ -140,15 +137,16 @@ def test_writer_execution_context_aligns_with_analyst_output() -> None:
         allowed_insight_ids={"insight_1"},
     )
 
-    assert context.target_sections[:6] == [
+    assert context.target_sections == [
         "executive_summary",
         "competitor_profiles",
         "comparison_matrix",
         "positioning_map",
-        "strategic_recommendations",
         "self_positioning",
+        "strategic_recommendations",
     ]
-    assert "feature" in context.target_sections
+    assert context.renderable_sections == context.target_sections
+    assert "feature" not in context.target_sections
 
 
 def test_analyst_fallback_marks_uncovered_dimensions() -> None:
@@ -324,6 +322,7 @@ def test_writer_report_output_marks_uncovered_target_sections() -> None:
     context = WriterExecutionContext(
         template_id="battlecard_default",
         target_sections=["feature", "pricing"],
+        renderable_sections=["feature", "pricing"],
         allowed_evidence_ids=frozenset({"ev_001"}),
         allowed_insight_ids=frozenset(),
     )
