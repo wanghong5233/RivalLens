@@ -204,8 +204,8 @@ def test_numeric_claim_guardrail_preserves_verifiable_numbers_in_deterministic_b
         "executive_summary": "摘要。",
         "sections": [
             {
-                "section_id": "representative_benchmarks",
-                "title": "代表标杆",
+                "section_id": "comparison_matrix",
+                "title": "对比矩阵",
                 "content_markdown": "小米目标 2025 年 Q2 发布，预期出货量超 100 万台，预测区间 1500-2000 元。",
                 "evidence_refs": ["ev_001"],
                 "insight_refs": [],
@@ -218,14 +218,14 @@ def test_numeric_claim_guardrail_preserves_verifiable_numbers_in_deterministic_b
         unsupported_numeric_claims=[
             {
                 "claim": "预测区间 1500-2000 元",
-                "section_id": "representative_benchmarks",
+                "section_id": "comparison_matrix",
                 "reason": "unsupported",
             }
         ],
         response_language="zh",
     )
 
-    assert downgraded_sections == ["representative_benchmarks"]
+    assert downgraded_sections == ["comparison_matrix"]
     benchmark_markdown = updated["sections"][0]["content_markdown"]
     assert isinstance(benchmark_markdown, str)
     # Only the QA-flagged claim is downgraded.
@@ -235,7 +235,7 @@ def test_numeric_claim_guardrail_preserves_verifiable_numbers_in_deterministic_b
     # being blanket-erased to placeholders.
     assert "2025" in benchmark_markdown
     assert "100" in benchmark_markdown
-    assert "numeric_claims_downgraded:representative_benchmarks" in updated["risk_callouts"]
+    assert "numeric_claims_downgraded:comparison_matrix" in updated["risk_callouts"]
 
 
 def test_writer_report_output_counts_top_level_executive_summary_as_covered() -> None:
@@ -660,26 +660,23 @@ def test_apply_structured_writer_sections_landscape_prioritizes_trend_outline() 
 
     sections = [item for item in updated["sections"] if isinstance(item, dict)]
     section_ids = [item.get("section_id") for item in sections]
+    assert "competitor_profiles" in section_ids
+    assert "positioning_map" in section_ids
     assert "comparison_matrix" not in section_ids
-    assert "competitor_profiles" not in section_ids
-    assert "positioning_map" not in section_ids
     assert "market_landscape_map" in section_ids
     assert "trend_summary" in section_ids
-    assert "representative_benchmarks" in section_ids
-    representative_section = next(
-        item for item in sections if item.get("section_id") == "representative_benchmarks"
+    assert "representative_benchmarks" not in section_ids
+    profile_section = next(
+        item for item in sections if item.get("section_id") == "competitor_profiles"
     )
-    assert "### Meta" in representative_section["content_markdown"]
-    assert "### NVIDIA" not in representative_section["content_markdown"]
-    assert "暂缺足够证据" not in representative_section["content_markdown"]
-    # Coverage statuses render as localized labels, never raw internal enums.
-    assert "维度覆盖: 完整/完整/部分" in representative_section["content_markdown"]
-    assert "insufficient_data" not in representative_section["content_markdown"]
-    assert updated["report_degraded_required_sections"] == []
+    assert "### Meta" in profile_section["content_markdown"]
+    assert "### NVIDIA" not in profile_section["content_markdown"]
+    assert "数据覆盖: 关键维度覆盖完整" in profile_section["content_markdown"]
+    assert "insufficient_data" not in profile_section["content_markdown"]
+    assert updated["report_degraded_required_sections"] == ["comparison_matrix"]
     # Fallback path (no LLM summary preserved) synthesizes the deterministic
     # positioning signal so positioning_map and executive_summary stay consistent.
     assert "领先梯队 Meta" in updated["executive_summary"]
-    assert "观察梯队 暂无" in updated["executive_summary"]
 
 
 def test_apply_structured_writer_sections_records_degraded_required_sections() -> None:
@@ -731,20 +728,26 @@ def test_apply_structured_writer_sections_records_degraded_required_sections() -
     )
 
     assert updated["report_degraded_required_sections"] == [
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
         "trend_summary",
-        "representative_benchmarks",
     ]
     risk_callouts = updated["risk_callouts"]
     assert isinstance(risk_callouts, list)
+    assert "report_degraded_required_section:competitor_profiles" in risk_callouts
+    assert "report_degraded_required_section:comparison_matrix" in risk_callouts
+    assert "report_degraded_required_section:positioning_map" in risk_callouts
     assert "report_degraded_required_section:trend_summary" in risk_callouts
-    assert "report_degraded_required_section:representative_benchmarks" in risk_callouts
     section_ids = [
         section.get("section_id")
         for section in updated["sections"]
         if isinstance(section, dict)
     ]
+    assert "competitor_profiles" not in section_ids
+    assert "comparison_matrix" not in section_ids
+    assert "positioning_map" not in section_ids
     assert "trend_summary" not in section_ids
-    assert "representative_benchmarks" not in section_ids
 
 
 def test_apply_structured_writer_sections_preserves_llm_executive_summary() -> None:

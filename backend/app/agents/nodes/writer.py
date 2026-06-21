@@ -777,8 +777,8 @@ def _status_label(*, status: str, response_language: str | None) -> str:
         return {
             "complete": "完整",
             "partial": "部分",
-            "insufficient_data": "数据不足",
-            "missing": "缺失",
+            "insufficient_data": "未核验",
+            "missing": "未采集",
         }.get(status, status)
     return {
         "complete": "Complete",
@@ -786,6 +786,24 @@ def _status_label(*, status: str, response_language: str | None) -> str:
         "insufficient_data": "Insufficient data",
         "missing": "Missing",
     }.get(status, status)
+
+
+def _gap_dimension_labels(*, dimensions: list[str], response_language: str | None) -> list[str]:
+    if response_language == "zh":
+        labels = {
+            "feature": "功能",
+            "pricing": "定价",
+            "feedback": "口碑",
+            "persona": "用户画像",
+        }
+    else:
+        labels = {
+            "feature": "feature",
+            "pricing": "pricing",
+            "feedback": "feedback",
+            "persona": "persona",
+        }
+    return [labels.get(item, item) for item in dimensions]
 
 
 def _fallback_evidence_refs(*, allowed_evidence_ids: set[str], limit: int = 4) -> list[str]:
@@ -837,7 +855,7 @@ def _feature_summary(
         if isinstance(item.get("name"), str) and str(item.get("name")).strip()
     ]
     if not names:
-        return "数据不足" if response_language == "zh" else "insufficient data"
+        return "未找到可核验证据" if response_language == "zh" else "no verifiable evidence found"
     return ", ".join(_stable_unique(names)[:5])
 
 
@@ -847,7 +865,7 @@ def _pricing_summary(
     response_language: str | None,
 ) -> str:
     if not pricings:
-        return "数据不足" if response_language == "zh" else "insufficient data"
+        return "未找到可核验证据" if response_language == "zh" else "no verifiable evidence found"
     models = [
         str(item.get("model")).strip()
         for item in pricings
@@ -874,7 +892,7 @@ def _feedback_summary(
     response_language: str | None,
 ) -> str:
     if not feedback_rows:
-        return "数据不足" if response_language == "zh" else "insufficient data"
+        return "未找到可核验证据" if response_language == "zh" else "no verifiable evidence found"
     sentiments = Counter(
         str(item.get("sentiment")).strip()
         for item in feedback_rows
@@ -1005,9 +1023,11 @@ def _build_comparison_matrix_section(
             ]
         )
     if not feature_rows:
-        feature_rows = [["-", "-", "insufficient_data"]]
-        pricing_rows = [["-", "-", "insufficient_data"]]
-        feedback_rows = [["-", "-", "insufficient_data"]]
+        empty_label = "未找到可核验证据" if response_language == "zh" else "no verifiable evidence found"
+        empty_status = "未核验" if response_language == "zh" else "Insufficient data"
+        feature_rows = [["-", empty_label, empty_status]]
+        pricing_rows = [["-", empty_label, empty_status]]
+        feedback_rows = [["-", empty_label, empty_status]]
     lines = [
         "### 功能矩阵" if response_language == "zh" else "### Feature Matrix",
         _build_markdown_table(
@@ -1088,49 +1108,57 @@ def _build_competitor_profiles_section(
             key
             for key in ("feature", "pricing", "feedback")
             if _coverage_status(coverage=coverage, competitor=competitor, key=key)
-            in {"partial", "insufficient_data", "missing"}
+            in {"insufficient_data", "missing"}
         ]
-        weakness_summary = (
-            ", ".join(weakness_dimensions)
-            if weakness_dimensions
-            else ("关键维度覆盖完整" if response_language == "zh" else "coverage is complete on key dimensions")
+        gap_labels = _gap_dimension_labels(
+            dimensions=weakness_dimensions,
+            response_language=response_language,
         )
         refs_text = ", ".join(f"[{item}]" for item in competitor_refs) if competitor_refs else "-"
+        lines.append(f"### {competitor}")
+        lines.append(
+            f"- 定位: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
+            if response_language == "zh"
+            else (
+                f"- Positioning: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
+            )
+        )
+        if features:
+            lines.append(
+                f"- 优势: {_feature_summary(features=features, response_language=response_language)}"
+                if response_language == "zh"
+                else f"- Strengths: {_feature_summary(features=features, response_language=response_language)}"
+            )
+        if pricings:
+            lines.append(
+                f"- 定价: {_pricing_summary(pricings=pricings, response_language=response_language)}"
+                if response_language == "zh"
+                else f"- Pricing: {_pricing_summary(pricings=pricings, response_language=response_language)}"
+            )
+        if feedback_rows:
+            lines.append(
+                f"- 口碑: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
+                if response_language == "zh"
+                else f"- Feedback: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
+            )
+        if gap_labels:
+            gap_text = "、".join(gap_labels) if response_language == "zh" else ", ".join(gap_labels)
+            lines.append(
+                f"- 数据缺口: {gap_text} 缺少可核验证据"
+                if response_language == "zh"
+                else f"- Evidence gaps: {gap_text} lack verifiable evidence"
+            )
+        else:
+            lines.append(
+                "- 数据覆盖: 关键维度覆盖完整"
+                if response_language == "zh"
+                else "- Data coverage: key dimensions are covered"
+            )
         lines.extend(
             [
-                f"### {competitor}",
-                (
-                    f"- 定位: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
-                    if response_language == "zh"
-                    else (
-                        f"- Positioning: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
-                    )
-                ),
-                (
-                    f"- 优势: {_feature_summary(features=features, response_language=response_language)}"
-                    if response_language == "zh"
-                    else f"- Strengths: {_feature_summary(features=features, response_language=response_language)}"
-                ),
-                (
-                    f"- 劣势: {weakness_summary}"
-                    if response_language == "zh"
-                    else f"- Gaps: {weakness_summary}"
-                ),
-                (
-                    f"- 定价: {_pricing_summary(pricings=pricings, response_language=response_language)}"
-                    if response_language == "zh"
-                    else f"- Pricing: {_pricing_summary(pricings=pricings, response_language=response_language)}"
-                ),
-                (
-                    f"- 口碑: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
-                    if response_language == "zh"
-                    else f"- Feedback: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
-                ),
-                (
-                    f"- 代表证据: {refs_text}"
-                    if response_language == "zh"
-                    else f"- Key evidence: {refs_text}"
-                ),
+                f"- 代表证据: {refs_text}"
+                if response_language == "zh"
+                else f"- Key evidence: {refs_text}",
                 "",
             ]
         )
@@ -1189,29 +1217,29 @@ def _positioning_signal_summary(
     clusters: dict[str, list[str]],
     response_language: str | None,
 ) -> str:
-    leaders = ", ".join(clusters.get("leaders", [])) or ("暂无" if response_language == "zh" else "none")
-    capability = ", ".join(clusters.get("capability_potential", [])) or (
-        "暂无" if response_language == "zh" else "none"
-    )
-    commercial = ", ".join(clusters.get("commercial_execution", [])) or (
-        "暂无" if response_language == "zh" else "none"
-    )
-    watchlist = ", ".join(clusters.get("watchlist", [])) or ("暂无" if response_language == "zh" else "none")
+    ordered_clusters = [
+        ("领先梯队", "leaders", "leaders"),
+        ("能力潜力梯队", "capability_potential", "capability potential"),
+        ("商业执行梯队", "commercial_execution", "commercial execution"),
+        ("观察梯队", "watchlist", "watchlist"),
+    ]
     if response_language == "zh":
-        return (
-            "基于功能深度与商业化成熟度同一定位信号："
-            f"领先梯队 {leaders}；"
-            f"能力潜力梯队 {capability}；"
-            f"商业执行梯队 {commercial}；"
-            f"观察梯队 {watchlist}。"
-        )
-    return (
-        "Using the same positioning signal (capability depth + commercial maturity): "
-        f"leaders {leaders}; "
-        f"capability potential {capability}; "
-        f"commercial execution {commercial}; "
-        f"watchlist {watchlist}."
-    )
+        parts = [
+            f"{zh_label} {', '.join(clusters.get(key, []))}"
+            for zh_label, key, _en_label in ordered_clusters
+            if clusters.get(key)
+        ]
+        if not parts:
+            return "当前证据不足以形成稳定定位信号。"
+        return "基于功能深度与商业化成熟度同一定位信号：" + "；".join(parts) + "。"
+    parts = [
+        f"{en_label} {', '.join(clusters.get(key, []))}"
+        for _zh_label, key, en_label in ordered_clusters
+        if clusters.get(key)
+    ]
+    if not parts:
+        return "Current evidence is insufficient for a stable positioning signal."
+    return "Using the same positioning signal (capability depth + commercial maturity): " + "; ".join(parts) + "."
 
 
 def _build_positioning_map_section(
@@ -1235,33 +1263,46 @@ def _build_positioning_map_section(
             )
         )
     if response_language == "zh":
-        lines = [
+        candidates = [
             "- 定位信号: 能力深度（feature + feedback） × 商业化成熟度（pricing）",
-            f"- 领先梯队（能力深、商业化强）: {', '.join(clusters.get('leaders', [])) or '暂无'}",
             (
                 "- 能力潜力梯队（能力强、商业化待补）: "
-                f"{', '.join(clusters.get('capability_potential', [])) or '暂无'}"
+                f"{', '.join(clusters.get('capability_potential', []))}"
             ),
             (
                 "- 商业执行梯队（商业化强、能力待补）: "
-                f"{', '.join(clusters.get('commercial_execution', [])) or '暂无'}"
+                f"{', '.join(clusters.get('commercial_execution', []))}"
             ),
-            f"- 观察梯队（能力与商业化均待补）: {', '.join(clusters.get('watchlist', [])) or '暂无'}",
+            f"- 观察梯队（能力与商业化均待补）: {', '.join(clusters.get('watchlist', []))}",
         ]
+        lines = [
+            "- 定位信号: 能力深度（feature + feedback） × 商业化成熟度（pricing）"
+        ]
+        if clusters.get("leaders"):
+            lines.append(f"- 领先梯队（能力深、商业化强）: {', '.join(clusters['leaders'])}")
+        lines.extend(
+            candidate
+            for candidate in candidates[1:]
+            if not candidate.endswith(": ")
+        )
     else:
         lines = [
             "- Positioning signal: capability depth (feature + feedback) x commercial maturity (pricing).",
-            f"- Leaders (high capability, high maturity): {', '.join(clusters.get('leaders', [])) or 'none'}",
-            (
-                "- Capability potential (high capability, maturity gap): "
-                f"{', '.join(clusters.get('capability_potential', [])) or 'none'}"
-            ),
-            (
-                "- Commercial execution (high maturity, capability gap): "
-                f"{', '.join(clusters.get('commercial_execution', [])) or 'none'}"
-            ),
-            f"- Watchlist (capability and maturity both thin): {', '.join(clusters.get('watchlist', [])) or 'none'}",
         ]
+        if clusters.get("leaders"):
+            lines.append(f"- Leaders (high capability, high maturity): {', '.join(clusters['leaders'])}")
+        if clusters.get("capability_potential"):
+            lines.append(
+                "- Capability potential (high capability, maturity gap): "
+                f"{', '.join(clusters['capability_potential'])}"
+            )
+        if clusters.get("commercial_execution"):
+            lines.append(
+                "- Commercial execution (high maturity, capability gap): "
+                f"{', '.join(clusters['commercial_execution'])}"
+            )
+        if clusters.get("watchlist"):
+            lines.append(f"- Watchlist (capability and maturity both thin): {', '.join(clusters['watchlist'])}")
     return {
         "section_id": "positioning_map",
         "title": _section_title("positioning_map", response_language=response_language),
@@ -1330,108 +1371,30 @@ def _build_landscape_map_section(
         "unknown",
     ):
         competitors = grouped.get(role, [])
+        if not competitors:
+            continue
         lines.append(f"### {role_labels[role]} ({len(competitors)})")
-        lines.append(", ".join(competitors) if competitors else ("暂无" if response_language == "zh" else "none"))
+        lines.append(", ".join(competitors))
         lines.append("")
+    if lines:
+        lines.insert(
+            0,
+            "本图展示本轮已识别的竞品角色分层，用于界定后续画像、矩阵与定位的分析边界。"
+            if response_language == "zh"
+            else "This map shows the identified competitor role layers and bounds the later profiles, matrix, and positioning analysis.",
+        )
+        lines.insert(1, "")
+    else:
+        lines.append(
+            "暂无可分类竞品，需先完成 discovery 后再进入画像、矩阵与定位分析。"
+            if response_language == "zh"
+            else "No classifiable competitors yet; complete discovery before profiles, matrix, and positioning analysis."
+        )
     return {
         "section_id": "market_landscape_map",
         "title": _section_title("market_landscape_map", response_language=response_language),
         "content_markdown": "\n".join(lines).strip(),
         "evidence_refs": _stable_unique(refs)[:10]
-        or _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
-        "insight_refs": [],
-    }
-
-
-def _build_representative_benchmarks_section(
-    *,
-    profile_competitors: list[str],
-    response_language: str | None,
-    knowledge_payload: dict[str, object],
-    evidence_briefs: list[dict[str, object]],
-    allowed_evidence_ids: set[str],
-    comparison_briefs: list[dict[str, object]],
-    coverage: dict[str, object],
-) -> dict[str, object]:
-    lines: list[str] = []
-    refs: list[str] = []
-    for competitor in profile_competitors:
-        competitor_refs = _collect_competitor_evidence_refs(
-            competitor=competitor,
-            knowledge_payload=knowledge_payload,
-            evidence_briefs=evidence_briefs,
-            allowed_evidence_ids=allowed_evidence_ids,
-            limit=3,
-        )
-        refs.extend(competitor_refs)
-        features = _knowledge_rows_for_competitor(
-            rows=knowledge_payload.get("features"),
-            competitor=competitor,
-        )
-        pricings = _knowledge_rows_for_competitor(
-            rows=knowledge_payload.get("pricings"),
-            competitor=competitor,
-        )
-        feedback_rows = _knowledge_rows_for_competitor(
-            rows=knowledge_payload.get("feedback"),
-            competitor=competitor,
-        )
-        refs_text = ", ".join(f"[{item}]" for item in competitor_refs) if competitor_refs else "-"
-        lines.extend(
-            [
-                f"### {competitor}",
-                (
-                    f"- 定位: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
-                    if response_language == "zh"
-                    else f"- Positioning: {_positioning_summary_from_comparisons(competitor=competitor, comparison_briefs=comparison_briefs, response_language=response_language)}"
-                ),
-                (
-                    f"- 代表能力: {_feature_summary(features=features, response_language=response_language)}"
-                    if response_language == "zh"
-                    else f"- Representative capability: {_feature_summary(features=features, response_language=response_language)}"
-                ),
-                (
-                    f"- 商业化: {_pricing_summary(pricings=pricings, response_language=response_language)}"
-                    if response_language == "zh"
-                    else f"- Commercialization: {_pricing_summary(pricings=pricings, response_language=response_language)}"
-                ),
-                (
-                    f"- 反馈信号: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
-                    if response_language == "zh"
-                    else f"- Feedback signal: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}"
-                ),
-                (
-                    f"- 维度覆盖: "
-                    f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feature'), response_language=response_language)}/"
-                    f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='pricing'), response_language=response_language)}/"
-                    f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feedback'), response_language=response_language)}"
-                    if response_language == "zh"
-                    else (
-                        "- Dimension coverage: "
-                        f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feature'), response_language=response_language)}/"
-                        f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='pricing'), response_language=response_language)}/"
-                        f"{_status_label(status=_coverage_status(coverage=coverage, competitor=competitor, key='feedback'), response_language=response_language)}"
-                    )
-                ),
-                (
-                    f"- 代表证据: {refs_text}"
-                    if response_language == "zh"
-                    else f"- Key evidence: {refs_text}"
-                ),
-                "",
-            ]
-        )
-    if not lines:
-        lines = [
-            "- 暂无可用代表标杆，当前证据不足以支撑横向论证。"
-            if response_language == "zh"
-            else "- No representative benchmarks available yet; grounded comparative evidence is insufficient."
-        ]
-    return {
-        "section_id": "representative_benchmarks",
-        "title": _section_title("representative_benchmarks", response_language=response_language),
-        "content_markdown": "\n".join(lines).strip(),
-        "evidence_refs": _stable_unique(refs)[:12]
         or _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
         "insight_refs": [],
     }
@@ -1581,19 +1544,6 @@ def _apply_structured_writer_sections(
                 knowledge_payload=knowledge_payload,
                 evidence_briefs=evidence_briefs,
                 allowed_evidence_ids=allowed_evidence_ids,
-            ),
-        )
-    if "representative_benchmarks" in renderable_set:
-        _upsert_section(
-            sections=sections,
-            section_payload=_build_representative_benchmarks_section(
-                profile_competitors=profile_competitors,
-                response_language=response_language,
-                knowledge_payload=knowledge_payload,
-                evidence_briefs=evidence_briefs,
-                allowed_evidence_ids=allowed_evidence_ids,
-                comparison_briefs=comparison_briefs,
-                coverage=coverage,
             ),
         )
     if "self_positioning" in renderable_set:

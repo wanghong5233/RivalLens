@@ -127,15 +127,18 @@ def _select_golden_profiles(prompt_text: str) -> list[dict[str, object]]:
         for profile in _GOLDEN_PROFILE_LIBRARY
         if _profile_matches_prompt(profile, prompt_lower)
     ]
-    if explicit_matches:
-        return explicit_matches
     for track, hints in _GOLDEN_TRACK_HINTS.items():
         if any(hint in prompt_lower for hint in hints):
-            return [
+            track_profiles = [
                 profile
                 for profile in _GOLDEN_PROFILE_LIBRARY
                 if isinstance(profile.get("track"), str) and profile["track"] == track
             ]
+            if explicit_matches and len(explicit_matches) >= 2:
+                return explicit_matches
+            return track_profiles
+    if explicit_matches:
+        return explicit_matches
     return [profile for profile in _GOLDEN_PROFILE_LIBRARY if profile.get("track") == "coding"][:2]
 
 
@@ -945,7 +948,6 @@ class _FakeLLMClient:
             "self_positioning": "Self Positioning",
             "market_landscape_map": "Competitor Layering Map",
             "trend_summary": "Trend Summary",
-            "representative_benchmarks": "Representative Benchmarks",
             "opportunity_map": "Opportunity Map",
             "strategic_recommendations": "Actionable Recommendations",
         }

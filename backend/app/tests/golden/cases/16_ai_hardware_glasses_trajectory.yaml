@@ -14,7 +14,9 @@ assertions:
   final_qa_outcome: approved
   report_section_ids_include:
     - market_landscape_map
+    - competitor_profiles
+    - comparison_matrix
+    - positioning_map
     - trend_summary
-    - representative_benchmarks
   report_degraded_required_sections_count_lte: 0
   evidence_floor_count_lte: 0

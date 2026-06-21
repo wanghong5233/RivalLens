@@ -356,11 +356,23 @@ def test_rule_writer_no_fallback_mode_pass_and_fail() -> None:
 
 
 def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
-    landscape_json = {
+    thin_landscape_json = {
         "executive_summary": "summary",
         "sections": [
             {"section_id": "market_landscape_map"},
             {"section_id": "trend_summary"},
+            {"section_id": "strategic_recommendations"},
+        ],
+    }
+    landscape_json = {
+        "executive_summary": "summary",
+        "sections": [
+            {"section_id": "market_landscape_map"},
+            {"section_id": "competitor_profiles"},
+            {"section_id": "comparison_matrix"},
+            {"section_id": "positioning_map"},
+            {"section_id": "trend_summary"},
+            {"section_id": "opportunity_map"},
             {"section_id": "strategic_recommendations"},
         ]
     }
@@ -375,6 +387,10 @@ def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
         ]
     }
 
+    thin_landscape_result = rule_structured_sections_present(
+        content_json=thin_landscape_json,
+        analysis_archetype="landscape",
+    )
     landscape_result = rule_structured_sections_present(
         content_json=landscape_json,
         analysis_archetype="landscape",
@@ -384,17 +400,27 @@ def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
         analysis_archetype="comparison",
     )
 
-    assert landscape_result.passed is False
-    assert "representative_benchmarks" in landscape_result.message
+    assert thin_landscape_result.passed is False
+    assert "competitor_profiles" in thin_landscape_result.message
+    assert "comparison_matrix" in thin_landscape_result.message
+    assert "positioning_map" in thin_landscape_result.message
+    assert "opportunity_map" in thin_landscape_result.message
+    assert landscape_result.passed is True
     assert comparison_result.passed is True
 
 
 def test_rule_structured_sections_present_ignores_degraded_required_sections() -> None:
     landscape_json = {
         "executive_summary": "summary",
-        "report_degraded_required_sections": ["trend_summary", "representative_benchmarks"],
+        "report_degraded_required_sections": [
+            "competitor_profiles",
+            "comparison_matrix",
+            "positioning_map",
+            "trend_summary",
+        ],
         "sections": [
             {"section_id": "market_landscape_map"},
+            {"section_id": "opportunity_map"},
             {"section_id": "strategic_recommendations"},
         ],
     }

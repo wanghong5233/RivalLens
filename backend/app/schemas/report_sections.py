@@ -68,12 +68,12 @@ def _requires_at_least_one_substantive(ctx: SectionEvidenceContext) -> bool:
     return _count_substantive(coverage=ctx.coverage, competitors=ctx.competitors) >= 1
 
 
-def _requires_at_least_two_substantive(ctx: SectionEvidenceContext) -> bool:
-    return _count_substantive(coverage=ctx.coverage, competitors=ctx.competitors) >= 2
-
-
 def _requires_at_least_one_core_substantive(ctx: SectionEvidenceContext) -> bool:
     return _count_substantive(coverage=ctx.coverage, competitors=ctx.core_competitors) >= 1
+
+
+def _requires_at_least_two_core_substantive(ctx: SectionEvidenceContext) -> bool:
+    return _count_substantive(coverage=ctx.coverage, competitors=ctx.core_competitors) >= 2
 
 
 @dataclass(frozen=True)
@@ -109,24 +109,24 @@ _SECTION_SPECS: tuple[SectionSpec, ...] = (
     SectionSpec(
         section_id="competitor_profiles",
         kind="deterministic",
-        required_for=_COMPARISON_AND_MIXED,
-        requires=_requires_at_least_one_substantive,
+        required_for=_ALL_ARCHETYPES,
+        requires=_requires_at_least_one_core_substantive,
         title_zh="逐竞品画像",
         title_en="Competitor Profiles",
     ),
     SectionSpec(
         section_id="comparison_matrix",
         kind="deterministic",
-        required_for=_COMPARISON_AND_MIXED,
-        requires=_requires_at_least_two_substantive,
+        required_for=_ALL_ARCHETYPES,
+        requires=_requires_at_least_two_core_substantive,
         title_zh="对比矩阵（功能/定价/用户反馈）",
         title_en="Comparison Matrix (Feature/Pricing/User Feedback)",
     ),
     SectionSpec(
         section_id="positioning_map",
         kind="deterministic",
-        required_for=_COMPARISON_AND_MIXED,
-        requires=_requires_at_least_one_substantive,
+        required_for=_ALL_ARCHETYPES,
+        requires=_requires_at_least_one_core_substantive,
         title_zh="2x2 定位图（结构化）",
         title_en="2x2 Positioning Map (Structured)",
     ),
@@ -155,17 +155,9 @@ _SECTION_SPECS: tuple[SectionSpec, ...] = (
         title_en="Trend Summary",
     ),
     SectionSpec(
-        section_id="representative_benchmarks",
-        kind="deterministic",
-        required_for=_LANDSCAPE_AND_MIXED,
-        requires=_requires_at_least_one_core_substantive,
-        title_zh="代表标杆",
-        title_en="Representative Benchmarks",
-    ),
-    SectionSpec(
         section_id="opportunity_map",
         kind="narrative",
-        required_for=frozenset(),
+        required_for=_LANDSCAPE_AND_MIXED,
         requires=_requires_always,
         title_zh="机会地图",
         title_en="Opportunity Map",
@@ -196,8 +188,10 @@ _DEFAULT_OUTLINES: dict[str, tuple[str, ...]] = {
     "landscape": (
         "executive_summary",
         "market_landscape_map",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
         "trend_summary",
-        "representative_benchmarks",
         "opportunity_map",
         "strategic_recommendations",
     ),
@@ -205,7 +199,6 @@ _DEFAULT_OUTLINES: dict[str, tuple[str, ...]] = {
         "executive_summary",
         "market_landscape_map",
         "trend_summary",
-        "representative_benchmarks",
         "competitor_profiles",
         "comparison_matrix",
         "positioning_map",

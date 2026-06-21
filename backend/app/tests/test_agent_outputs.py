@@ -107,8 +107,10 @@ def test_resolve_writer_target_sections_adds_landscape_required_sections() -> No
     assert sections == [
         "executive_summary",
         "market_landscape_map",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
         "trend_summary",
-        "representative_benchmarks",
         "opportunity_map",
         "strategic_recommendations",
     ]

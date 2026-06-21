@@ -610,7 +610,7 @@ async def test_qa_data_degraded_force_finalize_uses_data_gap_reason() -> None:
         qa_reject_to="supervisor",
         qa_reasons=["Required sections lack grounded evidence."],
         qa_degrade_reason="report_degraded_required_sections",
-        qa_degraded_required_sections=["trend_summary", "representative_benchmarks"],
+        qa_degraded_required_sections=["competitor_profiles", "comparison_matrix", "positioning_map", "trend_summary"],
         qa_unsupported_numeric_claims=[],
         user_query="landscape ai hardware",
         competitors=["Meta", "NVIDIA"],
@@ -623,7 +623,7 @@ async def test_qa_data_degraded_force_finalize_uses_data_gap_reason() -> None:
     decision, llm_response, forced_degraded = decision_bundle
     assert forced_degraded is True
     assert decision.chosen_tool == "Finalize"
-    assert "degraded_required=trend_summary, representative_benchmarks" in decision.reasoning_summary
+    assert "degraded_required=competitor_profiles, comparison_matrix, positioning_map, trend_summary" in decision.reasoning_summary
     assert llm_response.prompt_preview == "qa_data_degraded"
 
 
