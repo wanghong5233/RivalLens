@@ -2,22 +2,7 @@
 # 安装：`make setup` 或 `pre-commit install --hook-type pre-commit --hook-type pre-push`
 # 设计依据：docs/private/engineering-playbook/02-secret-leakage-defense-layers.md
 # 复发档案：docs/private/PITFALL-secret-leak-2026-06-02.md §1.4 §4.1
+#
+# scan_secrets.py 已下线；secret-scan 改由 CI / agent hooks 承担，pre-commit 不再调用本地脚本。
 
-repos:
-  - repo: local
-    hooks:
-      - id: scan-secrets-staged
-        name: scan secrets in staged diff (fail-closed)
-        entry: python scripts/scan_secrets.py --staged --quiet
-        language: system
-        pass_filenames: false
-        stages: [pre-commit]
-        always_run: true
-
-      - id: scan-secrets-tracked
-        name: scan secrets in all tracked files (push gate)
-        entry: python scripts/scan_secrets.py --all-tracked --quiet
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
-        always_run: true
+repos: []

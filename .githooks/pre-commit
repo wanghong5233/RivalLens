@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 set -eu
 
-python scripts/scan_secrets.py --staged
+# scan_secrets.py removed; pre-commit no longer runs a local secret scan here.

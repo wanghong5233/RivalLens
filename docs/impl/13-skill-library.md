@@ -72,14 +72,10 @@ Researcher 可调用：
 
 ## 7. 迁移说明
 
-重构阶段提供一次性脚本：
+`industry_pack` 固定包已下线。迁移结果：
 
-- `backend/app/scripts/migrate_pack_to_skills.py`
-
-用途：
-
-- 历史规则迁移为 `SKILL.md`
-- demo competitor 数据迁移为 `demo_fixtures/competitors_seed.yaml`
+- 历史规则落到 `backend/skills/**/SKILL.md`
+- demo competitor 数据落到 `backend/demo_fixtures/competitors_seed.yaml`
 
 ## 8. 验收检查
 

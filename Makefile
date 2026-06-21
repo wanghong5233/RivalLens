@@ -1,5 +1,5 @@
 # Repo-root shortcuts — delegate to backend/
-.PHONY: help setup scan-secrets up up-build down logs-api health
+.PHONY: help setup up up-build down logs-api health
 help:
 	@$(MAKE) -C backend help
 
@@ -9,9 +9,6 @@ setup:
 	@command -v pre-commit >/dev/null 2>&1 || python -m pip install --user pre-commit
 	pre-commit install --hook-type pre-commit --hook-type pre-push
 	@echo "[setup] pre-commit hooks installed (pre-commit + pre-push)"
-
-scan-secrets:
-	python scripts/scan_secrets.py --all-tracked
 
 up:
 	@$(MAKE) -C backend up
