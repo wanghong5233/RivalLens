@@ -14,12 +14,14 @@ from sqlalchemy import select, update
 
 from agents.graph import compile_graph
 from core.config import settings
+from core.tiers import resolve_tier_profile
 from db.engine import dispose_engine, get_session_factory, init_engine
 from exceptions.base import APIException
 from models.run import Run
 from router import health_rt, run_rt, skill_rt
 from service.event_bus import EventBus, RunEventType, emit_run_event, set_event_bus
 from service.skill_store import get_skill_store
+from service.watchlist.refresher import WatchlistRefresher
 from utils.logger import bind_request_id, clear_request_id, configure_logging, get_logger
 from utils.request_id import new_request_id, request_id_ctx
 
@@ -98,6 +100,38 @@ async def lifespan(app: FastAPI):
 
             app.state.checkpointer = checkpointer
             app.state.compiled_graph = compile_graph(checkpointer=checkpointer)
+
+            def _make_watchlist_run_launcher(compiled_graph: Any, app_state: Any) -> Any:
+                async def _launcher(run_id: str, initial_state: dict[str, object]) -> None:
+                    bt: set[asyncio.Task[Any]] = getattr(app_state, "background_tasks", set())
+                    profile = resolve_tier_profile("quick")
+                    from router.run_rt import _execute_run_graph  # noqa: PLC0415
+                    task = asyncio.create_task(
+                        _execute_run_graph(
+                            run_id=run_id,
+                            graph=compiled_graph,
+                            initial_state=initial_state,
+                            domain_hint=None,
+                            recursion_limit=profile.recursion_limit,
+                            background_tasks=bt,
+                        ),
+                        name=f"run_graph_{run_id}",
+                    )
+                    bt.add(task)
+                    task.add_done_callback(bt.discard)
+                    await task
+                return _launcher
+
+            refresher = WatchlistRefresher(
+                session_factory=get_session_factory(),
+                run_launcher=_make_watchlist_run_launcher(app.state.compiled_graph, app.state),
+                background_tasks=background_tasks,
+            )
+            app.state.watchlist_refresher = refresher
+            refresher_task = asyncio.create_task(refresher.start_loop(), name="watchlist_refresher")
+            background_tasks.add(refresher_task)
+            refresher_task.add_done_callback(background_tasks.discard)
+
             log.info("service_start", service=settings.SERVICE_NAME, environment=settings.ENVIRONMENT)
             yield
     finally:

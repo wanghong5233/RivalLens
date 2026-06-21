@@ -23,7 +23,8 @@ _TITLE_PATTERN = re.compile(r"<title[^>]*>(.*?)</title>", flags=re.IGNORECASE | 
 _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 _KEY_PAGE_BUCKETS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("pricing_page", ("/pricing", "/plan", "/plans", "/billing")),
-    ("docs", ("/docs", "/doc", "/api", "/reference", "/changelog", "/release")),
+    ("docs", ("/docs", "/doc", "/api", "/reference")),
+    ("product_changelog", ("/changelog", "/releases", "/release-notes", "/updates", "/what-is-new", "/blog/release", "/blog/changelog")),
     ("official_site", ("/enterprise", "/business", "/security", "/compliance")),
 )
 _NON_OFFICIAL_HOST_HINTS: tuple[str, ...] = (
@@ -151,7 +152,7 @@ def _score_key_page(url: str) -> int:
         return 40
     if any(keyword in path for keyword in ("/docs", "/doc", "/api", "/reference")):
         return 30
-    if any(keyword in path for keyword in ("/changelog", "/release")):
+    if any(keyword in path for keyword in ("/changelog", "/releases", "/release-notes", "/updates", "/blog/release", "/blog/changelog")):
         return 25
     if any(keyword in path for keyword in ("/enterprise", "/business", "/security", "/compliance")):
         return 20
