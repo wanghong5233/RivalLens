@@ -100,19 +100,21 @@ def test_resolve_writer_target_sections_prefers_analyst_dimensions() -> None:
 def test_resolve_writer_target_sections_adds_landscape_required_sections() -> None:
     sections = resolve_writer_target_sections(
         requested_sections=None,
-        recommended_sections=["trend_summary"],
+        recommended_sections=["opportunities_risks"],
         analysis_archetype="landscape",
     )
 
     assert sections == [
-        "executive_summary",
-        "market_landscape_map",
-        "competitor_profiles",
-        "comparison_matrix",
-        "positioning_map",
-        "trend_summary",
-        "opportunity_map",
+        "executive_takeaways",
+        "market_definition",
+        "market_size_growth",
+        "market_segmentation",
+        "competitive_landscape",
+        "key_players",
+        "value_chain",
+        "opportunities_risks",
         "strategic_recommendations",
+        "methodology_limits",
     ]
 
 
@@ -129,9 +131,9 @@ def test_resolve_writer_target_sections_accepts_outline_sections_not_dimensions(
                 }
             ],
             "risk_flags": [],
-            "recommended_sections": ["competitive_edge", "opportunity_map"],
+            "recommended_sections": ["competitive_edge", "opportunities_risks"],
             "report_outline": [
-                {"section_id": "trend_summary"},
+                {"section_id": "market_definition"},
                 {"section_id": "pricing"},
             ],
         }
@@ -151,8 +153,6 @@ def test_resolve_writer_target_sections_accepts_outline_sections_not_dimensions(
         "positioning_map",
         "self_positioning",
         "strategic_recommendations",
-        "trend_summary",
-        "opportunity_map",
     ]
     assert "feature" not in sections
     assert "pricing" not in sections

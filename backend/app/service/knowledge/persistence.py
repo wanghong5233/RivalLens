@@ -18,6 +18,7 @@ class RunKnowledgePayload(TypedDict):
     feedback: list[dict[str, object]]
     missing_reasons: dict[str, list[str]]
     coverage: dict[str, object]
+    supporting_target_evidence_ids: dict[str, dict[str, list[str]]]
 
 
 EMPTY_RUN_KNOWLEDGE: RunKnowledgePayload = {
@@ -28,6 +29,7 @@ EMPTY_RUN_KNOWLEDGE: RunKnowledgePayload = {
     "feedback": [],
     "missing_reasons": {},
     "coverage": {},
+    "supporting_target_evidence_ids": {},
 }
 
 
@@ -47,7 +49,11 @@ async def persist_knowledge_for_step(
     feedback: list[dict[str, object]],
     missing_reasons: dict[str, list[str]],
     coverage: dict[str, object],
+    supporting_target_evidence_ids: dict[str, dict[str, list[str]]] | None = None,
 ) -> RunKnowledgeRecord:
+    coverage_payload = dict(coverage)
+    if supporting_target_evidence_ids:
+        coverage_payload["__supporting_target_evidence_ids"] = supporting_target_evidence_ids
     record = RunKnowledgeRecord(
         knowledge_id=make_id("knowledge_"),
         run_id=run_id,
@@ -58,7 +64,7 @@ async def persist_knowledge_for_step(
         personas=personas,
         feedback=feedback,
         missing_reasons=missing_reasons,
-        coverage=coverage,
+        coverage=coverage_payload,
     )
     session.add(record)
     return record
@@ -79,6 +85,13 @@ async def load_knowledge_for_run(
     ).scalars().first()
     if row is None:
         return _copy_empty_knowledge()
+    coverage_payload = dict(row.coverage)
+    supporting_target_evidence_ids_raw = coverage_payload.pop("__supporting_target_evidence_ids", {})
+    supporting_target_evidence_ids = (
+        supporting_target_evidence_ids_raw
+        if isinstance(supporting_target_evidence_ids_raw, dict)
+        else {}
+    )
     return {
         "schema_version": row.schema_version,
         "features": list(row.features),
@@ -86,5 +99,6 @@ async def load_knowledge_for_run(
         "personas": list(row.personas),
         "feedback": list(row.feedback),
         "missing_reasons": dict(row.missing_reasons),
-        "coverage": dict(row.coverage),
+        "coverage": coverage_payload,
+        "supporting_target_evidence_ids": supporting_target_evidence_ids,
     }

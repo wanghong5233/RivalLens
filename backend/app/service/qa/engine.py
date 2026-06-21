@@ -46,11 +46,6 @@ _QA_SEMANTIC_DIMENSIONS: tuple[str, ...] = (
     "faithfulness",
     "instruction_following",
 )
-_CORE_DISCOVERY_ROLES: frozenset[str] = frozenset(
-    {"direct_competitor", "adjacent_competitor", "substitute"}
-)
-
-
 def _report_has_writer_fallback_mode(content_json: dict[str, object]) -> bool:
     risk_callouts_raw = content_json.get("risk_callouts")
     if not isinstance(risk_callouts_raw, list):
@@ -65,6 +60,17 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_writer_sections_must_have_content": ["reports.content_json.sections[].content_markdown"],
     "rule_writer_must_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_writer_no_fallback_mode": ["reports.content_json.risk_callouts"],
+    "rule_landscape_no_legacy_workbench_sections": [
+        "reports.content_json.sections[].section_id",
+        "reports.content_json.sections[].content_markdown",
+    ],
+    "rule_landscape_core_commercial_sections_present": [
+        "reports.content_json.sections[].section_id",
+    ],
+    "rule_complete_coverage_has_target_evidence": [
+        "run_knowledge.coverage",
+        "run_knowledge.supporting_target_evidence_ids",
+    ],
     "rule_evidence_must_be_desensitized": ["evidence.desensitized"],
     "rule_locale_mismatch": [
         "runs.intake_draft.market_scope",
@@ -315,36 +321,16 @@ def _profile_competitors_for_qa(
         for item in run.competitors or []
         if isinstance(item, str) and item.strip()
     ]
-    if analysis_archetype != "landscape":
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for competitor in competitors:
-            if competitor in seen:
-                continue
-            seen.add(competitor)
-            ordered.append(competitor)
-        return ordered
-    plan_tree = run.plan_tree if isinstance(run.plan_tree, dict) else {}
-    competitor_sources_raw = plan_tree.get("competitor_sources")
-    competitor_sources = competitor_sources_raw if isinstance(competitor_sources_raw, dict) else {}
-    core = [
-        competitor
-        for competitor in competitors
-        if isinstance(competitor_sources.get(competitor), dict)
-        and competitor_sources[competitor].get("candidate_role") in _CORE_DISCOVERY_ROLES
-    ]
-    if not core:
-        non_upstream = [
-            competitor
-            for competitor in competitors
-            if not (
-                isinstance(competitor_sources.get(competitor), dict)
-                and competitor_sources[competitor].get("candidate_role") == "upstream_supplier"
-            )
-        ]
-        core = non_upstream or competitors
-    limit = 5 if report_depth == "deep" else 3
-    return core[:limit]
+    if analysis_archetype == "landscape":
+        return []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for competitor in competitors:
+        if competitor in seen:
+            continue
+        seen.add(competitor)
+        ordered.append(competitor)
+    return ordered
 
 
 def _extend_sections_from_values(*, sections: list[str], values: object) -> None:

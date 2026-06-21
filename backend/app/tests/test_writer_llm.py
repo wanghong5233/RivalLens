@@ -90,13 +90,13 @@ def test_build_writer_prompts_include_required_context() -> None:
     assert "unsupported_numeric_claims" in user_prompt
     assert "$40/seat" in user_prompt
     assert "Do not create a section titled Executive Summary or 执行摘要" in user_prompt
-    assert "If trend_summary is in target_sections" in user_prompt
+    assert "legacy workbench sections" in user_prompt
     assert "organize by stakeholder" in user_prompt
     assert "[ev_xxx]" in WRITER_SYSTEM_PROMPT
     assert "Never emit bare ev_xxx ids" in WRITER_SYSTEM_PROMPT
     assert "Write all report output in response_language" in WRITER_SYSTEM_PROMPT
     assert "Exact numbers" in WRITER_SYSTEM_PROMPT
-    assert "theme -> representative benchmark -> business implication" in WRITER_SYSTEM_PROMPT
+    assert "commercial market-report outline" in WRITER_SYSTEM_PROMPT
     assert "Keep tone deterministic and factual" in WRITER_SYSTEM_PROMPT
     assert "During QA rewrites" in WRITER_SYSTEM_PROMPT
     assert "Fallback writer request" in fallback_prompt
@@ -588,7 +588,7 @@ def test_writer_report_output_allows_template_auto_mode() -> None:
     assert report["sections"][0]["section_id"] == "go_to_market"
 
 
-def test_apply_structured_writer_sections_landscape_prioritizes_trend_outline() -> None:
+def test_apply_structured_writer_sections_landscape_uses_commercial_outline() -> None:
     updated = _apply_structured_writer_sections(
         report_content={
             "template_id": "default",
@@ -596,15 +596,15 @@ def test_apply_structured_writer_sections_landscape_prioritizes_trend_outline() 
             "executive_summary": "summary",
             "sections": [
                 {
-                    "section_id": "trend_summary",
-                    "title": "趋势综述",
-                    "content_markdown": "趋势段落 [ev_001]",
+                    "section_id": "market_size_growth",
+                    "title": "市场规模与增长驱动",
+                    "content_markdown": "规模段落 [ev_001]",
                     "evidence_refs": ["ev_001"],
                     "insight_refs": [],
                 },
                 {
-                    "section_id": "opportunity_map",
-                    "title": "机会地图",
+                    "section_id": "opportunities_risks",
+                    "title": "机会与风险",
                     "content_markdown": "机会段落 [ev_001]",
                     "evidence_refs": ["ev_001"],
                     "insight_refs": [],
@@ -641,42 +641,56 @@ def test_apply_structured_writer_sections_landscape_prioritizes_trend_outline() 
                 "Meta": {"feature": "complete", "pricing": "complete", "feedback": "partial"},
                 "NVIDIA": {"feature": "partial", "pricing": "insufficient_data", "feedback": "insufficient_data"},
             },
+            "supporting_target_evidence_ids": {
+                "Meta": {"feature": ["ev_001"], "pricing": ["ev_001"], "feedback": ["ev_003"]},
+                "NVIDIA": {"feature": ["ev_002"]},
+            },
         },
         comparison_briefs=[],
+        insight_briefs=[],
         evidence_briefs=[
-            {"evidence_id": "ev_001", "competitor_id": "Meta"},
-            {"evidence_id": "ev_002", "competitor_id": "NVIDIA"},
-            {"evidence_id": "ev_003", "competitor_id": "Meta"},
+            {"evidence_id": "ev_001", "competitor_id": "Meta", "category_relevance": "target"},
+            {"evidence_id": "ev_002", "competitor_id": "NVIDIA", "category_relevance": "value_chain"},
+            {"evidence_id": "ev_003", "competitor_id": "Meta", "category_relevance": "target"},
         ],
         allowed_evidence_ids={"ev_001", "ev_002", "ev_003"},
         state_competitors=["Meta", "NVIDIA"],
         discovered_competitor_sources={
-            "Meta": {"candidate_role": "direct_competitor"},
-            "NVIDIA": {"candidate_role": "upstream_supplier"},
+            "Meta": {"candidate_role": "direct_competitor", "admission_status": "main_player"},
+            "NVIDIA": {"candidate_role": "upstream_supplier", "admission_status": "value_chain"},
         },
         self_product=None,
+        target_category="AI眼镜",
+        category_aliases=["AI眼镜"],
+        excluded_categories=[],
+        market_segments=[],
+        scope_policy="explicit_category",
         preserve_llm_executive_summary=False,
     )
 
     sections = [item for item in updated["sections"] if isinstance(item, dict)]
     section_ids = [item.get("section_id") for item in sections]
-    assert "competitor_profiles" in section_ids
-    assert "positioning_map" in section_ids
+    assert "executive_takeaways" in section_ids
+    assert "market_definition" in section_ids
+    assert "competitive_landscape" in section_ids
+    assert "key_players" in section_ids
+    assert "methodology_limits" in section_ids
+    assert "competitor_profiles" not in section_ids
+    assert "positioning_map" not in section_ids
     assert "comparison_matrix" not in section_ids
-    assert "market_landscape_map" in section_ids
-    assert "trend_summary" in section_ids
+    assert "market_landscape_map" not in section_ids
+    assert "trend_summary" not in section_ids
     assert "representative_benchmarks" not in section_ids
-    profile_section = next(
-        item for item in sections if item.get("section_id") == "competitor_profiles"
-    )
-    assert "### Meta" in profile_section["content_markdown"]
-    assert "### NVIDIA" not in profile_section["content_markdown"]
-    assert "数据覆盖: 关键维度覆盖完整" in profile_section["content_markdown"]
-    assert "insufficient_data" not in profile_section["content_markdown"]
-    assert updated["report_degraded_required_sections"] == ["comparison_matrix"]
-    # Fallback path (no LLM summary preserved) synthesizes the deterministic
-    # positioning signal so positioning_map and executive_summary stay consistent.
-    assert "领先梯队 Meta" in updated["executive_summary"]
+    for section in sections:
+        content_markdown = section.get("content_markdown")
+        assert isinstance(content_markdown, str)
+        assert len(content_markdown.strip()) >= 60
+        assert section.get("evidence_refs")
+    key_players = next(item for item in sections if item.get("section_id") == "key_players")
+    assert "Meta" in key_players["content_markdown"]
+    assert "NVIDIA" not in key_players["content_markdown"]
+    assert updated["report_degraded_required_sections"] == []
+    assert "目标品类" in updated["executive_summary"]
 
 
 def test_apply_structured_writer_sections_records_degraded_required_sections() -> None:
@@ -687,8 +701,8 @@ def test_apply_structured_writer_sections_records_degraded_required_sections() -
             "executive_summary": "summary",
             "sections": [
                 {
-                    "section_id": "opportunity_map",
-                    "title": "机会地图",
+                    "section_id": "opportunities_risks",
+                    "title": "机会与风险",
                     "content_markdown": "机会段落 [ev_001]",
                     "evidence_refs": ["ev_001"],
                     "insight_refs": [],
@@ -715,8 +729,10 @@ def test_apply_structured_writer_sections_records_degraded_required_sections() -
             "feedback": [],
             "missing_reasons": {},
             "coverage": {},
+            "supporting_target_evidence_ids": {},
         },
         comparison_briefs=[],
+        insight_briefs=[],
         evidence_briefs=[],
         allowed_evidence_ids=set(),
         state_competitors=["Meta"],
@@ -724,21 +740,18 @@ def test_apply_structured_writer_sections_records_degraded_required_sections() -
             "Meta": {"candidate_role": "direct_competitor"},
         },
         self_product=None,
+        target_category="AI眼镜",
+        category_aliases=["AI眼镜"],
+        excluded_categories=[],
+        market_segments=[],
+        scope_policy="explicit_category",
         preserve_llm_executive_summary=True,
     )
 
-    assert updated["report_degraded_required_sections"] == [
-        "competitor_profiles",
-        "comparison_matrix",
-        "positioning_map",
-        "trend_summary",
-    ]
+    assert updated["report_degraded_required_sections"] == []
     risk_callouts = updated["risk_callouts"]
     assert isinstance(risk_callouts, list)
-    assert "report_degraded_required_section:competitor_profiles" in risk_callouts
-    assert "report_degraded_required_section:comparison_matrix" in risk_callouts
-    assert "report_degraded_required_section:positioning_map" in risk_callouts
-    assert "report_degraded_required_section:trend_summary" in risk_callouts
+    assert not any(item.startswith("report_degraded_required_section:") for item in risk_callouts)
     section_ids = [
         section.get("section_id")
         for section in updated["sections"]
@@ -761,12 +774,7 @@ def test_apply_structured_writer_sections_preserves_llm_executive_summary() -> N
             "risk_callouts": [],
         },
         target_sections=[
-            "executive_summary",
-            "competitor_profiles",
-            "comparison_matrix",
-            "positioning_map",
-            "market_landscape_map",
-            "trend_summary",
+            *default_outline_for_archetype("landscape"),
         ],
         analysis_archetype="landscape",
         response_language="zh",
@@ -787,28 +795,32 @@ def test_apply_structured_writer_sections_preserves_llm_executive_summary() -> N
             "coverage": {
                 "Meta": {"feature": "complete", "pricing": "complete", "feedback": "partial"},
             },
+            "supporting_target_evidence_ids": {
+                "Meta": {"feature": ["ev_001"], "pricing": ["ev_001"], "feedback": ["ev_003"]},
+            },
         },
         comparison_briefs=[],
+        insight_briefs=[],
         evidence_briefs=[
-            {"evidence_id": "ev_001", "competitor_id": "Meta"},
-            {"evidence_id": "ev_003", "competitor_id": "Meta"},
+            {"evidence_id": "ev_001", "competitor_id": "Meta", "category_relevance": "target"},
+            {"evidence_id": "ev_003", "competitor_id": "Meta", "category_relevance": "target"},
         ],
         allowed_evidence_ids={"ev_001", "ev_003"},
         state_competitors=["Meta", "XREAL"],
         discovered_competitor_sources={
-            "Meta": {"candidate_role": "direct_competitor"},
-            "XREAL": {"candidate_role": "adjacent_competitor"},
+            "Meta": {"candidate_role": "direct_competitor", "admission_status": "main_player"},
+            "XREAL": {"candidate_role": "adjacent_competitor", "admission_status": "watchlist"},
         },
         self_product=None,
+        target_category="AI眼镜",
+        category_aliases=["AI眼镜"],
+        excluded_categories=[],
+        market_segments=[],
+        scope_policy="explicit_category",
         preserve_llm_executive_summary=True,
     )
 
-    # Primary LLM narrative must survive untouched; positioning_map still renders
-    # the deterministic clusters independently.
     assert updated["executive_summary"] == llm_summary
-    positioning_section = next(
-        item
-        for item in updated["sections"]
-        if isinstance(item, dict) and item.get("section_id") == "positioning_map"
-    )
-    assert "领先梯队（能力深、商业化强）" in positioning_section["content_markdown"]
+    section_ids = [item.get("section_id") for item in updated["sections"] if isinstance(item, dict)]
+    assert "positioning_map" not in section_ids
+    assert "key_players" in section_ids

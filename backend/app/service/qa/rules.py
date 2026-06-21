@@ -30,6 +30,33 @@ _PLACEHOLDER_SECTION_MARKERS: tuple[str, ...] = (
     "lacks enough grounded evidence",
     "no grounded evidence matched this section",
 )
+_LEGACY_WORKBENCH_SECTION_IDS: frozenset[str] = frozenset(
+    {
+        "market_landscape_map",
+        "competitor_profiles",
+        "comparison_matrix",
+        "positioning_map",
+        "representative_benchmarks",
+        "trend_summary",
+    }
+)
+_LEGACY_WORKBENCH_TITLE_MARKERS: tuple[str, ...] = (
+    "竞品分层地图",
+    "逐竞品画像",
+    "代表标杆",
+    "直接竞品",
+    "替代方案",
+    "2x2",
+)
+_LANDSCAPE_CORE_SECTION_IDS: frozenset[str] = frozenset(
+    {
+        "executive_takeaways",
+        "market_definition",
+        "competitive_landscape",
+        "key_players",
+        "methodology_limits",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -220,13 +247,102 @@ def rule_writer_no_fallback_mode(content_json: dict[str, object]) -> RuleResult:
         isinstance(risk_callouts_raw, list)
         and "writer_fallback_mode" in risk_callouts_raw
     )
-    passed = not has_fallback_flag
     return RuleResult(
         rule_id="rule_writer_no_fallback_mode",
-        passed=passed,
+        passed=not has_fallback_flag,
         severity="blocking",
         reject_to="writer",
         message="Report must not be generated in deterministic writer fallback mode.",
+    )
+
+
+def rule_landscape_no_legacy_workbench_sections(
+    *,
+    content_json: dict[str, object],
+    content_markdown: str,
+    analysis_archetype: str,
+) -> RuleResult:
+    if analysis_archetype != "landscape":
+        return RuleResult(
+            rule_id="rule_landscape_no_legacy_workbench_sections",
+            passed=True,
+            severity="blocking",
+            reject_to="writer",
+            message="Legacy workbench section check skipped for non-landscape report.",
+        )
+    section_ids = [
+        section_id
+        for section in _iter_report_sections(content_json)
+        for section_id in [_section_id(section)]
+        if section_id is not None
+    ]
+    legacy_ids = [section_id for section_id in section_ids if section_id in _LEGACY_WORKBENCH_SECTION_IDS]
+    legacy_titles = [marker for marker in _LEGACY_WORKBENCH_TITLE_MARKERS if marker in content_markdown]
+    return RuleResult(
+        rule_id="rule_landscape_no_legacy_workbench_sections",
+        passed=not legacy_ids and not legacy_titles,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            "Landscape report must not expose legacy workbench sections or headings "
+            f"(legacy_ids={legacy_ids}, legacy_titles={legacy_titles})."
+        ),
+    )
+
+
+def rule_landscape_core_commercial_sections_present(
+    *,
+    content_json: dict[str, object],
+    analysis_archetype: str,
+) -> RuleResult:
+    if analysis_archetype != "landscape":
+        return RuleResult(
+            rule_id="rule_landscape_core_commercial_sections_present",
+            passed=True,
+            severity="blocking",
+            reject_to="writer",
+            message="Commercial landscape core section check skipped for non-landscape report.",
+        )
+    present = _covered_report_section_ids(content_json)
+    missing = sorted(_LANDSCAPE_CORE_SECTION_IDS - present)
+    return RuleResult(
+        rule_id="rule_landscape_core_commercial_sections_present",
+        passed=not missing,
+        severity="blocking",
+        reject_to="writer",
+        message=f"Landscape report is missing commercial core sections (missing={missing}).",
+    )
+
+
+def rule_complete_coverage_has_target_evidence(
+    *,
+    knowledge: dict[str, object],
+) -> RuleResult:
+    coverage = knowledge.get("coverage")
+    supporting_raw = knowledge.get("supporting_target_evidence_ids")
+    supporting = supporting_raw if isinstance(supporting_raw, dict) else {}
+    failures: list[str] = []
+    if isinstance(coverage, dict):
+        for competitor, dimensions in coverage.items():
+            if not isinstance(competitor, str) or not isinstance(dimensions, dict):
+                continue
+            support_for_competitor = supporting.get(competitor)
+            support_map = support_for_competitor if isinstance(support_for_competitor, dict) else {}
+            for dimension, status in dimensions.items():
+                if status != "complete" or not isinstance(dimension, str):
+                    continue
+                target_ids = support_map.get(dimension)
+                if not isinstance(target_ids, list) or not any(isinstance(item, str) for item in target_ids):
+                    failures.append(f"{competitor}.{dimension}")
+    return RuleResult(
+        rule_id="rule_complete_coverage_has_target_evidence",
+        passed=not failures,
+        severity="blocking",
+        reject_to="researcher",
+        message=(
+            "Complete knowledge coverage must be supported by target-category evidence "
+            f"(failures={failures})."
+        ),
     )
 
 
@@ -943,6 +1059,15 @@ def evaluate_fast_path_rules(
             allowed_evidence_ids=allowed_evidence_ids,
         ),
         rule_writer_no_fallback_mode(content_json),
+        rule_landscape_no_legacy_workbench_sections(
+            content_json=content_json,
+            content_markdown=content_markdown,
+            analysis_archetype=analysis_archetype,
+        ),
+        rule_landscape_core_commercial_sections_present(
+            content_json=content_json,
+            analysis_archetype=analysis_archetype,
+        ),
         rule_evidence_must_be_desensitized(evidence_items),
         rule_buyer_critical_sections_need_official_source(
             content_json=content_json,
@@ -966,6 +1091,9 @@ def evaluate_fast_path_rules(
         ),
         rule_source_quality_blocklist_share(
             evidence_items=evidence_items,
+        ),
+        rule_complete_coverage_has_target_evidence(
+            knowledge=effective_knowledge,
         ),
     ]
     if report_depth == "deep":

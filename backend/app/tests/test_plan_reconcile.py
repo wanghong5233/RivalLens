@@ -86,19 +86,19 @@ def test_reconcile_plan_tree_preserves_candidate_role_in_sources_and_description
                 "official_url": None,
                 "source_domain": None,
                 "candidate_role": "direct_competitor",
-                "relevance_reason": "AI 眼镜直接竞品。",
+                "relevance_reason": "AI 眼镜核心竞争样本。",
             }
         },
     )
 
     research_tasks = [task for task in reconciled.tasks if task.stage == "research"]
     assert len(research_tasks) == 1
-    assert "候选角色：直接竞品" in research_tasks[0].description
+    assert "候选角色：核心竞争样本" in research_tasks[0].description
     assert reconciled.competitor_sources["Meta Ray-Ban"] == {
         "official_url": None,
         "source_domain": None,
         "candidate_role": "direct_competitor",
-        "relevance_reason": "AI 眼镜直接竞品。",
+        "relevance_reason": "AI 眼镜核心竞争样本。",
     }
 
 

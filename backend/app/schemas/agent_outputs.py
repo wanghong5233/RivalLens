@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationIn
 from schemas.business import Feature, Persona, Pricing, UserFeedback
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_section_id, validate_template_id
 from schemas.ids import make_id
-from schemas.report_sections import default_outline_for_archetype, is_known_section
+from schemas.report_sections import default_outline_for_archetype, get_section_spec, is_known_section
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 ComparisonStance = Literal["leader", "competitive", "laggard", "unknown"]
@@ -28,6 +28,11 @@ def stable_unique(values: list[str]) -> list[str]:
     return ordered
 
 
+def _section_allowed_for_archetype(section_id: str, archetype: str) -> bool:
+    spec = get_section_spec(section_id)
+    return spec is not None and spec.is_required_for(archetype)
+
+
 def resolve_writer_target_sections(
     *,
     requested_sections: list[str] | None,
@@ -38,25 +43,29 @@ def resolve_writer_target_sections(
     """Single source of truth for writer section targets across analyst → writer."""
     targets: list[str] = list(default_outline_for_archetype(analysis_archetype))
     for item in report_outline or []:
-        if is_known_section(item.section_id):
+        if _section_allowed_for_archetype(item.section_id, analysis_archetype):
             targets.append(item.section_id)
     for section_id in requested_sections or []:
         try:
             canonical = validate_section_id(section_id)
         except ValueError:
             continue
-        if is_known_section(canonical):
+        if _section_allowed_for_archetype(canonical, analysis_archetype):
             targets.append(canonical)
     for section_id in recommended_sections:
         try:
             canonical = validate_section_id(section_id)
         except ValueError:
             continue
-        if is_known_section(canonical):
+        if _section_allowed_for_archetype(canonical, analysis_archetype):
             targets.append(canonical)
-    normalized_targets = stable_unique([item for item in targets if is_known_section(item)])
+    normalized_targets = stable_unique(
+        [item for item in targets if _section_allowed_for_archetype(item, analysis_archetype)]
+    )
     if not normalized_targets:
         normalized_targets = list(DEFAULT_WRITER_SECTIONS)
+    if analysis_archetype == "landscape":
+        return [item for item in normalized_targets if item != "executive_summary"]
     if "executive_summary" not in normalized_targets:
         normalized_targets.insert(0, "executive_summary")
     without_summary = [item for item in normalized_targets if item != "executive_summary"]

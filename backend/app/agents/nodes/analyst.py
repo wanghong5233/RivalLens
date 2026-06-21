@@ -85,6 +85,8 @@ def _build_evidence_briefs(
         competitor_raw = span.get("competitor_id")
         competitor_id = competitor_raw if isinstance(competitor_raw, str) else "unknown"
         authority_raw = span.get("source_authority")
+        category_relevance_raw = span.get("category_relevance")
+        category_reason_raw = span.get("category_relevance_reason")
         briefs.append(
             {
                 "evidence_id": row.id,
@@ -95,6 +97,12 @@ def _build_evidence_briefs(
                 "source_url": row.source_url or "",
                 "source_type": row.source_type or "",
                 "source_authority": authority_raw if isinstance(authority_raw, str) else "third_party",
+                "category_relevance": (
+                    category_relevance_raw if isinstance(category_relevance_raw, str) else "unknown"
+                ),
+                "category_relevance_reason": (
+                    category_reason_raw if isinstance(category_reason_raw, str) else ""
+                ),
             }
         )
     return (
@@ -307,6 +315,11 @@ async def analyst_node(state: AgentState) -> AgentState:
             personas=list(deterministic_knowledge.personas),
             feedback=list(deterministic_knowledge.feedback),
         )
+    evidence_category_by_id = {
+        item["evidence_id"]: item.get("category_relevance", "target")
+        for item in evidence_briefs
+        if isinstance(item.get("evidence_id"), str)
+    }
     knowledge_result = build_knowledge_schema_result(
         schema_version=extracted_knowledge.schema_version,
         features=list(extracted_knowledge.features),
@@ -317,6 +330,7 @@ async def analyst_node(state: AgentState) -> AgentState:
         analysis_archetype=intake_draft.analysis_archetype,
         focus_dimensions=focus_dimensions,
         competitor_roles=competitor_roles,
+        evidence_category_by_id=evidence_category_by_id,
     )
     analysis_features = list(knowledge_result.features)
     analysis_pricings = list(knowledge_result.pricings)
@@ -325,6 +339,7 @@ async def analyst_node(state: AgentState) -> AgentState:
     analysis_coverage = dict(knowledge_result.coverage)
     analysis_schema_version = knowledge_result.schema_version
     schema_missing_reasons = dict(knowledge_result.missing_reasons)
+    supporting_target_evidence_ids = dict(knowledge_result.supporting_target_evidence_ids)
     evidence_lookup = {row.id: row for row in evidence_rows}
 
     llm_call_error = llm_response.error or analysis_schema_error
@@ -357,6 +372,7 @@ async def analyst_node(state: AgentState) -> AgentState:
             "schema_extraction_error": schema_extraction_error,
             "schema_coverage_by_competitor": analysis_coverage,
             "schema_missing_reasons": schema_missing_reasons,
+            "supporting_target_evidence_ids": supporting_target_evidence_ids,
         }
         log.info(
             "analyst.dimension_drops",
@@ -524,6 +540,7 @@ async def analyst_node(state: AgentState) -> AgentState:
                     feedback=analysis_feedback,
                     missing_reasons=schema_missing_reasons,
                     coverage=analysis_coverage,
+                    supporting_target_evidence_ids=supporting_target_evidence_ids,
                 )
                 await session.flush()
         except SQLAlchemyError as exc:

@@ -58,9 +58,9 @@ log = get_logger("agents.planner")
 _USER_ALLOWED_STAGES: frozenset[str] = frozenset({"research", "analyze", "write"})
 _PLAN_STAGE_ORDER: tuple[PlanTaskStage, ...] = ("discover", "research", "analyze", "write")
 _COMPETITOR_ROLE_LABELS: dict[str, str] = {
-    "direct_competitor": "直接竞品",
-    "adjacent_competitor": "相邻竞品",
-    "substitute": "替代方案",
+    "direct_competitor": "核心竞争样本",
+    "adjacent_competitor": "相邻样本",
+    "substitute": "替代路径",
     "upstream_supplier": "上游供应商",
     "trend_reference": "趋势参考",
 }

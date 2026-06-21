@@ -66,6 +66,11 @@ def test_initial_researcher_substate_raises_turn_budget_to_cover_focus_dimension
         resolved_official_hosts=[],
         resolved_source_pages=[],
         search_attempts_per_dim=2,
+        target_category=None,
+        category_aliases=[],
+        excluded_categories=[],
+        market_segments=[],
+        scope_policy=None,
     )
 
     # 4 dimensions x (2 searches + 1 fetch) = 12 turns, well above max_iterations.
@@ -1379,3 +1384,63 @@ def test_effective_action_dimension_search_uses_pending_head() -> None:
         _effective_action_dimension(state=state, action_args={}, action="search_web")
         == "pricing"
     )
+
+
+def test_build_evidence_rows_drops_off_topic_category_before_floor_restore() -> None:
+    rows, ids, dropped_dimensions = _build_evidence_rows(
+        run_id="run_category_gate_test",
+        step_id="step_category_gate_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing", "feature"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "vivo",
+                "quote": (
+                    "vivo smartphone price details describe handset launch pricing, storage tiers, "
+                    "carrier retail bundles, and mobile phone channel discounts for consumer buyers, "
+                    "but do not mention AI hardware endpoint products or AI glasses."
+                ),
+                "sanitized_text": (
+                    "vivo smartphone price details describe handset launch pricing, storage tiers, "
+                    "carrier retail bundles, and mobile phone channel discounts for consumer buyers, "
+                    "but do not mention AI hardware endpoint products or AI glasses."
+                ),
+                "source_type": "article",
+                "source_url": "https://example.com/vivo-phone-price",
+                "source_title": "vivo smartphone price",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "feature",
+                "competitor_id": "Huawei",
+                "quote": (
+                    "Huawei OceanStor storage feature documentation describes enterprise storage arrays, "
+                    "data protection, snapshot management, and SAN deployment for infrastructure buyers, "
+                    "without covering AI hardware endpoint products or AI glasses."
+                ),
+                "sanitized_text": (
+                    "Huawei OceanStor storage feature documentation describes enterprise storage arrays, "
+                    "data protection, snapshot management, and SAN deployment for infrastructure buyers, "
+                    "without covering AI hardware endpoint products or AI glasses."
+                ),
+                "source_type": "article",
+                "source_url": "https://example.com/huawei-oceanstor",
+                "source_title": "Huawei OceanStor storage",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="vivo",
+        target_category="AI硬件",
+        category_aliases=["AI硬件", "AI hardware"],
+        excluded_categories=["smartphone", "手机", "OceanStor", "storage"],
+        market_segments=["AI眼镜"],
+        competitor_admissions={"vivo": "watchlist", "Huawei": "watchlist"},
+    )
+
+    assert rows == []
+    assert ids == []
+    assert dropped_dimensions["reasons"]["category:matched_excluded_category"] == 2

@@ -182,6 +182,11 @@ class ResearcherSubState(TypedDict, total=False):
     final_summary: str
     compressed_summary: str
     domain_hint: str | None
+    target_category: str | None
+    category_aliases: list[str]
+    excluded_categories: list[str]
+    market_segments: list[str]
+    scope_policy: str | None
     market_scope: str | None
     response_language: str | None
     reference_urls: list[str]
@@ -1395,6 +1400,11 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         observation_briefs=observation_briefs,
         compressed_summary=compressed_summary,
         domain_hint=domain_hint,
+        target_category=state.get("target_category"),
+        category_aliases=list(state.get("category_aliases", [])),
+        excluded_categories=list(state.get("excluded_categories", [])),
+        market_segments=list(state.get("market_segments", [])),
+        scope_policy=state.get("scope_policy"),
         reference_urls=reference_urls,
         discovered_urls=discovered_urls,
         resolved_official_urls=resolved_official_urls,

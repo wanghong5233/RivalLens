@@ -34,6 +34,7 @@ class KnowledgeExtractionResult:
     coverage: KnowledgeCoverage
     extraction_mode: Literal["comparison", "landscape"]
     missing_reasons: dict[str, list[str]]
+    supporting_target_evidence_ids: dict[str, dict[str, list[str]]]
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class _EvidenceBrief:
     dimension: str | None
     quote_preview: str
     source_title: str
+    category_relevance: str
+    category_relevance_reason: str
 
 
 def _safe_string(value: object) -> str:
@@ -83,6 +86,9 @@ def _normalize_evidence_briefs(
             continue
         if competitors and competitor_id not in competitors:
             continue
+        category_relevance = _safe_string(item.get("category_relevance")) or "target"
+        if category_relevance == "off_topic":
+            continue
         normalized.append(
             _EvidenceBrief(
                 evidence_id=evidence_id,
@@ -90,6 +96,8 @@ def _normalize_evidence_briefs(
                 dimension=_normalize_dimension(item.get("dimension")),
                 quote_preview=_safe_string(item.get("quote_preview")),
                 source_title=_safe_string(item.get("source_title")),
+                category_relevance=category_relevance,
+                category_relevance_reason=_safe_string(item.get("category_relevance_reason")),
             )
         )
     return normalized
@@ -104,7 +112,6 @@ def _schema_bucket_for_dimension(dimension: str | None) -> SchemaBucket:
         "feedback" in dimension
         or "persona" in dimension
         or "buyer" in dimension
-        or "user" in dimension
     ):
         return "persona"
     return "feature"
@@ -335,6 +342,26 @@ def _normalize_competitor_roles(
     return normalized
 
 
+def _target_evidence_ids_for_item(
+    item: dict[str, object],
+    *,
+    evidence_category_by_id: dict[str, str],
+) -> list[str]:
+    evidence_ids_raw = item.get("evidence_ids")
+    if not isinstance(evidence_ids_raw, list):
+        return []
+    return [
+        evidence_id
+        for evidence_id in evidence_ids_raw
+        if isinstance(evidence_id, str) and evidence_category_by_id.get(evidence_id, "target") == "target"
+    ]
+
+
+def _has_any_evidence(item: dict[str, object]) -> bool:
+    evidence_ids_raw = item.get("evidence_ids")
+    return isinstance(evidence_ids_raw, list) and any(isinstance(evidence_id, str) for evidence_id in evidence_ids_raw)
+
+
 def build_knowledge_schema_result(
     *,
     schema_version: str,
@@ -346,6 +373,7 @@ def build_knowledge_schema_result(
     analysis_archetype: str,
     focus_dimensions: list[str] | None = None,
     competitor_roles: dict[str, str] | None = None,
+    evidence_category_by_id: dict[str, str] | None = None,
 ) -> KnowledgeExtractionResult:
     ordered_competitors = _normalize_competitors(competitors)
     if not ordered_competitors:
@@ -362,6 +390,8 @@ def build_knowledge_schema_result(
     coverage: KnowledgeCoverage = _empty_coverage(ordered_competitors)
     missing_reasons: dict[str, list[str]] = {}
     normalized_competitor_roles = _normalize_competitor_roles(competitor_roles)
+    evidence_categories = evidence_category_by_id or {}
+    supporting_target_evidence_ids: dict[str, dict[str, list[str]]] = {}
     evidence_owner_by_id: dict[str, str] = {}
     for item in [*features, *pricings, *feedback]:
         competitor_id = _coerce_competitor_id(item.get("competitor_id"))
@@ -380,27 +410,45 @@ def build_knowledge_schema_result(
             and competitor_role is not None
             and competitor_role not in _LANDSCAPE_CORE_ROLES
         )
-        feature_count = sum(
-            1
+        competitor_features = [
+            item
             for item in features
             if _coerce_competitor_id(item.get("competitor_id")) == competitor_id
+        ]
+        feature_count = sum(
+            1
+            for item in competitor_features
+            if _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
         )
+        feature_any_count = sum(1 for item in competitor_features if _has_any_evidence(item))
         competitor_pricings = [
             item
             for item in pricings
             if _coerce_competitor_id(item.get("competitor_id")) == competitor_id
         ]
-        pricing_count = len(competitor_pricings)
+        pricing_count = sum(
+            1
+            for item in competitor_pricings
+            if _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
+        )
+        pricing_any_count = sum(1 for item in competitor_pricings if _has_any_evidence(item))
         pricing_tier_count = sum(
             1
             for item in competitor_pricings
             if isinstance(item.get("tiers"), list) and bool(item["tiers"])
+            and _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
         )
-        feedback_count = sum(
-            1
+        competitor_feedback = [
+            item
             for item in feedback
             if _coerce_competitor_id(item.get("competitor_id")) == competitor_id
+        ]
+        feedback_count = sum(
+            1
+            for item in competitor_feedback
+            if _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
         )
+        feedback_any_count = sum(1 for item in competitor_feedback if _has_any_evidence(item))
         persona_count = sum(
             1
             for item in personas
@@ -409,6 +457,17 @@ def build_knowledge_schema_result(
                 competitor_id=competitor_id,
                 evidence_owner_by_id=evidence_owner_by_id,
             )
+            and _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
+        )
+        persona_any_count = sum(
+            1
+            for item in personas
+            if _persona_matches_competitor(
+                persona_item=item,
+                competitor_id=competitor_id,
+                evidence_owner_by_id=evidence_owner_by_id,
+            )
+            and _has_any_evidence(item)
         )
         pricing_applicable = (
             analysis_archetype != "landscape"
@@ -430,6 +489,43 @@ def build_knowledge_schema_result(
             persona_count=persona_count,
             pricing_applicable=pricing_applicable,
         )
+        for dimension, target_ids in {
+            "feature": [
+                evidence_id
+                for item in competitor_features
+                for evidence_id in _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
+            ],
+            "pricing": [
+                evidence_id
+                for item in competitor_pricings
+                for evidence_id in _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
+            ],
+            "feedback": [
+                evidence_id
+                for item in competitor_feedback
+                for evidence_id in _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
+            ],
+            "persona": [
+                evidence_id
+                for item in personas
+                if _persona_matches_competitor(
+                    persona_item=item,
+                    competitor_id=competitor_id,
+                    evidence_owner_by_id=evidence_owner_by_id,
+                )
+                for evidence_id in _target_evidence_ids_for_item(item, evidence_category_by_id=evidence_categories)
+            ],
+        }.items():
+            if target_ids:
+                supporting_target_evidence_ids.setdefault(competitor_id, {})[dimension] = sorted(set(target_ids))
+        for dimension, any_count in {
+            "feature": feature_any_count,
+            "pricing": pricing_any_count,
+            "feedback": feedback_any_count,
+            "persona": persona_any_count,
+        }.items():
+            if coverage[competitor_id].get(dimension) == "insufficient_data" and any_count > 0:
+                coverage[competitor_id][dimension] = "partial"
         if landscape_schema_not_applicable:
             coverage[competitor_id]["feature"] = "not_applicable_for_archetype"
             coverage[competitor_id]["feedback"] = "not_applicable_for_archetype"
@@ -438,25 +534,41 @@ def build_knowledge_schema_result(
         if landscape_schema_not_applicable:
             reasons.append("feature:not_applicable_for_archetype")
         elif feature_count == 0:
-            reasons.append("feature:no_grounded_evidence")
+            reasons.append(
+                "feature:category_mismatch"
+                if feature_any_count > 0
+                else "feature:no_grounded_evidence"
+            )
         elif feature_count < 3:
             reasons.append("feature:coverage_partial")
         if not pricing_applicable:
             reasons.append("pricing:not_applicable_for_archetype")
         elif pricing_count == 0:
-            reasons.append("pricing:no_grounded_evidence")
+            reasons.append(
+                "pricing:category_mismatch"
+                if pricing_any_count > 0
+                else "pricing:no_grounded_evidence"
+            )
         elif pricing_tier_count == 0:
             reasons.append("pricing:tier_details_missing")
         if landscape_schema_not_applicable:
             reasons.append("feedback:not_applicable_for_archetype")
         elif feedback_count == 0:
-            reasons.append("feedback:no_grounded_evidence")
+            reasons.append(
+                "feedback:category_mismatch"
+                if feedback_any_count > 0
+                else "feedback:no_grounded_evidence"
+            )
         elif feedback_count < 2:
             reasons.append("feedback:coverage_partial")
         if landscape_schema_not_applicable:
             reasons.append("persona:not_applicable_for_archetype")
         elif persona_count == 0:
-            reasons.append("persona:no_grounded_evidence")
+            reasons.append(
+                "persona:category_mismatch"
+                if persona_any_count > 0
+                else "persona:no_grounded_evidence"
+            )
         elif persona_count < 2:
             reasons.append("persona:coverage_partial")
         if reasons:
@@ -470,6 +582,7 @@ def build_knowledge_schema_result(
         coverage=coverage,
         extraction_mode="landscape" if analysis_archetype == "landscape" else "comparison",
         missing_reasons=missing_reasons,
+        supporting_target_evidence_ids=supporting_target_evidence_ids,
     )
 
 
@@ -487,6 +600,9 @@ def extract_knowledge_schema(
         evidence_briefs=evidence_briefs,
         competitors=competitor_set,
     )
+    evidence_category_by_id = {
+        item.evidence_id: item.category_relevance for item in normalized_evidence
+    }
     if not ordered_competitors:
         ordered_competitors = _normalize_competitors(
             [item.competitor_id for item in normalized_evidence]
@@ -616,6 +732,7 @@ def extract_knowledge_schema(
         analysis_archetype=analysis_archetype,
         focus_dimensions=focus_dimensions,
         competitor_roles=competitor_roles,
+        evidence_category_by_id=evidence_category_by_id,
     )
 
 

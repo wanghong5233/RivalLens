@@ -23,6 +23,7 @@ from models.run import Run
 from models.step import Step
 from schemas.contracts import normalize_dimension_or_none, validate_dimension, validate_source_type
 from schemas.ids import make_id
+from schemas.intake import category_aliases_for_target, text_mentions_any_term
 from schemas.supervisor import ConductResearch, FocusDimension
 from service.collector.errors import ChannelError
 from service.collector.source_resolver import SourceResolutionResult, resolve_official_sources
@@ -55,6 +56,13 @@ _OFFICIAL_URL_SEARCH_MAX_RESULTS = 6
 _OFFICIAL_URL_CANDIDATE_BUDGET = 8
 _RESEARCHER_GENERIC_NAME_TOKENS: frozenset[str] = frozenset(
     {"ai", "app", "tool", "tools", "software", "assistant", "the", "inc", "labs", "lab"}
+)
+_RESEARCHER_SEGMENT_HINTS: tuple[str, ...] = (
+    "眼镜",
+    "glasses",
+    "ar",
+    "wearable",
+    "可穿戴",
 )
 
 
@@ -103,7 +111,13 @@ def _merge_intake_context_drafts(
     persisted_intake_draft: dict[str, object] | None,
 ) -> dict[str, object] | None:
     merged: dict[str, object] = {}
-    for field_name in ("domain_hint", "market_scope", "response_language"):
+    for field_name in (
+        "domain_hint",
+        "market_scope",
+        "response_language",
+        "target_category",
+        "scope_policy",
+    ):
         state_value = (
             _normalized_intake_string(state_intake_draft.get(field_name))
             if state_intake_draft is not None
@@ -134,7 +148,51 @@ def _merge_intake_context_drafts(
     )
     if selected_reference_urls is not None:
         merged["reference_urls"] = selected_reference_urls
+    for field_name in ("category_aliases", "excluded_categories", "market_segments"):
+        state_values = _intake_string_list(state_intake_draft, field_name)
+        persisted_values = _intake_string_list(persisted_intake_draft, field_name)
+        selected_values = state_values or persisted_values
+        if selected_values:
+            merged[field_name] = selected_values
     return merged if merged else None
+
+
+def _intake_string_list(payload: dict[str, object] | None, field_name: str) -> list[str]:
+    if payload is None:
+        return []
+    raw = payload.get(field_name)
+    if not isinstance(raw, list):
+        return []
+    return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+
+
+def _classify_category_relevance(
+    *,
+    text: str,
+    target_category: str | None,
+    category_aliases: list[str],
+    excluded_categories: list[str],
+    market_segments: list[str],
+    scope_policy: str | None,
+    admission_status: str | None,
+) -> tuple[str, str]:
+    if target_category is None:
+        return "target", "no_target_category_available"
+    if excluded_categories and text_mentions_any_term(text, excluded_categories):
+        return "off_topic", "matched_excluded_category"
+    aliases = category_aliases or category_aliases_for_target(target_category)
+    if aliases and text_mentions_any_term(text, aliases):
+        return "target", "matched_target_category"
+    if admission_status == "value_chain":
+        return "value_chain", "player_admitted_as_value_chain"
+    segment_terms = [*market_segments]
+    if scope_policy == "broad_market":
+        segment_terms.extend(_RESEARCHER_SEGMENT_HINTS)
+    if segment_terms and text_mentions_any_term(text, segment_terms):
+        return "adjacent_segment", "matched_adjacent_market_segment"
+    if admission_status == "watchlist":
+        return "unknown", "player_admitted_as_watchlist"
+    return "off_topic", "missing_target_category_term"
 
 
 async def _load_persisted_intake_draft(
@@ -186,6 +244,38 @@ def _state_or_intake_reference_urls(
     return [item.strip() for item in reference_urls_raw if isinstance(item, str) and item.strip()]
 
 
+def _state_or_intake_string_list(
+    state: AgentState,
+    field_name: str,
+    *,
+    intake_draft: dict[str, object] | None = None,
+) -> list[str]:
+    raw = state.get(field_name)
+    if isinstance(raw, list):
+        return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    source_draft = intake_draft if intake_draft is not None else _coerce_intake_draft(
+        state.get("intake_draft")
+    )
+    raw = source_draft.get(field_name) if source_draft is not None else None
+    if not isinstance(raw, list):
+        return []
+    return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+
+
+def _competitor_admission_statuses(state: AgentState) -> dict[str, str]:
+    raw = state.get("discovered_competitor_sources")
+    if not isinstance(raw, dict):
+        return {}
+    statuses: dict[str, str] = {}
+    for competitor_id, payload in raw.items():
+        if not isinstance(competitor_id, str) or not isinstance(payload, dict):
+            continue
+        status = payload.get("admission_status")
+        if isinstance(status, str) and status.strip():
+            statuses[competitor_id] = status.strip()
+    return statuses
+
+
 def _resolve_focus_dimensions(
     *,
     request: ConductResearch,
@@ -220,6 +310,11 @@ def _build_initial_substate(
     resolved_official_hosts: list[str],
     resolved_source_pages: list[dict[str, str]],
     search_attempts_per_dim: int,
+    target_category: str | None,
+    category_aliases: list[str],
+    excluded_categories: list[str],
+    market_segments: list[str],
+    scope_policy: str | None,
 ) -> ResearcherSubState:
     # Reserve search_attempts_per_dim searches + 1 fetch per dimension, with the
     # tier's react_turns as the floor, so every dimension can search to budget.
@@ -252,6 +347,11 @@ def _build_initial_substate(
         "final_summary": "",
         "compressed_summary": "",
         "domain_hint": domain_hint,
+        "target_category": target_category,
+        "category_aliases": category_aliases,
+        "excluded_categories": excluded_categories,
+        "market_segments": market_segments,
+        "scope_policy": scope_policy,
         "market_scope": market_scope,
         "response_language": response_language,
         "reference_urls": reference_urls,
@@ -400,6 +500,12 @@ def _build_evidence_rows(
     default_competitor_id: str,
     resolved_official_hosts: set[str] | None = None,
     funnel_metrics: dict[str, object] | None = None,
+    target_category: str | None = None,
+    category_aliases: list[str] | None = None,
+    excluded_categories: list[str] | None = None,
+    market_segments: list[str] | None = None,
+    scope_policy: str | None = None,
+    competitor_admissions: dict[str, str] | None = None,
 ) -> tuple[list[EvidenceRecord], list[str], dict[str, object]]:
     dropped_reasons: dict[str, int] = {}
     funnel_overall: dict[str, int] = {
@@ -723,6 +829,25 @@ def _build_evidence_rows(
             )
         )
 
+    def category_relevance_for_candidate(candidate: dict[str, object]) -> tuple[str, str]:
+        competitor_id = str(candidate.get("competitor_id") or default_competitor_id)
+        source_title = candidate.get("source_title") if isinstance(candidate.get("source_title"), str) else ""
+        quote_text = candidate.get("quote") if isinstance(candidate.get("quote"), str) else ""
+        sanitized_text = (
+            candidate.get("sanitized_text") if isinstance(candidate.get("sanitized_text"), str) else ""
+        )
+        combined = f"{competitor_id} {source_title} {quote_text} {sanitized_text}"
+        admission_status = (competitor_admissions or {}).get(competitor_id)
+        return _classify_category_relevance(
+            text=combined,
+            target_category=target_category,
+            category_aliases=list(category_aliases or []),
+            excluded_categories=list(excluded_categories or []),
+            market_segments=list(market_segments or []),
+            scope_policy=scope_policy,
+            admission_status=admission_status,
+        )
+
     def source_quality_drop_reason(*, source_url: str | None, text: str) -> str | None:
         if source_blocklist_reason(source_url) is not None:
             return "source_blocklist"
@@ -812,6 +937,9 @@ def _build_evidence_rows(
             "competitor_source_match": competitor_source_match,
             "source_authority": source_authority,
             "source_authority_reason": source_authority_reason,
+            "target_category": target_category,
+            "category_aliases": list(category_aliases or []),
+            "domain_hint_at_collection": metadata.get("domain_hint", target_category),
         }
         candidate = {
             "dimension": normalized_dimension,
@@ -835,11 +963,21 @@ def _build_evidence_rows(
                 dimension=normalized_dimension,
             )
             if quality_drop_reason in {"low_semantic", "source_blocklist"}:
+                category_relevance, category_reason = category_relevance_for_candidate(candidate)
+                if category_relevance == "off_topic":
+                    record_drop_for_bucket(
+                        reason=f"category:{category_reason}",
+                        competitor_id=competitor_id_raw,
+                        dimension=normalized_dimension,
+                    )
+                    continue
                 floor_candidates.append(
                     {
                         **candidate,
                         "metadata": {
                             **metadata,
+                            "category_relevance": category_relevance,
+                            "category_relevance_reason": category_reason,
                             "source_quality_drop_reason": quality_drop_reason,
                             "funnel_floor_reason": quality_drop_reason,
                         },
@@ -867,6 +1005,14 @@ def _build_evidence_rows(
             )
         )
         if not grounded:
+            category_relevance, category_reason = category_relevance_for_candidate(candidate)
+            if category_relevance == "off_topic":
+                record_drop_for_bucket(
+                    reason=f"category:{category_reason}",
+                    competitor_id=competitor_id_raw,
+                    dimension=normalized_dimension,
+                )
+                continue
             record_drop_for_bucket(
                 reason="competitor_grounding_miss",
                 competitor_id=competitor_id_raw,
@@ -877,6 +1023,8 @@ def _build_evidence_rows(
                     **candidate,
                     "metadata": {
                         **metadata,
+                        "category_relevance": category_relevance,
+                        "category_relevance_reason": category_reason,
                         "grounding_drop_reason": "competitor_grounding_miss",
                         "funnel_floor_reason": "competitor_grounding_miss",
                     },
@@ -888,7 +1036,24 @@ def _build_evidence_rows(
             dimension=normalized_dimension,
             stage="post_grounding",
         )
-        append_evidence_row(candidate)
+        category_relevance, category_reason = category_relevance_for_candidate(candidate)
+        if category_relevance == "off_topic":
+            record_drop_for_bucket(
+                reason=f"category:{category_reason}",
+                competitor_id=competitor_id_raw,
+                dimension=normalized_dimension,
+            )
+            continue
+        append_evidence_row(
+            {
+                **candidate,
+                "metadata": {
+                    **metadata,
+                    "category_relevance": category_relevance,
+                    "category_relevance_reason": category_reason,
+                },
+            }
+        )
     if not evidence_rows and floor_candidates:
         def _floor_priority(reason: str) -> int:
             if reason == "low_semantic":
@@ -992,6 +1157,42 @@ def _build_llm_call_rows(
     return rows
 
 
+def _coverage_matrix_from_evidence_rows(
+    *,
+    focus_dimensions: list[FocusDimension],
+    evidence_rows: list[EvidenceRecord],
+) -> dict[str, dict[str, object]]:
+    matrix: dict[str, dict[str, object]] = {}
+    for dimension in focus_dimensions:
+        relevant_rows = [
+            row
+            for row in evidence_rows
+            if isinstance(row.span, dict)
+            and row.span.get("dimension") == dimension
+            and row.span.get("category_relevance") in {"target", "adjacent_segment", "value_chain", "unknown"}
+        ]
+        target_rows = [
+            row
+            for row in relevant_rows
+            if isinstance(row.span, dict) and row.span.get("category_relevance") == "target"
+        ]
+        matrix[dimension] = {
+            "covered": bool(target_rows),
+            "evidence_count": len(relevant_rows),
+            "target_evidence_count": len(target_rows),
+            "category_relevant_evidence_count": len(relevant_rows),
+            "category_relevance_distribution": {
+                relevance: sum(
+                    1
+                    for row in relevant_rows
+                    if isinstance(row.span, dict) and row.span.get("category_relevance") == relevance
+                )
+                for relevance in ("target", "adjacent_segment", "value_chain", "unknown")
+            },
+        }
+    return matrix
+
+
 @log_node("researcher")
 async def researcher_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
@@ -1021,6 +1222,33 @@ async def researcher_node(state: AgentState) -> AgentState:
         if response_language_raw in {"zh", "en"}
         else None
     )
+    target_category = _state_or_intake_string(state, "target_category", intake_draft=intake_draft)
+    category_aliases = _state_or_intake_string_list(
+        state,
+        "category_aliases",
+        intake_draft=intake_draft,
+    )
+    excluded_categories = _state_or_intake_string_list(
+        state,
+        "excluded_categories",
+        intake_draft=intake_draft,
+    )
+    market_segments = _state_or_intake_string_list(
+        state,
+        "market_segments",
+        intake_draft=intake_draft,
+    )
+    scope_policy = _state_or_intake_string(state, "scope_policy", intake_draft=intake_draft)
+    analysis_archetype = (
+        _state_or_intake_string(state, "analysis_archetype", intake_draft=intake_draft)
+        or "comparison"
+    )
+    category_gate_enabled = analysis_archetype == "landscape" or scope_policy == "broad_market"
+    effective_target_category = target_category if category_gate_enabled else None
+    effective_category_aliases = category_aliases if category_gate_enabled else []
+    effective_excluded_categories = excluded_categories if category_gate_enabled else []
+    effective_market_segments = market_segments if category_gate_enabled else []
+    competitor_admissions = _competitor_admission_statuses(state)
     reference_urls = _state_or_intake_reference_urls(state, intake_draft=intake_draft)
     source_candidate_urls = _candidate_source_urls_for_competitor(
         state=state,
@@ -1090,6 +1318,11 @@ async def researcher_node(state: AgentState) -> AgentState:
             for page in resolved_sources.key_pages
         ],
         search_attempts_per_dim=tier_profile.search_attempts_per_dim,
+        target_category=effective_target_category,
+        category_aliases=effective_category_aliases,
+        excluded_categories=effective_excluded_categories,
+        market_segments=effective_market_segments,
+        scope_policy=scope_policy,
     )
     # Each ReAct turn costs ~2 super-steps (llm_decide + tool_exec); give the
     # subgraph headroom above max_turns so it self-finalizes on turn budget
@@ -1112,13 +1345,26 @@ async def researcher_node(state: AgentState) -> AgentState:
         default_competitor_id=request.competitor_id,
         resolved_official_hosts=set(resolved_sources.official_hosts),
         funnel_metrics=evidence_funnel,
+        target_category=effective_target_category,
+        category_aliases=effective_category_aliases,
+        excluded_categories=effective_excluded_categories,
+        market_segments=effective_market_segments,
+        scope_policy=scope_policy,
+        competitor_admissions=competitor_admissions,
     )
     llm_call_rows = _build_llm_call_rows(
         step_id=step_id,
         llm_calls=list(subgraph_output.get("llm_calls", [])),
     )
-    coverage_matrix_raw = subgraph_output.get("coverage_matrix", {})
-    coverage_matrix = coverage_matrix_raw if isinstance(coverage_matrix_raw, dict) else {}
+    raw_coverage_matrix = (
+        subgraph_output.get("coverage_matrix", {})
+        if isinstance(subgraph_output.get("coverage_matrix", {}), dict)
+        else {}
+    )
+    coverage_matrix = _coverage_matrix_from_evidence_rows(
+        focus_dimensions=focus_dimensions,
+        evidence_rows=evidence_rows,
+    )
     uncovered_dimensions = [
         dimension
         for dimension, row in coverage_matrix.items()
@@ -1129,6 +1375,11 @@ async def researcher_node(state: AgentState) -> AgentState:
     step_payload = {
         **request.model_dump(),
         "domain_hint": domain_hint,
+        "target_category": target_category,
+        "category_aliases": category_aliases,
+        "excluded_categories": excluded_categories,
+        "market_segments": market_segments,
+        "scope_policy": scope_policy,
         "market_scope": market_scope,
         "response_language": response_language,
         "reference_urls": reference_urls,
@@ -1140,6 +1391,7 @@ async def researcher_node(state: AgentState) -> AgentState:
         "search_call_count": int(subgraph_output.get("search_call_count", 0)),
         "official_fetch_count": int(subgraph_output.get("official_fetch_count", 0)),
         "coverage_matrix": coverage_matrix,
+        "raw_coverage_matrix": raw_coverage_matrix,
         "coverage_summary": {
             "covered_dimension_count": len(coverage_matrix) - len(uncovered_dimensions),
             "total_dimension_count": len(coverage_matrix),

@@ -14,8 +14,6 @@ from fastapi.testclient import TestClient
 from app_main import app
 from core.config import settings
 from schemas.report_sections import default_outline_for_archetype
-from service.collector.base import CollectorObservation, CollectorSnippet, ToolObservationResult
-from service.collector.registry import get_channel_registry as _get_real_channel_registry
 from service.llm.response import LLMResponse
 
 
@@ -142,16 +140,6 @@ def _select_golden_profiles(prompt_text: str) -> list[dict[str, object]]:
     return [profile for profile in _GOLDEN_PROFILE_LIBRARY if profile.get("track") == "coding"][:2]
 
 
-def _build_golden_snippet_text(profile: dict[str, object]) -> str:
-    quote = str(profile.get("evidence_quote") or "").strip()
-    return (
-        f"{quote} 公开资料显示该产品覆盖功能能力、商业化定价与用户反馈信号，"
-        "并在最近版本中强调生态集成、行业场景落地与持续发布节奏；"
-        "这些信息可以直接用于后续结构化对比、证据引用与风险评估，"
-        "避免出现空洞占位段落或无法落地的泛化结论。"
-    )
-
-
 def _build_discovery_candidates_for_prompt(prompt_text: str) -> list[dict[str, object]]:
     candidates: list[dict[str, object]] = []
     for profile in _select_golden_profiles(prompt_text)[:10]:
@@ -174,101 +162,6 @@ def _build_discovery_candidates_for_prompt(prompt_text: str) -> list[dict[str, o
             }
         )
     return candidates
-
-
-class _GoldenDeterministicRegistry:
-    def __init__(self) -> None:
-        self._delegate = _get_real_channel_registry()
-
-    def has(self, action: str) -> bool:
-        return self._delegate.has(action)
-
-    def list_actions(self) -> list[str]:
-        return self._delegate.list_actions()
-
-    async def invoke(self, action: str, *, args: dict[str, object]) -> CollectorObservation:
-        if action in {"search_web", "bocha_search"}:
-            return self._fake_search_observation(action=action, args=args)
-        if action == "fetch_url":
-            return self._fake_fetch_observation(args=args)
-        return await self._delegate.invoke(action, args=args)
-
-    def _fake_search_observation(
-        self,
-        *,
-        action: str,
-        args: dict[str, object],
-    ) -> CollectorObservation:
-        query_raw = args.get("query")
-        query = query_raw.strip() if isinstance(query_raw, str) and query_raw.strip() else "market"
-        max_results_raw = args.get("max_results", 5)
-        max_results = max_results_raw if isinstance(max_results_raw, int) and max_results_raw > 0 else 5
-        snippets: list[CollectorSnippet] = []
-        for profile in _select_golden_profiles(query)[: min(max_results, 10)]:
-            snippet_text = _build_golden_snippet_text(profile)
-            source_url = str(profile.get("official_url") or "")
-            snippets.append(
-                CollectorSnippet(
-                    quote=snippet_text,
-                    sanitized_text=snippet_text,
-                    source_url=source_url,
-                    source_title=f"{profile.get('name')} official update",
-                    source_type="official_site",
-                    desensitized=True,
-                    metadata={"source": "golden_fake_search", "query": query},
-                )
-            )
-        return CollectorObservation(
-            channel=action,
-            args={"query": query, "max_results": max_results},
-            result=ToolObservationResult(
-                snippets=snippets,
-                metadata={"provider": "golden_fake", "result_count": len(snippets)},
-            ),
-        )
-
-    def _fake_fetch_observation(self, *, args: dict[str, object]) -> CollectorObservation:
-        url_raw = args.get("url")
-        url = url_raw.strip() if isinstance(url_raw, str) and url_raw.strip() else "https://example.com"
-        selected = _select_golden_profiles(url)[0]
-        snippet_text = _build_golden_snippet_text(selected)
-        snippet = CollectorSnippet(
-            quote=snippet_text,
-            sanitized_text=snippet_text,
-            source_url=url,
-            source_title=f"{selected.get('name')} evidence page",
-            source_type="official_doc",
-            desensitized=True,
-            metadata={"source": "golden_fake_fetch"},
-        )
-        return CollectorObservation(
-            channel="fetch_url",
-            args={"url": url},
-            result=ToolObservationResult(
-                snippets=[snippet],
-                metadata={"source": "golden_fake_fetch", "host": _profile_source_domain(url)},
-            ),
-        )
-
-
-def install_fake_collector_for_golden() -> _GoldenDeterministicRegistry:
-    fake_registry = _GoldenDeterministicRegistry()
-    fake_getter: Callable[[], object] = lambda: fake_registry
-
-    import agents.nodes.discovery as discovery_module
-    import agents.nodes.researcher as researcher_node_module
-    import agents.subgraphs.researcher as researcher_subgraph_module
-    import agents.tools as tools_module
-    import service.collector.registry as collector_registry_module
-    import tests.golden.runner as golden_runner_module
-
-    collector_registry_module.get_channel_registry = fake_getter
-    tools_module.get_channel_registry = fake_getter
-    discovery_module.get_channel_registry = fake_getter
-    researcher_node_module.get_channel_registry = fake_getter
-    researcher_subgraph_module.get_channel_registry = fake_getter
-    golden_runner_module.get_channel_registry = fake_getter
-    return fake_registry
 
 
 class _FakeLLMClient:
@@ -946,10 +839,16 @@ class _FakeLLMClient:
             "comparison_matrix": "Comparison Matrix",
             "positioning_map": "Positioning Map",
             "self_positioning": "Self Positioning",
-            "market_landscape_map": "Competitor Layering Map",
-            "trend_summary": "Trend Summary",
-            "opportunity_map": "Opportunity Map",
-            "strategic_recommendations": "Actionable Recommendations",
+            "executive_takeaways": "Executive Takeaways",
+            "market_definition": "Market Definition",
+            "market_size_growth": "Market Size and Growth",
+            "market_segmentation": "Market Segmentation",
+            "competitive_landscape": "Competitive Landscape",
+            "key_players": "Key Players",
+            "value_chain": "Value Chain",
+            "opportunities_risks": "Opportunities and Risks",
+            "strategic_recommendations": "Strategic Recommendations",
+            "methodology_limits": "Methodology and Limits",
         }
         sections: list[dict[str, object]] = []
         for section_id in requested_sections:
@@ -1394,25 +1293,6 @@ def fake_llm_client(
     monkeypatch.setattr("service.llm.client.get_llm_client", lambda: fake_client)
     monkeypatch.setattr("service.llm.harness.get_llm_client", lambda: fake_client)
     return fake_client
-
-
-@pytest.fixture(autouse=True)
-def fake_collector_registry_for_golden(
-    monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
-) -> _GoldenDeterministicRegistry | None:
-    node_path = str(request.node.path)
-    if "test_golden_runner.py" not in node_path:
-        return None
-    fake_registry = _GoldenDeterministicRegistry()
-    fake_getter: Callable[[], object] = lambda: fake_registry
-    monkeypatch.setattr("service.collector.registry.get_channel_registry", fake_getter)
-    monkeypatch.setattr("agents.tools.get_channel_registry", fake_getter)
-    monkeypatch.setattr("agents.nodes.discovery.get_channel_registry", fake_getter)
-    monkeypatch.setattr("agents.nodes.researcher.get_channel_registry", fake_getter)
-    monkeypatch.setattr("agents.subgraphs.researcher.get_channel_registry", fake_getter)
-    monkeypatch.setattr("tests.golden.runner.get_channel_registry", fake_getter)
-    return fake_registry
 
 
 @pytest.fixture()

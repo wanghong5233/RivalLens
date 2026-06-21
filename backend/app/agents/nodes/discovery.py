@@ -21,6 +21,7 @@ from db.engine import get_session_factory
 from models.run import Run
 from models.step import Step
 from schemas.ids import make_id
+from schemas.intake import category_aliases_for_target, normalize_optional_text, text_mentions_any_term
 from service.collector.errors import ChannelError
 from service.event_bus import RunEventType, emit_run_event
 from schemas.agent_outputs import DiscoveryExtractOutput
@@ -94,20 +95,6 @@ _DISCOVERY_TREND_HINTS: tuple[str, ...] = (
     "媒体",
     "研究机构",
 )
-_DISCOVERY_MEDIA_HINTS: tuple[str, ...] = (
-    "media",
-    "report",
-    "research",
-    "institute",
-    "news",
-    "press",
-    "资讯",
-    "报道",
-    "媒体",
-    "研究机构",
-    "协会",
-    "智库",
-)
 _DISCOVERY_SUBSTITUTE_HINTS: tuple[str, ...] = (
     "substitute",
     "alternative",
@@ -122,13 +109,17 @@ _DISCOVERY_ADJACENT_HINTS: tuple[str, ...] = (
     "生态",
     "平台",
 )
+_DISCOVERY_SEGMENT_HINTS: tuple[str, ...] = (
+    "眼镜",
+    "glasses",
+    "ar",
+    "wearable",
+    "可穿戴",
+)
 
 
 def _clean_optional_string(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    cleaned = value.strip()
-    return cleaned or None
+    return normalize_optional_text(value)
 
 
 def _state_or_intake_string(state: AgentState, field_name: str) -> str | None:
@@ -138,7 +129,25 @@ def _state_or_intake_string(state: AgentState, field_name: str) -> str | None:
     intake_draft = state.get("intake_draft")
     if intake_draft is None:
         return None
+    if isinstance(intake_draft, dict):
+        return _clean_optional_string(intake_draft.get(field_name))
     return _clean_optional_string(getattr(intake_draft, field_name, None))
+
+
+def _state_or_intake_string_list(state: AgentState, field_name: str) -> list[str]:
+    raw = state.get(field_name)
+    if isinstance(raw, list):
+        return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    intake_draft = state.get("intake_draft")
+    if isinstance(intake_draft, dict):
+        raw = intake_draft.get(field_name)
+    elif intake_draft is not None:
+        raw = getattr(intake_draft, field_name, None)
+    else:
+        raw = None
+    if not isinstance(raw, list):
+        return []
+    return [item.strip() for item in raw if isinstance(item, str) and item.strip()]
 
 
 def _state_response_language(state: AgentState) -> str | None:
@@ -295,34 +304,37 @@ def _reconcile_candidate_role(
     return llm_candidate_role
 
 
-def _is_landscape_core_fallback_candidate(
+def _infer_admission_status(
     *,
     candidate_role: str,
-    candidate_name: str,
     relevance_reason: str,
-) -> bool:
+    evidence_quote: str,
+    target_category: str | None,
+    category_aliases: list[str],
+    excluded_categories: list[str],
+    market_segments: list[str],
+    scope_policy: str | None,
+) -> tuple[str, str]:
+    combined = f"{relevance_reason} {evidence_quote}"
+    if excluded_categories and text_mentions_any_term(combined, excluded_categories):
+        return "excluded", "matched_excluded_category"
+    aliases = category_aliases or category_aliases_for_target(target_category)
+    target_hit = bool(aliases and text_mentions_any_term(combined, aliases))
+    segment_terms = [*market_segments]
+    if scope_policy == "broad_market":
+        segment_terms.extend(_DISCOVERY_SEGMENT_HINTS)
+    segment_hit = bool(segment_terms and text_mentions_any_term(combined, segment_terms))
     if candidate_role == "upstream_supplier":
-        return False
-    if candidate_role != "trend_reference":
-        return True
-    combined = f"{candidate_name} {relevance_reason}".casefold()
-    return not any(hint in combined for hint in _DISCOVERY_MEDIA_HINTS)
-
-
-def _ensure_landscape_core_candidate(*, relevance: list[dict[str, object]]) -> None:
-    if any(str(item.get("candidate_role") or "") in _DISCOVERY_CORE_ROLES for item in relevance):
-        return
-    for item in relevance:
-        candidate_role = str(item.get("candidate_role") or "")
-        candidate_name = str(item.get("name") or "")
-        relevance_reason = str(item.get("relevance_reason") or "")
-        if _is_landscape_core_fallback_candidate(
-            candidate_role=candidate_role,
-            candidate_name=candidate_name,
-            relevance_reason=relevance_reason,
-        ):
-            item["candidate_role"] = "adjacent_competitor"
-            return
+        return "value_chain", "upstream_or_supplier_role"
+    if candidate_role == "trend_reference":
+        return "watchlist", "trend_or_media_reference_role"
+    if candidate_role in _DISCOVERY_CORE_ROLES and target_hit:
+        return "main_player", "matched_target_category"
+    if candidate_role in _DISCOVERY_CORE_ROLES and segment_hit:
+        return "segment_player", "matched_adjacent_market_segment"
+    if candidate_role in _DISCOVERY_CORE_ROLES and target_category is None:
+        return "main_player", "no_target_category_available"
+    return "watchlist", "missing_target_category_evidence"
 
 
 def _score_official_source_candidate(
@@ -429,6 +441,11 @@ def _filter_discovery_candidates(
     analysis_intent: str | None = None,
     self_product: str | None = None,
     analysis_archetype: str = "comparison",
+    target_category: str | None = None,
+    category_aliases: list[str] | None = None,
+    excluded_categories: list[str] | None = None,
+    market_segments: list[str] | None = None,
+    scope_policy: str | None = None,
 ) -> tuple[list[str], list[dict[str, object]], list[dict[str, object]]]:
     discovered: list[str] = []
     filtered_out: list[dict[str, object]] = []
@@ -452,12 +469,32 @@ def _filter_discovery_candidates(
         llm_official_url = getattr(candidate, "official_url", None)
         llm_source_domain = getattr(candidate, "source_domain", None)
         alias_key = _normalize_alias_key(name)
+        admission_status, admission_reason = _infer_admission_status(
+            candidate_role=candidate_role,
+            relevance_reason=relevance_reason,
+            evidence_quote=evidence_quote,
+            target_category=target_category,
+            category_aliases=list(category_aliases or []),
+            excluded_categories=list(excluded_categories or []),
+            market_segments=list(market_segments or []),
+            scope_policy=scope_policy,
+        )
 
         if not name:
             filtered_out.append({"name": "", "reason": "blank_name"})
             continue
         if not is_competitor:
             filtered_out.append({"name": name, "reason": "not_competitor"})
+            continue
+        if admission_status == "excluded":
+            filtered_out.append(
+                {
+                    "name": name,
+                    "reason": admission_reason,
+                    "candidate_role": candidate_role,
+                    "admission_status": admission_status,
+                }
+            )
             continue
         if candidate_role not in _DISCOVERY_CORE_ROLES and analysis_archetype != "landscape":
             filtered_out.append(
@@ -493,6 +530,8 @@ def _filter_discovery_candidates(
         row: dict[str, object] = {
             "name": name,
             "candidate_role": candidate_role,
+            "admission_status": admission_status,
+            "admission_reason": admission_reason,
             "relevance_reason": relevance_reason,
             "evidence_quote_preview": evidence_quote[:_DISCOVERY_EVIDENCE_PREVIEW_LIMIT],
         }
@@ -501,8 +540,6 @@ def _filter_discovery_candidates(
             row["source_domain"] = source_domain or _source_domain(official_url)
         relevance.append(row)
 
-    if analysis_archetype == "landscape":
-        _ensure_landscape_core_candidate(relevance=relevance)
     relevance.sort(
         key=lambda item: _DISCOVERY_ROLE_PRIORITY.get(
             str(item.get("candidate_role") or ""),
@@ -540,6 +577,11 @@ async def discovery_node(state: AgentState) -> AgentState:
     analysis_intent = _state_or_intake_string(state, "analysis_intent")
     self_product = _state_or_intake_string(state, "self_product")
     analysis_archetype = _state_analysis_archetype(state)
+    target_category = _state_or_intake_string(state, "target_category")
+    category_aliases = _state_or_intake_string_list(state, "category_aliases")
+    excluded_categories = _state_or_intake_string_list(state, "excluded_categories")
+    market_segments = _state_or_intake_string_list(state, "market_segments")
+    scope_policy = _state_or_intake_string(state, "scope_policy")
 
     search_queries: list[str] = pending_tool_args.get("search_queries", [user_query])
     domain_context: str = pending_tool_args.get("domain_context", user_query)
@@ -655,6 +697,11 @@ async def discovery_node(state: AgentState) -> AgentState:
             market_scope=market_scope,
             analysis_intent=analysis_intent,
             self_product=self_product,
+            target_category=target_category,
+            category_aliases=category_aliases,
+            excluded_categories=excluded_categories,
+            market_segments=market_segments,
+            scope_policy=scope_policy,
             response_language=response_language,
         )
         fallback_prompt = build_discovery_extract_fallback_user_prompt(
@@ -686,6 +733,11 @@ async def discovery_node(state: AgentState) -> AgentState:
                     analysis_intent=analysis_intent,
                     self_product=self_product,
                     analysis_archetype=analysis_archetype,
+                    target_category=target_category,
+                    category_aliases=category_aliases,
+                    excluded_categories=excluded_categories,
+                    market_segments=market_segments,
+                    scope_policy=scope_policy,
                 )
             elif harness_result.llm_response.error is not None:
                 extract_error = harness_result.llm_response.error[:300]
@@ -738,6 +790,8 @@ async def discovery_node(state: AgentState) -> AgentState:
                         "official_url": item.get("official_url"),
                         "source_domain": item.get("source_domain"),
                         "candidate_role": item.get("candidate_role"),
+                        "admission_status": item.get("admission_status"),
+                        "admission_reason": item.get("admission_reason"),
                         "relevance_reason": item.get("relevance_reason"),
                     }
                     for item in relevance

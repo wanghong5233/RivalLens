@@ -646,7 +646,7 @@ Rules:
 - If QA feedback lists unsupported_numeric_claims, remove those exact numbers, rewrite them as qualitative statements, or label them clearly as proposals instead of factual claims.
 - During QA rewrites, avoid introducing new exact funding amounts, market-share percentages, acceptance rates, or time windows unless the exact value appears verbatim in evidence_briefs.
 - For report_depth=deep, write a materially deeper report for sections with grounded evidence; avoid placeholder sections and keep citations concrete.
-- If trend_summary is present, make it the narrative center: theme -> representative benchmark -> business implication, with grounded citations.
+- For landscape reports, follow the commercial market-report outline in target_sections and disclose scope/evidence limits.
 - If strategic_recommendations is present, organize recommendations by stakeholder and make each recommendation executable and evidence-linked.
 - Keep tone deterministic and factual; avoid speculative flourish and random phrasing shifts across retries.
 - Do not fabricate evidence ids or insight refs.
@@ -1139,6 +1139,11 @@ def build_researcher_user_prompt(
     observation_briefs: Sequence[dict[str, object]],
     compressed_summary: str = "",
     domain_hint: str | None = None,
+    target_category: str | None = None,
+    category_aliases: Sequence[str] | None = None,
+    excluded_categories: Sequence[str] | None = None,
+    market_segments: Sequence[str] | None = None,
+    scope_policy: str | None = None,
     reference_urls: Sequence[str] | None = None,
     discovered_urls: Sequence[str] | None = None,
     resolved_official_urls: Sequence[str] | None = None,
@@ -1165,6 +1170,11 @@ def build_researcher_user_prompt(
         f"- turn_count: {turn_count}\n"
         f"- max_turns: {max_turns}\n"
         f"- domain_hint: {domain_hint}\n"
+        f"- target_category: {target_category}\n"
+        f"- category_aliases: {_json(list(category_aliases or []))}\n"
+        f"- excluded_categories: {_json(list(excluded_categories or []))}\n"
+        f"- market_segments: {_json(list(market_segments or []))}\n"
+        f"- scope_policy: {scope_policy}\n"
         f"- reference_urls: {_json(reference_urls_row)}\n"
         f"- discovered_urls: {_json(discovered_urls_row)}\n"
         f"- resolved_official_urls: {_json(resolved_official_urls_row)}\n"
@@ -1174,6 +1184,8 @@ def build_researcher_user_prompt(
         "Action guidance:\n"
         "1) Follow source-first: for each pending dimension, prioritize fetch_url on resolved_official_urls/reference_urls before search_web.\n"
         "2) Use search_web only for uncovered gaps in coverage_matrix after source-first fetch attempts.\n"
+        "2.1) Every search query must include the target_category or one category_alias unless the dimension is explicitly value-chain/ecosystem.\n"
+        "2.2) Do not use evidence from excluded_categories for the requested feature/pricing/feedback dimensions.\n"
         "3) Use fetch_url only with URLs from resolved_official_urls, discovered_urls, or reference_urls; pass current research_topic as query when useful.\n"
         "3.1) For user_feedback-like dimensions, prioritize third-party reviews/forums with explicit review-oriented queries.\n"
         "4) Use load_skill when domain_hint implies specialized schema or source routing.\n"
@@ -1338,8 +1350,8 @@ def build_analyst_user_prompt(
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
         "Produce cross-competitor insights with explicit evidence_ids. "
         "For each focus dimension that has grounded evidence in evidence_briefs, produce at least one insight. "
-        "Also produce comparisons: per focus dimension, compare each competitor with stance, summary, and grounded evidence_ids. "
-        "Prioritize product-level facts that can later render competitor_profiles + comparison_matrix deterministically."
+        "Also produce comparisons only when competitors have target-category evidence for the same dimension. "
+        "Prioritize facts that support commercial market sections such as market definition, segmentation, competitive landscape, key players, opportunities/risks, and methodology limits."
         + schema_task
         + "\n\n"
         + outline_instruction
@@ -1519,8 +1531,8 @@ def build_writer_user_prompt(
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     framing = (
-        "Write a commercial-grade landscape report. Make trend_summary the narrative core, tie trends to representative benchmarks, "
-        "and include evidence-backed competitor comparisons only when target_sections requires them. "
+        "Write a commercial-grade market landscape report: define scope, separate segments from whole-market claims, "
+        "admit only target-category supported companies into key-player analysis, and disclose evidence limits. "
         if analysis_archetype == "landscape"
         else "Write a commercial-grade comparison report focused on evidence-backed differences "
         "across capabilities, pricing, and user feedback. "
@@ -1550,7 +1562,7 @@ def build_writer_user_prompt(
         + framing
         + "section_id must exactly match target_sections entries. "
         "Do not invent placeholder sections: when evidence is insufficient, omit non-required sections and keep required sections explicit about limits. "
-        "If trend_summary is in target_sections, structure it as trend theme -> representative benchmark -> implication with [ev] citations. "
+        "For landscape target_sections, do not fall back to legacy workbench sections. "
         "If strategic_recommendations is in target_sections, organize by stakeholder (e.g., product/strategy/sales/operations/investor) and make each action concrete. "
         "Inline citations in content_markdown must use [ev_xxx] only from allowed_evidence_ids; "
         "never output bare ev_xxx or insight_x ids in markdown. "
@@ -1692,6 +1704,11 @@ def build_discovery_extract_user_prompt(
     market_scope: str | None = None,
     analysis_intent: str | None = None,
     self_product: str | None = None,
+    target_category: str | None = None,
+    category_aliases: Sequence[str] | None = None,
+    excluded_categories: Sequence[str] | None = None,
+    market_segments: Sequence[str] | None = None,
+    scope_policy: str | None = None,
     response_language: str | None = None,
 ) -> str:
     reason_language = (
@@ -1706,6 +1723,11 @@ def build_discovery_extract_user_prompt(
         f"- market_scope: {market_scope}\n"
         f"- analysis_intent: {analysis_intent}\n"
         f"- self_product: {self_product}\n"
+        f"- target_category: {target_category}\n"
+        f"- category_aliases: {_json(list(category_aliases or []))}\n"
+        f"- excluded_categories: {_json(list(excluded_categories or []))}\n"
+        f"- market_segments: {_json(list(market_segments or []))}\n"
+        f"- scope_policy: {scope_policy}\n"
         f"- response_language: {response_language}\n\n"
         "Rules:\n"
         "- Return ONLY a JSON object with this schema:\n"
@@ -1717,6 +1739,8 @@ def build_discovery_extract_user_prompt(
         '"source_domain":"Optional domain of official_url or null"}]}\n'
         "- candidate_role must be one of: direct_competitor, adjacent_competitor, substitute, upstream_supplier, trend_reference.\n"
         "- Assign direct_competitor ONLY when the candidate competes on the same end-user job/product category.\n"
+        "- For broad_market scope, do not narrow target_category to one segment; identify segment players separately in relevance_reason.\n"
+        "- If evidence only matches excluded_categories, set is_competitor=false.\n"
         "- When self_product is provided, prioritize direct_competitor and adjacent_competitor candidates that solve the same user job or product category.\n"
         "- Mark heterogeneous entities (chip vendors, infrastructure providers, media/research reports, ecosystems) as upstream_supplier/trend_reference/substitute; do not label them direct competitors.\n"
         "- Include only products or companies mentioned in search_results.\n"

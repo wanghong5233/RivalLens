@@ -20,6 +20,10 @@ from schemas.intake import (
     IntakeExchange,
     IntakeUserReply,
     RunIntakeDraft,
+    infer_scope_policy,
+    normalize_optional_text,
+    stable_unique_text,
+    text_mentions_any_term,
 )
 from service.event_bus import RunEventType, emit_run_event
 from service.locale import detect_language
@@ -74,6 +78,10 @@ _DISCOVERY_OFF_KEYWORDS: tuple[str, ...] = (
 _OPTIONAL_CLARIFY_TARGETS: frozenset[str] = frozenset(
     {
         "domain_hint",
+        "target_category",
+        "category_aliases",
+        "excluded_categories",
+        "market_segments",
         "focus_dimensions",
         "reference_urls",
         "self_product",
@@ -82,7 +90,7 @@ _OPTIONAL_CLARIFY_TARGETS: frozenset[str] = frozenset(
     }
 )
 _OPTIONAL_FREE_TEXT_TARGETS: frozenset[str] = frozenset(
-    {"domain_hint", "self_product", "market_scope", "time_context"}
+    {"domain_hint", "target_category", "self_product", "market_scope", "time_context"}
 )
 _MAX_OPTIONAL_CLARIFY_TURNS_AFTER_COMPLETE = 2
 _AMBIGUOUS_TERMS: frozenset[str] = frozenset({"opc"})
@@ -243,8 +251,8 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
     discovery_raw = patch.get("competitors_discovery_mode")
     if isinstance(discovery_raw, bool):
         base["competitors_discovery_mode"] = discovery_raw
-    domain_raw = patch.get("domain_hint")
-    if isinstance(domain_raw, str) and domain_raw.strip():
+    domain_raw = normalize_optional_text(patch.get("domain_hint"))
+    if domain_raw is not None:
         canonical_domain = _canonical_domain_hint(domain_raw)
         base["domain_hint"] = canonical_domain
         rewritten_intent = _rewrite_ambiguous_intent(
@@ -256,20 +264,43 @@ def _apply_patch(draft: RunIntakeDraft, patch: dict[str, object]) -> RunIntakeDr
     focus_raw = patch.get("focus_dimensions")
     if isinstance(focus_raw, list):
         normalized = normalize_dimensions(
-            [str(d).strip() for d in focus_raw if isinstance(d, str) and d.strip()],
+            stable_unique_text([d for d in focus_raw if isinstance(d, str)]),
             allow_empty=True,
         )
         if normalized:
             base["focus_dimensions"] = normalized
+    for list_field in ("category_aliases", "excluded_categories", "market_segments"):
+        list_raw = patch.get(list_field)
+        if isinstance(list_raw, list):
+            normalized = stable_unique_text([item for item in list_raw if isinstance(item, str)])
+            if normalized:
+                base[list_field] = normalized
     urls_raw = patch.get("reference_urls")
     if isinstance(urls_raw, list):
-        normalized = [str(u).strip() for u in urls_raw if isinstance(u, str) and u.strip()]
+        normalized = stable_unique_text([u for u in urls_raw if isinstance(u, str)])
         if normalized:
             base["reference_urls"] = normalized
     for free_text_field in ("self_product", "market_scope", "time_context"):
-        value_raw = patch.get(free_text_field)
-        if isinstance(value_raw, str) and value_raw.strip():
-            base[free_text_field] = value_raw.strip()
+        if free_text_field in patch:
+            base[free_text_field] = normalize_optional_text(patch.get(free_text_field))
+    target_category = normalize_optional_text(patch.get("target_category"))
+    if target_category is not None:
+        current_target = normalize_optional_text(base.get("target_category"))
+        target_would_narrow_broad_scope = (
+            current_target is not None
+            and infer_scope_policy(current_target) == "broad_market"
+            and infer_scope_policy(target_category) != "broad_market"
+            and not text_mentions_any_term(draft.user_query, [target_category])
+        )
+        if target_would_narrow_broad_scope:
+            base["market_segments"] = stable_unique_text(
+                [*base.get("market_segments", []), target_category]
+            )
+        else:
+            base["target_category"] = target_category
+    scope_policy_raw = patch.get("scope_policy")
+    if scope_policy_raw in {"explicit_category", "broad_market"}:
+        base["scope_policy"] = scope_policy_raw
     language_raw = patch.get("response_language")
     if isinstance(language_raw, str) and language_raw in {"zh", "en"}:
         base["response_language"] = language_raw
@@ -294,6 +325,10 @@ def _clarify_target_satisfied(field_target: str, draft: RunIntakeDraft) -> bool:
         return bool(draft.competitors_explicit) or draft.competitors_discovery_mode is True
     if field_target == "domain_hint":
         return bool(draft.domain_hint and draft.domain_hint.strip())
+    if field_target == "target_category":
+        return bool(draft.target_category and draft.target_category.strip())
+    if field_target in {"category_aliases", "excluded_categories", "market_segments"}:
+        return bool(getattr(draft, field_target))
     if field_target == "focus_dimensions":
         return bool(draft.focus_dimensions)
     if field_target == "reference_urls":
@@ -538,12 +573,14 @@ def _merge_reply_into_draft(
         )
         if rewritten_intent is not None:
             base["analysis_intent"] = rewritten_intent
+    if "target_category" in targets and reply_signal:
+        base["target_category"] = normalize_optional_text(reply_signal)
 
     # Optional free-text enrichment fields: accept the user's phrasing verbatim
     # when the Agent's clarify question targeted one of them.
-    for free_text_field in _OPTIONAL_FREE_TEXT_TARGETS - {"domain_hint"}:
+    for free_text_field in _OPTIONAL_FREE_TEXT_TARGETS - {"domain_hint", "target_category"}:
         if free_text_field in targets and reply_signal:
-            base[free_text_field] = reply_signal
+            base[free_text_field] = normalize_optional_text(reply_signal)
 
     # focus_dimensions / reference_urls intentionally left to the LLM —
     # they need richer parsing the wait node should not own.

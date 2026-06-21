@@ -242,3 +242,63 @@ def test_extract_knowledge_schema_requires_pricing_when_landscape_requests_prici
 
     assert result.coverage["DeepSeek"]["pricing"] == "insufficient_data"
     assert "pricing:no_grounded_evidence" in result.missing_reasons["DeepSeek"]
+
+
+def test_extract_knowledge_schema_complete_requires_target_category_evidence() -> None:
+    result = extract_knowledge_schema(
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_adjacent_feature_1",
+                "competitor_id": "Meta",
+                "dimension": "feature",
+                "quote_preview": "Meta 手机业务新闻不属于 AI 眼镜目标品类。",
+                "source_title": "Meta adjacent business",
+                "category_relevance": "adjacent_segment",
+            },
+            {
+                "evidence_id": "ev_adjacent_feature_2",
+                "competitor_id": "Meta",
+                "dimension": "feature",
+                "quote_preview": "Meta VR 业务邻近但不能单独支撑 AI 眼镜 complete。",
+                "source_title": "Meta adjacent VR",
+                "category_relevance": "adjacent_segment",
+            },
+            {
+                "evidence_id": "ev_adjacent_feature_3",
+                "competitor_id": "Meta",
+                "dimension": "feature",
+                "quote_preview": "Meta 泛硬件能力仍缺少目标品类证据。",
+                "source_title": "Meta adjacent hardware",
+                "category_relevance": "adjacent_segment",
+            },
+        ],
+        competitors=["Meta"],
+        focus_dimensions=["feature"],
+        analysis_archetype="landscape",
+    )
+
+    assert result.coverage["Meta"]["feature"] == "partial"
+    assert result.supporting_target_evidence_ids == {}
+    assert "feature:category_mismatch" in result.missing_reasons["Meta"]
+
+
+def test_extract_knowledge_schema_filters_off_topic_evidence() -> None:
+    result = extract_knowledge_schema(
+        evidence_briefs=[
+            {
+                "evidence_id": "ev_oceanstor_feature",
+                "competitor_id": "Huawei",
+                "dimension": "feature",
+                "quote_preview": "Huawei OceanStor storage feature is unrelated to AI hardware endpoint products.",
+                "source_title": "Huawei OceanStor",
+                "category_relevance": "off_topic",
+            }
+        ],
+        competitors=["Huawei"],
+        focus_dimensions=["feature"],
+        analysis_archetype="landscape",
+    )
+
+    assert result.features == []
+    assert result.coverage["Huawei"]["feature"] == "insufficient_data"
+    assert result.supporting_target_evidence_ids == {}

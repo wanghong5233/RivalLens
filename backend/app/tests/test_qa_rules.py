@@ -30,6 +30,9 @@ from service.qa.rules import (
     rule_report_must_have_markdown_content,
     rule_report_section_count_in_bounds,
     rule_source_quality_blocklist_share,
+    rule_complete_coverage_has_target_evidence,
+    rule_landscape_core_commercial_sections_present,
+    rule_landscape_no_legacy_workbench_sections,
     rule_structured_sections_present,
     rule_report_template_id_present,
     rule_triplet_coverage_for_profile_competitors,
@@ -261,8 +264,8 @@ def test_rule_writer_no_placeholder_scaffolding_blocks_scaffold_text() -> None:
     passing_content_json = {
         "sections": [
             {
-                "section_id": "trend_summary",
-                "title": "Trend Summary",
+                "section_id": "market_size_growth",
+                "title": "Market Size and Growth",
                 "content_markdown": "This trend section contains grounded observations and concrete evidence.",
                 "evidence_refs": ["ev_test_001"],
             }
@@ -271,9 +274,9 @@ def test_rule_writer_no_placeholder_scaffolding_blocks_scaffold_text() -> None:
     failing_content_json = {
         "sections": [
             {
-                "section_id": "trend_summary",
-                "title": "Trend Summary",
-                "content_markdown": "Section trend_summary lacks enough grounded evidence; trigger follow-up research.",
+                "section_id": "market_size_growth",
+                "title": "Market Size and Growth",
+                "content_markdown": "Section market_size_growth lacks enough grounded evidence; trigger follow-up research.",
                 "evidence_refs": ["ev_test_001"],
             }
         ]
@@ -359,21 +362,23 @@ def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
     thin_landscape_json = {
         "executive_summary": "summary",
         "sections": [
-            {"section_id": "market_landscape_map"},
-            {"section_id": "trend_summary"},
+            {"section_id": "executive_takeaways"},
             {"section_id": "strategic_recommendations"},
         ],
     }
     landscape_json = {
         "executive_summary": "summary",
         "sections": [
-            {"section_id": "market_landscape_map"},
-            {"section_id": "competitor_profiles"},
-            {"section_id": "comparison_matrix"},
-            {"section_id": "positioning_map"},
-            {"section_id": "trend_summary"},
-            {"section_id": "opportunity_map"},
+            {"section_id": "executive_takeaways"},
+            {"section_id": "market_definition"},
+            {"section_id": "market_size_growth"},
+            {"section_id": "market_segmentation"},
+            {"section_id": "competitive_landscape"},
+            {"section_id": "key_players"},
+            {"section_id": "value_chain"},
+            {"section_id": "opportunities_risks"},
             {"section_id": "strategic_recommendations"},
+            {"section_id": "methodology_limits"},
         ]
     }
     comparison_json = {
@@ -401,10 +406,8 @@ def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
     )
 
     assert thin_landscape_result.passed is False
-    assert "competitor_profiles" in thin_landscape_result.message
-    assert "comparison_matrix" in thin_landscape_result.message
-    assert "positioning_map" in thin_landscape_result.message
-    assert "opportunity_map" in thin_landscape_result.message
+    assert "market_definition" in thin_landscape_result.message
+    assert "methodology_limits" in thin_landscape_result.message
     assert landscape_result.passed is True
     assert comparison_result.passed is True
 
@@ -412,16 +415,17 @@ def test_rule_structured_sections_present_enforces_archetype_sections() -> None:
 def test_rule_structured_sections_present_ignores_degraded_required_sections() -> None:
     landscape_json = {
         "executive_summary": "summary",
-        "report_degraded_required_sections": [
-            "competitor_profiles",
-            "comparison_matrix",
-            "positioning_map",
-            "trend_summary",
-        ],
         "sections": [
-            {"section_id": "market_landscape_map"},
-            {"section_id": "opportunity_map"},
+            {"section_id": "executive_takeaways"},
+            {"section_id": "market_definition"},
+            {"section_id": "market_size_growth"},
+            {"section_id": "market_segmentation"},
+            {"section_id": "competitive_landscape"},
+            {"section_id": "key_players"},
+            {"section_id": "value_chain"},
+            {"section_id": "opportunities_risks"},
             {"section_id": "strategic_recommendations"},
+            {"section_id": "methodology_limits"},
         ],
     }
     result = rule_structured_sections_present(
@@ -430,6 +434,36 @@ def test_rule_structured_sections_present_ignores_degraded_required_sections() -
     )
 
     assert result.passed is True
+
+
+def test_rule_landscape_no_legacy_workbench_sections_blocks_old_output() -> None:
+    result = rule_landscape_no_legacy_workbench_sections(
+        content_json={"sections": [{"section_id": "market_landscape_map"}]},
+        content_markdown="## 竞品分层地图\n旧输出",
+        analysis_archetype="landscape",
+    )
+    assert result.passed is False
+    assert result.reject_to == "writer"
+
+
+def test_rule_landscape_core_commercial_sections_present_blocks_missing_core() -> None:
+    result = rule_landscape_core_commercial_sections_present(
+        content_json={"sections": [{"section_id": "executive_takeaways"}]},
+        analysis_archetype="landscape",
+    )
+    assert result.passed is False
+    assert "market_definition" in result.message
+
+
+def test_rule_complete_coverage_has_target_evidence_blocks_fake_complete() -> None:
+    result = rule_complete_coverage_has_target_evidence(
+        knowledge={
+            "coverage": {"Meta": {"feature": "complete"}},
+            "supporting_target_evidence_ids": {"Meta": {"pricing": ["ev_price"]}},
+        },
+    )
+    assert result.passed is False
+    assert "Meta.feature" in result.message
 
 
 def test_rule_triplet_coverage_for_profile_competitors_blocks_thin_coverage() -> None:
@@ -629,14 +663,14 @@ def test_target_sections_prefers_writer_renderable_sections_when_available() -> 
         status="completed",
         retry_count=0,
         payload={
-            "renderable_sections": ["executive_summary", "trend_summary"],
-            "target_sections": ["executive_summary", "trend_summary", "comparison_matrix"],
+            "renderable_sections": ["executive_summary", "strategic_recommendations"],
+            "target_sections": ["executive_summary", "strategic_recommendations", "comparison_matrix"],
         },
     )
 
     assert _target_sections_for_report(run=run, writer_step=writer_step) == [
         "executive_summary",
-        "trend_summary",
+        "strategic_recommendations",
     ]
 
 

@@ -224,7 +224,7 @@ def test_filter_discovery_candidates_filters_upstream_suppliers_from_core_queue(
         name="NVIDIA",
         is_competitor=True,
         candidate_role="upstream_supplier",
-        relevance_reason="上游芯片供应商，不是 AI 眼镜直接竞品。",
+        relevance_reason="上游芯片供应商，不是 AI 眼镜核心竞争样本。",
         evidence_quote=quote,
     )
 
@@ -314,7 +314,7 @@ def test_filter_discovery_candidates_prioritizes_direct_candidates() -> None:
             name="Meta Ray-Ban",
             is_competitor=True,
             candidate_role="direct_competitor",
-            relevance_reason="AI 眼镜直接竞品。",
+            relevance_reason="AI 眼镜核心竞争样本。",
             evidence_quote=direct_quote,
         ),
         SimpleNamespace(

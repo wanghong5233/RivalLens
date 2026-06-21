@@ -68,6 +68,30 @@ def test_apply_patch_accepts_response_language_override() -> None:
     assert next_draft.response_language == "en"
 
 
+def test_apply_patch_normalizes_unknown_self_product_to_none() -> None:
+    draft = RunIntakeDraft(user_query="AI硬件全景与趋势", self_product="AI硬件")
+
+    next_draft = _apply_patch(draft, {"self_product": "不知道"})
+
+    assert next_draft.self_product is None
+
+
+def test_apply_patch_does_not_narrow_broad_ai_hardware_to_ai_glasses() -> None:
+    draft = RunIntakeDraft(user_query="AI硬件全景与趋势")
+
+    next_draft = _apply_patch(
+        draft,
+        {
+            "target_category": "AI眼镜",
+            "category_aliases": ["AI眼镜"],
+            "market_segments": ["AI眼镜"],
+        },
+    )
+
+    assert next_draft.target_category == "AI硬件"
+    assert "AI眼镜" in next_draft.market_segments
+
+
 def test_ambiguous_opc_requires_clarify_before_complete() -> None:
     draft = RunIntakeDraft(
         user_query="在 AI 时代有哪些能赚钱的 OPC 项目？",

@@ -44,6 +44,8 @@ from schemas.intake import (
     IntakeUserReply,
     RunIntakeDraft,
     UserRole,
+    normalize_optional_text,
+    stable_unique_text,
 )
 from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.comparison import load_comparisons_for_run
@@ -143,14 +145,22 @@ class RunCreateRequest(BaseModel):
     self_product: str | None = None
     market_scope: str | None = None
     time_context: str | None = None
+    target_category: str | None = None
+    category_aliases: list[str] = Field(default_factory=list)
+    excluded_categories: list[str] = Field(default_factory=list)
+    market_segments: list[str] = Field(default_factory=list)
 
-    @field_validator("domain_hint", "self_product", "market_scope", "time_context")
+    @field_validator("domain_hint", "self_product", "market_scope", "time_context", "target_category")
     @classmethod
     def _normalize_domain_hint(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        return normalized if normalized else None
+        return normalize_optional_text(value)
+
+    @field_validator("category_aliases", "excluded_categories", "market_segments", mode="before")
+    @classmethod
+    def _normalize_category_lists(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return stable_unique_text([item for item in value if isinstance(item, str)])
 
     @field_validator("reference_urls")
     @classmethod
@@ -193,14 +203,15 @@ class IntakeCreateRequest(BaseModel):
     from_run_id: str | None = None
     seed_competitor_ids: list[str] = Field(default_factory=list)
     client_request_id: str | None = None
+    target_category: str | None = None
+    category_aliases: list[str] = Field(default_factory=list)
+    excluded_categories: list[str] = Field(default_factory=list)
+    market_segments: list[str] = Field(default_factory=list)
 
-    @field_validator("client_request_id")
+    @field_validator("client_request_id", "target_category")
     @classmethod
     def _normalize_client_request_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = value.strip()
-        return normalized if normalized else None
+        return normalize_optional_text(value)
 
     @field_validator("from_run_id")
     @classmethod
@@ -222,6 +233,13 @@ class IntakeCreateRequest(BaseModel):
             seen.add(item)
             normalized.append(item)
         return normalized
+
+    @field_validator("category_aliases", "excluded_categories", "market_segments", mode="before")
+    @classmethod
+    def _normalize_category_lists(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return stable_unique_text([item for item in value if isinstance(item, str)])
 
 
 class IntakeCreateResponse(BaseModel):
@@ -1519,6 +1537,10 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             self_product=payload.self_product,
             market_scope=payload.market_scope,
             time_context=payload.time_context,
+            target_category=payload.target_category,
+            category_aliases=payload.category_aliases,
+            excluded_categories=payload.excluded_categories,
+            market_segments=payload.market_segments,
             analysis_archetype=direct_analysis_archetype,
             response_language=detect_language(payload.user_query),
         )
@@ -1641,6 +1663,10 @@ def _intake_request_fingerprint(payload: IntakeCreateRequest) -> str:
         "report_depth": payload.report_depth,
         "from_run_id": payload.from_run_id,
         "seed_competitor_ids": list(payload.seed_competitor_ids),
+        "target_category": payload.target_category,
+        "category_aliases": list(payload.category_aliases),
+        "excluded_categories": list(payload.excluded_categories),
+        "market_segments": list(payload.market_segments),
     }
     encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -1960,11 +1986,17 @@ async def create_run_intake(
 
     def _pick_non_empty_string(*values: object) -> str | None:
         for value in values:
-            if isinstance(value, str):
-                normalized = value.strip()
-                if normalized:
-                    return normalized
+            normalized = normalize_optional_text(value)
+            if normalized is not None:
+                return normalized
         return None
+
+    def _pick_text_list(primary: object, inherited: object) -> list[str]:
+        if isinstance(primary, list) and primary:
+            return stable_unique_text([item for item in primary if isinstance(item, str)])
+        if isinstance(inherited, list):
+            return stable_unique_text([item for item in inherited if isinstance(item, str)])
+        return []
 
     inherited_reference_urls = (
         list(inherited_run.reference_urls or [])
@@ -2016,6 +2048,22 @@ async def create_run_intake(
             payload.domain_hint,
             inherited_draft_raw.get("domain_hint") if isinstance(inherited_draft_raw, dict) else None,
             inherited_run.domain_hint if inherited_run is not None else None,
+        ),
+        target_category=_pick_non_empty_string(
+            payload.target_category,
+            inherited_draft_raw.get("target_category") if isinstance(inherited_draft_raw, dict) else None,
+        ),
+        category_aliases=_pick_text_list(
+            payload.category_aliases,
+            inherited_draft_raw.get("category_aliases") if isinstance(inherited_draft_raw, dict) else None,
+        ),
+        excluded_categories=_pick_text_list(
+            payload.excluded_categories,
+            inherited_draft_raw.get("excluded_categories") if isinstance(inherited_draft_raw, dict) else None,
+        ),
+        market_segments=_pick_text_list(
+            payload.market_segments,
+            inherited_draft_raw.get("market_segments") if isinstance(inherited_draft_raw, dict) else None,
         ),
         competitors_explicit=effective_competitors,
         competitors_discovery_mode=bool(payload.competitors_discovery_mode) and not effective_competitors,
