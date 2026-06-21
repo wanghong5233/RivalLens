@@ -655,7 +655,7 @@ Rules:
 - If QA feedback lists unsupported_numeric_claims, remove those exact numbers, rewrite them as qualitative statements, or label them clearly as proposals instead of factual claims.
 - During QA rewrites, avoid introducing new exact funding amounts, market-share percentages, acceptance rates, or time windows unless the exact value appears verbatim in evidence_briefs.
 - For report_depth=deep, write a materially deeper report for sections with grounded evidence; avoid placeholder sections and keep citations concrete.
-- For landscape reports, follow the commercial market-report outline in target_sections and disclose scope/evidence limits.
+- For landscape reports, follow the commercial market-report outline in target_sections and disclose scope/evidence limits. Each landscape section must be analytical prose grounded in cited evidence — multi-sentence paragraphs (and a tier table where structure helps), never key:value one-liners or bare lists. When landscape_facts is provided, use it as the system-derived structure (admission tiers, category scope, coverage); do not reclassify companies and do not write methodology_limits (it is appended deterministically).
 - If strategic_recommendations is present, organize recommendations by stakeholder and make each recommendation executable and evidence-linked.
 - Keep tone deterministic and factual; avoid speculative flourish and random phrasing shifts across retries.
 - Do not fabricate evidence ids or insight refs.
@@ -1569,6 +1569,7 @@ def build_writer_user_prompt(
     market_scope: str | None = None,
     response_language: str | None = None,
     analysis_archetype: str = "comparison",
+    landscape_facts: dict[str, object] | None = None,
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     framing = (
@@ -1577,6 +1578,27 @@ def build_writer_user_prompt(
         if analysis_archetype == "landscape"
         else "Write a commercial-grade comparison report focused on evidence-backed differences "
         "across capabilities, pricing, and user feedback. "
+    )
+    landscape_facts_block = (
+        f"- landscape_facts: {_json(landscape_facts)}\n"
+        if analysis_archetype == "landscape" and landscape_facts is not None
+        else ""
+    )
+    landscape_section_guidance = (
+        "Landscape sections you must write as analytical prose (not key:value lists, not one-liners): "
+        "market_definition (define the target category and scope using landscape_facts.category facts), "
+        "market_size_growth (synthesize demand drivers and structural constraints from cited evidence; "
+        "give numbers only when an evidence brief contains them), market_segmentation (explain the "
+        "segmentation logic and where each sample sits), competitive_landscape (present the admission tiers "
+        "from landscape_facts.admission_tiers as a table AND analyze what the structure means), key_players "
+        "(for EACH company in landscape_facts.key_players write a multi-sentence paragraph covering its "
+        "positioning, capability signal, commercialization, and feedback, each claim tied to its "
+        "target_evidence_ids), value_chain (analyze supply-side/ecosystem roles), opportunities_risks and "
+        "strategic_recommendations (concrete, stakeholder-routed, evidence-linked). Use landscape_facts only "
+        "as grounded structure; never restate it verbatim and never reclassify a company across tiers. "
+        "Do not author methodology_limits — it is appended deterministically. "
+        if analysis_archetype == "landscape"
+        else ""
     )
     return (
         "Writer context:\n"
@@ -1593,7 +1615,8 @@ def build_writer_user_prompt(
         f"- recommended_sections: {_json(list(recommended_sections))}\n"
         f"- allowed_evidence_ids: {_json(list(allowed_evidence_ids))}\n"
         f"- competitors: {_json(list(competitors))}\n"
-        f"- evidence_briefs: {_json(selected_evidence_briefs)}\n"
+        + landscape_facts_block
+        + f"- evidence_briefs: {_json(selected_evidence_briefs)}\n"
         f"- analyst_summary: {analyst_summary}\n"
         f"- analyst_insights: {_json(list(analyst_insights)[:10])}\n"
         f"- analyst_comparisons: {_json(list(analyst_comparisons)[:10])}\n"
@@ -1601,6 +1624,7 @@ def build_writer_user_prompt(
         f"- qa_reasons: {_json(list(qa_reasons))}\n"
         f"- unsupported_numeric_claims: {_json(list(unsupported_numeric_claims)[:12])}\n\n"
         + framing
+        + landscape_section_guidance
         + "section_id must exactly match target_sections entries. "
         "Do not invent placeholder sections: when evidence is insufficient, omit non-required sections and keep required sections explicit about limits. "
         "For landscape target_sections, do not fall back to legacy workbench sections. "

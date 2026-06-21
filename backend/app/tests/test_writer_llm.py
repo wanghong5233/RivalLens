@@ -588,7 +588,11 @@ def test_writer_report_output_allows_template_auto_mode() -> None:
     assert report["sections"][0]["section_id"] == "go_to_market"
 
 
-def test_apply_structured_writer_sections_landscape_uses_commercial_outline() -> None:
+def test_apply_structured_writer_sections_landscape_preserves_llm_narrative() -> None:
+    # The LLM owns landscape narrative; only methodology_limits is deterministic, and the
+    # apply pass must NOT overwrite LLM prose with key:value template stubs (the old bug).
+    llm_key_players = "Meta 凭借生态整合在主分析样本中处于领先，硬件与社交闭环形成壁垒 [ev_001]。"
+    llm_landscape = "主分析样本由 Meta 主导，价值链样本提供供给侧解释 [ev_001]。"
     updated = _apply_structured_writer_sections(
         report_content={
             "template_id": "default",
@@ -596,26 +600,23 @@ def test_apply_structured_writer_sections_landscape_uses_commercial_outline() ->
             "executive_summary": "summary",
             "sections": [
                 {
-                    "section_id": "market_size_growth",
-                    "title": "市场规模与增长驱动",
-                    "content_markdown": "规模段落 [ev_001]",
-                    "evidence_refs": ["ev_001"],
-                    "insight_refs": [],
-                },
-                {
-                    "section_id": "opportunities_risks",
-                    "title": "机会与风险",
-                    "content_markdown": "机会段落 [ev_001]",
-                    "evidence_refs": ["ev_001"],
-                    "insight_refs": [],
-                },
-                {
-                    "section_id": "strategic_recommendations",
-                    "title": "建议",
-                    "content_markdown": "建议段落 [ev_001]",
+                    "section_id": section_id,
+                    "title": section_id,
+                    "content_markdown": content,
                     "evidence_refs": ["ev_001"],
                     "insight_refs": [],
                 }
+                for section_id, content in (
+                    ("executive_takeaways", "核心判断段落，锁定目标品类并说明样本边界 [ev_001]。"),
+                    ("market_definition", "市场定义段落，界定 AI眼镜 范围与排除项 [ev_001]。"),
+                    ("market_size_growth", "规模与增长驱动的定性分析段落 [ev_001]。"),
+                    ("market_segmentation", "细分赛道分层逻辑与样本归属分析 [ev_001]。"),
+                    ("competitive_landscape", llm_landscape),
+                    ("key_players", llm_key_players),
+                    ("value_chain", "产业链与生态角色分析段落 [ev_001]。"),
+                    ("opportunities_risks", "机会与风险段落 [ev_001]。"),
+                    ("strategic_recommendations", "面向产品与销售团队的可执行建议 [ev_001]。"),
+                )
             ],
             "risk_callouts": [],
         },
@@ -647,7 +648,6 @@ def test_apply_structured_writer_sections_landscape_uses_commercial_outline() ->
             },
         },
         comparison_briefs=[],
-        insight_briefs=[],
         evidence_briefs=[
             {"evidence_id": "ev_001", "competitor_id": "Meta", "category_relevance": "target"},
             {"evidence_id": "ev_002", "competitor_id": "NVIDIA", "category_relevance": "value_chain"},
@@ -665,32 +665,26 @@ def test_apply_structured_writer_sections_landscape_uses_commercial_outline() ->
         excluded_categories=[],
         market_segments=[],
         scope_policy="explicit_category",
-        preserve_llm_executive_summary=False,
+        preserve_llm_executive_summary=True,
     )
 
     sections = [item for item in updated["sections"] if isinstance(item, dict)]
     section_ids = [item.get("section_id") for item in sections]
-    assert "executive_takeaways" in section_ids
-    assert "market_definition" in section_ids
-    assert "competitive_landscape" in section_ids
     assert "key_players" in section_ids
     assert "methodology_limits" in section_ids
     assert "competitor_profiles" not in section_ids
     assert "positioning_map" not in section_ids
     assert "comparison_matrix" not in section_ids
-    assert "market_landscape_map" not in section_ids
-    assert "trend_summary" not in section_ids
-    assert "representative_benchmarks" not in section_ids
-    for section in sections:
-        content_markdown = section.get("content_markdown")
-        assert isinstance(content_markdown, str)
-        assert len(content_markdown.strip()) >= 60
-        assert section.get("evidence_refs")
+    # LLM prose is preserved verbatim, not replaced by a deterministic key:value stub.
     key_players = next(item for item in sections if item.get("section_id") == "key_players")
-    assert "Meta" in key_players["content_markdown"]
-    assert "NVIDIA" not in key_players["content_markdown"]
+    assert key_players["content_markdown"] == llm_key_players
+    assert "作为关键玩家纳入主分析" not in key_players["content_markdown"]
+    landscape = next(item for item in sections if item.get("section_id") == "competitive_landscape")
+    assert landscape["content_markdown"] == llm_landscape
+    # methodology_limits stays deterministic bookkeeping.
+    methodology = next(item for item in sections if item.get("section_id") == "methodology_limits")
+    assert "目标品类证据数" in methodology["content_markdown"]
     assert updated["report_degraded_required_sections"] == []
-    assert "目标品类" in updated["executive_summary"]
 
 
 def test_apply_structured_writer_sections_records_degraded_required_sections() -> None:
@@ -732,7 +726,6 @@ def test_apply_structured_writer_sections_records_degraded_required_sections() -
             "supporting_target_evidence_ids": {},
         },
         comparison_briefs=[],
-        insight_briefs=[],
         evidence_briefs=[],
         allowed_evidence_ids=set(),
         state_competitors=["Meta"],
@@ -800,7 +793,6 @@ def test_apply_structured_writer_sections_preserves_llm_executive_summary() -> N
             },
         },
         comparison_briefs=[],
-        insight_briefs=[],
         evidence_briefs=[
             {"evidence_id": "ev_001", "competitor_id": "Meta", "category_relevance": "target"},
             {"evidence_id": "ev_003", "competitor_id": "Meta", "category_relevance": "target"},

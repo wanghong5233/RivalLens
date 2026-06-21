@@ -600,7 +600,7 @@ def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str
                 "evidence_id": row.id,
                 "dimension": dimension_raw if isinstance(dimension_raw, str) else None,
                 "competitor_id": competitor_id_raw if isinstance(competitor_id_raw, str) else "unknown",
-                "quote_preview": row.sanitized_text[:220],
+                "quote_preview": row.sanitized_text[:600],
                 "source_title": row.source_title or "",
                 "source_url": row.source_url or "",
                 "source_type": row.source_type or "",
@@ -1023,30 +1023,12 @@ def _section_payload(
     }
 
 
-def _commercial_landscape_sections(
+def _landscape_status_groups(
     *,
     ordered_competitors: list[str],
     discovered_competitor_sources: dict[str, dict[str, object]] | None,
-    knowledge_payload: dict[str, object],
-    evidence_briefs: list[dict[str, object]],
-    insight_briefs: list[dict[str, object]],
-    allowed_evidence_ids: set[str],
-    response_language: str | None,
-    target_category: str | None,
-    category_aliases: list[str],
-    excluded_categories: list[str],
-    market_segments: list[str],
-    scope_policy: str | None,
-) -> list[dict[str, object]]:
-    zh = response_language == "zh"
-    target_label = target_category or ("未明确目标品类" if zh else "unspecified target category")
-    key_players = _admitted_key_players(
-        ordered_competitors=ordered_competitors,
-        discovered_competitor_sources=discovered_competitor_sources,
-        evidence_briefs=evidence_briefs,
-        allowed_evidence_ids=allowed_evidence_ids,
-    )
-    status_groups: dict[str, list[str]] = {
+) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {
         "main_player": [],
         "segment_player": [],
         "value_chain": [],
@@ -1054,8 +1036,17 @@ def _commercial_landscape_sections(
     }
     for competitor in ordered_competitors:
         status = _admission_status_for_competitor(discovered_competitor_sources, competitor)
-        if status in status_groups:
-            status_groups[status].append(competitor)
+        if status in groups:
+            groups[status].append(competitor)
+    return groups
+
+
+def _landscape_evidence_ref_split(
+    *,
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    target_category: str | None,
+) -> tuple[list[str], list[str]]:
     target_relevance_values = {"target"}
     if target_category is None:
         target_relevance_values.add("unknown")
@@ -1073,296 +1064,203 @@ def _commercial_landscape_sections(
         and isinstance(brief.get("evidence_id"), str)
         and brief["evidence_id"] in allowed_evidence_ids
     ]
-    source_refs = _stable_unique([*target_refs, *adjacent_refs])[:6] or _fallback_evidence_refs(
+    return _stable_unique(target_refs), _stable_unique(adjacent_refs)
+
+
+def _landscape_reference_refs(
+    *,
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    target_category: str | None,
+    limit: int,
+) -> list[str]:
+    target_refs, adjacent_refs = _landscape_evidence_ref_split(
+        evidence_briefs=evidence_briefs,
         allowed_evidence_ids=allowed_evidence_ids,
-        limit=6,
+        target_category=target_category,
     )
+    refs = _stable_unique([*target_refs, *adjacent_refs])[:limit]
+    return refs or _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids, limit=limit)
+
+
+def _landscape_structure_facts(
+    *,
+    ordered_competitors: list[str],
+    discovered_competitor_sources: dict[str, dict[str, object]] | None,
+    knowledge_payload: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    target_category: str | None,
+    category_aliases: list[str],
+    excluded_categories: list[str],
+    market_segments: list[str],
+    scope_policy: str | None,
+) -> dict[str, object]:
+    """System-derived landscape facts handed to the writer LLM as grounded input.
+
+    The LLM owns every section narrative; this only encodes the classification the
+    model must not invent (admission tiers, category scope, coverage, evidence counts)
+    so it can write grounded prose and cite the right evidence instead of guessing.
+    """
     coverage_raw = knowledge_payload.get("coverage")
     coverage = coverage_raw if isinstance(coverage_raw, dict) else {}
-
-    takeaways = [
-        (
-            f"- 本报告锁定目标品类为 {target_label}；主分析仅使用命中目标品类的证据。"
-            if zh
-            else f"- This report locks the target category to {target_label}; main analysis uses target-category evidence only."
-        ),
-        (
-            f"- 当前可进入主分析的厂商/产品为 {len(key_players)} 个：{', '.join(key_players) or '暂无'}。"
-            if zh
-            else f"- {len(key_players)} companies/products qualify for main analysis: {', '.join(key_players) or 'none'}."
-        ),
-        (
-            "- 若证据集中在单一细分赛道，本报告在方法论中按样本偏差处理，不把细分结论冒充整体市场结论。"
-            if zh
-            else "- When evidence clusters in one segment, the methodology treats it as sample bias rather than whole-market proof."
-        ),
-    ]
-
-    definition_lines = [
-        f"- 目标品类: {target_label}" if zh else f"- Target category: {target_label}",
-        (
-            f"- Scope policy: {scope_policy or 'explicit_category'}"
-            if not zh
-            else f"- 范围策略: {scope_policy or 'explicit_category'}"
-        ),
-        (
-            "- 主分析只纳入满足品类准入和证据门槛的样本；相邻细分、产业链和观察名单不会被混同为核心市场。"
-            if zh
-            else "- Main analysis includes only samples that pass category admission and evidence gates; adjacent segments, value-chain actors, and watchlist items are not treated as the core market."
-        ),
-    ]
-    if category_aliases:
-        definition_lines.append(
-            f"- 品类别名: {', '.join(category_aliases)}" if zh else f"- Category aliases: {', '.join(category_aliases)}"
-        )
-    if excluded_categories:
-        definition_lines.append(
-            f"- 排除范围: {', '.join(excluded_categories)}" if zh else f"- Excluded categories: {', '.join(excluded_categories)}"
-        )
-
-    segmentation_rows = [
-        [segment, "declared segment" if not zh else "用户/系统声明细分"]
-        for segment in market_segments
-    ]
-    for competitor in status_groups["segment_player"]:
-        payload = _source_payload_for_competitor(discovered_competitor_sources, competitor)
-        segmentation_rows.append([competitor, payload.get("admission_reason", "segment evidence")])
-    segmentation_content = (
-        _build_markdown_table(
-            headers=["细分/样本", "依据"] if zh else ["Segment/Sample", "Basis"],
-            rows=segmentation_rows,
-        )
-        if segmentation_rows
-        else (
-            "- 本轮暂未形成可核验的细分赛道样本；报告不会把单一厂商或相邻场景包装成完整细分市场。\n"
-            "- 因此本节只披露分层依据缺口，不生成缺少证据支撑的细分市场图。"
-            if zh
-            else "- This run has no verifiable segment sample yet; the report does not turn one vendor or adjacent use case into a full market segment.\n"
-            "- This section therefore discloses the segmentation evidence gap instead of drawing an unsupported market map."
-        )
+    status_groups = _landscape_status_groups(
+        ordered_competitors=ordered_competitors,
+        discovered_competitor_sources=discovered_competitor_sources,
+    )
+    key_players = _admitted_key_players(
+        ordered_competitors=ordered_competitors,
+        discovered_competitor_sources=discovered_competitor_sources,
+        evidence_briefs=evidence_briefs,
+        allowed_evidence_ids=allowed_evidence_ids,
+    )
+    target_refs, adjacent_refs = _landscape_evidence_ref_split(
+        evidence_briefs=evidence_briefs,
+        allowed_evidence_ids=allowed_evidence_ids,
+        target_category=target_category,
     )
 
-    landscape_rows = [
-        [
-            "主分析样本" if zh else "Main analysis sample",
-            ", ".join(status_groups["main_player"]) or ("暂无" if zh else "none"),
-        ],
-        [
-            "细分样本" if zh else "Segment sample",
-            ", ".join(status_groups["segment_player"]) or ("暂无" if zh else "none"),
-        ],
-        [
-            "产业链/生态" if zh else "Value chain/ecosystem",
-            ", ".join(status_groups["value_chain"]) or ("暂无" if zh else "none"),
-        ],
-        [
-            "观察名单" if zh else "Watchlist",
-            ", ".join(status_groups["watchlist"]) or ("暂无" if zh else "none"),
-        ],
-    ]
+    def _player_fact(competitor: str) -> dict[str, object]:
+        competitor_coverage = coverage.get(competitor) if isinstance(coverage, dict) else None
+        return {
+            "competitor_id": competitor,
+            "admission_status": _admission_status_for_competitor(
+                discovered_competitor_sources, competitor
+            ),
+            "target_evidence_ids": _target_evidence_refs_for_competitor(
+                competitor=competitor,
+                evidence_briefs=evidence_briefs,
+                allowed_evidence_ids=allowed_evidence_ids,
+            ),
+            "coverage": competitor_coverage if isinstance(competitor_coverage, dict) else {},
+        }
 
-    key_player_lines: list[str] = []
-    for competitor in key_players:
-        refs = _target_evidence_refs_for_competitor(
-            competitor=competitor,
-            evidence_briefs=evidence_briefs,
-            allowed_evidence_ids=allowed_evidence_ids,
-        )
-        features = _knowledge_rows_for_competitor(rows=knowledge_payload.get("features"), competitor=competitor)
-        pricings = _knowledge_rows_for_competitor(rows=knowledge_payload.get("pricings"), competitor=competitor)
-        feedback_rows = _knowledge_rows_for_competitor(rows=knowledge_payload.get("feedback"), competitor=competitor)
-        summary = _feature_summary(features=features, response_language=response_language)
-        ref_text = " ".join(f"[{evidence_id}]" for evidence_id in refs[:3])
-        pricing_status = _status_label(
-            status=_coverage_status(coverage=coverage, competitor=competitor, key="pricing"),
-            response_language=response_language,
-        )
-        feedback_status = _status_label(
-            status=_coverage_status(coverage=coverage, competitor=competitor, key="feedback"),
-            response_language=response_language,
-        )
-        if zh:
-            key_player_lines.append(
-                f"- {competitor}: 作为关键玩家纳入主分析；功能证据包括 {summary}；"
-                f"定价覆盖为{pricing_status}，口碑覆盖为{feedback_status}；"
-                f"定价线索为 {_pricing_summary(pricings=pricings, response_language=response_language)}，"
-                f"用户反馈线索为 {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}。{ref_text}"
-            )
-        else:
-            key_player_lines.append(
-                f"- {competitor}: included as a key player for main analysis; feature evidence includes {summary}; "
-                f"pricing coverage is {pricing_status}, feedback coverage is {feedback_status}; "
-                f"pricing signal: {_pricing_summary(pricings=pricings, response_language=response_language)}; "
-                f"feedback signal: {_feedback_summary(feedback_rows=feedback_rows, response_language=response_language)}. {ref_text}"
-            )
-    if not key_player_lines:
-        key_player_lines.append(
-            "- 暂无同时满足主分析准入和目标品类证据门槛的厂商/产品；相关公司仅作为观察名单或产业链样本处理，不进入关键玩家主分析。"
-            if zh
-            else "- No company/product currently satisfies both admission and target-category evidence gates; related companies remain watchlist or value-chain samples rather than key-player analysis."
-        )
-    key_player_refs = [
-        evidence_id
-        for competitor in key_players
-        for evidence_id in _target_evidence_refs_for_competitor(
-            competitor=competitor,
-            evidence_briefs=evidence_briefs,
-            allowed_evidence_ids=allowed_evidence_ids,
-        )
-    ][:8] or source_refs[:4]
-
-    value_chain_lines: list[str] = []
-    for competitor in status_groups["value_chain"]:
-        payload = _source_payload_for_competitor(discovered_competitor_sources, competitor)
-        reason = str(payload.get("admission_reason") or "value chain evidence").strip()
-        features = _knowledge_rows_for_competitor(rows=knowledge_payload.get("features"), competitor=competitor)
-        refs = _collect_competitor_evidence_refs(
-            competitor=competitor,
-            knowledge_payload=knowledge_payload,
-            evidence_briefs=evidence_briefs,
-            allowed_evidence_ids=allowed_evidence_ids,
-            limit=3,
-        )
-        ref_text = " ".join(f"[{evidence_id}]" for evidence_id in refs)
-        if zh:
-            value_chain_lines.append(
-                f"- {competitor}: 作为产业链/生态样本使用，准入理由为 {reason}；"
-                f"可核验线索包括 {_feature_summary(features=features, response_language=response_language)}。"
-                f"该样本用于解释供给侧或生态影响，不进入关键玩家主分析。{ref_text}"
-            )
-        else:
-            value_chain_lines.append(
-                f"- {competitor}: used as a value-chain/ecosystem sample because {reason}; "
-                f"verifiable signal includes {_feature_summary(features=features, response_language=response_language)}. "
-                f"This sample informs supply-side or ecosystem context and is excluded from key-player analysis. {ref_text}"
-            )
-    value_chain_lines = value_chain_lines or [
-        "- 暂无可单独进入产业链分析的证据；报告仅保留已核验的终端或细分样本。\n"
-        "- 供应链、生态伙伴和上游能力缺口统一放入方法论边界，不参与关键玩家排序。"
-        if zh
-        else "- No separately verifiable value-chain evidence yet; the report keeps only verified endpoint or segment samples.\n"
-        "- Supply-chain, ecosystem-partner, and upstream-capability gaps are disclosed in methodology limits and excluded from key-player ranking."
-    ]
-
-    insight_lines = [
-        f"- {insight.get('finding')}"
-        for insight in insight_briefs[:4]
-        if isinstance(insight.get("finding"), str)
-    ]
-    market_size_content = "\n".join(insight_lines[:2]) or (
-        "- 本轮未采集到可直接支撑市场规模、增速或出货量的目标品类证据；不输出未经核验的规模数字。\n"
-        "- 后续需要补充权威市场报告、厂商出货披露或渠道统计，才能把趋势判断升级为规模判断。"
-        if zh
-        else "- This run did not collect target-category evidence for market size, growth rate, or shipment volume; unverified figures are omitted.\n"
-        "- Follow-up evidence should come from market reports, vendor shipment disclosures, or channel statistics before converting trend signals into market-size claims."
-    )
-    opportunities_content = "\n".join(insight_lines[2:4]) or (
-        "- 机会与风险需基于后续目标品类证据扩展；当前仅保留可核验样本带来的方向性判断。\n"
-        "- 已有证据不足以支撑投资优先级或市场进入节奏判断，相关结论需要在补充样本后再收敛。"
-        if zh
-        else "- Opportunities and risks require more target-category evidence; current conclusions remain directional.\n"
-        "- Existing evidence is insufficient for investment-priority or go-to-market timing decisions until the sample is expanded."
-    )
-    recommendations_content = (
-        "- 产品/战略团队应优先补齐目标品类证据，再比较主分析样本的能力、商业化和反馈信号。\n"
-        "- 市场/销售团队应区分整体市场判断和细分赛道样本，避免用单一细分叙事覆盖全部客户。"
-        if zh
-        else "- Product/strategy teams should fill target-category evidence before comparing capability, commercialization, and feedback signals.\n"
-        "- Market/sales teams should separate whole-market claims from segment samples."
-    )
-    missing_reasons = knowledge_payload.get("missing_reasons")
-    gap_lines: list[str] = []
-    if isinstance(missing_reasons, dict):
-        for competitor, reasons in missing_reasons.items():
+    coverage_gaps: dict[str, list[str]] = {}
+    missing_reasons_raw = knowledge_payload.get("missing_reasons")
+    if isinstance(missing_reasons_raw, dict):
+        for competitor, reasons in missing_reasons_raw.items():
             if isinstance(competitor, str) and isinstance(reasons, list) and reasons:
-                gap_lines.append(f"- {competitor}: {', '.join(str(reason) for reason in reasons[:4])}")
-    methodology_lines = [
-        f"- 目标品类证据数: {len(target_refs)}" if zh else f"- Target-category evidence count: {len(target_refs)}",
-        f"- 相邻细分证据数: {len(adjacent_refs)}" if zh else f"- Adjacent-segment evidence count: {len(adjacent_refs)}",
+                coverage_gaps[competitor] = [str(reason) for reason in reasons[:6]]
+
+    return {
+        "target_category": target_category,
+        "category_aliases": list(category_aliases),
+        "excluded_categories": list(excluded_categories),
+        "market_segments": list(market_segments),
+        "scope_policy": scope_policy or "explicit_category",
+        "admission_tiers": {
+            "main_player": [_player_fact(item) for item in status_groups["main_player"]],
+            "segment_player": [_player_fact(item) for item in status_groups["segment_player"]],
+            "value_chain": [
+                {
+                    "competitor_id": competitor,
+                    "reason": str(
+                        _source_payload_for_competitor(
+                            discovered_competitor_sources, competitor
+                        ).get("admission_reason")
+                        or "value chain evidence"
+                    ),
+                }
+                for competitor in status_groups["value_chain"]
+            ],
+            "watchlist": list(status_groups["watchlist"]),
+        },
+        "key_players": key_players,
+        "target_evidence_count": len(target_refs),
+        "adjacent_evidence_count": len(adjacent_refs),
+        "coverage_gaps": coverage_gaps,
+    }
+
+
+def _landscape_methodology_section(
+    *,
+    facts: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    response_language: str | None,
+) -> dict[str, object]:
+    zh = response_language == "zh"
+    target_count = int(facts.get("target_evidence_count", 0) or 0)
+    adjacent_count = int(facts.get("adjacent_evidence_count", 0) or 0)
+    tiers_raw = facts.get("admission_tiers")
+    tiers = tiers_raw if isinstance(tiers_raw, dict) else {}
+    watchlist_raw = tiers.get("watchlist")
+    watchlist = [str(item) for item in watchlist_raw] if isinstance(watchlist_raw, list) else []
+    lines = [
+        f"- 目标品类证据数: {target_count}" if zh else f"- Target-category evidence count: {target_count}",
         (
-            f"- 观察名单不进入关键玩家主分析: {', '.join(status_groups['watchlist']) or '暂无'}"
+            f"- 相邻细分证据数: {adjacent_count}"
             if zh
-            else f"- Watchlist excluded from key-player analysis: {', '.join(status_groups['watchlist']) or 'none'}"
+            else f"- Adjacent-segment evidence count: {adjacent_count}"
         ),
-        *gap_lines[:8],
+        (
+            f"- 观察名单不进入关键玩家主分析: {', '.join(watchlist) or '暂无'}"
+            if zh
+            else f"- Watchlist excluded from key-player analysis: {', '.join(watchlist) or 'none'}"
+        ),
     ]
-    methodology_lines.append(
+    coverage_gaps = facts.get("coverage_gaps")
+    if isinstance(coverage_gaps, dict):
+        for competitor, reasons in list(coverage_gaps.items())[:8]:
+            if isinstance(reasons, list) and reasons:
+                lines.append(f"- {competitor}: {', '.join(str(reason) for reason in reasons[:4])}")
+    lines.append(
         "- 方法论边界优先披露证据缺口、样本偏差和准入规则，避免把未覆盖信息包装成确定性结论。"
         if zh
         else "- Methodology limits disclose evidence gaps, sample bias, and admission rules before presenting uncovered areas as conclusions."
     )
-    if scope_policy == "broad_market" and adjacent_refs:
-        methodology_lines.append(
+    if facts.get("scope_policy") == "broad_market" and adjacent_count > 0:
+        lines.append(
             "- 样本偏差: 本轮证据集中在相邻/细分赛道，整体市场结论已按保守口径处理。"
             if zh
             else "- Sample bias: evidence clusters in adjacent/segment markets; whole-market claims are conservative."
         )
+    target_category = (
+        facts.get("target_category") if isinstance(facts.get("target_category"), str) else None
+    )
+    return _section_payload(
+        section_id="methodology_limits",
+        response_language=response_language,
+        content_markdown="\n".join(lines),
+        evidence_refs=_landscape_reference_refs(
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+            target_category=target_category,
+            limit=6,
+        ),
+    )
 
-    return [
-        _section_payload(
-            section_id="executive_takeaways",
-            response_language=response_language,
-            content_markdown="\n".join(takeaways),
-            evidence_refs=source_refs[:4],
+
+def _landscape_degrade_stub(
+    *,
+    section_id: str,
+    facts: dict[str, object],
+    evidence_briefs: list[dict[str, object]],
+    allowed_evidence_ids: set[str],
+    response_language: str | None,
+) -> dict[str, object]:
+    zh = response_language == "zh"
+    content = (
+        "本节所需的目标品类证据不足，未生成结论；相关缺口已在方法论与证据边界中披露，"
+        "待补充可核验证据后再扩展该章节。"
+        if zh
+        else "Target-category evidence for this section is insufficient, so no conclusion is generated; "
+        "the gap is disclosed in methodology limits and will be expanded once verifiable evidence is added."
+    )
+    target_category = (
+        facts.get("target_category") if isinstance(facts.get("target_category"), str) else None
+    )
+    return _section_payload(
+        section_id=section_id,
+        response_language=response_language,
+        content_markdown=content,
+        evidence_refs=_landscape_reference_refs(
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+            target_category=target_category,
+            limit=4,
         ),
-        _section_payload(
-            section_id="market_definition",
-            response_language=response_language,
-            content_markdown="\n".join(definition_lines),
-            evidence_refs=source_refs[:3],
-        ),
-        _section_payload(
-            section_id="market_size_growth",
-            response_language=response_language,
-            content_markdown=market_size_content,
-            evidence_refs=source_refs[:3],
-        ),
-        _section_payload(
-            section_id="market_segmentation",
-            response_language=response_language,
-            content_markdown=segmentation_content,
-            evidence_refs=source_refs[:4],
-        ),
-        _section_payload(
-            section_id="competitive_landscape",
-            response_language=response_language,
-            content_markdown=_build_markdown_table(
-                headers=["层级", "厂商/产品"] if zh else ["Layer", "Companies/Products"],
-                rows=landscape_rows,
-            ),
-            evidence_refs=source_refs[:5],
-        ),
-        _section_payload(
-            section_id="key_players",
-            response_language=response_language,
-            content_markdown="\n".join(key_player_lines),
-            evidence_refs=key_player_refs,
-        ),
-        _section_payload(
-            section_id="value_chain",
-            response_language=response_language,
-            content_markdown="\n".join(value_chain_lines),
-            evidence_refs=source_refs[:4],
-        ),
-        _section_payload(
-            section_id="opportunities_risks",
-            response_language=response_language,
-            content_markdown=opportunities_content,
-            evidence_refs=source_refs[:4],
-        ),
-        _section_payload(
-            section_id="strategic_recommendations",
-            response_language=response_language,
-            content_markdown=recommendations_content,
-            evidence_refs=source_refs[:4],
-        ),
-        _section_payload(
-            section_id="methodology_limits",
-            response_language=response_language,
-            content_markdown="\n".join(methodology_lines),
-            evidence_refs=source_refs[:6],
-        ),
-    ]
+    )
 
 
 def _build_comparison_matrix_section(
@@ -1765,7 +1663,6 @@ def _apply_structured_writer_sections(
     report_depth: Literal["quick", "deep"],
     knowledge_payload: dict[str, object],
     comparison_briefs: list[dict[str, object]],
-    insight_briefs: list[dict[str, object]],
     evidence_briefs: list[dict[str, object]],
     allowed_evidence_ids: set[str],
     state_competitors: list[str],
@@ -1822,22 +1719,54 @@ def _apply_structured_writer_sections(
     renderable_set = set(renderable_sections)
 
     if analysis_archetype == "landscape":
-        for section_payload in _commercial_landscape_sections(
+        landscape_facts = _landscape_structure_facts(
             ordered_competitors=ordered_competitors,
             discovered_competitor_sources=discovered_competitor_sources,
             knowledge_payload=knowledge_payload,
             evidence_briefs=evidence_briefs,
-            insight_briefs=insight_briefs,
             allowed_evidence_ids=allowed_evidence_ids,
-            response_language=response_language,
             target_category=target_category,
             category_aliases=category_aliases,
             excluded_categories=excluded_categories,
             market_segments=market_segments,
             scope_policy=scope_policy,
-        ):
-            if section_payload.get("section_id") in renderable_set:
-                _upsert_section(sections=sections, section_payload=section_payload)
+        )
+        llm_section_ids = {
+            section.get("section_id")
+            for section in sections
+            if isinstance(section.get("section_id"), str)
+        }
+        # The writer LLM owns every landscape section narrative. Deterministic code only
+        # (1) overrides methodology_limits with exact bookkeeping and (2) backfills a
+        # required registry section the LLM omitted with an honest-degrade stub — it never
+        # overwrites LLM prose, which is what previously turned reports into key:value stubs.
+        if "methodology_limits" in renderable_set:
+            _upsert_section(
+                sections=sections,
+                section_payload=_landscape_methodology_section(
+                    facts=landscape_facts,
+                    evidence_briefs=evidence_briefs,
+                    allowed_evidence_ids=allowed_evidence_ids,
+                    response_language=response_language,
+                ),
+            )
+        for section_id in renderable_sections:
+            if section_id in {"executive_summary", "methodology_limits"}:
+                continue
+            if section_id in llm_section_ids:
+                continue
+            if get_section_spec(section_id) is None:
+                continue
+            _upsert_section(
+                sections=sections,
+                section_payload=_landscape_degrade_stub(
+                    section_id=section_id,
+                    facts=landscape_facts,
+                    evidence_briefs=evidence_briefs,
+                    allowed_evidence_ids=allowed_evidence_ids,
+                    response_language=response_language,
+                ),
+            )
     elif "competitor_profiles" in renderable_set:
         _upsert_section(
             sections=sections,
@@ -2274,6 +2203,33 @@ async def writer_node(state: AgentState) -> AgentState:
     report_depth = _report_depth_from_state(state)
     analyst_summary = analyst_output.summary
     risk_flags = list(analyst_output.risk_flags)
+    discovered_competitor_sources_raw = state.get("discovered_competitor_sources")
+    discovered_competitor_sources = (
+        discovered_competitor_sources_raw
+        if isinstance(discovered_competitor_sources_raw, dict)
+        else None
+    )
+    state_competitors = [
+        item for item in state.get("competitors", []) if isinstance(item, str) and item.strip()
+    ]
+    landscape_facts: dict[str, object] | None = None
+    if intake_draft.analysis_archetype == "landscape":
+        landscape_facts = _landscape_structure_facts(
+            ordered_competitors=_ordered_competitors_for_report(
+                state_competitors=state_competitors,
+                evidence_briefs=evidence_briefs,
+                knowledge_payload=knowledge_payload,
+            ),
+            discovered_competitor_sources=discovered_competitor_sources,
+            knowledge_payload=knowledge_payload,
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+            target_category=intake_draft.target_category,
+            category_aliases=list(intake_draft.category_aliases),
+            excluded_categories=list(intake_draft.excluded_categories),
+            market_segments=list(intake_draft.market_segments),
+            scope_policy=intake_draft.scope_policy,
+        )
     fallback_user_prompt = build_writer_fallback_user_prompt(
         template_id=request.template_id,
         requested_sections=target_sections,
@@ -2309,6 +2265,7 @@ async def writer_node(state: AgentState) -> AgentState:
             market_scope=intake_draft.market_scope,
             response_language=intake_draft.response_language,
             analysis_archetype=intake_draft.analysis_archetype,
+            landscape_facts=landscape_facts,
         ),
         output_model=WriterReportOutput,
         parser=lambda content: WriterReportOutput.parse_llm_content(
@@ -2353,15 +2310,6 @@ async def writer_node(state: AgentState) -> AgentState:
             evidence_briefs=evidence_briefs,
             risk_flags=risk_flags,
         )
-    discovered_competitor_sources_raw = state.get("discovered_competitor_sources")
-    discovered_competitor_sources = (
-        discovered_competitor_sources_raw
-        if isinstance(discovered_competitor_sources_raw, dict)
-        else None
-    )
-    state_competitors = [
-        item for item in state.get("competitors", []) if isinstance(item, str) and item.strip()
-    ]
     report_content = _apply_structured_writer_sections(
         report_content=report_content,
         target_sections=target_sections,
@@ -2370,7 +2318,6 @@ async def writer_node(state: AgentState) -> AgentState:
         report_depth=report_depth,
         knowledge_payload=knowledge_payload,
         comparison_briefs=comparison_briefs,
-        insight_briefs=insight_briefs,
         evidence_briefs=evidence_briefs,
         allowed_evidence_ids=allowed_evidence_ids,
         state_competitors=state_competitors,

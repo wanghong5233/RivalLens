@@ -9,6 +9,14 @@ from service.llm.harness import complete_structured
 
 from agents.tools.parse_page import infer_source_type
 
+# Feed the extractor enough of a long article body for a faithful structured
+# quote instead of clipping at 4000 chars; the model summarizes, it does not
+# need the literal head of the document.
+EXTRACT_PROMPT_CHAR_LIMIT = 12000
+# When structured extraction fails entirely we still keep a substantive body
+# rather than a 1200-char mid-sentence cut; downstream previews bound length.
+EXTRACT_FALLBACK_QUOTE_CHAR_LIMIT = 6000
+
 
 class ExtractStructuredChannel(BaseChannel):
     name = "extract_structured"
@@ -37,8 +45,8 @@ class ExtractStructuredChannel(BaseChannel):
                 official_hosts=None,
             )
 
-        prompt_text = text[:4000]
-        fallback_prompt = f"Return minimal JSON quote for text:\n{prompt_text[:1200]}"
+        prompt_text = text[:EXTRACT_PROMPT_CHAR_LIMIT]
+        fallback_prompt = f"Return minimal JSON quote for text:\n{prompt_text[:2000]}"
         harness_result = await complete_structured(
             model_slot="research",
             system_prompt=EXTRACT_STRUCTURED_SYSTEM_PROMPT,
@@ -60,7 +68,7 @@ class ExtractStructuredChannel(BaseChannel):
                 source_title if isinstance(source_title, str) else "structured_extract"
             )
         else:
-            quote = text[:1200]
+            quote = text[:EXTRACT_FALLBACK_QUOTE_CHAR_LIMIT]
             normalized_title = (
                 source_title if isinstance(source_title, str) else "structured_extract"
             )

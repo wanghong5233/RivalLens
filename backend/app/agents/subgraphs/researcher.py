@@ -1103,6 +1103,97 @@ def _source_first_fetch_guard_url(
     )
 
 
+# A search-provider summary maxes out around ~800 chars and routinely ends
+# mid-sentence; a fetched article body runs into the thousands. Anything at or
+# above this is treated as already-deep evidence so the deepen guard does not
+# re-fetch full-text pages, while shallow search summaries get deepened once.
+DEEP_EVIDENCE_MIN_CHARS = 1200
+
+
+def _dimension_evidence_depth(
+    *,
+    state: ResearcherSubState,
+    dimension: FocusDimension,
+) -> tuple[int, int, str | None]:
+    """Return (shallow_count, deep_count, best_shallow_url) for one dimension.
+
+    Shallow = a search-provider summary/snippet kept verbatim as a draft; deep =
+    a fetched/extracted body. best_shallow_url is the source URL of the first
+    shallow draft worth deepening into full text.
+    """
+    focus_dimensions = list(state.get("focus_dimensions", []))
+    shallow_count = 0
+    deep_count = 0
+    best_shallow_url: str | None = None
+    for draft in state.get("evidence_drafts", []):
+        if not isinstance(draft, dict):
+            continue
+        if _evidence_draft_dimension(draft, allowed=focus_dimensions) != dimension:
+            continue
+        text_raw = draft.get("sanitized_text") or draft.get("quote") or ""
+        text = text_raw if isinstance(text_raw, str) else ""
+        if len(text) >= DEEP_EVIDENCE_MIN_CHARS:
+            deep_count += 1
+            continue
+        shallow_count += 1
+        if best_shallow_url is not None:
+            continue
+        source_url_raw = draft.get("source_url")
+        if isinstance(source_url_raw, str) and source_url_raw.strip().startswith(
+            ("http://", "https://")
+        ):
+            best_shallow_url = source_url_raw.strip()
+    return shallow_count, deep_count, best_shallow_url
+
+
+def _shallow_evidence_deepen_action(
+    state: ResearcherSubState,
+) -> tuple[str, dict[str, object]] | None:
+    """Force one full-text fetch when a dimension only holds shallow summaries.
+
+    Search-provider summaries were previously admitted as terminal evidence, so
+    high-value third-party hits never got deepened into full article bodies. This
+    upgrades the best shallow hit per dimension exactly once (bounded by the
+    per-dimension fetch attempt counter), covering third-party pages too — not
+    just official hosts like the source-first guard.
+    """
+    competitor_id_raw = state.get("competitor_id")
+    if not isinstance(competitor_id_raw, str) or not competitor_id_raw.strip():
+        return None
+    focus_dimensions = list(state.get("focus_dimensions", []))
+    pending_dimensions = list(state.get("pending_dimensions", []))
+    ordered = pending_dimensions + [
+        dimension for dimension in focus_dimensions if dimension not in pending_dimensions
+    ]
+    for dimension in ordered:
+        if _is_feedback_dimension(dimension):
+            continue
+        if (
+            _dimension_tool_attempt_count(
+                state=state,
+                tool_name="fetch_url",
+                dimension=dimension,
+            )
+            > 0
+        ):
+            continue
+        shallow_count, deep_count, best_shallow_url = _dimension_evidence_depth(
+            state=state,
+            dimension=dimension,
+        )
+        if deep_count > 0 or shallow_count == 0 or best_shallow_url is None:
+            continue
+        return (
+            "fetch_url",
+            {
+                "url": best_shallow_url,
+                "competitor_id": competitor_id_raw.strip(),
+                "dimension": dimension,
+            },
+        )
+    return None
+
+
 def _needs_compress(state: ResearcherSubState) -> bool:
     turn_count = int(state.get("turn_count", 0))
     if turn_count < COMPRESS_AFTER_TURNS:
@@ -1514,6 +1605,20 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         if bootstrap_skill_id is not None:
             action = "load_skill"
             action_args = {"skill_id": bootstrap_skill_id}
+    if action != "fetch_url" and int(state.get("turn_count", 0)) < max_turns:
+        deepen_action = _shallow_evidence_deepen_action(state)
+        if deepen_action is not None:
+            action, action_args = deepen_action
+            log_context = bind_step(step_id) if step_id is not None else nullcontext()
+            with log_context:
+                log.info(
+                    "researcher.deepen_shallow_evidence",
+                    competitor_id=state["competitor_id"],
+                    dimension=action_args.get("dimension"),
+                    url=action_args.get("url"),
+                    turn_count=int(state.get("turn_count", 0)),
+                    max_turns=max_turns,
+                )
     pending_action_args = {"_action": action, **action_args}
     next_action: Literal["tool_exec", "compress", "finalize"]
     if action in TOOL_ACTIONS:
