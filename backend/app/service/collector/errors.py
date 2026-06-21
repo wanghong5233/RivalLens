@@ -18,4 +18,12 @@ class FetchTimeout(ChannelError):
 
 
 class RateLimited(ChannelError):
-    """Raised when a channel cannot acquire rate-limit tokens in time."""
+    """Raised when a provider reports a quota/rate limit (quota exhausted, 429)."""
+
+
+class RateLimiterTimeout(ChannelError):
+    """Raised when the LOCAL per-host limiter queue times out.
+
+    Distinct from RateLimited so a healthy provider is not put in a long cooldown
+    just because concurrent in-process callers saturated its per-host token bucket.
+    """

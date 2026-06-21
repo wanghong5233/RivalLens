@@ -4,7 +4,7 @@ import asyncio
 
 from aiolimiter import AsyncLimiter
 
-from service.collector.errors import RateLimited
+from service.collector.errors import RateLimiterTimeout
 
 
 class PerHostLimiter:
@@ -33,4 +33,4 @@ class PerHostLimiter:
         try:
             await asyncio.wait_for(limiter.acquire(), timeout=timeout_seconds)
         except TimeoutError as exc:
-            raise RateLimited(f"rate limiter timeout on host={host}") from exc
+            raise RateLimiterTimeout(f"rate limiter timeout on host={host}") from exc

@@ -13,6 +13,7 @@ from agents.tools.parse_page import (
     official_hosts_for_competitor,
     source_matches_competitor,
 )
+from core.config import settings
 from core.defaults import DEFAULT_FOCUS_DIMENSIONS
 from core.tiers import resolve_tier_profile
 from db.engine import get_session_factory
@@ -184,6 +185,13 @@ def _classify_category_relevance(
     aliases = category_aliases or category_aliases_for_target(target_category)
     if aliases and text_mentions_any_term(text, aliases):
         return "target", "matched_target_category"
+    # In a broad-market landscape the vetted competitor set IS the scope, so a
+    # main player's evidence is on-topic even when the snippet never repeats the
+    # abstract category phrase — real product evidence (e.g. an NVIDIA GPU page)
+    # almost never says "AI硬件". Literal-term matching alone was demoting/dropping
+    # nearly all such evidence, collapsing a 10-competitor run to a handful of rows.
+    if scope_policy == "broad_market" and admission_status == "main_player":
+        return "target", "broad_market_main_player_admitted"
     if admission_status == "value_chain":
         return "value_chain", "player_admitted_as_value_chain"
     segment_terms = [*market_segments]
@@ -193,6 +201,10 @@ def _classify_category_relevance(
         return "adjacent_segment", "matched_adjacent_market_segment"
     if admission_status == "watchlist":
         return "unknown", "player_admitted_as_watchlist"
+    # broad_market scope: keep vetted-landscape evidence as adjacent instead of
+    # discarding it for lacking the literal category term, so breadth survives.
+    if scope_policy == "broad_market":
+        return "adjacent_segment", "broad_market_admitted_without_term"
     return "off_topic", "missing_target_category_term"
 
 
@@ -789,6 +801,9 @@ def _build_evidence_rows(
     evidence_rows: list[EvidenceRecord] = []
     evidence_ids: list[str] = []
     floor_candidates: list[dict[str, object]] = []
+    # Grounded + on-category candidates are buffered, not admitted inline, so the
+    # target-evidence floor can run after every candidate is classified.
+    admitted_candidates: list[tuple[str | None, str, dict[str, object]]] = []
 
     def append_evidence_row(candidate: dict[str, object]) -> None:
         evidence_id = make_id("ev_")
@@ -1053,18 +1068,76 @@ def _build_evidence_rows(
                 dimension=normalized_dimension,
             )
             continue
-        append_evidence_row(
-            {
-                **candidate,
-                "metadata": {
-                    **metadata,
-                    "category_relevance": category_relevance,
-                    "category_relevance_reason": category_reason,
+        admitted_candidates.append(
+            (
+                normalized_dimension,
+                category_relevance,
+                {
+                    **candidate,
+                    "metadata": {
+                        **metadata,
+                        "category_relevance": category_relevance,
+                        "category_relevance_reason": category_reason,
+                    },
                 },
-            }
+            )
         )
+
+    # Target-evidence floor: in an EXPLICIT single-category run an "AI glasses"
+    # report must not be built mostly from adjacent-segment smartphone content, so
+    # a dimension admits adjacent_segment/unknown rows only once it holds
+    # CATEGORY_TARGET_EVIDENCE_FLOOR on-target rows; otherwise they are demoted to
+    # the loud evidence-floor fallback. This gate is DISABLED for broad_market
+    # landscapes: there breadth across vetted players IS the scope, target evidence
+    # is structurally rare (product pages never repeat the abstract category term),
+    # and the floor otherwise collapsed every competitor to a single row.
+    category_gate_enabled = target_category is not None and scope_policy != "broad_market"
+    target_floor = settings.CATEGORY_TARGET_EVIDENCE_FLOOR
+    target_count_by_dimension: dict[str | None, int] = {}
+    if category_gate_enabled:
+        for dimension_key, relevance, _ in admitted_candidates:
+            if relevance == "target":
+                target_count_by_dimension[dimension_key] = (
+                    target_count_by_dimension.get(dimension_key, 0) + 1
+                )
+    for dimension_key, relevance, admitted_candidate in admitted_candidates:
+        if (
+            category_gate_enabled
+            and relevance in {"adjacent_segment", "unknown"}
+            and target_count_by_dimension.get(dimension_key, 0) < target_floor
+        ):
+            competitor_for_drop = admitted_candidate.get("competitor_id")
+            record_drop_for_bucket(
+                reason="category:adjacent_below_target_floor",
+                competitor_id=(
+                    competitor_for_drop
+                    if isinstance(competitor_for_drop, str)
+                    else default_competitor_id
+                ),
+                dimension=dimension_key if isinstance(dimension_key, str) else None,
+            )
+            admitted_metadata_raw = admitted_candidate.get("metadata")
+            admitted_metadata = (
+                admitted_metadata_raw if isinstance(admitted_metadata_raw, dict) else {}
+            )
+            floor_candidates.append(
+                {
+                    **admitted_candidate,
+                    "metadata": {
+                        **admitted_metadata,
+                        "funnel_floor_reason": "adjacent_below_target_floor",
+                    },
+                }
+            )
+            continue
+        append_evidence_row(admitted_candidate)
     if not evidence_rows and floor_candidates:
         def _floor_priority(reason: str) -> int:
+            # A row demoted only for the target floor is grounded and on an
+            # adjacent segment, so it is the least-bad last resort when a
+            # competitor otherwise produced nothing.
+            if reason == "adjacent_below_target_floor":
+                return 4
             if reason == "low_semantic":
                 return 3
             if reason == "source_blocklist":

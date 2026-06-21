@@ -31,6 +31,33 @@ LOW_SEMANTIC_PHRASES = frozenset(
         "sign in home",
     }
 )
+# A real article body carries prose; pages dominated by site footer / contact
+# fields or upload-portal promos slipped past the length gate and polluted
+# production evidence (e.g. ByteDance footer, 原创力文档 upload boilerplate).
+CONTACT_FOOTER_MARKERS = frozenset(
+    {
+        "网站地图",
+        "法律声明",
+        "联系方式",
+        "联系电话",
+        "客服电话",
+        "传真",
+        "版权所有",
+        "绿色通道",
+        "site map",
+        "all rights reserved",
+    }
+)
+DOC_PORTAL_PROMO_PHRASES = frozenset(
+    {
+        "原创力文档",
+        "上传者qq群",
+        "侵权专属",
+        "无忧创作",
+        "知识共享、知识服务",
+        "上传文档赚钱",
+    }
+)
 BLOCKED_HOST_SUFFIXES = frozenset(
     {
         "linkedin.com",
@@ -125,6 +152,11 @@ def is_low_semantic_text(
         return True, "navigation_boilerplate"
     if any(phrase in lower for phrase in LOW_SEMANTIC_PHRASES):
         return True, "loading_or_auth_boilerplate"
+    if any(phrase in lower for phrase in DOC_PORTAL_PROMO_PHRASES):
+        return True, "doc_portal_promo"
+    contact_footer_hits = sum(1 for marker in CONTACT_FOOTER_MARKERS if marker in lower)
+    if contact_footer_hits >= 3 and len(words) < 120:
+        return True, "contact_footer_boilerplate"
     return False, None
 
 

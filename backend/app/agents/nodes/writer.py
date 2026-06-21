@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -33,6 +33,7 @@ from service.comparison import load_comparisons_for_run
 from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import load_conclusions_for_run
 from service.llm import (
+    EVIDENCE_QUOTE_CHAR_BUDGET,
     WRITER_SYSTEM_PROMPT,
     build_writer_fallback_user_prompt,
     build_writer_repair_user_prompt,
@@ -600,7 +601,7 @@ def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str
                 "evidence_id": row.id,
                 "dimension": dimension_raw if isinstance(dimension_raw, str) else None,
                 "competitor_id": competitor_id_raw if isinstance(competitor_id_raw, str) else "unknown",
-                "quote_preview": row.sanitized_text[:600],
+                "quote_preview": row.sanitized_text[:EVIDENCE_QUOTE_CHAR_BUDGET],
                 "source_title": row.source_title or "",
                 "source_url": row.source_url or "",
                 "source_type": row.source_type or "",
@@ -2412,6 +2413,12 @@ async def writer_node(state: AgentState) -> AgentState:
                 error=llm_call_error,
             )
         )
+        # One report per run: a QA-reject retry re-runs the writer, and without
+        # this the old draft lingered as a second `reports` row (the "methodology
+        # 重复入库" / duplicated-section artifact). The API reads latest-by-created_at
+        # so users never saw it, but the stale row is dead weight — drop it so the
+        # run owns exactly one report.
+        await session.execute(delete(Report).where(Report.run_id == run_id))
         session.add(
             Report(
                 report_id=report_id,

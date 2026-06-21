@@ -46,12 +46,14 @@ OBSERVATIONS_FULL_RETAIN = 2
 TOOL_ERROR_PREVIEW_LIMIT = 200
 RERANK_DOCUMENT_BATCH_SIZE = 50
 RERANK_DOCUMENT_CHAR_LIMIT = 512
+# load_skill / read_skill_file are intentionally NOT researcher actions: in the
+# ReAct loop they produced zero evidence (snippet_count=0) yet burned a turn per
+# competitor on generic guidance. source_routing and qa_rule skills are still
+# applied — read directly from the skill store by code, not via this tool.
 TOOL_ACTIONS = {
     "search_web",
     "fetch_url",
     "extract_structured",
-    "load_skill",
-    "read_skill_file",
 }
 DIMENSIONAL_TOOL_ACTIONS = {
     "search_web",
@@ -68,8 +70,6 @@ ACTION_TO_CHANNEL = {
     "search_web": "search_web",
     "fetch_url": "fetch_url",
     "extract_structured": "extract_structured",
-    "load_skill": "load_skill",
-    "read_skill_file": "read_skill_file",
 }
 log = get_logger("agents.researcher_subgraph")
 
@@ -696,23 +696,6 @@ def _effective_prompt_size(state: ResearcherSubState) -> int:
     return size
 
 
-def _guess_skill_id(domain_hint: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", domain_hint.strip().lower()).strip("_")
-    if not normalized:
-        return "general_research"
-    return normalized[:64]
-
-
-def _has_tool_attempt(state: ResearcherSubState, tool_name: str) -> bool:
-    observations_log = list(state.get("observations_log", []))
-    for item in observations_log:
-        if not isinstance(item, dict):
-            continue
-        if item.get("tool") == tool_name:
-            return True
-    return False
-
-
 def _recent_search_dimension(state: ResearcherSubState) -> str | None:
     focus_dimensions = list(state.get("focus_dimensions", []))
     for item in reversed(list(state.get("observations_log", []))):
@@ -752,33 +735,6 @@ def _effective_action_dimension(
     return _recent_search_dimension(state)
 
 
-def _resolve_bootstrap_skill_id(domain_hint: str | None) -> str | None:
-    store = get_skill_store()
-    skill_names = store.get_skill_names()
-    if not skill_names:
-        if domain_hint is None:
-            return None
-        guessed = _guess_skill_id(domain_hint)
-        return guessed if guessed else None
-
-    if domain_hint is not None:
-        guessed = _guess_skill_id(domain_hint)
-        if guessed:
-            for name in skill_names:
-                if guessed in name or name in guessed:
-                    return name
-            hint_tokens = [token for token in guessed.split("_") if token]
-            for token in hint_tokens:
-                for name in skill_names:
-                    if token in name:
-                        return name
-
-    for applies_to in ("general", "prompt_template", "source_routing"):
-        names = sorted(store.list_by_applies_to(applies_to))
-        if names:
-            return names[0]
-    return skill_names[0] if skill_names else None
-
 
 def _dimension_tool_attempt_count(
     *,
@@ -804,18 +760,32 @@ def _dimension_tool_attempt_count(
     return count
 
 
+def _already_fetched_urls(state: ResearcherSubState) -> set[str]:
+    """URLs already passed to fetch_url in this researcher run (any dimension).
+
+    fetch_url falls back to a short search snippet when full-text extraction
+    fails (Tavily exhausted / site blocks scraping). Without this set the LLM and
+    the deepen guard re-fetch the same dead URL every turn, burning the turn
+    budget and re-admitting identical boilerplate as evidence.
+    """
+    fetched: set[str] = set()
+    for item in list(state.get("observations_log", [])):
+        if not isinstance(item, dict) or item.get("tool") != "fetch_url":
+            continue
+        args_raw = item.get("args", {})
+        args = args_raw if isinstance(args_raw, dict) else {}
+        url_raw = args.get("url")
+        if isinstance(url_raw, str) and url_raw.strip():
+            fetched.add(url_raw.strip())
+    return fetched
+
+
 def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]:
     pending_dimensions = list(state.get("pending_dimensions", []))
     if not pending_dimensions:
         return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 
     dimension = pending_dimensions[0]
-    domain_hint_raw = state.get("domain_hint")
-    domain_hint = domain_hint_raw if isinstance(domain_hint_raw, str) and domain_hint_raw.strip() else None
-    if domain_hint is not None and not _has_tool_attempt(state, "load_skill"):
-        skill_id = _resolve_bootstrap_skill_id(domain_hint)
-        if skill_id is not None:
-            return ("load_skill", {"skill_id": skill_id})
 
     fetch_attempt_count = _dimension_tool_attempt_count(
         state=state,
@@ -1165,6 +1135,7 @@ def _shallow_evidence_deepen_action(
     ordered = pending_dimensions + [
         dimension for dimension in focus_dimensions if dimension not in pending_dimensions
     ]
+    already_fetched = _already_fetched_urls(state)
     for dimension in ordered:
         if _is_feedback_dimension(dimension):
             continue
@@ -1182,6 +1153,10 @@ def _shallow_evidence_deepen_action(
             dimension=dimension,
         )
         if deep_count > 0 or shallow_count == 0 or best_shallow_url is None:
+            continue
+        # Deepening a URL that already came back shallow just re-admits identical
+        # fallback junk; only deepen URLs not yet fetched in this run.
+        if best_shallow_url in already_fetched:
             continue
         return (
             "fetch_url",
@@ -1594,17 +1569,6 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
                     turn_count=int(state.get("turn_count", 0)),
                     max_turns=max_turns,
                 )
-    if (
-        domain_hint is not None
-        and int(state.get("turn_count", 0)) == 0
-        and action != "load_skill"
-        and not _has_tool_attempt(state, "load_skill")
-        and not coverage_guard_triggered
-    ):
-        bootstrap_skill_id = _resolve_bootstrap_skill_id(domain_hint)
-        if bootstrap_skill_id is not None:
-            action = "load_skill"
-            action_args = {"skill_id": bootstrap_skill_id}
     if action != "fetch_url" and int(state.get("turn_count", 0)) < max_turns:
         deepen_action = _shallow_evidence_deepen_action(state)
         if deepen_action is not None:
@@ -1616,6 +1580,34 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
                     competitor_id=state["competitor_id"],
                     dimension=action_args.get("dimension"),
                     url=action_args.get("url"),
+                    turn_count=int(state.get("turn_count", 0)),
+                    max_turns=max_turns,
+                )
+    if action == "fetch_url":
+        target_url_raw = action_args.get("url")
+        target_url = target_url_raw.strip() if isinstance(target_url_raw, str) else ""
+        if target_url and target_url in _already_fetched_urls(state):
+            # Re-fetching a URL already pulled this run only re-admits identical
+            # fallback junk. Hand back to the attempt-count-aware fallback, which
+            # prefers an un-attempted search/dimension; if it still resolves to the
+            # same dead URL, stop instead of looping the turn budget away.
+            redirect_action, redirect_args = _fallback_action(state)
+            if redirect_action == "fetch_url":
+                redirect_url_raw = redirect_args.get("url")
+                redirect_url = (
+                    redirect_url_raw.strip() if isinstance(redirect_url_raw, str) else ""
+                )
+                if not redirect_url or redirect_url in _already_fetched_urls(state):
+                    redirect_action = "finalize"
+                    redirect_args = {"summary": "stop re-fetching already-fetched urls"}
+            action, action_args = redirect_action, redirect_args
+            log_context = bind_step(step_id) if step_id is not None else nullcontext()
+            with log_context:
+                log.info(
+                    "researcher.skip_duplicate_fetch",
+                    competitor_id=state["competitor_id"],
+                    duplicate_url=target_url,
+                    redirect_action=action,
                     turn_count=int(state.get("turn_count", 0)),
                     max_turns=max_turns,
                 )

@@ -4,6 +4,7 @@ import asyncio
 from functools import lru_cache
 from urllib.parse import urlsplit
 
+import httpx
 from tavily import TavilyClient
 from tavily.errors import (
     BadRequestError as TavilyBadRequestError,
@@ -122,6 +123,43 @@ def _can_use_tavily_fallback() -> bool:
     return bool(settings.TAVILY_API_KEY)
 
 
+# Jina Reader rate-limits anonymous traffic with 429 (rate) / 451 (abuse
+# heuristics); both mean "back off", not a permanent failure, so we treat them as
+# RateLimited and fall through to the next fallback instead of crashing the run.
+_JINA_RATE_LIMIT_STATUS: frozenset[int] = frozenset({429, 451})
+
+
+def _can_use_jina_fallback() -> bool:
+    if not settings.COLLECTOR_FETCH_JINA_FALLBACK_ENABLED:
+        return False
+    return bool(settings.JINA_READER_BASE_URL.strip())
+
+
+async def _fetch_via_jina_reader(*, url: str) -> tuple[str, str]:
+    reader_url = f"{settings.JINA_READER_BASE_URL.rstrip('/')}/{url}"
+    # Default markdown return is already nav/ad-stripped article text. Do NOT send
+    # X-Token-Budget: it 409s on normal-length articles (10k-40k tokens); the
+    # downstream extractor handles length, not this hop.
+    headers = {"X-Return-Format": "markdown"}
+    if settings.JINA_API_KEY:
+        headers["Authorization"] = f"Bearer {settings.JINA_API_KEY}"
+    timeout = httpx.Timeout(float(settings.COLLECTOR_FETCH_TIMEOUT_S))
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.get(reader_url, headers=headers)
+    except httpx.TimeoutException as exc:
+        raise FetchTimeout(f"jina reader timed out: {exc}") from exc
+    except httpx.RequestError as exc:
+        raise ChannelError(f"jina reader request failed: {exc}") from exc
+    if response.status_code in _JINA_RATE_LIMIT_STATUS:
+        raise RateLimited(f"jina reader rate limited: status={response.status_code}")
+    if response.status_code != 200:
+        raise ChannelError(f"jina reader failed with status {response.status_code}")
+    extracted_text = post_clean_text(response.text)
+    _validate_extracted_text(extracted_text)
+    return extracted_text, url
+
+
 async def _fetch_via_httpx(*, url: str) -> tuple[str, str]:
     http_client = get_collector_http_client()
     fetched = await http_client.fetch_text(url, retries=1)
@@ -214,12 +252,28 @@ class FetchUrlChannel(BaseChannel):
         extracted_text: str | None = None
         source_url: str | None = None
         httpx_error: ChannelError | FetchTimeout | None = None
+        jina_error: ChannelError | FetchTimeout | RateLimited | None = None
         tavily_error: ChannelError | FetchTimeout | RateLimited | None = None
         search_fallback_error: ChannelError | FetchTimeout | RateLimited | None = None
         try:
             extracted_text, source_url = await _fetch_via_httpx(url=url)
         except (ChannelError, FetchTimeout) as exc:
             httpx_error = exc
+
+        # Jina Reader is the free full-text fallback; it carries most of the load
+        # now that Tavily Extract quota is exhausted, handling JS/anti-bot pages
+        # local httpx cannot. Tavily stays after it only when a key is configured.
+        if extracted_text is None or source_url is None:
+            if _can_use_jina_fallback():
+                try:
+                    extracted_text, source_url = await _fetch_via_jina_reader(url=url)
+                    fetch_source = "jina_reader"
+                except (ChannelError, FetchTimeout, RateLimited) as exc:
+                    jina_error = exc
+            else:
+                jina_error = ChannelError(
+                    "fetch_url jina fallback skipped: disabled by config."
+                )
 
         if extracted_text is None or source_url is None:
             if _can_use_tavily_fallback():
@@ -253,7 +307,8 @@ class FetchUrlChannel(BaseChannel):
         if extracted_text is None or source_url is None:
             raise ChannelError(
                 f"fetch_url failed for url={url}: httpx_error={httpx_error}; "
-                f"tavily_error={tavily_error}; search_fallback_error={search_fallback_error}"
+                f"jina_error={jina_error}; tavily_error={tavily_error}; "
+                f"search_fallback_error={search_fallback_error}"
             )
 
         source_type = infer_source_type(

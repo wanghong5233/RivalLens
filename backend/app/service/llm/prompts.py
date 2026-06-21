@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
+from core.config import settings
 from schemas.report_sections import SECTION_REGISTRY, default_outline_for_archetype
 from service.skill_store import get_skill_store
 
@@ -409,18 +410,7 @@ Allowed actions:
        "dimension": str | null,
        "competitor_id": str | null
      }
-4) load_skill
-   - args schema:
-     {
-       "skill_id": str
-     }
-5) read_skill_file
-   - args schema:
-     {
-       "skill_id": str,
-       "filename": str
-     }
-6) finalize
+4) finalize
    - args schema:
      {
        "summary": str
@@ -428,7 +418,7 @@ Allowed actions:
 
 Output JSON schema:
 {
-  "action": "search_web" | "fetch_url" | "extract_structured" | "load_skill" | "read_skill_file" | "finalize",
+  "action": "search_web" | "fetch_url" | "extract_structured" | "finalize",
   "action_args": { ... valid for action ... },
   "reasoning_summary": "short and concrete rationale"
 }
@@ -438,7 +428,7 @@ Hard constraints:
 - Evidence can only come from tool observations.
 - response_language controls the language of reasoning_summary and query phrasing hints; evidence quotes keep source language.
 - If enough dimensions are already covered, call finalize.
-- Prefer online collection first; use load_skill when domain-specific extraction guidance is needed.
+- Prefer online collection first; spend every turn on search_web/fetch_url/extract_structured.
 - For buyer-critical dimensions (pricing, enterprise, security, compliance), gather evidence from the vendor's OWN site first (e.g. search `site:<official-domain> pricing`, or fetch the official pricing/security/docs page); fall back to third-party articles only when the official source yields nothing.
 - When action_args.dimension is present, it MUST be exactly one value from focus_dimensions. Do not invent compound dimensions.
 - Return JSON object only, no markdown.
@@ -663,10 +653,10 @@ Rules:
 - Return JSON object only.
 """
 
-RESEARCHER_SYSTEM_PROMPT = _inject_catalog(
-    RESEARCHER_SYSTEM_PROMPT,
-    applies_to_filter=("general", "source_routing"),
-)
+# No skill catalog for the researcher: it no longer has load_skill/read_skill_file
+# actions, and source_routing skills are applied deterministically by the
+# researcher subgraph (not chosen by the LLM), so the catalog would only add
+# tokens and tempt the model toward an action it cannot take.
 ANALYST_SYSTEM_PROMPT = _inject_catalog(
     ANALYST_SYSTEM_PROMPT,
     applies_to_filter=("general",),
@@ -688,9 +678,18 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-RESEARCH_PROMPT_CHAR_BUDGET = 8000
-COMPRESSION_PROMPT_CHAR_BUDGET = 12000
-OBSERVATION_BRIEF_QUOTE_LIMIT = 200
+# All prompt/evidence char budgets derive from the model context window (config
+# SSOT) instead of hand-picked few-KB caps that silently starve agents. With a
+# 256k-token window the input budget is ~160k chars; per-prompt slices below stay
+# well inside it while letting full evidence bodies through.
+_PROMPT_CHAR_BUDGET = settings.llm_prompt_char_budget
+RESEARCH_PROMPT_CHAR_BUDGET = _PROMPT_CHAR_BUDGET // 4
+COMPRESSION_PROMPT_CHAR_BUDGET = _PROMPT_CHAR_BUDGET // 4
+# QA must judge the whole report, never a head-truncated fragment.
+QA_REPORT_MARKDOWN_CHAR_BUDGET = _PROMPT_CHAR_BUDGET // 2
+# Each evidence brief carries a full grounded body (deepened article text), not a
+# half-sentence stub; bounded so a brief set still fits the prompt budget.
+EVIDENCE_QUOTE_CHAR_BUDGET = 2400
 EVIDENCE_BRIEF_PROMPT_LIMIT = 24
 ANALYST_EVIDENCE_BRIEF_PROMPT_LIMIT = 80
 
@@ -1219,10 +1218,9 @@ def build_researcher_user_prompt(
         "2.2) Do not use evidence from excluded_categories for the requested feature/pricing/feedback dimensions.\n"
         "3) Use fetch_url only with URLs from resolved_official_urls, discovered_urls, or reference_urls; pass current research_topic as query when useful.\n"
         "3.1) For user_feedback-like dimensions, prioritize third-party reviews/forums with explicit review-oriented queries.\n"
-        "4) Use load_skill when domain_hint implies specialized schema or source routing.\n"
-        "5) Use finalize only when pending_dimensions is empty or coverage_matrix shows sufficient evidence.\n"
-        "6) action_args.dimension must be one exact value from focus_dimensions; never create compound dimensions.\n"
-        "7) If proposing future focus_dimensions in summaries or tool context, keep each concise snake_case <= 32 chars.\n"
+        "4) Use finalize only when pending_dimensions is empty or coverage_matrix shows sufficient evidence.\n"
+        "5) action_args.dimension must be one exact value from focus_dimensions; never create compound dimensions.\n"
+        "6) If proposing future focus_dimensions in summaries or tool context, keep each concise snake_case <= 32 chars.\n"
     )
 
 
@@ -1267,7 +1265,7 @@ def build_researcher_fallback_user_prompt(
         f"- max_turns: {max_turns}\n\n"
         f"- response_language: {response_language}\n"
         f"- domain_hint: {domain_hint}\n\n"
-        "Return one action with valid action_args. Prefer search_web/fetch_url/extract_structured or load_skill. "
+        "Return one action with valid action_args. Prefer search_web/fetch_url/extract_structured. "
         "Use only pending_dimensions values for action_args.dimension. "
         "Do not invent long compound dimension names; focus dimensions are concise snake_case <= 32 chars."
     )
@@ -1524,7 +1522,7 @@ def build_qa_semantic_user_prompt(
         f"- target_sections: {_json(list(target_sections))}\n"
         f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n"
         f"- report_json: {_json(report_json)}\n"
-        f"- report_markdown: {truncate_for_prompt(report_markdown, max_chars=8000)}\n"
+        f"- report_markdown: {truncate_for_prompt(report_markdown, max_chars=QA_REPORT_MARKDOWN_CHAR_BUDGET)}\n"
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
         f"- numeric_claims: {_json(list(numeric_claims))}\n\n"
         "Judge depth, citation_coverage, faithfulness, and instruction_following separately. "
@@ -1800,7 +1798,7 @@ def build_discovery_extract_user_prompt(
         '"candidate_role":"direct_competitor",'
         '"relevance_reason":"Why it competes in this market",'
         '"evidence_quote":"Exact short quote copied from search_results",'
-        '"official_url":"Optional official website/product URL from search_results or null",'
+        '"official_url":"Best-known official homepage/product URL for this candidate (the vendor\'s OWN domain), even if not in search_results; null only if genuinely unknown",'
         '"source_domain":"Optional domain of official_url or null"}]}\n'
         "- candidate_role must be one of: direct_competitor, adjacent_competitor, substitute, upstream_supplier, trend_reference.\n"
         "- Assign direct_competitor ONLY when the candidate competes on the same end-user job/product category.\n"
@@ -1809,6 +1807,9 @@ def build_discovery_extract_user_prompt(
         "- When self_product is provided, prioritize direct_competitor and adjacent_competitor candidates that solve the same user job or product category.\n"
         "- Mark heterogeneous entities (chip vendors, infrastructure providers, media/research reports, ecosystems) as upstream_supplier/trend_reference/substitute; do not label them direct competitors.\n"
         "- Include only products or companies mentioned in search_results.\n"
+        "- official_url is a routing hint, NOT evidence: give the candidate's own official homepage "
+        "(e.g. https://www.apple.com), never a news/research/marketplace/aggregator domain; it is the only "
+        "field you may fill from general knowledge. names and evidence_quote must still be grounded in search_results.\n"
         "- Set is_competitor=false when a mentioned entity is adjacent, media-only, or not a direct competitor.\n"
         "- evidence_quote must be an exact short substring copied from search_results.\n"
         "- Disambiguate polysemous entity names by market_scope and analysis_intent. "
@@ -1850,7 +1851,7 @@ def build_discovery_extract_repair_user_prompt(
         "Rules:\n"
         "- Return ONLY a JSON object with a candidates list.\n"
         "- Each candidate must include name, is_competitor, relevance_reason, and evidence_quote.\n"
-        "- official_url/source_domain are optional, but when provided they must come from search results.\n"
+        "- official_url/source_domain are optional routing hints; when provided use the candidate's own official homepage (vendor domain), never a news/research/aggregator domain.\n"
         "- evidence_quote must be copied from the provided search results; if unavailable, return an empty candidates list.\n"
         "- Do not invent competitor names or quotes.\n"
         "- Return JSON object only."

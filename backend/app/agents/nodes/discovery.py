@@ -56,6 +56,14 @@ _DISCOVERY_NON_OFFICIAL_HOST_HINTS: tuple[str, ...] = (
     "youtube.com",
     "techcrunch.com",
     "news.ycombinator.com",
+    # Market-research / analyst / aggregator domains: valid as evidence, but never
+    # a competitor's OWN site, so they must not be accepted as official_url.
+    "marketsandmarkets.com",
+    "statista.com",
+    "grandviewresearch.com",
+    "mordorintelligence.com",
+    "gartner.com",
+    "idc.com",
 )
 _DISCOVERY_GENERIC_NAME_TOKENS: frozenset[str] = frozenset(
     {"ai", "app", "tool", "tools", "software", "assistant", "the", "inc", "labs", "lab"}
@@ -197,6 +205,25 @@ def _source_domain(source_url: object) -> str | None:
     parsed = urlsplit(stripped)
     host = parsed.netloc.lower().removeprefix("www.")
     return host or None
+
+
+def _is_plausible_official_url(url: str | None) -> bool:
+    """Cheap structural sanity for an LLM-proposed official URL.
+
+    Discovery cannot fully verify an official site without fetching it; the
+    researcher does that downstream (fetch_url + category floor + quality gates).
+    We only reject the obviously-unusable here — non-http(s), bare/IP hosts, and
+    aggregator/news hosts that are never a vendor's own site.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return False
+    parsed = urlsplit(url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = parsed.netloc.lower().removeprefix("www.")
+    if not host or "." not in host or host.replace(".", "").isdigit():
+        return False
+    return not any(host == blocked or host.endswith(f".{blocked}") for blocked in _DISCOVERY_NON_OFFICIAL_HOST_HINTS)
 
 
 def _candidate_name_tokens(name: str) -> set[str]:
@@ -372,7 +399,7 @@ def _resolve_validated_official_source(
     llm_official_url: str | None,
     llm_source_domain: str | None,
     snippet_rows: Sequence[dict[str, object]],
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     normalized_quote = _normalize_grounding_text(evidence_quote)
     best_url: str | None = None
     best_domain: str | None = None
@@ -407,14 +434,14 @@ def _resolve_validated_official_source(
             best_domain = _source_domain(source_url)
 
     if best_score >= 2:
-        return best_url, best_domain
+        return best_url, best_domain, "corroborated"
 
     llm_url = llm_official_url.strip() if isinstance(llm_official_url, str) and llm_official_url.strip() else None
     if llm_url is None:
-        return None, None
+        return None, None, None
     llm_domain = _source_domain(llm_url)
     if llm_domain is None:
-        return None, None
+        return None, None, None
     for row in snippet_rows:
         source_url_raw = row.get("source_url")
         row_url = source_url_raw.strip() if isinstance(source_url_raw, str) and source_url_raw.strip() else None
@@ -428,8 +455,14 @@ def _resolve_validated_official_source(
             candidate_name=candidate_name,
             text=row_text,
         ):
-            return llm_url, llm_source_domain or llm_domain
-    return None, None
+            return llm_url, llm_source_domain or llm_domain, "corroborated"
+
+    # No snippet corroboration, but the LLM lead is structurally usable: hand it
+    # to the researcher as a provisional source-first target instead of dropping
+    # it (which starved source-first fetch and forced shallow web search).
+    if _is_plausible_official_url(llm_url):
+        return llm_url, llm_source_domain or llm_domain, "llm_provisional"
+    return None, None, None
 
 
 def _filter_discovery_candidates(
@@ -520,7 +553,7 @@ def _filter_discovery_candidates(
 
         seen_aliases.add(alias_key)
         discovered.append(name)
-        official_url, source_domain = _resolve_validated_official_source(
+        official_url, source_domain, official_url_confidence = _resolve_validated_official_source(
             candidate_name=name,
             evidence_quote=evidence_quote,
             llm_official_url=llm_official_url if isinstance(llm_official_url, str) else None,
@@ -538,6 +571,7 @@ def _filter_discovery_candidates(
         if official_url is not None:
             row["official_url"] = official_url
             row["source_domain"] = source_domain or _source_domain(official_url)
+            row["official_url_confidence"] = official_url_confidence
         relevance.append(row)
 
     relevance.sort(
@@ -764,6 +798,12 @@ async def discovery_node(state: AgentState) -> AgentState:
                 extract_error=extract_error,
                 filtered_out_count=len(filtered_out_competitors),
             )
+        official_url_confidence_counts: dict[str, int] = {}
+        for item in relevance:
+            if not isinstance(item, dict) or item.get("official_url") is None:
+                continue
+            label = str(item.get("official_url_confidence") or "unknown")
+            official_url_confidence_counts[label] = official_url_confidence_counts.get(label, 0) + 1
         log.info(
             "discovery.complete",
             discovered_count=len(discovered),
@@ -775,6 +815,8 @@ async def discovery_node(state: AgentState) -> AgentState:
             queries=search_queries,
             extract_outcome=extract_outcome,
             extract_error=extract_error,
+            official_url_with_url_count=sum(official_url_confidence_counts.values()),
+            official_url_confidence_counts=official_url_confidence_counts,
         )
 
     async with session_factory() as session:
@@ -789,6 +831,7 @@ async def discovery_node(state: AgentState) -> AgentState:
                     str(item["name"]): {
                         "official_url": item.get("official_url"),
                         "source_domain": item.get("source_domain"),
+                        "official_url_confidence": item.get("official_url_confidence"),
                         "candidate_role": item.get("candidate_role"),
                         "admission_status": item.get("admission_status"),
                         "admission_reason": item.get("admission_reason"),
@@ -819,6 +862,7 @@ async def discovery_node(state: AgentState) -> AgentState:
         str(item["name"]): {
             "official_url": item.get("official_url"),
             "source_domain": item.get("source_domain"),
+            "official_url_confidence": item.get("official_url_confidence"),
             "candidate_role": item.get("candidate_role"),
             "relevance_reason": item.get("relevance_reason"),
         }

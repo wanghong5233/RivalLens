@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     LLM_MAX_TOKENS_COMPRESSION: int = 2048
     LLM_MAX_TOKENS_QA: int = 2048
     LLM_MAX_TOKENS_RESEARCH: int = 2048
+    # Model input-capacity governance (anti silent-throttle). Long-context models
+    # expose ~256k token windows; hand-picked few-KB input truncations quietly
+    # starve agents of evidence with no error surfaced. Every critical-path prompt
+    # and evidence char budget is derived from these via `llm_prompt_char_budget`,
+    # never hand-written magic numbers.
+    LLM_CONTEXT_WINDOW_TOKENS: int = 256000
+    LLM_INPUT_BUDGET_RATIO: float = 0.4
+    LLM_CHARS_PER_TOKEN: float = 1.6
     LLM_MAX_RETRIES: int = 2
     LLM_RETRY_BASE_SECONDS: float = 1.0
     LLM_RETRY_CAP_SECONDS: float = 30.0
@@ -121,17 +129,29 @@ class Settings(BaseSettings):
         "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     )
     COLLECTOR_FETCH_TAVILY_FALLBACK_ENABLED: bool = True
+    # Jina Reader (r.jina.ai) turns a URL into clean full-text markdown for free
+    # (anonymous, no key). It is the primary full-text fallback when local httpx
+    # extraction fails, so collection no longer depends on the paid Tavily Extract
+    # quota. A free JINA_API_KEY only raises rate limits; anonymous works.
+    COLLECTOR_FETCH_JINA_FALLBACK_ENABLED: bool = True
     COLLECTOR_FETCH_SEARCH_FALLBACK_ENABLED: bool = True
     COLLECTOR_SEARCH_BREADTH_ENABLED: bool = True
     COLLECTOR_PROVIDER_COOLDOWN_SECONDS: int = 120
     TAVILY_API_KEY: str | None = None
     SERPER_API_KEY: str | None = None
     BOCHA_API_KEY: str | None = None
+    JINA_API_KEY: str | None = None
+    JINA_READER_BASE_URL: str = "https://r.jina.ai"
     BOCHA_BASE_URL: str = "https://api.bochaai.com/v1"
     BOCHA_RERANK_MODEL: str = "gte-rerank"
     RERANK_DROP_THRESHOLD: float = 0.2
     RERANK_COVERAGE_THRESHOLD: float = 0.5
     RERANK_MIN_HIGH_SCORE_PER_DIM: int = 2
+    # Landscape/broad-market reports drifted off-topic when adjacent-segment
+    # evidence replaced on-target evidence (e.g. generic smartphone content
+    # filling an "AI hardware" report). A dimension must hold at least this many
+    # on-target evidence rows before adjacent-segment rows may supplement it.
+    CATEGORY_TARGET_EVIDENCE_FLOOR: int = 1
     COLLECTOR_OFFLINE_SNAPSHOT_DIR: str = "./data/snapshots"
     COLLECTOR_FETCH_TIMEOUT_S: int = 10
     COLLECTOR_ROBOTS_CACHE_TTL_S: int = 3600
@@ -143,6 +163,19 @@ class Settings(BaseSettings):
 
     CORS_ALLOW_ORIGINS: str = "http://localhost:5173,http://localhost:5174"
     DEMO_FIXTURES_DIR: str | None = None
+
+    @property
+    def llm_prompt_char_budget(self) -> int:
+        """Total prompt INPUT char budget derived from the model context window.
+
+        Single source of truth for every critical-path truncation so we never
+        silently throttle below the model's real capacity.
+        """
+        return int(
+            self.LLM_CONTEXT_WINDOW_TOKENS
+            * self.LLM_INPUT_BUDGET_RATIO
+            * self.LLM_CHARS_PER_TOKEN
+        )
 
     @model_validator(mode="after")
     def validate_llm_provider_credentials(self) -> Settings:
@@ -231,6 +264,12 @@ class Settings(BaseSettings):
         ):
             if value < 0:
                 raise ValueError(f"{name} cannot be negative.")
+        if self.LLM_CONTEXT_WINDOW_TOKENS <= 0:
+            raise ValueError("LLM_CONTEXT_WINDOW_TOKENS must be positive.")
+        if not 0 < self.LLM_INPUT_BUDGET_RATIO <= 1:
+            raise ValueError("LLM_INPUT_BUDGET_RATIO must be in (0, 1].")
+        if self.LLM_CHARS_PER_TOKEN <= 0:
+            raise ValueError("LLM_CHARS_PER_TOKEN must be positive.")
         if self.ORPHAN_RUN_SWEEP_GRACE_SECONDS < 0:
             raise ValueError("ORPHAN_RUN_SWEEP_GRACE_SECONDS cannot be negative.")
         if self.LLM_MAX_RETRIES < 0:
@@ -261,6 +300,8 @@ class Settings(BaseSettings):
             raise ValueError("COLLECTOR_USER_AGENT cannot be empty.")
         if not self.BOCHA_BASE_URL.strip():
             raise ValueError("BOCHA_BASE_URL cannot be empty.")
+        if not self.JINA_READER_BASE_URL.strip():
+            raise ValueError("JINA_READER_BASE_URL cannot be empty.")
         if not self.BOCHA_RERANK_MODEL.strip():
             raise ValueError("BOCHA_RERANK_MODEL cannot be empty.")
         for name, value in (
@@ -273,6 +314,8 @@ class Settings(BaseSettings):
             raise ValueError("RERANK_COVERAGE_THRESHOLD must be >= RERANK_DROP_THRESHOLD.")
         if self.RERANK_MIN_HIGH_SCORE_PER_DIM < 0:
             raise ValueError("RERANK_MIN_HIGH_SCORE_PER_DIM cannot be negative.")
+        if self.CATEGORY_TARGET_EVIDENCE_FLOOR < 0:
+            raise ValueError("CATEGORY_TARGET_EVIDENCE_FLOOR cannot be negative.")
         for name, value in (
             ("CURATOR_MIN_COVERAGE_RATE", self.CURATOR_MIN_COVERAGE_RATE),
             ("CURATOR_MIN_DIMENSION_COVERAGE_RATE", self.CURATOR_MIN_DIMENSION_COVERAGE_RATE),

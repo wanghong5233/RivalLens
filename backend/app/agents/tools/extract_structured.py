@@ -7,14 +7,16 @@ from schemas.contracts import validate_source_type
 from service.llm import EXTRACT_STRUCTURED_SYSTEM_PROMPT, build_extract_structured_repair_user_prompt
 from service.llm.harness import complete_structured
 
+from core.config import settings
 from agents.tools.parse_page import infer_source_type
 
-# Feed the extractor enough of a long article body for a faithful structured
-# quote instead of clipping at 4000 chars; the model summarizes, it does not
-# need the literal head of the document.
-EXTRACT_PROMPT_CHAR_LIMIT = 12000
+# Feed the extractor a full long-form article and let the LLM summarize, instead
+# of a hand-picked few-KB head clip that silently drops most of the page. Derived
+# from the model input budget (config SSOT); ~half the budget leaves room for the
+# system prompt and output.
+EXTRACT_PROMPT_CHAR_LIMIT = settings.llm_prompt_char_budget // 2
 # When structured extraction fails entirely we still keep a substantive body
-# rather than a 1200-char mid-sentence cut; downstream previews bound length.
+# rather than a mid-sentence cut; downstream previews bound what each agent sees.
 EXTRACT_FALLBACK_QUOTE_CHAR_LIMIT = 6000
 
 

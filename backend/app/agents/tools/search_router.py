@@ -17,7 +17,7 @@ from service.collector.base import (
     CollectorSnippet,
     ToolObservationResult,
 )
-from service.collector.errors import ChannelError, FetchTimeout, RateLimited
+from service.collector.errors import ChannelError, FetchTimeout, RateLimited, RateLimiterTimeout
 from utils.logger import get_logger
 
 log = get_logger("agents.tools.search_router")
@@ -226,6 +226,14 @@ class SearchWebRouterChannel(BaseChannel):
                 latency_ms = int((time.perf_counter() - started_at) * 1000)
                 error_text = str(exc)
                 is_api_key_error = _is_api_key_error(error_text)
+                # A local limiter-queue timeout means concurrent callers saturated
+                # this host's token bucket, NOT that the provider rejected us. Skip
+                # the attempt without a provider cooldown so the next leg can reuse a
+                # healthy provider immediately.
+                is_local_limiter_timeout = isinstance(exc, RateLimiterTimeout)
+                should_cooldown = (
+                    isinstance(exc, RateLimited) and not is_local_limiter_timeout
+                ) or is_api_key_error
                 errors.append(f"{variant}:{type(exc).__name__}:{error_text[:120]}")
                 log.warning(
                     "search_web.provider.fail",
@@ -238,7 +246,7 @@ class SearchWebRouterChannel(BaseChannel):
                     latency_ms=latency_ms,
                     fail_fast=isinstance(exc, (RateLimited, FetchTimeout)) or is_api_key_error,
                 )
-                if isinstance(exc, RateLimited) or is_api_key_error:
+                if should_cooldown:
                     cooldown_seconds = _mark_provider_cooldown(provider)
                     if cooldown_seconds > 0:
                         log.info(
