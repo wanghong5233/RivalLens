@@ -263,12 +263,14 @@ async def analyst_node(state: AgentState) -> AgentState:
         competitors=normalized_competitors,
         focus_dimensions=focus_dimensions,
         evidence_briefs=evidence_briefs,
+        response_language=intake_draft.response_language,
         analysis_archetype=intake_draft.analysis_archetype,
     )
     knowledge_fallback_prompt = build_knowledge_extraction_fallback_user_prompt(
         competitors=normalized_competitors,
         focus_dimensions=focus_dimensions,
         evidence_ids=sorted(allowed_evidence_ids),
+        response_language=intake_draft.response_language,
     )
     knowledge_harness_result = await complete_structured(
         model_slot="summarization",

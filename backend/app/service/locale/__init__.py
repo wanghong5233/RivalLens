@@ -3,13 +3,23 @@ from __future__ import annotations
 from typing import Literal, TypedDict
 from urllib.parse import urlsplit
 
-LanguageCode = Literal["zh", "en"]
+# Language contract (four layers):
+# - ui_locale: frontend shell language (button/label/date formatting).
+# - report_language (backward compatible key: response_language): report output language.
+# - source_languages: retrieval fan-out languages.
+# - source/evidence language: per-evidence original-language marker.
+UILocale = Literal["zh-CN", "en-US"]
+ReportLanguage = Literal["zh", "en"]
 CountryCode = Literal["china", "global", "unknown"]
+
+DEFAULT_UI_LOCALE: UILocale = "zh-CN"
+DEFAULT_REPORT_LANGUAGE: ReportLanguage = "zh"
+SUPPORTED_REPORT_LANGUAGES: frozenset[str] = frozenset({"zh", "en"})
 
 
 class SourceLocale(TypedDict):
     country: CountryCode
-    language: LanguageCode
+    language: str
     country_signal: str
     language_signal: str
     host: str | None
@@ -49,8 +59,33 @@ _CHINA_HOST_SUFFIXES = (
 )
 
 
-def detect_language(text: str) -> LanguageCode:
-    """Detect the expected output language from user-visible text."""
+def normalize_report_language(value: object) -> ReportLanguage | None:
+    if isinstance(value, str) and value in SUPPORTED_REPORT_LANGUAGES:
+        return value
+    return None
+
+
+def resolve_report_language(
+    *,
+    report_language: object | None = None,
+    response_language: object | None = None,
+    user_query: str | None = None,
+    default_language: ReportLanguage = DEFAULT_REPORT_LANGUAGE,
+) -> ReportLanguage:
+    """Resolve report output language with response_language compatibility."""
+    normalized_report_language = normalize_report_language(report_language)
+    if normalized_report_language is not None:
+        return normalized_report_language
+    normalized_response_language = normalize_report_language(response_language)
+    if normalized_response_language is not None:
+        return normalized_response_language
+    if isinstance(user_query, str) and user_query.strip():
+        return detect_language(user_query)
+    return default_language
+
+
+def detect_language(text: str) -> ReportLanguage:
+    """Detect report output language from user-visible text."""
     if not isinstance(text, str):
         raise TypeError("detect_language expects text to be str")
     stripped = text.strip()
@@ -63,6 +98,20 @@ def detect_language(text: str) -> LanguageCode:
     if chinese_chars >= 4:
         return "zh"
     return "zh" if chinese_chars >= 2 and chinese_chars / alnum_chars >= 0.10 else "en"
+
+
+def detect_source_language(text: str) -> str:
+    """Best-effort language detection for evidence/source text."""
+    if not isinstance(text, str):
+        raise TypeError("detect_source_language expects text to be str")
+    stripped = text.strip()
+    if not stripped:
+        return "en"
+    if any("\u3040" <= char <= "\u30ff" for char in stripped):
+        return "ja"
+    if any("\uac00" <= char <= "\ud7af" for char in stripped):
+        return "ko"
+    return detect_language(stripped)
 
 
 # Multilingual breadth policy. Output language picks the "home" language; market scope and
@@ -121,6 +170,22 @@ def _normalize_languages(languages: list[str], *, max_languages: int) -> list[st
     return result
 
 
+def plan_source_languages(
+    *,
+    report_language: str | None,
+    market_scope: object,
+    extra_languages: list[str] | None = None,
+    max_languages: int = _MAX_SEARCH_LANGUAGES,
+) -> list[str]:
+    """Ordered source-language set for multilingual retrieval."""
+    home = report_language if normalize_report_language(report_language) is not None else "en"
+    ordered = [home, "en"]
+    ordered.extend(languages_from_market_scope(market_scope))
+    if extra_languages:
+        ordered.extend(extra_languages)
+    return _normalize_languages(ordered, max_languages=max_languages)
+
+
 def plan_search_languages(
     *,
     response_language: str | None,
@@ -128,15 +193,13 @@ def plan_search_languages(
     extra_languages: list[str] | None = None,
     max_languages: int = _MAX_SEARCH_LANGUAGES,
 ) -> list[str]:
-    """Ordered language set for retrieval breadth: home language → English (global lingua franca)
-    → market-implied languages → explicit hints. Carrier language never excludes; it only orders.
-    """
-    home = response_language if response_language in {"zh", "en"} else "en"
-    ordered = [home, "en"]
-    ordered.extend(languages_from_market_scope(market_scope))
-    if extra_languages:
-        ordered.extend(extra_languages)
-    return _normalize_languages(ordered, max_languages=max_languages)
+    """Backward-compatible alias for source language planning."""
+    return plan_source_languages(
+        report_language=response_language,
+        market_scope=market_scope,
+        extra_languages=extra_languages,
+        max_languages=max_languages,
+    )
 
 
 def target_country_from_scope(*, market_scope: object) -> str | None:
@@ -174,11 +237,24 @@ def _country_from_host(host: str | None) -> tuple[CountryCode, str]:
     return "global", "host"
 
 
-def _language_from_span(span: dict[str, object] | None) -> LanguageCode | None:
+def _language_from_span(span: dict[str, object] | None) -> str | None:
     if not isinstance(span, dict):
         return None
-    language_raw = span.get("response_language")
-    return language_raw if language_raw in {"zh", "en"} else None
+    for key in ("source_language", "detected_language", "response_language"):
+        language_raw = span.get(key)
+        if isinstance(language_raw, str) and language_raw.strip():
+            return language_raw.strip().casefold()
+    return None
+
+
+def should_translate_evidence(*, report_language: str | None, source_language: str | None) -> bool:
+    if not isinstance(source_language, str) or not source_language.strip():
+        return False
+    normalized_source = source_language.strip().casefold()
+    normalized_report = normalize_report_language(report_language)
+    if normalized_report is None:
+        return False
+    return normalized_source != normalized_report
 
 
 def source_locale(
@@ -192,9 +268,9 @@ def source_locale(
     span_language = _language_from_span(span)
     if span_language is not None:
         language = span_language
-        language_signal = "span.response_language"
+        language_signal = "span.language"
     else:
-        language = detect_language(sanitized_text)
+        language = detect_source_language(sanitized_text)
         language_signal = "sanitized_text"
     return {
         "country": country,

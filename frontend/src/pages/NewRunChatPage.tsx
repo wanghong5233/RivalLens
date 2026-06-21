@@ -45,6 +45,7 @@ import { ReportDepthSelector } from "@/components/intake/ReportDepthSelector";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { NativeSelect } from "@/components/ui/native-select";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 import { pushToast } from "@/components/ui/toaster";
@@ -84,6 +85,7 @@ const POST_COMPLETE_DELAY_MS = 1500;
 // chat lives at the static /runs/new route) so a refresh can restore the current
 // pending question from the server instead of losing the thread.
 const INTAKE_SESSION_KEY = "rivallens.intake.run_id";
+type ReportLanguage = "zh" | "en";
 
 function normalizeReportDepth(raw: unknown): ReportDepth {
   if (raw === "deep" || raw === "quick") {
@@ -93,6 +95,14 @@ function normalizeReportDepth(raw: unknown): ReportDepth {
     return "debug";
   }
   return "quick";
+}
+
+function normalizeReportLanguage(raw: unknown): ReportLanguage {
+  return raw === "en" ? "en" : "zh";
+}
+
+function reportLanguageLabel(language: ReportLanguage): string {
+  return language === "en" ? "English" : "中文";
 }
 
 function reportDepthLabel(depth: ReportDepth): string {
@@ -407,6 +417,7 @@ export function NewRunChatPage(): JSX.Element {
   const [composerText, setComposerText] = useState("");
   const [composerOptions, setComposerOptions] = useState<string[]>([]);
   const [reportDepth, setReportDepth] = useState<ReportDepth>("quick");
+  const [reportLanguage, setReportLanguage] = useState<ReportLanguage>("zh");
   const [selectedExampleId, setSelectedExampleId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -425,6 +436,7 @@ export function NewRunChatPage(): JSX.Element {
     setComposerText("");
     setComposerOptions([]);
     setReportDepth("quick");
+    setReportLanguage("zh");
     setSelectedExampleId(null);
     ghostShownMessageIdsRef.current.clear();
     createIdempotencyKeyRef.current = null;
@@ -502,6 +514,7 @@ export function NewRunChatPage(): JSX.Element {
         setDraft(session.intake_draft);
         if (session.intake_draft !== null) {
           setReportDepth(normalizeReportDepth(session.intake_draft.report_depth));
+          setReportLanguage(normalizeReportLanguage(session.intake_draft.response_language));
         }
         setRunId(session.run_id);
         setStatus(session.phase === "planning" ? "awaiting_profile" : "awaiting_user");
@@ -528,6 +541,16 @@ export function NewRunChatPage(): JSX.Element {
     }
     return fromDetail.competitors;
   }, [seedCompetitorsFromQuery, sourceRunQuery.data]);
+
+  useEffect(() => {
+    if (runId !== null) {
+      return;
+    }
+    const inheritedReportLanguage = sourceRunQuery.data?.intake_draft?.response_language;
+    if (inheritedReportLanguage === "zh" || inheritedReportLanguage === "en") {
+      setReportLanguage(inheritedReportLanguage);
+    }
+  }, [runId, sourceRunQuery.data?.intake_draft?.response_language]);
 
   useEffect(() => {
     if (fromRunId === null || runId !== null || status !== "idle") {
@@ -592,6 +615,10 @@ export function NewRunChatPage(): JSX.Element {
     (snapshot: Record<string, unknown> | undefined) => {
       if (!snapshot) {
         return;
+      }
+      const responseLanguageRaw = snapshot.response_language;
+      if (responseLanguageRaw === "zh" || responseLanguageRaw === "en") {
+        setReportLanguage(responseLanguageRaw);
       }
       setDraft((prev) => {
         const base = prev ?? emptyDraft(typeof snapshot.user_query === "string" ? snapshot.user_query : "");
@@ -658,6 +685,9 @@ export function NewRunChatPage(): JSX.Element {
       if (draftFromEvent?.report_depth !== undefined) {
         setReportDepth(normalizeReportDepth(draftFromEvent.report_depth));
       }
+      if (draftFromEvent?.response_language === "zh" || draftFromEvent?.response_language === "en") {
+        setReportLanguage(draftFromEvent.response_language);
+      }
       setStatus("awaiting_profile");
       pushToast({
         title: "需求确认完成",
@@ -718,6 +748,7 @@ export function NewRunChatPage(): JSX.Element {
     try {
       const payload: IntakeCreateRequest = {
         user_query: userQuery,
+        response_language: reportLanguage,
       };
       if (fromRunId !== null) {
         payload.from_run_id = fromRunId;
@@ -740,6 +771,7 @@ export function NewRunChatPage(): JSX.Element {
       sessionStorage.setItem(INTAKE_SESSION_KEY, response.run_id);
       setDraft(response.intake_draft);
       setReportDepth(normalizeReportDepth(response.intake_draft.report_depth));
+      setReportLanguage(normalizeReportLanguage(response.intake_draft.response_language));
       if (response.phase === "done") {
         sessionStorage.removeItem(INTAKE_SESSION_KEY);
         setStatus("complete");
@@ -1138,6 +1170,20 @@ export function NewRunChatPage(): JSX.Element {
                     value={composerText}
                   />
                 </div>
+                {runId === null && (
+                  <label className="flex items-center gap-2 text-xs text-foreground-muted">
+                    <span className="shrink-0">报告语言</span>
+                    <NativeSelect
+                      className="h-8 w-40"
+                      disabled={composerDisabled}
+                      onChange={(event) => setReportLanguage(normalizeReportLanguage(event.target.value))}
+                      value={reportLanguage}
+                    >
+                      <option value="zh">中文（默认）</option>
+                      <option value="en">English</option>
+                    </NativeSelect>
+                  </label>
+                )}
                 {composerOptions.length > 0 && (
                   <div className="flex flex-wrap gap-1.5">
                     {composerOptions.map((option) => (
@@ -1282,6 +1328,12 @@ export function NewRunChatPage(): JSX.Element {
                     {status === "awaiting_profile"
                       ? reportDepthLabel(reportDepth)
                       : reportDepthLabel(normalizeReportDepth(draft.report_depth))}
+                  </p>
+                  <p>
+                    <span className="text-foreground-subtle">报告语言：</span>
+                    {status === "awaiting_profile"
+                      ? reportLanguageLabel(reportLanguage)
+                      : reportLanguageLabel(normalizeReportLanguage(draft.response_language))}
                   </p>
                 </div>
               )}

@@ -260,7 +260,8 @@ Composition rules (must follow):
    Each focus_dimension MUST be <= 32 chars, use a-z0-9_ only, and be 1-3 words.
    Prefer canonical ids such as product_positioning, pricing_strategy, enterprise_capabilities, market_differences, feature, pricing, user_feedback.
 5) Cap research tasks at 8; if competitors_explicit is larger, drop the lowest-priority entries beyond 8.
-6) Use the language of analysis_intent for titles/descriptions (Chinese for Chinese intents, English for English).
+6) Use response_language when intake_draft.response_language is provided (zh = Chinese, en = English);
+   otherwise use the language of analysis_intent.
 7) If intake_draft.self_product is set, the analyze/write tasks MUST frame findings RELATIVE to it
    (gaps vs self, where self wins/loses, actionable direction) — reflect this in their description.
 8) If intake_draft.market_scope is set, reflect that scope in research task descriptions (e.g. prioritize
@@ -435,6 +436,7 @@ Output JSON schema:
 Hard constraints:
 - Never fabricate evidence quotes, source_url, or source_title.
 - Evidence can only come from tool observations.
+- response_language controls the language of reasoning_summary and query phrasing hints; evidence quotes keep source language.
 - If enough dimensions are already covered, call finalize.
 - Prefer online collection first; use load_skill when domain-specific extraction guidance is needed.
 - For buyer-critical dimensions (pricing, enterprise, security, compliance), gather evidence from the vendor's OWN site first (e.g. search `site:<official-domain> pricing`, or fetch the official pricing/security/docs page); fall back to third-party articles only when the official source yields nothing.
@@ -565,6 +567,9 @@ Output JSON schema:
 }
 
 Rules:
+- Write user-facing fields in response_language when provided (zh = Chinese, en = English);
+  otherwise default to the language of user_query.
+- Evidence quotes remain source-language artifacts; do not overwrite source quote language.
 - Use only competitor_id and evidence_ids provided in the user prompt.
 - Every emitted row must have at least one valid evidence_id.
 - If evidence is insufficient, omit the row; do not emit placeholders.
@@ -600,6 +605,10 @@ Rules:
 - citation_coverage: true only when important claims are tied to evidence_refs from the prompt.
 - faithfulness: true only when claims are supported by the provided evidence and do not invent sources.
 - instruction_following: true only when sections match requested target sections and report_depth.
+- instruction_following must also enforce response_language consistency for report正文/章节标题:
+  allow occasional domain terms (e.g. API, SaaS, AI), but reject large mixed-language paragraphs
+  that drift away from response_language.
+- Evidence originals can be multilingual and should NOT be treated as language-consistency violations.
 - If a required field has genuinely no supporting evidence in the prompt and the report explicitly marks the gap (for example "no public pricing evidence"), do NOT fail instruction_following for that field.
 - Do not require fabricated pricing tiers, exact numbers, or pseudo-citations to satisfy instruction_following.
 - For every numeric_claim in the prompt, decide whether any cited evidence item supports that exact number or a directly computable equivalent. One supporting cited evidence item is sufficient; do not require every cited evidence item to contain the same number.
@@ -796,20 +805,39 @@ def build_intake_fallback_user_prompt(
     )
 
 
-def build_planner_user_prompt(*, intake_draft: dict[str, object]) -> str:
+def build_planner_user_prompt(
+    *,
+    intake_draft: dict[str, object],
+    response_language: str | None = None,
+) -> str:
     """Render the planner-turn user prompt from a completed intake_draft."""
+    effective_response_language = (
+        response_language
+        if response_language in {"zh", "en"}
+        else intake_draft.get("response_language")
+    )
     return (
         "Plan generation context:\n"
+        f"- response_language: {effective_response_language}\n"
         f"- intake_draft: {json.dumps(intake_draft, ensure_ascii=False)}\n"
         "\nReturn JSON per PLANNER_SYSTEM_PROMPT and nothing else."
     )
 
 
-def build_planner_fallback_user_prompt(*, intake_draft: dict[str, object]) -> str:
+def build_planner_fallback_user_prompt(
+    *,
+    intake_draft: dict[str, object],
+    response_language: str | None = None,
+) -> str:
     """Slimmer fallback prompt; planner_generate_node also has a deterministic fallback."""
     competitors = intake_draft.get("competitors_explicit") or []
     intent = intake_draft.get("analysis_intent")
     analysis_archetype = intake_draft.get("analysis_archetype")
+    effective_response_language = (
+        response_language
+        if response_language in {"zh", "en"}
+        else intake_draft.get("response_language")
+    )
     topology_hint = (
         "landscape topology: discover + research samples + analyze(opportunity map) + analyze(trends) + write"
         if analysis_archetype == "landscape"
@@ -817,6 +845,7 @@ def build_planner_fallback_user_prompt(*, intake_draft: dict[str, object]) -> st
     )
     return (
         "Fallback plan generation:\n"
+        f"- response_language: {effective_response_language}\n"
         f"- competitors_explicit: {_json(competitors if isinstance(competitors, list) else [])}\n"
         f"- competitors_discovery_mode: {bool(intake_draft.get('competitors_discovery_mode'))}\n"
         f"- analysis_archetype: {analysis_archetype}\n"
@@ -1137,6 +1166,7 @@ def build_researcher_user_prompt(
     turn_count: int,
     max_turns: int,
     observation_briefs: Sequence[dict[str, object]],
+    response_language: str | None = None,
     compressed_summary: str = "",
     domain_hint: str | None = None,
     target_category: str | None = None,
@@ -1165,6 +1195,7 @@ def build_researcher_user_prompt(
         f"- research_topic: {research_topic}\n"
         f"- competitor_id: {competitor_id}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
+        f"- response_language: {response_language}\n"
         f"- pending_dimensions: {_json(list(pending_dimensions))}\n"
         f"- queried_dimensions: {_json(list(queried_dimensions))}\n"
         f"- turn_count: {turn_count}\n"
@@ -1224,6 +1255,7 @@ def build_researcher_fallback_user_prompt(
     queried_dimensions: Sequence[str],
     turn_count: int,
     max_turns: int,
+    response_language: str | None = None,
     domain_hint: str | None = None,
 ) -> str:
     return (
@@ -1233,6 +1265,7 @@ def build_researcher_fallback_user_prompt(
         f"- queried_dimensions: {_json(list(queried_dimensions))}\n"
         f"- turn_count: {turn_count}\n"
         f"- max_turns: {max_turns}\n\n"
+        f"- response_language: {response_language}\n"
         f"- domain_hint: {domain_hint}\n\n"
         "Return one action with valid action_args. Prefer search_web/fetch_url/extract_structured or load_skill. "
         "Use only pending_dimensions values for action_args.dimension. "
@@ -1417,6 +1450,7 @@ def build_knowledge_extraction_user_prompt(
     competitors: Sequence[str],
     focus_dimensions: Sequence[str],
     evidence_briefs: Sequence[dict[str, object]],
+    response_language: str | None = None,
     analysis_archetype: str = "comparison",
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(
@@ -1426,6 +1460,7 @@ def build_knowledge_extraction_user_prompt(
     return (
         "Knowledge extraction context:\n"
         f"- analysis_archetype: {analysis_archetype}\n"
+        f"- response_language: {response_language}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- evidence_briefs: {_json(selected_evidence_briefs)}\n\n"
@@ -1439,9 +1474,11 @@ def build_knowledge_extraction_fallback_user_prompt(
     competitors: Sequence[str],
     focus_dimensions: Sequence[str],
     evidence_ids: Sequence[str],
+    response_language: str | None = None,
 ) -> str:
     return (
         "Fallback knowledge extraction request:\n"
+        f"- response_language: {response_language}\n"
         f"- competitors: {_json(list(competitors))}\n"
         f"- focus_dimensions: {_json(list(focus_dimensions))}\n"
         f"- evidence_ids: {_json(list(evidence_ids))}\n\n"
@@ -1477,11 +1514,13 @@ def build_qa_semantic_user_prompt(
     report_depth: str = "quick",
     target_sections: Sequence[str] = (),
     numeric_claims: Sequence[dict[str, object]] = (),
+    response_language: str | None = None,
 ) -> str:
     selected_evidence_briefs = select_layered_evidence_briefs(evidence_briefs)
     return (
         "QA semantic audit context:\n"
         f"- report_depth: {report_depth}\n"
+        f"- response_language: {response_language}\n"
         f"- target_sections: {_json(list(target_sections))}\n"
         f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n"
         f"- report_json: {_json(report_json)}\n"
@@ -1497,11 +1536,13 @@ def build_qa_semantic_fallback_user_prompt(
     *,
     failed_rule_ids: Sequence[str],
     evidence_count: int,
+    response_language: str | None = None,
 ) -> str:
     return (
         "Fallback QA semantic audit request:\n"
         f"- failed_rule_ids: {_json(list(failed_rule_ids))}\n"
         f"- evidence_count: {evidence_count}\n\n"
+        f"- response_language: {response_language}\n\n"
         "Return minimal valid JSON for semantic_audit_passed/reject_to/severity/finding/required_fields."
     )
 

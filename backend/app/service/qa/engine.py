@@ -60,6 +60,12 @@ _RULE_REQUIRED_FIELDS: dict[str, list[str]] = {
     "rule_writer_sections_must_have_content": ["reports.content_json.sections[].content_markdown"],
     "rule_writer_must_cite_evidence": ["reports.content_json.sections[].evidence_refs"],
     "rule_writer_no_fallback_mode": ["reports.content_json.risk_callouts"],
+    "rule_report_language_consistency": [
+        "runs.intake_draft.response_language",
+        "reports.content_json.executive_summary",
+        "reports.content_json.sections[].title",
+        "reports.content_json.sections[].content_markdown",
+    ],
     "rule_landscape_no_legacy_workbench_sections": [
         "reports.content_json.sections[].section_id",
         "reports.content_json.sections[].content_markdown",
@@ -762,6 +768,12 @@ async def evaluate_report(
         else {}
     )
     market_scope_raw = intake_draft.get("market_scope")
+    response_language_raw = intake_draft.get("response_language")
+    response_language = (
+        response_language_raw
+        if isinstance(response_language_raw, str)
+        else None
+    )
     analysis_archetype = _analysis_archetype_from_run(run)
     require_competitor_schema = analysis_archetype != "landscape"
     profile_competitors = _profile_competitors_for_qa(
@@ -778,6 +790,7 @@ async def evaluate_report(
         report_depth=report_depth,
         target_sections=target_sections,
         market_scope=market_scope_raw if isinstance(market_scope_raw, str) else None,
+        response_language=response_language,
         knowledge=knowledge,
         analysis_archetype=analysis_archetype,
         profile_competitors=profile_competitors,
@@ -824,10 +837,12 @@ async def evaluate_report(
         report_depth=report_depth,
         target_sections=target_sections,
         numeric_claims=numeric_claims_for_prompt,
+        response_language=response_language,
     )
     semantic_fallback_prompt = build_qa_semantic_fallback_user_prompt(
         failed_rule_ids=failed_rule_ids,
         evidence_count=len(evidence_items),
+        response_language=response_language,
     )
     harness_result = await complete_structured(
         model_slot="qa",

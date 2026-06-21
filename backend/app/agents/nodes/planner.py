@@ -816,8 +816,14 @@ async def planner_generate_node(state: AgentState) -> AgentState:
     tier_profile = resolve_tier_profile(draft.report_depth)
     intake_dump = draft.model_dump(exclude={"is_complete"})
 
-    user_prompt = build_planner_user_prompt(intake_draft=intake_dump)
-    fallback_user_prompt = build_planner_fallback_user_prompt(intake_draft=intake_dump)
+    user_prompt = build_planner_user_prompt(
+        intake_draft=intake_dump,
+        response_language=draft.response_language,
+    )
+    fallback_user_prompt = build_planner_fallback_user_prompt(
+        intake_draft=intake_dump,
+        response_language=draft.response_language,
+    )
     harness_result = await complete_structured(
         model_slot="research",
         system_prompt=PLANNER_SYSTEM_PROMPT,

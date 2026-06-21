@@ -41,6 +41,25 @@ function toAuthorityLabel(value: string): string {
   return "来源未知";
 }
 
+function toLanguageLabel(language: string | null): string {
+  if (!language) {
+    return "语言未知";
+  }
+  if (language === "zh") {
+    return "中文原文";
+  }
+  if (language === "en") {
+    return "英文原文";
+  }
+  if (language === "ja") {
+    return "日文原文";
+  }
+  if (language === "ko") {
+    return "韩文原文";
+  }
+  return `${language.toUpperCase()} 原文`;
+}
+
 export function EvidenceDrawer({
   open,
   onOpenChange,
@@ -95,6 +114,11 @@ export function EvidenceDrawer({
           {evidenceRows.map((item) => {
             const sourceIcon = SOURCE_TYPE_ICON[item.source_type] ?? "📌";
             const sourceAuthority = getSourceAuthority(item.metadata);
+            const originalText = item.quote.trim().length > 0 ? item.quote : item.sanitized_text;
+            const translatedExcerpt =
+              typeof item.translated_excerpt === "string" && item.translated_excerpt.trim().length > 0
+                ? item.translated_excerpt
+                : null;
             return (
               <article className="space-y-2 rounded-md border border-border bg-card p-3" key={item.evidence_id}>
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -110,12 +134,26 @@ export function EvidenceDrawer({
                   <Badge variant={sourceAuthority === "official" ? "success" : "secondary"}>
                     {toAuthorityLabel(sourceAuthority)}
                   </Badge>
+                  <Badge variant="secondary">{toLanguageLabel(item.source_language)}</Badge>
                   <Badge variant={item.desensitized ? "success" : "warning"}>
                     {item.desensitized ? "已脱敏" : "未脱敏"}
                   </Badge>
                 </div>
-                <div className="prose prose-invert max-w-none text-sm leading-6 prose-headings:mb-1.5 prose-headings:mt-3 prose-headings:text-sm prose-headings:font-semibold prose-headings:text-foreground prose-p:my-1.5 prose-p:text-foreground prose-strong:text-foreground prose-a:text-primary prose-li:my-0.5">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.sanitized_text}</ReactMarkdown>
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">证据原文</p>
+                    <div className="prose prose-invert max-w-none text-sm leading-6 prose-headings:mb-1.5 prose-headings:mt-3 prose-headings:text-sm prose-headings:font-semibold prose-headings:text-foreground prose-p:my-1.5 prose-p:text-foreground prose-strong:text-foreground prose-a:text-primary prose-li:my-0.5">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{originalText}</ReactMarkdown>
+                    </div>
+                  </div>
+                  {translatedExcerpt ? (
+                    <div className="space-y-1 rounded-md border border-primary/20 bg-primary/[0.06] p-2">
+                      <p className="text-xs text-primary">报告语言摘要/译文</p>
+                      <div className="prose prose-invert max-w-none text-sm leading-6 prose-headings:mb-1.5 prose-headings:mt-3 prose-headings:text-sm prose-headings:font-semibold prose-headings:text-foreground prose-p:my-1.5 prose-p:text-foreground prose-strong:text-foreground prose-a:text-primary prose-li:my-0.5">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{translatedExcerpt}</ReactMarkdown>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="text-xs text-muted-foreground">
                   <span>competitor: {item.competitor_id ?? "-"}</span>

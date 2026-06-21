@@ -34,6 +34,25 @@ function toAuthorityLabel(value: string): string {
   return "来源未知";
 }
 
+function toLanguageLabel(language: string | null): string {
+  if (!language) {
+    return "语言未知";
+  }
+  if (language === "zh") {
+    return "中文原文";
+  }
+  if (language === "en") {
+    return "英文原文";
+  }
+  if (language === "ja") {
+    return "日文原文";
+  }
+  if (language === "ko") {
+    return "韩文原文";
+  }
+  return `${language.toUpperCase()} 原文`;
+}
+
 function toSourceMeta(sourceType: string): SourceMeta {
   const normalized = sourceType.toLowerCase();
   if (normalized.includes("pricing")) {
@@ -333,6 +352,11 @@ export function RunEvidencePage(): JSX.Element {
                 const SourceIcon = sourceMeta.icon;
                 const isHighlighted = item.evidence_id === highlightedEvidenceId;
                 const itemSourceAuthority = getSourceAuthority(item.metadata);
+                const originalText = item.quote.trim().length > 0 ? item.quote : item.sanitized_text;
+                const translatedExcerpt =
+                  typeof item.translated_excerpt === "string" && item.translated_excerpt.trim().length > 0
+                    ? item.translated_excerpt
+                    : null;
                 return (
                   <article
                     className={cn(
@@ -354,12 +378,26 @@ export function RunEvidencePage(): JSX.Element {
                       <Badge variant={itemSourceAuthority === "official" ? "success" : "secondary"}>
                         {toAuthorityLabel(itemSourceAuthority)}
                       </Badge>
+                      <Badge variant="secondary">{toLanguageLabel(item.source_language)}</Badge>
                       <Badge variant={item.desensitized ? "success" : "warning"}>
                         {item.desensitized ? "已脱敏" : "未脱敏"}
                       </Badge>
                     </div>
                     {item.source_title ? <p className="text-sm font-medium text-foreground">{item.source_title}</p> : null}
-                    <p className="whitespace-pre-wrap text-sm leading-6 text-slate-200">{item.sanitized_text}</p>
+                    <div className="space-y-2">
+                      <div className="space-y-1">
+                        <p className="text-xs text-muted-foreground">证据原文</p>
+                        <p className="whitespace-pre-wrap text-sm leading-6 text-slate-200">{originalText}</p>
+                      </div>
+                      {translatedExcerpt ? (
+                        <div className="space-y-1 rounded-md border border-primary/20 bg-primary/[0.06] p-2">
+                          <p className="text-xs text-primary">报告语言摘要/译文</p>
+                          <p className="whitespace-pre-wrap text-sm leading-6 text-slate-100">
+                            {translatedExcerpt}
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
                     <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                       {isHighlighted ? <span className="rounded bg-primary/20 px-2 py-0.5 text-primary">报告高亮引用</span> : null}
                       {item.source_url ? (

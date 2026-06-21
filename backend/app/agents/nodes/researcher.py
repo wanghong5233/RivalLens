@@ -29,6 +29,7 @@ from service.collector.errors import ChannelError
 from service.collector.source_resolver import SourceResolutionResult, resolve_official_sources
 from service.event_bus import RunEventType, emit_run_event
 from service.desensitize import normalize_text_for_storage
+from service.locale import source_locale
 from service.llm.records import build_llm_call_record_from_mapping
 from service.collector.source_quality import is_low_semantic_text, source_blocklist_reason
 from utils.log_node import log_node
@@ -931,12 +932,20 @@ def _build_evidence_rows(
             source_type=normalized_source_type,
             competitor_source_match=competitor_source_match,
         )
+        source_locale_payload = source_locale(
+            source_url=source_url,
+            span=metadata,
+            sanitized_text=sanitized_text,
+        )
         metadata = {
             **metadata,
             "dimension_drop_reason": drop_reason,
             "competitor_source_match": competitor_source_match,
             "source_authority": source_authority,
             "source_authority_reason": source_authority_reason,
+            "source_language": source_locale_payload["language"],
+            "detected_language": source_locale_payload["language"],
+            "source_language_signal": source_locale_payload["language_signal"],
             "target_category": target_category,
             "category_aliases": list(category_aliases or []),
             "domain_hint_at_collection": metadata.get("domain_hint", target_category),

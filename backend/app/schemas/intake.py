@@ -180,6 +180,7 @@ class RunIntakeDraft(BaseModel):
     self_product: str | None = None
     market_scope: str | None = None
     time_context: str | None = None
+    # Backward-compatible field name: response_language == report output language.
     response_language: Literal["zh", "en"] | None = None
     # Defaults to comparison to preserve legacy behavior; never gates completion.
     analysis_archetype: AnalysisArchetype = "comparison"

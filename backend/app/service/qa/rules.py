@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Literal
 
 from core.defaults import (
@@ -13,7 +14,7 @@ from models.evidence import EvidenceRecord
 from schemas.contracts import validate_section_id
 from schemas.report_sections import required_sections_for_archetype
 from service.collector.source_quality import source_blocklist_reason
-from service.locale import source_locale, target_country_from_scope
+from service.locale import normalize_report_language, source_locale, target_country_from_scope
 
 RuleSeverity = Literal["blocking", "warning"]
 RuleRejectTarget = Literal["supervisor", "researcher", "analyst", "writer"]
@@ -57,6 +58,14 @@ _LANDSCAPE_CORE_SECTION_IDS: frozenset[str] = frozenset(
         "methodology_limits",
     }
 )
+_REPORT_LANGUAGE_ZH_MIN_CJK_CHARS = 20
+_REPORT_LANGUAGE_ZH_MIN_CJK_RATIO = 0.28
+_REPORT_LANGUAGE_ZH_LATIN_GRACE_CHARS = 24
+_REPORT_LANGUAGE_EN_MAX_CJK_CHARS = 24
+_REPORT_LANGUAGE_EN_MAX_CJK_RATIO = 0.20
+_EVIDENCE_CITATION_TOKEN_PATTERN = re.compile(r"\[ev_[^\]]+\]", re.IGNORECASE)
+_URL_TOKEN_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
+_CODE_SPAN_PATTERN = re.compile(r"`[^`]+`")
 
 
 @dataclass(frozen=True)
@@ -256,6 +265,56 @@ def rule_writer_no_fallback_mode(content_json: dict[str, object]) -> RuleResult:
     )
 
 
+def rule_report_language_consistency(
+    *,
+    content_json: dict[str, object],
+    response_language: str | None,
+) -> RuleResult:
+    normalized_response_language = normalize_report_language(response_language)
+    if normalized_response_language is None:
+        return RuleResult(
+            rule_id="rule_report_language_consistency",
+            passed=True,
+            severity="blocking",
+            reject_to="writer",
+            message="Report language consistency skipped: response_language is not explicitly set.",
+        )
+    report_text = _language_check_text(content_json)
+    if not report_text.strip():
+        return RuleResult(
+            rule_id="rule_report_language_consistency",
+            passed=True,
+            severity="blocking",
+            reject_to="writer",
+            message="Report language consistency skipped: no report text available.",
+        )
+    sanitized = _sanitize_language_check_text(report_text)
+    cjk_chars, latin_chars = _script_char_counts(sanitized)
+    script_total = cjk_chars + latin_chars
+    cjk_ratio = (cjk_chars / script_total) if script_total > 0 else 0.0
+    if normalized_response_language == "zh":
+        passed = cjk_chars >= _REPORT_LANGUAGE_ZH_MIN_CJK_CHARS and (
+            cjk_ratio >= _REPORT_LANGUAGE_ZH_MIN_CJK_RATIO
+            or latin_chars <= _REPORT_LANGUAGE_ZH_LATIN_GRACE_CHARS
+        )
+    else:
+        passed = (
+            cjk_chars <= _REPORT_LANGUAGE_EN_MAX_CJK_CHARS
+            or cjk_ratio <= _REPORT_LANGUAGE_EN_MAX_CJK_RATIO
+        )
+    return RuleResult(
+        rule_id="rule_report_language_consistency",
+        passed=passed,
+        severity="blocking",
+        reject_to="writer",
+        message=(
+            "Report body and section titles should stay in response_language "
+            f"(response_language={normalized_response_language}, cjk_chars={cjk_chars}, "
+            f"latin_chars={latin_chars}, cjk_ratio={cjk_ratio:.2f})."
+        ),
+    )
+
+
 def rule_landscape_no_legacy_workbench_sections(
     *,
     content_json: dict[str, object],
@@ -368,6 +427,34 @@ def _section_evidence_refs(section: dict[str, object]) -> list[str]:
     if not isinstance(refs_raw, list):
         return []
     return [item for item in refs_raw if isinstance(item, str) and item]
+
+
+def _language_check_text(content_json: dict[str, object]) -> str:
+    fragments: list[str] = []
+    executive_summary_raw = content_json.get("executive_summary")
+    if isinstance(executive_summary_raw, str) and executive_summary_raw.strip():
+        fragments.append(executive_summary_raw)
+    for section in _iter_report_sections(content_json):
+        title_raw = section.get("title")
+        if isinstance(title_raw, str) and title_raw.strip():
+            fragments.append(title_raw)
+        markdown_raw = section.get("content_markdown")
+        if isinstance(markdown_raw, str) and markdown_raw.strip():
+            fragments.append(markdown_raw)
+    return "\n".join(fragments)
+
+
+def _sanitize_language_check_text(text: str) -> str:
+    without_citations = _EVIDENCE_CITATION_TOKEN_PATTERN.sub(" ", text)
+    without_urls = _URL_TOKEN_PATTERN.sub(" ", without_citations)
+    without_code_spans = _CODE_SPAN_PATTERN.sub(" ", without_urls)
+    return without_code_spans
+
+
+def _script_char_counts(text: str) -> tuple[int, int]:
+    cjk_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    latin_chars = sum(1 for char in text if ("a" <= char <= "z") or ("A" <= char <= "Z"))
+    return cjk_chars, latin_chars
 
 
 def _executive_summary_is_present(content_json: dict[str, object]) -> bool:
@@ -1042,6 +1129,7 @@ def evaluate_fast_path_rules(
     report_depth: Literal["quick", "deep"] = "quick",
     target_sections: list[str] | None = None,
     market_scope: str | None = None,
+    response_language: str | None = None,
     knowledge: dict[str, object] | None = None,
     analysis_archetype: str = "comparison",
     profile_competitors: list[str] | None = None,
@@ -1059,6 +1147,10 @@ def evaluate_fast_path_rules(
             allowed_evidence_ids=allowed_evidence_ids,
         ),
         rule_writer_no_fallback_mode(content_json),
+        rule_report_language_consistency(
+            content_json=content_json,
+            response_language=response_language,
+        ),
         rule_landscape_no_legacy_workbench_sections(
             content_json=content_json,
             content_markdown=content_markdown,

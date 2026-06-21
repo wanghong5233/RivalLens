@@ -52,7 +52,7 @@ from service.comparison import load_comparisons_for_run
 from service.conclusion import load_conclusions_for_run
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.knowledge import load_knowledge_for_run
-from service.locale import detect_language
+from service.locale import resolve_report_language
 from service.metrics import RunMetricsSnapshot, build_run_metrics_snapshot, load_run_metrics_snapshot
 from service.skill_curator.tasks import run_skill_curator_for_run
 from utils.logger import bind_run, format_exception_for_log, get_logger
@@ -142,6 +142,7 @@ class RunCreateRequest(BaseModel):
     reference_urls: list[str] | None = None
     target_roles: list[str] = Field(default_factory=list)
     report_depth: Literal["debug", "quick", "deep"] = "quick"
+    response_language: Literal["zh", "en"] | None = None
     self_product: str | None = None
     market_scope: str | None = None
     time_context: str | None = None
@@ -200,6 +201,7 @@ class IntakeCreateRequest(BaseModel):
     competitors_discovery_mode: bool = False
     focus_dimensions: list[str] = Field(default_factory=list)
     report_depth: Literal["debug", "quick", "deep"] = "quick"
+    response_language: Literal["zh", "en"] | None = None
     from_run_id: str | None = None
     seed_competitor_ids: list[str] = Field(default_factory=list)
     client_request_id: str | None = None
@@ -403,7 +405,10 @@ class EvidenceListItemResponse(BaseModel):
     source_type: str
     source_url: str | None
     source_title: str | None
+    quote: str
     sanitized_text: str
+    source_language: str | None
+    translated_excerpt: str | None
     competitor_id: str | None
     metadata: dict[str, object] | None
     desensitized: bool
@@ -1217,6 +1222,28 @@ def _extract_competitor_id(span: dict[str, object] | None) -> str | None:
     return competitor_id if isinstance(competitor_id, str) else None
 
 
+def _extract_source_language(span: dict[str, object] | None) -> str | None:
+    if not isinstance(span, dict):
+        return None
+    for key in ("source_language", "detected_language"):
+        value = span.get(key)
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+    return None
+
+
+def _extract_translated_excerpt(span: dict[str, object] | None) -> str | None:
+    if not isinstance(span, dict):
+        return None
+    translated_raw = span.get("translated_excerpt")
+    if not isinstance(translated_raw, str):
+        return None
+    translated_excerpt = translated_raw.strip()
+    return translated_excerpt if translated_excerpt else None
+
+
 def _normalize_competitor_inputs(values: list[str]) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
@@ -1542,7 +1569,10 @@ async def create_run(payload: RunCreateRequest, request: Request) -> RunCreateRe
             excluded_categories=payload.excluded_categories,
             market_segments=payload.market_segments,
             analysis_archetype=direct_analysis_archetype,
-            response_language=detect_language(payload.user_query),
+            response_language=resolve_report_language(
+                response_language=payload.response_language,
+                user_query=payload.user_query,
+            ),
         )
 
         async with session_factory() as session:
@@ -2083,9 +2113,14 @@ async def create_run_intake(
         time_context=_pick_non_empty_string(
             inherited_draft_raw.get("time_context") if isinstance(inherited_draft_raw, dict) else None,
         ),
-        response_language=_pick_non_empty_string(
-            inherited_draft_raw.get("response_language") if isinstance(inherited_draft_raw, dict) else None,
-            detect_language(payload.user_query),
+        response_language=resolve_report_language(
+            report_language=payload.response_language,
+            response_language=(
+                inherited_draft_raw.get("response_language")
+                if isinstance(inherited_draft_raw, dict)
+                else None
+            ),
+            user_query=payload.user_query,
         ),
         analysis_archetype="comparison" if payload.from_run_id is not None else "comparison",
     )
@@ -3108,7 +3143,10 @@ async def get_run_evidence(
             source_type=evidence.source_type,
             source_url=evidence.source_url,
             source_title=evidence.source_title,
+            quote=evidence.quote,
             sanitized_text=evidence.sanitized_text,
+            source_language=_extract_source_language(evidence.span),
+            translated_excerpt=_extract_translated_excerpt(evidence.span),
             competitor_id=_extract_competitor_id(evidence.span),
             metadata=evidence.span,
             desensitized=evidence.desensitized,

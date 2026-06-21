@@ -217,6 +217,64 @@ def test_build_evidence_rows_uses_sanitized_text_when_quote_missing() -> None:
     assert dropped_dimensions == {"count": 0, "reasons": {}}
 
 
+def test_build_evidence_rows_persists_multilingual_source_language() -> None:
+    english_quote = (
+        "Cursor pricing page explains annual billing, enterprise controls, seat governance, "
+        "security review expectations, procurement checkpoints, and finance approval workflows "
+        "for software teams comparing rollout readiness across paid tiers."
+    )
+    japanese_quote = (
+        "Cursorの価格ページでは、年間契約、エンタープライズ管理、調達フロー、監査対応、"
+        "運用ガバナンス、導入計画の詳細が説明されており、企業チームが比較検討するための"
+        "具体的な判断材料が継続的に更新されています。"
+        "Cursorの価格ページでは、年間契約、エンタープライズ管理、調達フロー、監査対応、"
+        "運用ガバナンス、導入計画の詳細が説明されており、企業チームが比較検討するための"
+        "具体的な判断材料が継続的に更新されています。"
+    )
+    rows, _, dropped_dimensions = _build_evidence_rows(
+        run_id="run_source_language_test",
+        step_id="step_source_language_test",
+        collected_at=datetime.now(timezone.utc),
+        focus_dimensions=["pricing"],
+        evidence_drafts=[
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": english_quote,
+                "sanitized_text": english_quote,
+                "source_type": "article",
+                "source_url": "https://example.com/en-pricing",
+                "source_title": "Cursor Pricing EN",
+                "desensitized": True,
+                "metadata": {},
+            },
+            {
+                "dimension": "pricing",
+                "competitor_id": "Cursor",
+                "quote": japanese_quote,
+                "sanitized_text": japanese_quote,
+                "source_type": "article",
+                "source_url": "https://example.com/ja-pricing",
+                "source_title": "Cursor Pricing JA",
+                "desensitized": True,
+                "metadata": {},
+            },
+        ],
+        observations_log=[],
+        default_competitor_id="Cursor",
+    )
+
+    assert len(rows) == 2
+    language_by_url = {
+        row.source_url: row.span.get("source_language")
+        for row in rows
+        if isinstance(row.source_url, str) and isinstance(row.span, dict)
+    }
+    assert language_by_url["https://example.com/en-pricing"] == "en"
+    assert language_by_url["https://example.com/ja-pricing"] == "ja"
+    assert dropped_dimensions == {"count": 0, "reasons": {}}
+
+
 def test_build_evidence_rows_dedupes_draft_and_observation_path() -> None:
     quote = (
         "Cursor publishes pricing details for team buyers, including annual billing discounts, "

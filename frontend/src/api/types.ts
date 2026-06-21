@@ -13,6 +13,7 @@ export interface RunCreateRequest {
   reference_urls?: string[] | null;
   target_roles: string[];
   report_depth?: ReportDepth;
+  response_language?: "zh" | "en" | null;
   self_product?: string | null;
   market_scope?: string | null;
   time_context?: string | null;
@@ -52,6 +53,7 @@ export interface IntakeUserReply {
 
 export interface IntakeCreateRequest {
   user_query: string;
+  response_language?: "zh" | "en" | null;
   user_role?: UserRole | null;
   domain_hint?: string | null;
   reference_urls?: string[] | null;
@@ -481,7 +483,10 @@ export interface EvidenceListItemResponse {
   source_type: string;
   source_url: string | null;
   source_title: string | null;
+  quote: string;
   sanitized_text: string;
+  source_language: string | null;
+  translated_excerpt: string | null;
   competitor_id: string | null;
   metadata: Record<string, unknown> | null;
   desensitized: boolean;

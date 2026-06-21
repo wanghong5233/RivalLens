@@ -1393,6 +1393,11 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
         research_topic=state["research_topic"],
         competitor_id=state["competitor_id"],
         focus_dimensions=list(state.get("focus_dimensions", [])),
+        response_language=(
+            state.get("response_language")
+            if isinstance(state.get("response_language"), str)
+            else None
+        ),
         pending_dimensions=list(state.get("pending_dimensions", [])),
         queried_dimensions=list(state.get("queried_dimensions", [])),
         turn_count=int(state.get("turn_count", 0)),
@@ -1426,6 +1431,11 @@ async def llm_decide(state: ResearcherSubState) -> ResearcherSubState:
                 queried_dimensions=list(state.get("queried_dimensions", [])),
                 turn_count=int(state.get("turn_count", 0)),
                 max_turns=max_turns,
+                response_language=(
+                    state.get("response_language")
+                    if isinstance(state.get("response_language"), str)
+                    else None
+                ),
                 domain_hint=domain_hint,
             ),
             repair_user_prompt_builder=lambda errors: build_researcher_repair_user_prompt(

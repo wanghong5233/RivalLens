@@ -28,6 +28,7 @@ from service.qa.rules import (
     rule_locale_mismatch,
     rule_report_must_have_at_least_one_section,
     rule_report_must_have_markdown_content,
+    rule_report_language_consistency,
     rule_report_section_count_in_bounds,
     rule_source_quality_blocklist_share,
     rule_complete_coverage_has_target_evidence,
@@ -209,6 +210,90 @@ def test_rule_locale_mismatch_passes_for_china_scope_with_domestic_sources() -> 
     )
 
     assert result.passed is True
+
+
+def test_rule_report_language_consistency_rejects_zh_report_with_english_drift() -> None:
+    content_json = {
+        "executive_summary": (
+            "This report compares pricing strategy, distribution channels, and product moats across "
+            "multiple competitors with evidence-backed recommendations and implementation guidance."
+        ),
+        "sections": [
+            {
+                "section_id": "pricing_strategy",
+                "title": "Pricing Strategy",
+                "content_markdown": (
+                    "Enterprise pricing is structured around annual contracts, seat bundles, "
+                    "compliance add-ons, procurement workflows, and rollout governance for "
+                    "cross-functional buying committees."
+                ),
+                "evidence_refs": ["ev_test_001"],
+            }
+        ],
+    }
+
+    result = rule_report_language_consistency(
+        content_json=content_json,
+        response_language="zh",
+    )
+
+    assert result.passed is False
+    assert result.severity == "blocking"
+    assert "response_language=zh" in result.message
+
+
+def test_rule_report_language_consistency_allows_en_report_with_small_chinese_terms() -> None:
+    content_json = {
+        "executive_summary": (
+            "The report evaluates product positioning, monetization, and enterprise readiness "
+            "across major vendors while keeping evidence traceable for auditing."
+        ),
+        "sections": [
+            {
+                "section_id": "market_differences",
+                "title": "Market Differences",
+                "content_markdown": (
+                    "Most evidence supports an English narrative, with only limited proper nouns "
+                    "such as 阿里云 and 字节跳动 kept in original form."
+                ),
+                "evidence_refs": ["ev_test_001"],
+            }
+        ],
+    }
+
+    result = rule_report_language_consistency(
+        content_json=content_json,
+        response_language="en",
+    )
+
+    assert result.passed is True
+    assert result.severity == "blocking"
+
+
+def test_rule_report_language_consistency_rejects_en_report_with_large_chinese_blocks() -> None:
+    content_json = {
+        "executive_summary": "这是一段中文执行摘要，明显不符合英文报告输出要求。",
+        "sections": [
+            {
+                "section_id": "key_players",
+                "title": "关键玩家",
+                "content_markdown": (
+                    "该章节主要使用中文描述市场竞争格局、产品能力差异、渠道策略、定价方式以及采购流程，"
+                    "没有形成英文用户可以直接消费的统一叙述。"
+                ),
+                "evidence_refs": ["ev_test_001"],
+            }
+        ],
+    }
+
+    result = rule_report_language_consistency(
+        content_json=content_json,
+        response_language="en",
+    )
+
+    assert result.passed is False
+    assert result.severity == "blocking"
+    assert "response_language=en" in result.message
 
 
 def test_rule_report_must_have_markdown_content_pass_and_fail() -> None:
@@ -578,6 +663,36 @@ def test_evaluate_fast_path_rules_applies_deep_only_gates() -> None:
     failed_deep_rule_ids = {item.rule_id for item in deep_results if not item.passed}
     assert "rule_deep_report_min_char_count" in failed_deep_rule_ids
     assert "rule_deep_report_covers_target_sections" in failed_deep_rule_ids
+
+
+def test_evaluate_fast_path_rules_blocks_report_language_drift() -> None:
+    content_json = {
+        "template_id": "default",
+        "sections": [
+            {
+                "section_id": "pricing",
+                "title": "Pricing",
+                "content_markdown": (
+                    "This section describes annual contracts, onboarding playbooks, and procurement "
+                    "workflows with explicit buying-stage recommendations for enterprise teams."
+                ),
+                "evidence_refs": ["ev_test_001"],
+            }
+        ],
+    }
+    evidence = _make_evidence(desensitized=True)
+
+    results = evaluate_fast_path_rules(
+        content_markdown="x" * 500,
+        content_json=content_json,
+        evidence_items=[evidence],
+        allowed_evidence_ids={"ev_test_001"},
+        report_depth="quick",
+        response_language="zh",
+    )
+
+    failed_rule_ids = {item.rule_id for item in results if not item.passed}
+    assert "rule_report_language_consistency" in failed_rule_ids
 
 
 def test_deep_report_section_coverage_counts_top_level_executive_summary() -> None:
