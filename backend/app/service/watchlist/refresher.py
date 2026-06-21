@@ -123,6 +123,14 @@ class WatchlistRefresher:
         )
         session.add(run)
         item.last_run_id = run_id
+        # Claim the slot now: a refresh Run can outlast the 5-min poll interval, and
+        # next_refresh_at is otherwise only advanced in _finalize_watchlist (after the
+        # Run finishes). Without this the same item stays `next_refresh_at <= now` and
+        # the next poll fires a duplicate Run. _finalize_watchlist re-stamps it on done.
+        if item.refresh_interval_hours:
+            item.next_refresh_at = datetime.now(timezone.utc) + timedelta(
+                hours=item.refresh_interval_hours
+            )
         await session.commit()
         log.info("watchlist.refresher.run_created", watch_id=item.watch_id, run_id=run_id)
         return run_id

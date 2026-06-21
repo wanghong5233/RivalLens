@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import hashlib
 import json
@@ -52,7 +52,6 @@ from schemas.plan import FollowUpEntry, FollowUpRequest, PlanConfirmRequest
 from service.comparison import load_comparisons_for_run
 from service.conclusion import load_conclusions_for_run
 from service.diff.comparator import compute_diff
-from service.diff.persistence import persist_diffs
 from service.event_bus import EventBus, RunEventType, emit_run_event
 from service.knowledge import load_knowledge_for_run
 from service.locale import resolve_report_language
@@ -1515,7 +1514,7 @@ async def _compute_and_persist_diffs(*, run_id: str) -> None:
                         session=session,
                     )
                     if diffs:
-                        await persist_diffs(session=session, diffs=diffs)
+                        session.add_all(diffs)
                         await session.commit()
                         log.info(
                             "diff.persisted",
@@ -3500,11 +3499,18 @@ async def create_watchlist_item(payload: WatchlistCreateRequest) -> WatchlistIte
                     f"(matched={existing.competitor_id})"
                 ),
             )
+        # Seed the first auto-refresh due time when an interval is given without an
+        # explicit next_refresh_at, so the scheduler (next_refresh_at <= now) picks it up.
+        resolved_next_refresh_at = payload.next_refresh_at
+        if resolved_next_refresh_at is None and payload.refresh_interval_hours is not None:
+            resolved_next_refresh_at = datetime.now(timezone.utc) + timedelta(
+                hours=payload.refresh_interval_hours
+            )
         item = WatchlistItem(
             watch_id=make_id("watch_"),
             competitor_id=payload.competitor_id,
             note=payload.note,
-            next_refresh_at=payload.next_refresh_at,
+            next_refresh_at=resolved_next_refresh_at,
             added_from_run_id=payload.added_from_run_id,
             source_role=payload.source_role,
             refresh_interval_hours=payload.refresh_interval_hours,
@@ -3546,10 +3552,22 @@ async def update_watchlist_item(watch_id: str, payload: WatchlistUpdateRequest) 
         if "note" in payload.model_fields_set:
             normalized_note = payload.note.strip() if payload.note is not None else None
             item.note = normalized_note if normalized_note else None
-        if "next_refresh_at" in payload.model_fields_set:
+        explicit_next_refresh = "next_refresh_at" in payload.model_fields_set
+        if explicit_next_refresh:
             item.next_refresh_at = payload.next_refresh_at
         if "refresh_interval_hours" in payload.model_fields_set:
             item.refresh_interval_hours = payload.refresh_interval_hours
+            # The scheduler scans `next_refresh_at <= now`, so setting only the
+            # interval (the UI's frequency dropdown does exactly that) would leave
+            # next_refresh_at NULL and the entry would never auto-refresh. Seed the
+            # first due time here; clearing the interval (manual mode) stops it.
+            if not explicit_next_refresh:
+                if payload.refresh_interval_hours is None:
+                    item.next_refresh_at = None
+                else:
+                    item.next_refresh_at = datetime.now(timezone.utc) + timedelta(
+                        hours=payload.refresh_interval_hours
+                    )
         await session.commit()
         await session.refresh(item)
     return _to_watchlist_item(item)
