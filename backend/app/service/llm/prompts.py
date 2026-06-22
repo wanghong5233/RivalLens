@@ -669,6 +669,35 @@ WRITER_SYSTEM_PROMPT = _inject_catalog(
     WRITER_SYSTEM_PROMPT,
     applies_to_filter=("general",),
 )
+
+WRITER_SECTION_SYSTEM_PROMPT = """You are RivalLens Section Writer.
+Rewrite ONE report section into deeper, evidence-grounded analytical prose, in STRICT JSON.
+
+Output JSON schema:
+{
+  "section_id": str,
+  "title": str,
+  "content_markdown": str,
+  "evidence_refs": list[str],
+  "insight_refs": list[str]
+}
+
+Rules:
+- Write ONLY the single section named by section_id in the user prompt; keep that exact section_id and title.
+- Produce multi-paragraph analytical prose (and a markdown table where structure genuinely helps). Never emit key:value one-liners or a bare list of fields.
+- Go materially deeper than section_draft: interpret what the evidence means, contrast competitors/segments, and surface implications — do not merely restate the draft or the briefs.
+- Write in response_language (zh = Chinese, en = English); when absent, match user_query. Evidence may be foreign-language: translate facts into response_language but keep evidence ids and source_url unchanged.
+- Ground every claim with inline [ev_xxx] citations using ids from allowed_evidence_ids only. Never emit bare ev_xxx, unknown evidence ids, or insight_x ids in content_markdown.
+- Exact numbers (percentages, prices, counts, dates) must appear verbatim in cited evidence; otherwise state them qualitatively.
+- evidence_refs must list exactly the ids you cite, all drawn from allowed_evidence_ids. Do not fabricate ids.
+- Use business-report wording; in Chinese prefer 竞品/厂商/产品/企业 and avoid colloquial labels.
+- Return JSON object only.
+"""
+WRITER_SECTION_SYSTEM_PROMPT = _inject_catalog(
+    WRITER_SECTION_SYSTEM_PROMPT,
+    applies_to_filter=("general",),
+)
+
 QA_SEMANTIC_SYSTEM_PROMPT = _inject_catalog(
     QA_SEMANTIC_SYSTEM_PROMPT,
     applies_to_filter=("general", "qa_rule"),
@@ -1691,6 +1720,98 @@ def build_writer_fallback_user_prompt(
         "Write the report in response_language (zh = Chinese, en = English); when it is "
         "absent, match the language of user_query. Cite [ev_xxx] inline only from "
         "allowed_evidence_ids. Return valid JSON with at least one grounded section and evidence_refs."
+    )
+
+
+_SECTION_DEEPEN_DIRECTIVES: dict[str, str] = {
+    "executive_takeaways": (
+        "State the 3-5 highest-conviction judgments about this market; each takeaway is a "
+        "claim plus its evidence and the 'so what' for a decision-maker."
+    ),
+    "market_definition": (
+        "Define the target category precisely: what it is, its scope and boundaries, and what "
+        "is explicitly in or out of scope; ground the definition in cited evidence."
+    ),
+    "market_size_growth": (
+        "Synthesize demand drivers, structural constraints, and growth dynamics; give size/growth "
+        "numbers only when an evidence brief states them verbatim, otherwise reason qualitatively."
+    ),
+    "market_segmentation": (
+        "Explain the segmentation logic for this market and place each sample company/product in a "
+        "segment, justifying the placement with evidence."
+    ),
+    "competitive_landscape": (
+        "Present the admission tiers as a markdown table AND analyze what the structure implies "
+        "about concentration, differentiation, and where competition is intensifying."
+    ),
+    "key_players": (
+        "For EACH key player write a multi-sentence paragraph covering positioning, capability "
+        "signal, commercialization/pricing, and user feedback, each claim tied to its evidence."
+    ),
+    "value_chain": (
+        "Analyze the supply-side and ecosystem roles (components, platforms, channels) and where "
+        "value concentrates along the chain, grounded in cited evidence."
+    ),
+    "opportunities_risks": (
+        "Lay out concrete opportunities and risks; for each, give the evidence, the affected party, "
+        "and the likely direction of impact."
+    ),
+    "strategic_recommendations": (
+        "Give stakeholder-routed (product/strategy/sales/operations/investor), executable "
+        "recommendations; each must be concrete and tied to cited evidence."
+    ),
+}
+
+
+def writer_section_deepen_directive(section_id: str) -> str:
+    return _SECTION_DEEPEN_DIRECTIVES.get(
+        section_id,
+        "Deepen this section into grounded, multi-paragraph analytical prose.",
+    )
+
+
+def build_writer_section_deepen_user_prompt(
+    *,
+    section_id: str,
+    section_title: str,
+    section_draft: str,
+    user_query: str,
+    analysis_archetype: str,
+    response_language: str | None,
+    report_depth: str,
+    target_min_chars: int,
+    allowed_evidence_ids: Sequence[str],
+    evidence_briefs: Sequence[dict[str, object]],
+    analyst_summary: str,
+    analyst_insights: Sequence[dict[str, object]] = (),
+    landscape_facts: dict[str, object] | None = None,
+) -> str:
+    directive = writer_section_deepen_directive(section_id)
+    landscape_block = (
+        f"- landscape_facts: {_json(landscape_facts)}\n"
+        if analysis_archetype == "landscape" and landscape_facts is not None
+        else ""
+    )
+    return (
+        "Deepen a single report section into commercial-grade analytical prose.\n"
+        f"- section_id: {section_id}\n"
+        f"- section_title: {section_title}\n"
+        f"- section_objective: {directive}\n"
+        f"- user_query: {user_query}\n"
+        f"- analysis_archetype: {analysis_archetype}\n"
+        f"- response_language: {response_language}\n"
+        f"- report_depth: {report_depth}\n"
+        f"- target_min_chars: {target_min_chars}\n"
+        f"- allowed_evidence_ids: {_json(list(allowed_evidence_ids))}\n"
+        + landscape_block
+        + f"- analyst_summary: {analyst_summary}\n"
+        f"- analyst_insights: {_json(list(analyst_insights)[:8])}\n"
+        f"- evidence_briefs: {_json(list(evidence_briefs))}\n"
+        f"- section_draft (first-pass, expand and deepen this — do not just restate it):\n{section_draft}\n\n"
+        "Rewrite ONLY this section. Return JSON with section_id, title, content_markdown "
+        "(multi-paragraph analytical prose meeting section_objective, at least target_min_chars), "
+        "evidence_refs (ids you cite, all from allowed_evidence_ids), and insight_refs. Cite [ev_xxx] "
+        "inline only from allowed_evidence_ids; never output bare ev_xxx or insight_x ids in markdown."
     )
 
 

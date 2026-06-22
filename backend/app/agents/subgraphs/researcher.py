@@ -786,6 +786,13 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
         return ("finalize", {"summary": "fallback finalize after pending dimensions exhausted"})
 
     dimension = pending_dimensions[0]
+    domain_hint_raw = state.get("domain_hint")
+    domain_hint = (
+        domain_hint_raw.strip()
+        if isinstance(domain_hint_raw, str) and domain_hint_raw.strip()
+        else ""
+    )
+    already_fetched = _already_fetched_urls(state)
 
     fetch_attempt_count = _dimension_tool_attempt_count(
         state=state,
@@ -798,12 +805,15 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
         dimension=dimension,
     )
 
-    # Source-first: always attempt deterministic source fetch before open web search.
+    # Source-first: attempt a deterministic source fetch before open web search, but
+    # never re-fetch a URL already pulled this run (a dead "official" page resolves
+    # the same junk every dimension and starves the competitor of real evidence).
     if fetch_attempt_count == 0:
         official_fetch_url = _fallback_fetch_url(
             state=state,
             dimension=dimension,
             official_only=True,
+            exclude_urls=already_fetched,
         )
         if official_fetch_url is not None:
             return (
@@ -849,6 +859,7 @@ def _fallback_action(state: ResearcherSubState) -> tuple[str, dict[str, object]]
             state=state,
             dimension=dimension,
             official_only=False,
+            exclude_urls=already_fetched,
         )
         if follow_up_fetch_url is not None:
             return (
@@ -983,8 +994,10 @@ def _fallback_fetch_url(
     state: ResearcherSubState,
     dimension: FocusDimension,
     official_only: bool = False,
+    exclude_urls: set[str] | None = None,
 ) -> str | None:
     official_hosts = _state_official_hosts(state)
+    excluded = exclude_urls or set()
 
     candidate_rows: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
@@ -992,6 +1005,8 @@ def _fallback_fetch_url(
     def append_candidate(url: str, source_type: str) -> None:
         cleaned = url.strip()
         if not cleaned or cleaned in seen_urls:
+            return
+        if cleaned in excluded:
             return
         if official_only and not _url_host_matches(cleaned, official_hosts):
             return
@@ -1066,10 +1081,16 @@ def _source_first_fetch_guard_url(
         > 0
     ):
         return None
+    # When a competitor's only "official" host was already pulled (often a
+    # mis-resolved news/aggregator page that yields no full text), do not keep
+    # hijacking every dimension's first search into a re-fetch of that dead URL.
+    # Returning None lets the LLM's open-web search proceed, which is the only way
+    # starved competitors (1 evidence row) gather real evidence.
     return _fallback_fetch_url(
         state=state,
         dimension=dimension,
         official_only=True,
+        exclude_urls=_already_fetched_urls(state),
     )
 
 

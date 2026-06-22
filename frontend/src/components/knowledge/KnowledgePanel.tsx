@@ -1,5 +1,5 @@
-import { Boxes, ExternalLink, MessageSquareQuote, Tags, UserRound } from "lucide-react";
-import { useMemo } from "react";
+import { Boxes, ChevronDown, ExternalLink, MessageSquareQuote, Tags, UserRound } from "lucide-react";
+import { useMemo, useState } from "react";
 
 import type {
   KnowledgeFeedback,
@@ -387,6 +387,18 @@ export function KnowledgePanel({
   const feedbackGroups = useMemo(() => groupFeedback(knowledge?.feedback ?? []), [knowledge?.feedback]);
   const personaGroups = useMemo(() => groupPersonas(knowledge?.personas ?? []), [knowledge?.personas]);
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
+  const [expandedCompetitors, setExpandedCompetitors] = useState<Set<string>>(new Set());
+  function toggleCompetitor(competitorId: string): void {
+    setExpandedCompetitors((prev) => {
+      const next = new Set(prev);
+      if (next.has(competitorId)) {
+        next.delete(competitorId);
+      } else {
+        next.add(competitorId);
+      }
+      return next;
+    });
+  }
   const featureCount = knowledge?.features.length ?? 0;
   const pricingCount = knowledge?.pricings.length ?? 0;
   const personaCount = knowledge?.personas.length ?? 0;
@@ -394,19 +406,6 @@ export function KnowledgePanel({
   const isLandscape = knowledge?.analysis_archetype === "landscape";
   const hasKnowledge =
     featureCount + pricingCount + personaCount + feedbackCount > 0;
-  const roleGroups = useMemo(() => {
-    const grouped = new Map<string, string[]>();
-    for (const [competitorId, role] of Object.entries(roleByCompetitor)) {
-      const rows = grouped.get(role) ?? [];
-      rows.push(competitorId);
-      grouped.set(role, rows);
-    }
-    return Array.from(grouped.entries()).map(([role, competitors]) => ({
-      role,
-      label: candidateRoleLabel(role),
-      competitors: competitors.sort((left, right) => left.localeCompare(right)),
-    }));
-  }, [roleByCompetitor]);
   const featureEmpty = schemaEmptyText(knowledge ?? null, {
     bucket: "feature",
     defaultText: "暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。",
@@ -453,27 +452,6 @@ export function KnowledgePanel({
           </p>
         </div>
       </div>
-      {isLandscape ? (
-        <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-xs text-muted-foreground">
-          本次为趋势/全景分析，竞品知识矩阵为辅助视图；若需完整功能树/定价/画像，请在下一步发起聚焦到具体产品的对比分析。
-        </div>
-      ) : null}
-      {isLandscape && roleGroups.length > 0 ? (
-        <section className="rounded-md border border-primary/20 bg-background/40 p-3">
-          <p className="text-xs font-medium text-foreground">赛道角色分层</p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {roleGroups.map((group) => (
-              <div
-                className="rounded border border-white/[0.08] bg-surface/70 px-2 py-1 text-xs text-muted-foreground"
-                key={`role-group-${group.role}`}
-              >
-                <span className="font-medium text-foreground">{group.label}</span> · {group.competitors.join("、")}
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
       <div className="grid gap-2 sm:grid-cols-4">
         <SchemaStat hint="功能树节点" label="功能树" value={featureCount} />
         <SchemaStat hint="套餐/商业模式" label="定价模型" value={pricingCount} />
@@ -551,20 +529,38 @@ export function KnowledgePanel({
                 const competitorPersonas = personaGroups.get(competitorId) ?? [];
                 const competitorFeedback = feedbackGroups.get(competitorId) ?? [];
                 const sourceRole = roleByCompetitor[competitorId];
+                const isExpanded = expandedCompetitors.has(competitorId);
+                const detailCounts = [
+                  competitorFeatures.length > 0 ? `${competitorFeatures.length} 功能` : null,
+                  competitorPricings.length > 0 ? `${competitorPricings.length} 定价` : null,
+                  competitorPersonas.length > 0 ? `${competitorPersonas.length} 画像` : null,
+                  competitorFeedback.length > 0 ? `${competitorFeedback.length} 反馈` : null,
+                ].filter((value): value is string => value !== null);
                 return (
-                  <article className="rounded-lg border border-border bg-background/40 p-4" key={`card-${competitorId}`}>
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
+                  <article className="overflow-hidden rounded-lg border border-border bg-background/40" key={`card-${competitorId}`}>
+                    <div className="flex flex-wrap items-center justify-between gap-2 p-4">
+                      <button
+                        aria-expanded={isExpanded}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        onClick={() => toggleCompetitor(competitorId)}
+                        type="button"
+                      >
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 shrink-0 text-foreground-subtle transition-transform",
+                            isExpanded && "rotate-180",
+                          )}
+                        />
+                        <h4 className="truncate text-sm font-semibold text-foreground">{competitorId}</h4>
                         {sourceRole ? (
                           <Badge variant={isLandscape ? "secondary" : "outline"}>
                             {candidateRoleLabel(sourceRole)}
                           </Badge>
                         ) : null}
-                        {isLandscape && sourceRole ? (
-                          <Badge variant="outline">{sourceRole}</Badge>
-                        ) : null}
-                      </div>
+                        <span className="ml-1 truncate text-xs text-muted-foreground">
+                          {detailCounts.length > 0 ? detailCounts.join(" · ") : "暂无结构化数据"}
+                        </span>
+                      </button>
                       <div className="flex items-center gap-2">
                         {onFocusCompetitor ? (
                           <Button
@@ -588,7 +584,8 @@ export function KnowledgePanel({
                         ) : null}
                       </div>
                     </div>
-                    <div className="mt-3 grid gap-3 xl:grid-cols-2">
+                    {isExpanded ? (
+                    <div className="grid gap-3 border-t border-border/60 p-4 xl:grid-cols-2">
                       <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
                         <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
                           <Boxes className="h-3.5 w-3.5 text-primary" />
@@ -662,6 +659,7 @@ export function KnowledgePanel({
                         )}
                       </section>
                     </div>
+                    ) : null}
                   </article>
                 );
               })}

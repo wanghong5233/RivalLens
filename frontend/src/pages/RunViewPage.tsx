@@ -361,21 +361,9 @@ export function RunViewPage(): JSX.Element {
               )}
               {isReportReady && !reportQuery.isLoading && !reportQuery.isError && (
                 <>
-                  {isLandscapeRun ? (
-                    <RoleLayerMap
-                      groups={roleGroups}
-                      showActions
-                      onFocusCompetitor={(competitorId) => navigateToFocusedRun([competitorId])}
-                      onFocusRole={(_, competitors) => navigateToFocusedRun(competitors)}
-                      onAddWatchlist={(competitorId, sourceRole) =>
-                        void handleAddWatchlist(competitorId, sourceRole)
-                      }
-                    />
-                  ) : null}
                   <ReportArticle
                     markdown={reportMarkdown}
                     onEvidenceClick={openEvidenceDrawer}
-                    qaWarnings={reportQuery.data?.content_json.qa_warnings}
                   />
                   {diffs.length > 0 ? (
                     <CompetitorDiffCard diffs={diffs} />

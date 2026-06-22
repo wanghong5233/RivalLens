@@ -18,7 +18,13 @@ from models.artifact import Artifact
 from models.evidence import EvidenceRecord
 from models.report import Report
 from models.step import Step
-from schemas.agent_outputs import AnalystOutput, WriterExecutionContext, WriterReportOutput
+from schemas.agent_outputs import (
+    MIN_WRITER_SECTION_CHARS,
+    AnalystOutput,
+    WriterExecutionContext,
+    WriterReportOutput,
+    WriterSectionOutput,
+)
 from schemas.ids import make_id
 from schemas.report_sections import (
     CORE_DISCOVERY_ROLES,
@@ -34,14 +40,18 @@ from service.event_bus import RunEventType, emit_run_event
 from service.conclusion import load_conclusions_for_run
 from service.llm import (
     EVIDENCE_QUOTE_CHAR_BUDGET,
+    WRITER_SECTION_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
     build_writer_fallback_user_prompt,
     build_writer_repair_user_prompt,
+    build_writer_section_deepen_user_prompt,
     build_writer_user_prompt,
+    select_layered_evidence_briefs,
 )
 from service.knowledge import EMPTY_RUN_KNOWLEDGE, load_knowledge_for_run
 from service.llm.harness import complete_structured
 from service.llm.records import build_llm_call_record
+from service.llm.response import LLMResponse
 from utils.log_node import log_node
 from utils.logger import get_logger
 
@@ -1173,6 +1183,53 @@ def _landscape_structure_facts(
     }
 
 
+# Plain-language disclosure of per-competitor coverage gaps. Keys are the
+# `reason` half of the `bucket:reason` codes produced upstream; ordering goes
+# from most to least concerning so the report leads with real evidence gaps.
+_GAP_REASON_ORDER: tuple[str, ...] = (
+    "no_grounded_evidence",
+    "category_mismatch",
+    "coverage_partial",
+    "not_applicable_for_archetype",
+)
+_GAP_REASON_PHRASES: dict[str, dict[str, str]] = {
+    "no_grounded_evidence": {
+        "zh": "公开证据不足，未展开功能/定价/画像分析",
+        "en": "insufficient public evidence; not analyzed in depth",
+    },
+    "category_mismatch": {
+        "zh": "现有证据与目标品类匹配度有限，结论仅供参考",
+        "en": "evidence only partially matches the target category; treat as indicative",
+    },
+    "coverage_partial": {
+        "zh": "证据部分覆盖，结论以现有维度为准",
+        "en": "partial coverage; conclusions limited to covered dimensions",
+    },
+    "not_applicable_for_archetype": {
+        "zh": "趋势/全景模式下不强制结构化字段",
+        "en": "structured fields not required in landscape mode",
+    },
+}
+
+
+def _dominant_gap_reason(reasons: list[object]) -> str | None:
+    """Pick one disclosure bucket for a competitor from its `bucket:reason` codes.
+
+    Severity order wins ties so a competitor with any genuine evidence gap is
+    grouped under that gap rather than a benign "not applicable" note.
+    """
+    seen: set[str] = set()
+    for raw in reasons:
+        text = str(raw)
+        suffix = text.split(":", 1)[1] if ":" in text else text
+        if suffix in _GAP_REASON_PHRASES:
+            seen.add(suffix)
+    for reason_key in _GAP_REASON_ORDER:
+        if reason_key in seen:
+            return reason_key
+    return None
+
+
 def _landscape_methodology_section(
     *,
     facts: dict[str, object],
@@ -1202,9 +1259,24 @@ def _landscape_methodology_section(
     ]
     coverage_gaps = facts.get("coverage_gaps")
     if isinstance(coverage_gaps, dict):
-        for competitor, reasons in list(coverage_gaps.items())[:8]:
-            if isinstance(reasons, list) and reasons:
-                lines.append(f"- {competitor}: {', '.join(str(reason) for reason in reasons[:4])}")
+        # Disclose gaps in plain language grouped by dominant reason, instead of
+        # dumping raw `bucket:reason` machine codes (e.g. feature:no_grounded_evidence)
+        # into the user-facing report — those codes read as garbage to a reader.
+        competitors_by_reason: dict[str, list[str]] = {}
+        for competitor, reasons in coverage_gaps.items():
+            if not (isinstance(competitor, str) and isinstance(reasons, list) and reasons):
+                continue
+            dominant = _dominant_gap_reason(reasons)
+            if dominant is None:
+                continue
+            competitors_by_reason.setdefault(dominant, []).append(competitor)
+        for reason_key in _GAP_REASON_ORDER:
+            competitors = competitors_by_reason.get(reason_key)
+            if not competitors:
+                continue
+            phrase = _GAP_REASON_PHRASES[reason_key]["zh" if zh else "en"]
+            joined = "、".join(sorted(competitors)) if zh else ", ".join(sorted(competitors))
+            lines.append(f"- {joined}：{phrase}" if zh else f"- {joined}: {phrase}")
     lines.append(
         "- 方法论边界优先披露证据缺口、样本偏差和准入规则，避免把未覆盖信息包装成确定性结论。"
         if zh
@@ -1653,6 +1725,194 @@ def _build_self_positioning_section(
         "evidence_refs": _fallback_evidence_refs(allowed_evidence_ids=allowed_evidence_ids),
         "insight_refs": [],
     }
+
+
+# Sections the deterministic pass later rebuilds from tables/bookkeeping — a
+# deepening call on these is wasted because `_apply_structured_writer_sections`
+# overwrites them. Everything else in a landscape report is LLM-owned narrative.
+_DETERMINISTIC_OVERWRITE_SECTIONS_COMPARISON: frozenset[str] = frozenset(
+    {"competitor_profiles", "comparison_matrix", "positioning_map", "self_positioning"}
+)
+
+
+def _section_is_deterministically_overwritten(
+    section_id: str, *, analysis_archetype: str
+) -> bool:
+    if analysis_archetype == "landscape":
+        return section_id == "methodology_limits"
+    return section_id in _DETERMINISTIC_OVERWRITE_SECTIONS_COMPARISON
+
+
+def _section_deepen_briefs(
+    *,
+    section_refs: list[str],
+    evidence_briefs: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Evidence pool for one section: its cited briefs first, then a layered pool.
+
+    Keeping the section's own citations guarantees the prose stays grounded in the
+    evidence it already used, while the layered pool lets the model reach for
+    adjacent facts when it deepens the analysis.
+    """
+    by_id = {
+        brief["evidence_id"]: brief
+        for brief in evidence_briefs
+        if isinstance(brief.get("evidence_id"), str)
+    }
+    primary = [by_id[ref] for ref in section_refs if ref in by_id]
+    seen = {brief["evidence_id"] for brief in primary}
+    merged = list(primary)
+    for brief in select_layered_evidence_briefs(evidence_briefs):
+        evidence_id = brief.get("evidence_id")
+        if not isinstance(evidence_id, str) or evidence_id in seen:
+            continue
+        seen.add(evidence_id)
+        merged.append(brief)
+    return merged
+
+
+async def _deepen_single_section(
+    *,
+    section_id: str,
+    section_title_text: str,
+    draft_markdown: str,
+    user_query: str,
+    analysis_archetype: str,
+    response_language: str | None,
+    report_depth: Literal["quick", "deep"],
+    target_min_chars: int,
+    section_allowed_ids: set[str],
+    briefs: list[dict[str, object]],
+    analyst_summary: str,
+    insight_briefs: list[dict[str, object]],
+    landscape_facts: dict[str, object] | None,
+) -> tuple[WriterSectionOutput | None, LLMResponse]:
+    def _parse(content: dict[str, object]) -> WriterSectionOutput:
+        parsed = WriterSectionOutput.model_validate(content)
+        grounded_refs = _stable_unique(
+            [ref for ref in parsed.evidence_refs if ref in section_allowed_ids]
+        )
+        if not grounded_refs:
+            raise ValueError("section deepen produced no grounded evidence_refs")
+        return parsed.model_copy(
+            update={
+                "section_id": section_id,
+                "title": section_title_text,
+                "evidence_refs": grounded_refs,
+            }
+        )
+
+    harness_result = await complete_structured(
+        model_slot="writer",
+        system_prompt=WRITER_SECTION_SYSTEM_PROMPT,
+        user_prompt=build_writer_section_deepen_user_prompt(
+            section_id=section_id,
+            section_title=section_title_text,
+            section_draft=draft_markdown,
+            user_query=user_query,
+            analysis_archetype=analysis_archetype,
+            response_language=response_language,
+            report_depth=report_depth,
+            target_min_chars=target_min_chars,
+            allowed_evidence_ids=sorted(section_allowed_ids),
+            evidence_briefs=briefs,
+            analyst_summary=analyst_summary,
+            analyst_insights=insight_briefs,
+            landscape_facts=landscape_facts,
+        ),
+        output_model=WriterSectionOutput,
+        parser=_parse,
+        log_event="writer.section_deepen.finish",
+    )
+    return harness_result.value, harness_result.llm_response
+
+
+async def _deepen_report_sections(
+    *,
+    report_content: dict[str, object],
+    analysis_archetype: str,
+    response_language: str | None,
+    report_depth: Literal["quick", "deep"],
+    user_query: str,
+    evidence_briefs: list[dict[str, object]],
+    analyst_summary: str,
+    insight_briefs: list[dict[str, object]],
+    landscape_facts: dict[str, object] | None,
+) -> tuple[dict[str, object], list[LLMResponse], list[str]]:
+    """Second pass: rewrite each LLM-owned narrative section on its own.
+
+    One focused call per section lets the model spend its full output budget on a
+    single topic instead of collapsing every section into a few sentences. Runs
+    sequentially to avoid stacking concurrent provider calls; any per-section
+    failure (or a result no longer/shorter than the draft) keeps the first draft.
+    """
+    sections_raw = report_content.get("sections")
+    if not isinstance(sections_raw, list):
+        return report_content, [], []
+    min_chars = max(MIN_WRITER_SECTION_CHARS, settings.WRITER_SECTION_DEEPEN_MIN_CHARS)
+    updated_sections: list[object] = []
+    deepen_responses: list[LLMResponse] = []
+    deepened_ids: list[str] = []
+    for section in sections_raw:
+        if not isinstance(section, dict):
+            updated_sections.append(section)
+            continue
+        section_id = section.get("section_id")
+        draft = section.get("content_markdown")
+        if (
+            not isinstance(section_id, str)
+            or not isinstance(draft, str)
+            or _section_is_deterministically_overwritten(
+                section_id, analysis_archetype=analysis_archetype
+            )
+        ):
+            updated_sections.append(section)
+            continue
+        section_refs = [ref for ref in section.get("evidence_refs", []) if isinstance(ref, str)]
+        briefs = _section_deepen_briefs(
+            section_refs=section_refs,
+            evidence_briefs=evidence_briefs,
+        )
+        section_allowed_ids = {
+            brief["evidence_id"]
+            for brief in briefs
+            if isinstance(brief.get("evidence_id"), str)
+        }
+        if not section_allowed_ids:
+            updated_sections.append(section)
+            continue
+        title_raw = section.get("title")
+        section_title_text = (
+            title_raw.strip()
+            if isinstance(title_raw, str) and title_raw.strip()
+            else section_title(section_id, response_language=response_language)
+        )
+        deepened, llm_response = await _deepen_single_section(
+            section_id=section_id,
+            section_title_text=section_title_text,
+            draft_markdown=draft,
+            user_query=user_query,
+            analysis_archetype=analysis_archetype,
+            response_language=response_language,
+            report_depth=report_depth,
+            target_min_chars=min_chars,
+            section_allowed_ids=section_allowed_ids,
+            briefs=briefs,
+            analyst_summary=analyst_summary,
+            insight_briefs=insight_briefs,
+            landscape_facts=landscape_facts,
+        )
+        deepen_responses.append(llm_response)
+        deepened_body = deepened.content_markdown.strip() if deepened is not None else ""
+        if deepened is not None and len(deepened_body) >= max(min_chars, len(draft.strip())):
+            merged = dict(section)
+            merged["content_markdown"] = deepened.content_markdown
+            merged["evidence_refs"] = _stable_unique([*section_refs, *deepened.evidence_refs])
+            updated_sections.append(merged)
+            deepened_ids.append(section_id)
+        else:
+            updated_sections.append(section)
+    return {**report_content, "sections": updated_sections}, deepen_responses, deepened_ids
 
 
 def _apply_structured_writer_sections(
@@ -2311,6 +2571,27 @@ async def writer_node(state: AgentState) -> AgentState:
             evidence_briefs=evidence_briefs,
             risk_flags=risk_flags,
         )
+    section_deepen_responses: list[LLMResponse] = []
+    deepened_section_ids: list[str] = []
+    if writer_mode == "llm" and settings.WRITER_SECTION_DEEPENING_ENABLED:
+        report_content, section_deepen_responses, deepened_section_ids = (
+            await _deepen_report_sections(
+                report_content=report_content,
+                analysis_archetype=intake_draft.analysis_archetype,
+                response_language=intake_draft.response_language,
+                report_depth=report_depth,
+                user_query=str(state.get("user_query", "")),
+                evidence_briefs=evidence_briefs,
+                analyst_summary=analyst_summary,
+                insight_briefs=insight_briefs,
+                landscape_facts=landscape_facts,
+            )
+        )
+        log.info(
+            "writer.section_deepen",
+            deepened_sections=deepened_section_ids,
+            deepen_attempts=len(section_deepen_responses),
+        )
     report_content = _apply_structured_writer_sections(
         report_content=report_content,
         target_sections=target_sections,
@@ -2394,6 +2675,7 @@ async def writer_node(state: AgentState) -> AgentState:
                 "writer_mode": writer_mode,
                 "report_title": report_content.get("title"),
                 "section_count": section_count,
+                "deepened_sections": deepened_section_ids,
                 "evidence_ref_count": evidence_ref_count,
                 "fallback_reason": fallback_reason,
                 "numeric_guardrail_sections": numeric_guardrail_sections,
@@ -2413,6 +2695,13 @@ async def writer_node(state: AgentState) -> AgentState:
                 error=llm_call_error,
             )
         )
+        for deepen_response in section_deepen_responses:
+            session.add(
+                build_llm_call_record(
+                    step_id=step_id,
+                    response=deepen_response,
+                )
+            )
         # One report per run: a QA-reject retry re-runs the writer, and without
         # this the old draft lingered as a second `reports` row (the "methodology
         # 重复入库" / duplicated-section artifact). The API reads latest-by-created_at

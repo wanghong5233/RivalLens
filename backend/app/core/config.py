@@ -156,6 +156,16 @@ class Settings(BaseSettings):
     COLLECTOR_FETCH_TIMEOUT_S: int = 10
     COLLECTOR_ROBOTS_CACHE_TTL_S: int = 3600
     WRITER_READ_CONCLUSIONS_FROM_TABLE: bool = True
+    # A single LLM call that must emit every section at once spreads its output
+    # budget thin, so each section collapses into a few sentences / a short field
+    # list. When enabled, the writer runs a second focused pass that rewrites each
+    # LLM-owned narrative section on its own (one call per section) into deeper,
+    # evidence-grounded prose; deterministic sections (tables, methodology) are
+    # untouched and any per-section failure keeps the original draft.
+    WRITER_SECTION_DEEPENING_ENABLED: bool = True
+    # A deepened section must clear this body length (chars) AND be at least as long
+    # as the first-pass draft before it replaces it, so deepening never downgrades.
+    WRITER_SECTION_DEEPEN_MIN_CHARS: int = 360
     CURATOR_MIN_COVERAGE_RATE: float = 1.0
     CURATOR_MIN_DIMENSION_COVERAGE_RATE: float = 0.5
     CURATOR_MIN_REPORT_SECTION_COVERAGE_RATE: float = 1.0
@@ -316,6 +326,8 @@ class Settings(BaseSettings):
             raise ValueError("RERANK_MIN_HIGH_SCORE_PER_DIM cannot be negative.")
         if self.CATEGORY_TARGET_EVIDENCE_FLOOR < 0:
             raise ValueError("CATEGORY_TARGET_EVIDENCE_FLOOR cannot be negative.")
+        if self.WRITER_SECTION_DEEPEN_MIN_CHARS < 0:
+            raise ValueError("WRITER_SECTION_DEEPEN_MIN_CHARS cannot be negative.")
         for name, value in (
             ("CURATOR_MIN_COVERAGE_RATE", self.CURATOR_MIN_COVERAGE_RATE),
             ("CURATOR_MIN_DIMENSION_COVERAGE_RATE", self.CURATOR_MIN_DIMENSION_COVERAGE_RATE),

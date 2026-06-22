@@ -15,6 +15,7 @@ from service.llm.prompts import (
     RESEARCHER_SYSTEM_PROMPT,
     SKILL_CURATOR_ALLOWED_TYPES,
     SUPERVISOR_SYSTEM_PROMPT,
+    WRITER_SECTION_SYSTEM_PROMPT,
     WRITER_SYSTEM_PROMPT,
     build_analyst_fallback_user_prompt,
     build_analyst_repair_user_prompt,
@@ -51,7 +52,9 @@ from service.llm.prompts import (
     build_supervisor_user_prompt,
     build_writer_fallback_user_prompt,
     build_writer_repair_user_prompt,
+    build_writer_section_deepen_user_prompt,
     build_writer_user_prompt,
+    select_layered_evidence_briefs,
 )
 from service.llm.providers import LLMProvider, build_providers
 from service.llm.response import LLMResponse, ProviderRawResponse
@@ -79,6 +82,7 @@ __all__ = [
     "SKILL_CURATOR_ALLOWED_TYPES",
     "SLOT_NAMES",
     "SUPERVISOR_SYSTEM_PROMPT",
+    "WRITER_SECTION_SYSTEM_PROMPT",
     "WRITER_SYSTEM_PROMPT",
     "build_analyst_fallback_user_prompt",
     "build_analyst_repair_user_prompt",
@@ -116,8 +120,10 @@ __all__ = [
     "build_supervisor_user_prompt",
     "build_writer_fallback_user_prompt",
     "build_writer_repair_user_prompt",
+    "build_writer_section_deepen_user_prompt",
     "build_writer_user_prompt",
     "get_llm_client",
     "llm_client",
     "resolve_slot",
+    "select_layered_evidence_briefs",
 ]
