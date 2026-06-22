@@ -356,6 +356,19 @@ def test_rule_writer_no_placeholder_scaffolding_blocks_scaffold_text() -> None:
             }
         ]
     }
+    methodology_limits_content_json = {
+        "sections": [
+            {
+                "section_id": "methodology_limits",
+                "title": "方法论与证据边界",
+                "content_markdown": (
+                    "本轮公开证据足以支撑主要竞争格局判断，但部分私有部署价格暂缺足够证据。"
+                    "报告因此只保留方向性判断，不把未核验价格写成确定事实。"
+                ),
+                "evidence_refs": ["ev_test_001"],
+            }
+        ]
+    }
     failing_content_json = {
         "sections": [
             {
@@ -367,6 +380,7 @@ def test_rule_writer_no_placeholder_scaffolding_blocks_scaffold_text() -> None:
         ]
     }
     assert rule_writer_no_placeholder_scaffolding(passing_content_json).passed is True
+    assert rule_writer_no_placeholder_scaffolding(methodology_limits_content_json).passed is True
     assert rule_writer_no_placeholder_scaffolding(failing_content_json).passed is False
 
 
@@ -529,6 +543,15 @@ def test_rule_landscape_no_legacy_workbench_sections_blocks_old_output() -> None
     )
     assert result.passed is False
     assert result.reject_to == "writer"
+
+
+def test_rule_landscape_no_legacy_workbench_sections_allows_business_phrase() -> None:
+    result = rule_landscape_no_legacy_workbench_sections(
+        content_json={"sections": [{"section_id": "key_players"}]},
+        content_markdown="Tenstorrent 是主权 AI 场景下的首选替代方案之一。",
+        analysis_archetype="landscape",
+    )
+    assert result.passed is True
 
 
 def test_rule_landscape_core_commercial_sections_present_blocks_missing_core() -> None:

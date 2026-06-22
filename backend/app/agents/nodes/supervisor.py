@@ -112,6 +112,23 @@ def _stable_unique(values: list[str]) -> list[str]:
     return ordered
 
 
+def _stable_numeric_claims(values: list[dict[str, object]]) -> list[dict[str, object]]:
+    ordered: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        claim = value.get("claim")
+        section_id = value.get("section_id")
+        key = (
+            " ".join(claim.split()).casefold() if isinstance(claim, str) else "",
+            section_id.strip().casefold() if isinstance(section_id, str) else "",
+        )
+        if key == ("", "") or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(value)
+    return ordered
+
+
 def _clean_optional_string(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -1675,11 +1692,19 @@ async def supervisor_node(state: AgentState) -> AgentState:
         for item in state.get("qa_degraded_required_sections", [])
         if isinstance(item, str)
     ]
-    qa_unsupported_numeric_claims = [
+    qa_unsupported_numeric_claims_current = [
         item
         for item in state.get("qa_unsupported_numeric_claims", [])
         if isinstance(item, dict)
     ]
+    qa_numeric_claim_blocklist = [
+        item
+        for item in state.get("qa_numeric_claim_blocklist", [])
+        if isinstance(item, dict)
+    ]
+    qa_unsupported_numeric_claims = _stable_numeric_claims(
+        [*qa_numeric_claim_blocklist, *qa_unsupported_numeric_claims_current]
+    )
     report_depth = _state_or_intake_string(state, "report_depth")
     tier_profile = resolve_tier_profile(report_depth)
     competitors = competitors_raw[:tier_profile.max_competitors]

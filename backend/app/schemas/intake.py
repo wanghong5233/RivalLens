@@ -30,6 +30,10 @@ _UNKNOWN_OPTIONAL_VALUES: frozenset[str] = frozenset(
         "unknown",
         "not sure",
         "no",
+        "全景扫描 · 覆盖整个赛道，不收窄 (whole-landscape)",
+        "whole landscape — scan the full track, do not narrow",
+        "whole landscape - scan the full track, do not narrow",
+        "whole-landscape",
     }
 )
 _BROAD_MARKET_TERMS: tuple[str, ...] = (

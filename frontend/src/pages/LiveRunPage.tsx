@@ -59,7 +59,7 @@ import {
 import type { ToolActivityEntry } from "@/stores/liveRunProgress";
 
 type PlanTaskRuntimeStatus = "queued" | "running" | "completed";
-type ToolRuntimeStatus = "running" | "done" | "error";
+type ToolRuntimeStatus = "running" | "done" | "error" | "skipped";
 
 const STAGE_META: Record<
   PlanTaskStage,
@@ -612,6 +612,8 @@ function ToolActivityCard({ entries }: ToolActivityCardProps): JSX.Element {
                       ? "border-warning/30 bg-warning/[0.04]"
                       : entry.status === "error"
                       ? "border-danger/30 bg-danger/[0.04]"
+                      : entry.status === "skipped"
+                      ? "border-white/[0.08] bg-white/[0.03]"
                       : "border-success/30 bg-success/[0.04]",
                   )}
                 >
@@ -637,7 +639,13 @@ function ToolActivityCard({ entries }: ToolActivityCardProps): JSX.Element {
                           {entry.snippetCount !== null ? (
                             <span>{entry.snippetCount} 条片段</span>
                           ) : null}
-                          {entry.error ? <span className="text-danger">{entry.error}</span> : null}
+                          {entry.error ? (
+                            <span
+                              className={entry.status === "skipped" ? "text-foreground-muted" : "text-danger"}
+                            >
+                              {entry.error}
+                            </span>
+                          ) : null}
                         </>
                       )}
                     </div>
@@ -658,6 +666,9 @@ function ToolActivityStatusIcon({ status }: { status: ToolRuntimeStatus }): JSX.
   }
   if (status === "error") {
     return <AlertTriangle className="mt-0.5 h-4 w-4 text-danger" />;
+  }
+  if (status === "skipped") {
+    return <CircleSlash className="mt-0.5 h-4 w-4 text-foreground-muted" />;
   }
   return <CheckCircle2 className="mt-0.5 h-4 w-4 text-success" />;
 }

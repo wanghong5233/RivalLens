@@ -12,7 +12,7 @@ import type {
 import type { PlanTaskStage, PlanTree, StepTraceResponse } from "@/api/types";
 
 type PlanTaskRuntimeStatus = "queued" | "running" | "completed";
-type ToolRuntimeStatus = "running" | "done" | "error";
+type ToolRuntimeStatus = "running" | "done" | "error" | "skipped";
 
 // Task tiles only move forward; both live SSE and persisted backfill upgrade
 // monotonically so a poll snapshot can never roll a tile back to queued.
@@ -280,7 +280,9 @@ export function recordToolFinish(runId: string, payload: ToolFinishEventPayload)
   update(runId, (prev) => {
     const next = touchActivity(prev);
     const key = buildToolKey(payload);
-    const status: ToolRuntimeStatus = payload.success ? "done" : "error";
+    const robotsSkipped = isRobotsBlockedError(payload.error);
+    const status: ToolRuntimeStatus = payload.success ? "done" : robotsSkipped ? "skipped" : "error";
+    const error = robotsSkipped ? "站点 robots.txt 禁止抓取，已合规跳过" : payload.error;
     const existingIndex = next.toolActivity.findIndex((entry) => entry.key === key);
     if (existingIndex === -1) {
       const synthesized: ToolActivityEntry = {
@@ -293,7 +295,7 @@ export function recordToolFinish(runId: string, payload: ToolFinishEventPayload)
         startedAt: Date.now() - payload.latency_ms,
         latencyMs: payload.latency_ms,
         snippetCount: payload.snippet_count,
-        error: payload.error,
+        error,
       };
       next.toolActivity = [synthesized, ...next.toolActivity].slice(0, MAX_TOOL_ENTRIES);
       return next;
@@ -304,11 +306,19 @@ export function recordToolFinish(runId: string, payload: ToolFinishEventPayload)
       status,
       latencyMs: payload.latency_ms,
       snippetCount: payload.snippet_count,
-      error: payload.error,
+      error,
     };
     next.toolActivity = entries;
     return next;
   });
+}
+
+function isRobotsBlockedError(error: string | null): boolean {
+  if (error === null) {
+    return false;
+  }
+  const lowered = error.toLowerCase();
+  return lowered.includes("blocked_by_robots") || lowered.includes("robots denied");
 }
 
 export function recordEvidenceCollected(runId: string, payload: EvidenceCollectedPayload): void {

@@ -31,6 +31,11 @@ _PLACEHOLDER_SECTION_MARKERS: tuple[str, ...] = (
     "lacks enough grounded evidence",
     "no grounded evidence matched this section",
 )
+_PLACEHOLDER_SCAFFOLDING_MARKERS: tuple[str, ...] = (
+    "trigger follow-up research",
+    "todo",
+    "待补充",
+)
 _LEGACY_WORKBENCH_SECTION_IDS: frozenset[str] = frozenset(
     {
         "market_landscape_map",
@@ -150,8 +155,8 @@ def rule_writer_no_placeholder_scaffolding(content_json: dict[str, object]) -> R
     scaffold_sections: list[str] = []
     for section in _iter_report_sections(content_json):
         section_id = _section_id(section) or "unknown"
-        markdown = _section_markdown(section).casefold()
-        if any(marker in markdown for marker in _PLACEHOLDER_SECTION_MARKERS):
+        markdown = _section_markdown(section)
+        if _markdown_is_placeholder_scaffolding(markdown):
             scaffold_sections.append(section_id)
     return RuleResult(
         rule_id="rule_writer_no_placeholder_scaffolding",
@@ -163,6 +168,18 @@ def rule_writer_no_placeholder_scaffolding(content_json: dict[str, object]) -> R
             f"(sections={scaffold_sections})."
         ),
     )
+
+
+def _markdown_is_placeholder_scaffolding(content_markdown: str) -> bool:
+    normalized = re.sub(r"\s+", " ", content_markdown).strip().casefold()
+    if not normalized:
+        return False
+    has_placeholder_marker = any(marker in normalized for marker in _PLACEHOLDER_SECTION_MARKERS)
+    if not has_placeholder_marker:
+        return False
+    if any(marker in normalized for marker in _PLACEHOLDER_SCAFFOLDING_MARKERS):
+        return True
+    return any(normalized.startswith(marker) for marker in _PLACEHOLDER_SECTION_MARKERS)
 
 
 def rule_writer_must_cite_evidence(
@@ -336,7 +353,11 @@ def rule_landscape_no_legacy_workbench_sections(
         if section_id is not None
     ]
     legacy_ids = [section_id for section_id in section_ids if section_id in _LEGACY_WORKBENCH_SECTION_IDS]
-    legacy_titles = [marker for marker in _LEGACY_WORKBENCH_TITLE_MARKERS if marker in content_markdown]
+    legacy_titles = [
+        marker
+        for marker in _LEGACY_WORKBENCH_TITLE_MARKERS
+        if _markdown_has_legacy_title_marker(content_markdown, marker)
+    ]
     return RuleResult(
         rule_id="rule_landscape_no_legacy_workbench_sections",
         passed=not legacy_ids and not legacy_titles,
@@ -347,6 +368,19 @@ def rule_landscape_no_legacy_workbench_sections(
             f"(legacy_ids={legacy_ids}, legacy_titles={legacy_titles})."
         ),
     )
+
+
+def _markdown_has_legacy_title_marker(content_markdown: str, marker: str) -> bool:
+    for line in content_markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        normalized = stripped.lstrip("#").strip().strip("*").strip()
+        if normalized == marker:
+            return True
+        if normalized.startswith(f"{marker}：") or normalized.startswith(f"{marker}:"):
+            return True
+    return False
 
 
 def rule_landscape_core_commercial_sections_present(

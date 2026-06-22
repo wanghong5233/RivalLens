@@ -40,6 +40,7 @@ class AgentState(TypedDict, total=False):
     qa_degrade_reason: str | None
     qa_degraded_required_sections: list[str]
     qa_unsupported_numeric_claims: list[dict[str, object]]
+    qa_numeric_claim_blocklist: list[dict[str, object]]
     researched_competitors: Annotated[list[str], operator.add]
     researcher_degraded_competitors: Annotated[list[str], operator.add]
     analysis_done: bool

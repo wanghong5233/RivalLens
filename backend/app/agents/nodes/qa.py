@@ -187,6 +187,35 @@ def _state_report_depth(state: AgentState) -> str | None:
     return None
 
 
+def _numeric_claim_key(item: dict[str, object]) -> tuple[str, str]:
+    claim = item.get("claim")
+    section_id = item.get("section_id")
+    return (
+        " ".join(claim.split()).casefold() if isinstance(claim, str) else "",
+        section_id.strip().casefold() if isinstance(section_id, str) else "",
+    )
+
+
+def _merge_numeric_claim_blocklist(
+    *,
+    prior_items: object,
+    new_items: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    merged: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    candidate_items = [
+        *([item for item in prior_items if isinstance(item, dict)] if isinstance(prior_items, list) else []),
+        *new_items,
+    ]
+    for item in candidate_items:
+        key = _numeric_claim_key(item)
+        if key == ("", "") or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
 @log_node("qa")
 async def qa_node(state: AgentState) -> AgentState:
     run_id = state.get("run_id")
@@ -432,6 +461,10 @@ async def qa_node(state: AgentState) -> AgentState:
         if isinstance(unsupported_numeric_claims_raw, list)
         else []
     )
+    numeric_claim_blocklist = _merge_numeric_claim_blocklist(
+        prior_items=state.get("qa_numeric_claim_blocklist", []),
+        new_items=unsupported_numeric_claims,
+    )
     return {
         "last_completed_node": "writer",
         "pending_review_target_step_id": None,
@@ -440,6 +473,7 @@ async def qa_node(state: AgentState) -> AgentState:
         "qa_rejection_count": updated_rejection_count,
         "qa_reasons": qa_reasons,
         "qa_unsupported_numeric_claims": unsupported_numeric_claims,
+        "qa_numeric_claim_blocklist": numeric_claim_blocklist,
         "qa_degrade_reason": (
             "report_degraded_required_sections" if data_degraded_by_writer else None
         ),
