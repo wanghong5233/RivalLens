@@ -1,6 +1,6 @@
 # RivalLens
 
-> AI 驱动的竞品分析 Agent 协作系统：对话式开题 → 计划确认 → 多 Agent 采集分析 → 带证据溯源的竞品报告。
+> AI 驱动的竞品分析与追踪系统：对话式开题 → 多 Agent 调研 → 商业报告 → 竞品知识库 → 持续监控。
 
 ![Demo](https://img.shields.io/badge/demo-live-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
@@ -12,7 +12,7 @@
 
 在线体验：**<https://rival-lens.vercel.app>**（无需登录）
 
-体验路径：首页输入分析需求 → Agent 多轮澄清 → 确认任务计划 → Live 页实时观察执行 → 查看报告 / 结论矩阵 / 证据溯源 / Trace 回放。
+体验路径：首页输入分析需求 → Agent 多轮澄清 → 确认任务计划 → Live 页实时观察执行 → 查看报告 / 竞品知识 / 证据溯源 / 追踪面板。
 
 ## 目录
 
@@ -27,18 +27,18 @@
 
 ## Background
 
-传统竞品分析（信息搜集 → 功能对比 → 评价整理 → SWOT → 报告）重复性高、信息源分散、依赖个人行业认知。RivalLens 用 8 个职责独立的 Agent 模拟数字调研小组：从一句自然语言需求出发，自动完成竞品发现、公开证据采集、跨竞品分析与报告组装；每条结论强制绑定证据来源，每次 Agent 决策可回放审计。
+传统竞品分析（信息搜集 → 功能对比 → 评价整理 → SWOT → 报告）重复性高、信息源分散、依赖个人行业认知。RivalLens 用多 Agent 调研链路把一句自然语言需求转成可执行计划，自动完成竞品发现、公开证据采集、跨竞品分析、商业报告写作与后续追踪；报告结论绑定证据来源，关键 Agent 决策可回放审计。
 
 ## Features
 
-- **对话式开题**：Intake Agent 多轮澄清 + 建议答案，补齐角色 / 意图 / 竞品范围，支持竞品自动发现
-- **计划树 HITL**：Planner 产出可视化 PlanTree，用户勾选 / 追加任务后执行；执行期 Replanner 动态修订计划
-- **多 Agent 并行执行**：Supervisor LLM 工具委派调度，Researcher 按竞品 fan-out 并行采集
-- **质检反馈闭环**：QA 规则 DSL + LLM 语义双层审查，按失败源头打回 researcher / analyst / writer 重做
-- **全链路溯源**：结论强制 ≥1 条证据引用，报告 citation 一键跳转 Evidence Console
-- **实时可观测**：SSE 事件流 Live 页、Trace DAG 回放、token / 覆盖率 / QA 打回率指标面板
-- **运行中干预**：follow-up 追加指令、阶段级重放、超限自动降级
-- **Skill 自进化**：Curator 从达标 run 沉淀 QA 规则 / prompt 模板候选，人工审核后下轮生效
+- **对话式开题**：Intake Agent 多轮澄清 + 建议答案，补齐用户角色、分析意图、赛道范围与竞品发现方式
+- **双报告形态**：支持 `comparison` 竞品对比与 `landscape` 赛道全景；Writer 按章节深度写作，避免短列表报告
+- **产品实例建模**：竞品按“赛道 → 产品 → 功能 / 定价 / 人群 / 反馈”组织，区分产品、公司与上游供应商
+- **证据优先采集**：Bocha / Serper / Tavily 搜索路由 + Jina Reader 全文兜底，遵守 `robots.txt` 与站点限速
+- **质量反馈闭环**：QA 规则 + LLM 语义审查，拦截无证数字、占位正文、旧模板章节和证据覆盖不足
+- **竞品追踪**：把报告中的产品加入 watchlist，持续刷新 profile、近期变化、洞察和下次追踪建议
+- **全链路溯源**：报告 citation 一键跳转 Evidence Console，查看来源、正文片段与采集阶段
+- **实时可观测**：SSE Live 页展示 Agent 步骤、工具调用、合规跳过、Trace DAG 与 token 消耗
 
 ## Architecture
 
@@ -51,8 +51,10 @@ flowchart LR
     Sup --> Exec[Discovery / Researcher xK / Analyst / Writer]
     Exec --> QA{{QA Reviewer}}
     QA -->|打回| Sup
-    Exec --> Collector[采集通道 Bocha / Serper / Tavily]
+    Exec --> Collector[Bocha / Serper / Tavily / Jina]
     API --> PG[(PostgreSQL)]
+    API --> Watch[Watchlist / Diff Monitor]
+    Watch --> PG
     PG -.-> Curator[/Skill Curator 异步/]
     Curator -.-> Skills[(Skill Library)]
 ```
@@ -63,10 +65,10 @@ flowchart LR
 | Planner | 生成任务树 PlanTree，等用户确认（HITL） |
 | Supervisor | 执行期 LLM 工具委派，唯一调度中枢 |
 | Discovery / Replanner | 竞品自动发现 / 执行期计划修订 |
-| Researcher ×K | ReAct 子图并行采集 + 初步结构化 |
+| Researcher ×K | ReAct 子图并行采集、全文抓取、证据结构化 |
 | Analyst | 跨竞品结论矩阵（每条 ≥1 证据） |
-| Writer | 按领域模板组装 Battlecard 报告 |
-| QA Reviewer | 双层审查 + 多目标 rejection 路由 |
+| Writer | 生成全景报告 / 对比报告，按章节深化正文 |
+| QA Reviewer | 规则审查 + 语义审查 + 多目标 rejection 路由 |
 | Skill Curator | run 后异步沉淀技能候选，人工审核生效 |
 
 ## Quick Start
@@ -93,8 +95,8 @@ npm run dev                          # http://localhost:5173
 | 前端 | React 18 · Vite · TypeScript · Tailwind · shadcn/ui · @xyflow/react（Trace DAG） |
 | 后端 | FastAPI · SQLAlchemy · Pydantic v2 · LangGraph（checkpoint-postgres） |
 | LLM | Qwen / Doubao / OpenAI 多 provider，slot→tier→catalog 分档路由，JSON mode + repair prompt |
-| 检索 | Bocha（中文）/ Serper / Tavily 多源地域化路由，robots.txt 合规 + 站点限速 |
-| 存储 | PostgreSQL 16（runs / steps / llm_calls / evidence / conclusions / supervisor_decisions） |
+| 检索 | Bocha / Serper / Tavily 搜索路由，Jina Reader 全文兜底，robots.txt 合规 + 站点限速 |
+| 存储 | PostgreSQL 16（runs / steps / llm_calls / evidence / conclusions / run_knowledge / watchlist / competitor_diffs） |
 | 部署 | Docker Compose + Cloudflare Tunnel（API 公网）+ Vercel（前端） |
 
 ## Documentation
