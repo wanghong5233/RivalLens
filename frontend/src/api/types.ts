@@ -471,6 +471,7 @@ export interface WatchlistDigestDeltaResponse {
 export interface WatchlistDigestItemResponse {
   watch_id: string;
   competitor_id: string;
+  profile: KnowledgeCompetitor | null;
   note: string | null;
   created_at: string;
   insight_count: number;

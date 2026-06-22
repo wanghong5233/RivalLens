@@ -675,6 +675,7 @@ class CompetitorDiffItemResponse(BaseModel):
 class WatchlistDigestItemResponse(BaseModel):
     watch_id: str
     competitor_id: str
+    profile: KnowledgeCompetitorResponse | None = None
     note: str | None
     created_at: str
     insight_count: int
@@ -3349,6 +3350,38 @@ async def _latest_discovery_sources(
     return {}
 
 
+def _find_competitor_profile(
+    *,
+    competitor_id: str,
+    profiles: list[KnowledgeCompetitorResponse],
+) -> KnowledgeCompetitorResponse | None:
+    competitor_keys = _alias_keys_for_competitor(competitor_id)
+    for profile in profiles:
+        if competitor_keys.intersection(_alias_keys_for_competitor(profile.competitor_id)):
+            return profile
+    return None
+
+
+async def _watchlist_profile_for_run(
+    *,
+    run_id: str | None,
+    competitor_id: str,
+) -> KnowledgeCompetitorResponse | None:
+    if run_id is None:
+        return None
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        run = await session.get(Run, run_id)
+        if run is None:
+            return None
+        discovery_sources = await _latest_discovery_sources(session=session, run_id=run_id)
+        profiles = _build_competitor_profiles(
+            plan_tree=run.plan_tree,
+            discovery_sources=discovery_sources,
+        )
+    return _find_competitor_profile(competitor_id=competitor_id, profiles=profiles)
+
+
 @router.get("/api/runs/{run_id}/knowledge", response_model=RunKnowledgeResponse)
 async def get_run_knowledge(run_id: str) -> RunKnowledgeResponse:
     session_factory = get_session_factory()
@@ -3452,9 +3485,8 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
         diff_rows = (
             await session.execute(
                 select(CompetitorDiff)
-                .where(CompetitorDiff.competitor_id.in_(all_competitor_ids))
                 .order_by(CompetitorDiff.created_at.desc())
-                .limit(5 * len(all_competitor_ids))
+                .limit(10 * len(all_competitor_ids))
             )
         ).scalars().all()
 
@@ -3523,10 +3555,26 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
         )
         latest = insights[0] if insights else None
         delta = _watchlist_delta_from_insights(insights)
+        recent_changes = [
+            diff
+            for competitor_key in competitor_keys
+            for diff in diffs_by_competitor.get(competitor_key, [])
+        ][:5]
+        profile = (
+            await _watchlist_profile_for_run(
+                run_id=item.last_run_id,
+                competitor_id=item.competitor_id,
+            )
+            or await _watchlist_profile_for_run(
+                run_id=latest.run_id if latest is not None else None,
+                competitor_id=item.competitor_id,
+            )
+        )
         digest_items.append(
             WatchlistDigestItemResponse(
                 watch_id=item.watch_id,
                 competitor_id=item.competitor_id,
+                profile=profile,
                 note=item.note,
                 created_at=item.created_at.isoformat(),
                 insight_count=len(insights),
@@ -3541,7 +3589,7 @@ async def list_watchlist_digest() -> list[WatchlistDigestItemResponse]:
                 last_refreshed_at=_to_iso(item.last_refreshed_at),
                 refresh_interval_hours=item.refresh_interval_hours,
                 items=insights[:5],
-                recent_changes=diffs_by_competitor.get(competitor_key, [])[:5],
+                recent_changes=recent_changes,
             )
         )
     return digest_items

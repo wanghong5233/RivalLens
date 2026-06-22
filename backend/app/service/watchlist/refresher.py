@@ -100,6 +100,7 @@ class WatchlistRefresher:
 
     async def _create_run_record(self, item: WatchlistItem, session: AsyncSession) -> str:
         run_id = make_id("run_")
+        parent_run_id = item.last_run_id
         user_query = f"[竞品追踪] 自动刷新: {item.competitor_id}"
         intake_draft = RunIntakeDraft(
             user_query=user_query,
@@ -120,6 +121,8 @@ class WatchlistRefresher:
             target_roles=["pm"],
             competitors=[item.competitor_id],
             intake_draft=intake_draft.model_dump(exclude={"is_complete"}),
+            parent_run_id=parent_run_id,
+            seed_competitor_ids=[item.competitor_id],
         )
         session.add(run)
         item.last_run_id = run_id

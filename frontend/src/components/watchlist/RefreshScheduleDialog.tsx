@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { usePatchWatchlistItem } from "@/api/hooks";
 import type { WatchlistDigestItemResponse } from "@/api/types";
@@ -42,6 +42,12 @@ export function RefreshScheduleDialog({ item, children }: RefreshScheduleDialogP
     hoursToFrequency(item.refresh_interval_hours),
   );
   const patchMutation = usePatchWatchlistItem();
+
+  useEffect(() => {
+    if (open) {
+      setFrequency(hoursToFrequency(item.refresh_interval_hours));
+    }
+  }, [item.refresh_interval_hours, item.watch_id, open]);
 
   async function handleSave(): Promise<void> {
     const selected = FREQUENCY_OPTIONS.find((o) => o.value === frequency);

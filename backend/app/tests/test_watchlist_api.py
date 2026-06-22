@@ -12,13 +12,15 @@ from core.config import settings
 
 def _insert_watchlist_digest_fixture() -> dict[str, object]:
     suffix = uuid4().hex[:8]
-    competitor_base = f"cursor_digest_{suffix}"
+    competitor_base = f"Meta Ray-Ban {suffix}"
+    competitor_alias = f"Ray-Ban Meta {suffix}"
     run_old_id = f"run_watch_old_{suffix}"
     run_new_id = f"run_watch_new_{suffix}"
     step_old_id = f"step_watch_old_{suffix}"
     step_new_id = f"step_watch_new_{suffix}"
     conclusion_old_id = f"concl_watch_old_{suffix}"
     conclusion_new_id = f"concl_watch_new_{suffix}"
+    diff_id = f"diff_watch_{suffix}"
     watch_id = f"watch_{suffix}"
     evidence_old_id = f"ev_watch_old_{suffix}"
     evidence_new_primary_id = f"ev_watch_new_a_{suffix}"
@@ -34,10 +36,12 @@ def _insert_watchlist_digest_fixture() -> dict[str, object]:
             connection.execute(
                 text(
                     "INSERT INTO runs ("
-                    "run_id, user_query, title, status, target_roles, competitors, started_at, created_at"
+                    "run_id, user_query, title, status, target_roles, competitors, "
+                    "plan_tree, started_at, created_at"
                     ") VALUES ("
                     ":run_id, :user_query, :title, :status, "
-                    "CAST(:target_roles AS jsonb), CAST(:competitors AS jsonb), :started_at, :created_at"
+                    "CAST(:target_roles AS jsonb), CAST(:competitors AS jsonb), "
+                    "CAST(:plan_tree AS jsonb), :started_at, :created_at"
                     ")"
                 ),
                 {
@@ -47,6 +51,7 @@ def _insert_watchlist_digest_fixture() -> dict[str, object]:
                     "status": "completed",
                     "target_roles": "[]",
                     "competitors": json.dumps([competitor_base], ensure_ascii=False),
+                    "plan_tree": "{}",
                     "started_at": old_time,
                     "created_at": old_time,
                 },
@@ -54,10 +59,12 @@ def _insert_watchlist_digest_fixture() -> dict[str, object]:
             connection.execute(
                 text(
                     "INSERT INTO runs ("
-                    "run_id, user_query, title, status, target_roles, competitors, started_at, created_at"
+                    "run_id, user_query, title, status, target_roles, competitors, "
+                    "plan_tree, started_at, created_at"
                     ") VALUES ("
                     ":run_id, :user_query, :title, :status, "
-                    "CAST(:target_roles AS jsonb), CAST(:competitors AS jsonb), :started_at, :created_at"
+                    "CAST(:target_roles AS jsonb), CAST(:competitors AS jsonb), "
+                    "CAST(:plan_tree AS jsonb), :started_at, :created_at"
                     ")"
                 ),
                 {
@@ -67,6 +74,19 @@ def _insert_watchlist_digest_fixture() -> dict[str, object]:
                     "status": "completed",
                     "target_roles": "[]",
                     "competitors": json.dumps([competitor_base], ensure_ascii=False),
+                    "plan_tree": json.dumps(
+                        {
+                            "competitor_sources": {
+                                competitor_base: {
+                                    "candidate_role": "direct_competitor",
+                                    "segment": "AI smart glasses",
+                                    "vendor": "Meta",
+                                    "introduction": "Meta and Ray-Ban's camera-first smart glasses product.",
+                                }
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
                     "started_at": new_time,
                     "created_at": new_time,
                 },
@@ -153,7 +173,7 @@ def _insert_watchlist_digest_fixture() -> dict[str, object]:
                     "section": "feature",
                     "claim": "New feature launch signal.",
                     "confidence": "high",
-                    "competitor_ids": json.dumps([f"  {competitor_base.upper()}  "], ensure_ascii=False),
+                    "competitor_ids": json.dumps([f"  {competitor_alias.upper()}  "], ensure_ascii=False),
                     "risk_flags": "[]",
                     "created_at": new_time,
                 },
@@ -195,13 +215,38 @@ def _insert_watchlist_digest_fixture() -> dict[str, object]:
 
             connection.execute(
                 text(
-                    "INSERT INTO watchlist (watch_id, competitor_id, note, created_at) "
-                    "VALUES (:watch_id, :competitor_id, :note, :created_at)"
+                    "INSERT INTO competitor_diffs ("
+                    "diff_id, competitor_id, run_id_new, run_id_old, dimension, change_type, "
+                    "old_value, new_value, significance, created_at"
+                    ") VALUES ("
+                    ":diff_id, :competitor_id, :run_id_new, :run_id_old, :dimension, :change_type, "
+                    "CAST(:old_value AS jsonb), CAST(:new_value AS jsonb), :significance, :created_at"
+                    ")"
+                ),
+                {
+                    "diff_id": diff_id,
+                    "competitor_id": competitor_alias,
+                    "run_id_new": run_new_id,
+                    "run_id_old": run_old_id,
+                    "dimension": "pricing",
+                    "change_type": "summary_changed",
+                    "old_value": json.dumps({"stance": "competitive", "summary": "Old price."}),
+                    "new_value": json.dumps({"stance": "competitive", "summary": "New price."}),
+                    "significance": "low",
+                    "created_at": new_time,
+                },
+            )
+
+            connection.execute(
+                text(
+                    "INSERT INTO watchlist (watch_id, competitor_id, note, last_run_id, created_at) "
+                    "VALUES (:watch_id, :competitor_id, :note, :last_run_id, :created_at)"
                 ),
                 {
                     "watch_id": watch_id,
-                    "competitor_id": competitor_base.lower(),
+                    "competitor_id": competitor_base,
                     "note": "pricing and launch",
+                    "last_run_id": run_new_id,
                     "created_at": now,
                 },
             )
@@ -214,6 +259,7 @@ def _insert_watchlist_digest_fixture() -> dict[str, object]:
         "run_new_id": run_new_id,
         "conclusion_old_id": conclusion_old_id,
         "conclusion_new_id": conclusion_new_id,
+        "diff_id": diff_id,
         "evidence_old_id": evidence_old_id,
         "evidence_new_ids": [evidence_new_primary_id, evidence_new_secondary_id],
     }
@@ -228,6 +274,10 @@ def _cleanup_watchlist_digest_fixture(*, watch_id: str, run_ids: list[str]) -> N
                 {"watch_id": watch_id},
             )
             for run_id in run_ids:
+                connection.execute(
+                    text("DELETE FROM competitor_diffs WHERE run_id_new = :run_id OR run_id_old = :run_id"),
+                    {"run_id": run_id},
+                )
                 connection.execute(
                     text("DELETE FROM runs WHERE run_id = :run_id"),
                     {"run_id": run_id},
@@ -252,6 +302,14 @@ def test_watchlist_digest_groups_conclusions_case_insensitive(test_client: TestC
         assert watch_item["run_count"] == 2
         assert watch_item["latest_run_id"] == fixture["run_new_id"]
         assert watch_item["last_updated_at"] is not None
+        assert watch_item["profile"] == {
+            "competitor_id": f"Meta Ray-Ban {str(fixture['watch_id']).replace('watch_', '')}",
+            "role": "direct_competitor",
+            "segment": "AI smart glasses",
+            "vendor": "Meta",
+            "introduction": "Meta and Ray-Ban's camera-first smart glasses product.",
+        }
+        assert [diff["diff_id"] for diff in watch_item["recent_changes"]] == [fixture["diff_id"]]
         assert len(watch_item["items"]) == 2
         assert watch_item["delta"] == {
             "latest_run_id": fixture["run_new_id"],
