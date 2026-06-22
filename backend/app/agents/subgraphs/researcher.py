@@ -23,7 +23,7 @@ from schemas.supervisor import FocusDimension
 from service.collector.errors import ChannelError, ChannelNotRegisteredError
 from service.desensitize import DesensitizeError, normalize_text_for_storage
 from service.event_bus import RunEventType, emit_run_event
-from service.llm.prompts import evidence_draft_refs_for_prompt
+from service.llm.prompts import RESEARCH_PROMPT_CHAR_BUDGET, evidence_draft_refs_for_prompt
 from schemas.agent_outputs import ResearcherCompressionOutput, ResearcherDecisionOutput
 from service.llm import (
     RESEARCHER_COMPRESSION_PROMPT,
@@ -41,7 +41,9 @@ from service.skill_store import get_skill_store
 from utils.logger import bind_step, get_logger
 
 COMPRESS_AFTER_TURNS = 4
-COMPRESS_AFTER_CHARS = 2400
+# Compression is lossy. Gate it with the same centralized prompt budget used by
+# researcher prompts so we do not silently starve long-context models.
+COMPRESS_AFTER_CHARS = RESEARCH_PROMPT_CHAR_BUDGET
 OBSERVATIONS_FULL_RETAIN = 2
 TOOL_ERROR_PREVIEW_LIMIT = 200
 RERANK_DOCUMENT_BATCH_SIZE = 50
@@ -1198,8 +1200,6 @@ def _needs_compress(state: ResearcherSubState) -> bool:
         return False
 
     messages = list(state.get("messages", []))
-    if len(messages) >= 8:
-        return True
     if _effective_prompt_size(state) >= COMPRESS_AFTER_CHARS:
         return True
     return _approx_chars(messages) >= COMPRESS_AFTER_CHARS

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from agents.subgraphs.researcher import (
+    COMPRESS_AFTER_CHARS,
     ResearcherSubState,
     _archive_observations_log,
     _build_observation_brief,
     _effective_prompt_size,
     _fallback_action,
     _fallback_fetch_url,
+    _needs_compress,
 )
 from service.llm.prompts import (
     COMPRESSION_PROMPT_CHAR_BUDGET,
@@ -129,6 +131,33 @@ def test_effective_prompt_size_counts_briefs() -> None:
     }
     size = _effective_prompt_size(state)
     assert size > 600
+
+
+def test_researcher_compression_uses_prompt_budget_not_message_count() -> None:
+    state: ResearcherSubState = {
+        "turn_count": 4,
+        "last_compressed_turn": 3,
+        "messages": [{"role": "user", "content": "brief"} for _ in range(8)],
+        "observation_briefs": [],
+        "evidence_drafts": [],
+        "compressed_summary": "",
+    }
+
+    assert COMPRESS_AFTER_CHARS == RESEARCH_PROMPT_CHAR_BUDGET
+    assert _needs_compress(state) is False
+
+
+def test_researcher_compression_still_triggers_at_prompt_budget() -> None:
+    state: ResearcherSubState = {
+        "turn_count": 4,
+        "last_compressed_turn": 3,
+        "messages": [{"role": "user", "content": "x" * COMPRESS_AFTER_CHARS}],
+        "observation_briefs": [],
+        "evidence_drafts": [],
+        "compressed_summary": "",
+    }
+
+    assert _needs_compress(state) is True
 
 
 def test_observation_brief_truncates_error_preview() -> None:
