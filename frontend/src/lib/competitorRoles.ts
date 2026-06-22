@@ -12,12 +12,12 @@ const ROLE_ORDER = [
 const CORE_ROLES = new Set<string>(["direct_competitor", "adjacent_competitor", "substitute"]);
 
 const ROLE_LABELS: Record<string, string> = {
-  direct_competitor: "直接竞品",
-  adjacent_competitor: "相邻竞品",
+  direct_competitor: "核心竞品",
+  adjacent_competitor: "相邻产品",
   substitute: "替代方案",
-  upstream_supplier: "上游供应商",
-  trend_reference: "趋势参考",
-  unknown: "未标注角色",
+  upstream_supplier: "上游生态",
+  trend_reference: "趋势样本",
+  unknown: "未分类",
 };
 
 export interface CompetitorRoleGroup {
@@ -26,6 +26,15 @@ export interface CompetitorRoleGroup {
   competitors: string[];
   isCore: boolean;
 }
+
+export interface CompetitorMeta {
+  role: string;
+  segment: string | null;
+  introduction: string | null;
+  vendor: string | null;
+}
+
+export const UNGROUPED_SEGMENT_LABEL = "未归类赛道";
 
 export function normalizeCandidateRole(role: string | null | undefined): string {
   const cleaned = typeof role === "string" ? role.trim() : "";
@@ -51,6 +60,30 @@ export function roleByCompetitor(
   const mapping: Record<string, string> = {};
   for (const [competitorId, payload] of Object.entries(sources)) {
     mapping[competitorId] = normalizeCandidateRole(payload?.candidate_role ?? null);
+  }
+  return mapping;
+}
+
+function cleanText(value: string | null | undefined): string | null {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function competitorMetaFromPlanTree(
+  planTree: PlanTree | null | undefined,
+): Record<string, CompetitorMeta> {
+  const sources = planTree?.competitor_sources;
+  if (!sources) {
+    return {};
+  }
+  const mapping: Record<string, CompetitorMeta> = {};
+  for (const [competitorId, payload] of Object.entries(sources)) {
+    mapping[competitorId] = {
+      role: normalizeCandidateRole(payload?.candidate_role ?? null),
+      segment: cleanText(payload?.segment),
+      introduction: cleanText(payload?.introduction),
+      vendor: cleanText(payload?.vendor),
+    };
   }
   return mapping;
 }

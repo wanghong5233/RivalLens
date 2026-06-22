@@ -1,4 +1,13 @@
-import { Boxes, ChevronDown, ExternalLink, MessageSquareQuote, Tags, UserRound } from "lucide-react";
+import {
+  Boxes,
+  Building2,
+  ChevronDown,
+  ExternalLink,
+  Layers,
+  MessageSquareQuote,
+  Tags,
+  UserRound,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type {
@@ -11,7 +20,12 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { candidateRoleLabel } from "@/lib/competitorRoles";
+import {
+  candidateRoleLabel,
+  isCoreCandidateRole,
+  UNGROUPED_SEGMENT_LABEL,
+  type CompetitorMeta,
+} from "@/lib/competitorRoles";
 import { cn } from "@/lib/utils";
 
 export interface KnowledgePanelProps {
@@ -20,7 +34,7 @@ export interface KnowledgePanelProps {
   errorMessage?: string | null;
   onEvidenceClick: (evidenceIds: string[]) => void;
   compact?: boolean;
-  roleByCompetitor?: Record<string, string>;
+  competitorMeta?: Record<string, CompetitorMeta>;
   onFocusCompetitor?: (competitorId: string) => void;
   onAddWatchlist?: (competitorId: string, sourceRole?: string) => void;
 }
@@ -43,9 +57,67 @@ function getCompetitorIds(knowledge: RunKnowledgeResponse | null): string[] {
   return unique([
     ...knowledge.features.map((item) => item.competitor_id),
     ...knowledge.pricings.map((item) => item.competitor_id),
+    ...knowledge.personas.map((item) => item.competitor_id),
     ...knowledge.feedback.map((item) => item.competitor_id),
     ...Object.keys(knowledge.coverage),
   ]);
+}
+
+interface SegmentGroup {
+  segment: string;
+  competitors: string[];
+}
+
+/**
+ * Group products by their sub-track (赛道). Products without a segment fall into
+ * a trailing "未归类赛道" bucket. Within a group, core competitors come first.
+ * Returns `{ groups, grouped }` where `grouped=false` signals legacy runs that
+ * carry no segment metadata, so the caller can render a flat list instead.
+ */
+function groupCompetitorsBySegment(
+  competitorIds: string[],
+  meta: Record<string, CompetitorMeta>,
+): { groups: SegmentGroup[]; grouped: boolean } {
+  const bySegment = new Map<string, string[]>();
+  let realSegmentCount = 0;
+  for (const competitorId of competitorIds) {
+    const segment = meta[competitorId]?.segment ?? null;
+    const key = segment ?? UNGROUPED_SEGMENT_LABEL;
+    const bucket = bySegment.get(key);
+    if (bucket) {
+      bucket.push(competitorId);
+    } else {
+      bySegment.set(key, [competitorId]);
+      if (segment !== null) {
+        realSegmentCount += 1;
+      }
+    }
+  }
+  const sortWithinSegment = (left: string, right: string): number => {
+    const leftCore = isCoreCandidateRole(meta[left]?.role);
+    const rightCore = isCoreCandidateRole(meta[right]?.role);
+    if (leftCore !== rightCore) {
+      return leftCore ? -1 : 1;
+    }
+    return left.localeCompare(right);
+  };
+  const groups: SegmentGroup[] = Array.from(bySegment.entries())
+    .sort((a, b) => {
+      const aUngrouped = a[0] === UNGROUPED_SEGMENT_LABEL;
+      const bUngrouped = b[0] === UNGROUPED_SEGMENT_LABEL;
+      if (aUngrouped !== bUngrouped) {
+        return aUngrouped ? 1 : -1;
+      }
+      if (a[1].length !== b[1].length) {
+        return b[1].length - a[1].length;
+      }
+      return a[0].localeCompare(b[0]);
+    })
+    .map(([segment, competitors]) => ({
+      segment,
+      competitors: [...competitors].sort(sortWithinSegment),
+    }));
+  return { groups, grouped: realSegmentCount > 0 };
 }
 
 function groupFeatures(features: KnowledgeFeature[]): Map<string, KnowledgeFeature[]> {
@@ -157,24 +229,6 @@ function EmptyBlock({ text }: { text: string }): JSX.Element {
   return (
     <div className="rounded-md border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
       {text}
-    </div>
-  );
-}
-
-function SchemaStat({
-  hint,
-  label,
-  value,
-}: {
-  hint: string;
-  label: string;
-  value: number;
-}): JSX.Element {
-  return (
-    <div className="rounded-lg border border-white/[0.06] bg-surface/70 p-3">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="mt-1 text-lg font-semibold text-foreground">{value.toLocaleString()}</p>
-      <p className="mt-1 text-xs text-foreground-subtle">{hint}</p>
     </div>
   );
 }
@@ -372,13 +426,178 @@ function ListBlock({ items, title }: { items: string[]; title: string }): JSX.El
   );
 }
 
+interface CompetitorCardEmptyTexts {
+  feature: string;
+  pricing: string;
+  persona: string;
+  feedback: string;
+}
+
+function CompetitorCard({
+  competitorId,
+  meta,
+  features,
+  pricings,
+  personas,
+  feedback,
+  isExpanded,
+  isLandscape,
+  onToggle,
+  onEvidenceClick,
+  onFocusCompetitor,
+  onAddWatchlist,
+  emptyTexts,
+}: {
+  competitorId: string;
+  meta?: CompetitorMeta;
+  features: KnowledgeFeature[];
+  pricings: KnowledgePricing[];
+  personas: KnowledgePersona[];
+  feedback: KnowledgeFeedback[];
+  isExpanded: boolean;
+  isLandscape: boolean;
+  onToggle: (competitorId: string) => void;
+  onEvidenceClick: (evidenceIds: string[]) => void;
+  onFocusCompetitor?: (competitorId: string) => void;
+  onAddWatchlist?: (competitorId: string, sourceRole?: string) => void;
+  emptyTexts: CompetitorCardEmptyTexts;
+}): JSX.Element {
+  const role = meta?.role;
+  const vendor = meta?.vendor ?? null;
+  const introduction = meta?.introduction ?? null;
+  const detailCounts = [
+    features.length > 0 ? `${features.length} 功能` : null,
+    pricings.length > 0 ? `${pricings.length} 定价` : null,
+    personas.length > 0 ? `${personas.length} 画像` : null,
+    feedback.length > 0 ? `${feedback.length} 反馈` : null,
+  ].filter((value): value is string => value !== null);
+  return (
+    <article className="overflow-hidden rounded-lg border border-border bg-background/40">
+      <div className="flex flex-wrap items-start justify-between gap-2 p-4">
+        <button
+          aria-expanded={isExpanded}
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          onClick={() => onToggle(competitorId)}
+          type="button"
+        >
+          <ChevronDown
+            className={cn(
+              "mt-0.5 h-4 w-4 shrink-0 text-foreground-subtle transition-transform",
+              isExpanded && "rotate-180",
+            )}
+          />
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="truncate text-sm font-semibold text-foreground">{competitorId}</h4>
+              {vendor ? (
+                <span className="inline-flex items-center gap-1 text-xs text-foreground-subtle">
+                  <Building2 className="h-3 w-3" />
+                  {vendor}
+                </span>
+              ) : null}
+              {role ? (
+                <Badge variant={isLandscape ? "secondary" : "outline"} title="该产品在本赛道中的角色">
+                  {candidateRoleLabel(role)}
+                </Badge>
+              ) : null}
+              <span className="truncate text-xs text-muted-foreground">
+                {detailCounts.length > 0 ? detailCounts.join(" · ") : "暂无结构化数据"}
+              </span>
+            </div>
+            {introduction ? (
+              <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">{introduction}</p>
+            ) : null}
+          </div>
+        </button>
+        <div className="flex items-center gap-2">
+          {onFocusCompetitor ? (
+            <Button onClick={() => onFocusCompetitor(competitorId)} size="sm" type="button" variant="outline">
+              聚焦分析
+            </Button>
+          ) : null}
+          {onAddWatchlist ? (
+            <Button
+              onClick={() => onAddWatchlist(competitorId, role)}
+              size="sm"
+              type="button"
+              variant="ghost"
+            >
+              加入追踪
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {isExpanded ? (
+        <div className="grid gap-3 border-t border-border/60 p-4 xl:grid-cols-2">
+          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+              <Boxes className="h-3.5 w-3.5 text-primary" />
+              功能树
+            </p>
+            {features.length > 0 ? (
+              <FeatureTree competitorId={competitorId} features={features} onEvidenceClick={onEvidenceClick} />
+            ) : (
+              <EmptyBlock text={emptyTexts.feature} />
+            )}
+          </section>
+          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+              <Tags className="h-3.5 w-3.5 text-primary" />
+              定价模型
+            </p>
+            {pricings.length > 0 ? (
+              <div className="space-y-2">
+                {pricings.map((pricing) => (
+                  <PricingBlock key={pricing.id} onEvidenceClick={onEvidenceClick} pricing={pricing} />
+                ))}
+              </div>
+            ) : (
+              <EmptyBlock text={emptyTexts.pricing} />
+            )}
+          </section>
+          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+              <UserRound className="h-3.5 w-3.5 text-primary" />
+              用户画像
+            </p>
+            {personas.length > 0 ? (
+              <div className="space-y-2">
+                {personas.map((persona) => (
+                  <PersonaBlock key={persona.id} onEvidenceClick={onEvidenceClick} persona={persona} />
+                ))}
+              </div>
+            ) : (
+              <EmptyBlock text={emptyTexts.persona} />
+            )}
+          </section>
+          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
+            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+              <MessageSquareQuote className="h-3.5 w-3.5 text-primary" />
+              用户反馈
+            </p>
+            {feedback.length > 0 ? (
+              <div className="space-y-2">
+                {feedback.map((item) => (
+                  <FeedbackBlock feedback={item} key={item.id} onEvidenceClick={onEvidenceClick} />
+                ))}
+              </div>
+            ) : (
+              <EmptyBlock text={emptyTexts.feedback} />
+            )}
+          </section>
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
 export function KnowledgePanel({
   knowledge,
   isLoading = false,
   errorMessage = null,
   onEvidenceClick,
   compact = false,
-  roleByCompetitor = {},
+  competitorMeta = {},
   onFocusCompetitor,
   onAddWatchlist,
 }: KnowledgePanelProps): JSX.Element {
@@ -387,6 +606,10 @@ export function KnowledgePanel({
   const feedbackGroups = useMemo(() => groupFeedback(knowledge?.feedback ?? []), [knowledge?.feedback]);
   const personaGroups = useMemo(() => groupPersonas(knowledge?.personas ?? []), [knowledge?.personas]);
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
+  const { groups: segmentGroups, grouped: isSegmented } = useMemo(
+    () => groupCompetitorsBySegment(competitorIds, competitorMeta),
+    [competitorIds, competitorMeta],
+  );
   const [expandedCompetitors, setExpandedCompetitors] = useState<Set<string>>(new Set());
   function toggleCompetitor(competitorId: string): void {
     setExpandedCompetitors((prev) => {
@@ -399,28 +622,31 @@ export function KnowledgePanel({
       return next;
     });
   }
-  const featureCount = knowledge?.features.length ?? 0;
-  const pricingCount = knowledge?.pricings.length ?? 0;
-  const personaCount = knowledge?.personas.length ?? 0;
-  const feedbackCount = knowledge?.feedback.length ?? 0;
   const isLandscape = knowledge?.analysis_archetype === "landscape";
   const hasKnowledge =
-    featureCount + pricingCount + personaCount + feedbackCount > 0;
-  const featureEmpty = schemaEmptyText(knowledge ?? null, {
-    bucket: "feature",
-    defaultText: "暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。",
-    landscapeText: "当前是趋势/全景模式，外围角色可允许不强制功能树。",
-  });
-  const personaEmpty = schemaEmptyText(knowledge ?? null, {
-    bucket: "persona",
-    defaultText: "暂无用户画像条目：可能是公开资料未覆盖目标用户，或抽取仍在处理中。",
-    landscapeText: "当前是趋势/全景模式，外围角色可允许不强制用户画像。",
-  });
-  const feedbackEmpty = schemaEmptyText(knowledge ?? null, {
-    bucket: "feedback",
-    defaultText: "暂无用户反馈条目：可能是公开评论证据不足，或抽取仍在处理中。",
-    landscapeText: "当前是趋势/全景模式，外围角色可允许不强制用户反馈。",
-  });
+    (knowledge?.features.length ?? 0) +
+      (knowledge?.pricings.length ?? 0) +
+      (knowledge?.personas.length ?? 0) +
+      (knowledge?.feedback.length ?? 0) >
+    0;
+  const emptyTexts: CompetitorCardEmptyTexts = {
+    feature: schemaEmptyText(knowledge ?? null, {
+      bucket: "feature",
+      defaultText: "暂无功能树条目：可能是公开证据不足、产品未公开，或抽取仍在处理中。",
+      landscapeText: "当前是趋势/全景模式，外围角色可允许不强制功能树。",
+    }),
+    pricing: pricingEmptyText(knowledge ?? null),
+    persona: schemaEmptyText(knowledge ?? null, {
+      bucket: "persona",
+      defaultText: "暂无用户画像条目：可能是公开资料未覆盖目标用户，或抽取仍在处理中。",
+      landscapeText: "当前是趋势/全景模式，外围角色可允许不强制用户画像。",
+    }),
+    feedback: schemaEmptyText(knowledge ?? null, {
+      bucket: "feedback",
+      defaultText: "暂无用户反馈条目：可能是公开评论证据不足，或抽取仍在处理中。",
+      landscapeText: "当前是趋势/全景模式，外围角色可允许不强制用户反馈。",
+    }),
+  };
 
   if (isLoading) {
     return (
@@ -439,32 +665,55 @@ export function KnowledgePanel({
     );
   }
 
+  function renderCard(competitorId: string): JSX.Element {
+    return (
+      <CompetitorCard
+        competitorId={competitorId}
+        emptyTexts={emptyTexts}
+        feedback={feedbackGroups.get(competitorId) ?? []}
+        features={featureGroups.get(competitorId) ?? []}
+        isExpanded={expandedCompetitors.has(competitorId)}
+        isLandscape={isLandscape}
+        key={`card-${competitorId}`}
+        meta={competitorMeta[competitorId]}
+        onAddWatchlist={onAddWatchlist}
+        onEvidenceClick={onEvidenceClick}
+        onFocusCompetitor={onFocusCompetitor}
+        personas={personaGroups.get(competitorId) ?? []}
+        pricings={pricingGroups.get(competitorId) ?? []}
+        onToggle={toggleCompetitor}
+      />
+    );
+  }
+
   return (
     <div className={cn("space-y-5", compact && "space-y-4")}>
-      <div>
-        <div>
-          <h3 className="flex items-center gap-2 text-base font-semibold text-foreground">
-            <Boxes className="h-4 w-4 text-primary" />
-            竞品知识总览
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            基于已采集公开证据抽取的功能、定价、用户画像与用户反馈。
-          </p>
-        </div>
-      </div>
-      <div className="grid gap-2 sm:grid-cols-4">
-        <SchemaStat hint="功能树节点" label="功能树" value={featureCount} />
-        <SchemaStat hint="套餐/商业模式" label="定价模型" value={pricingCount} />
-        <SchemaStat hint="目标角色与 JTBD" label="用户画像" value={personaCount} />
-        <SchemaStat hint="口碑与体验主题" label="用户反馈" value={feedbackCount} />
-      </div>
-
       {!hasKnowledge ? (
-        <EmptyBlock
-          text="当前暂无可展示的竞品知识。通常是公开证据不足、目标信息未公开，或抽取仍在处理中。"
-        />
+        <EmptyBlock text="当前暂无可展示的竞品知识。通常是公开证据不足、目标信息未公开，或抽取仍在处理中。" />
       ) : (
         <>
+          <section className="space-y-3">
+            <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <Layers className="h-4 w-4 text-primary" />
+              {isSegmented ? "赛道 → 产品" : "竞品列表"}
+            </h4>
+            {isSegmented ? (
+              <div className="space-y-5">
+                {segmentGroups.map((group) => (
+                  <div className="space-y-3" key={`segment-${group.segment}`}>
+                    <div className="flex items-center gap-2 border-l-2 border-primary/50 pl-2.5">
+                      <span className="text-sm font-medium text-foreground">{group.segment}</span>
+                      <Badge variant="secondary">{group.competitors.length} 款产品</Badge>
+                    </div>
+                    <div className="space-y-4 pl-1">{group.competitors.map(renderCard)}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-4">{competitorIds.map(renderCard)}</div>
+            )}
+          </section>
+
           <section className="space-y-3">
             <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <Tags className="h-4 w-4 text-primary" />
@@ -472,11 +721,12 @@ export function KnowledgePanel({
             </h4>
             <div className="overflow-hidden rounded-lg border border-border">
               <div className="overflow-x-auto">
-                <table className="min-w-[760px] w-full text-xs">
+                <table className="min-w-[820px] w-full text-xs">
                   <thead className="bg-surface/80 text-left text-foreground-muted">
                     <tr>
-                      <th className="px-3 py-2">竞品</th>
-                      <th className="px-3 py-2">角色</th>
+                      <th className="px-3 py-2">产品</th>
+                      <th className="px-3 py-2">赛道</th>
+                      <th className="px-3 py-2">厂商</th>
                       <th className="px-3 py-2">关键功能</th>
                       <th className="px-3 py-2">定价模型</th>
                       <th className="px-3 py-2">画像</th>
@@ -489,13 +739,12 @@ export function KnowledgePanel({
                       const competitorPricings = pricingGroups.get(competitorId) ?? [];
                       const competitorPersonas = personaGroups.get(competitorId) ?? [];
                       const competitorFeedback = feedbackGroups.get(competitorId) ?? [];
-                      const role = roleByCompetitor[competitorId];
+                      const cardMeta = competitorMeta[competitorId];
                       return (
                         <tr className="border-t border-border/80" key={`matrix-${competitorId}`}>
                           <td className="px-3 py-2 font-medium text-foreground">{competitorId}</td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {role ? candidateRoleLabel(role) : "—"}
-                          </td>
+                          <td className="px-3 py-2 text-muted-foreground">{cardMeta?.segment ?? "—"}</td>
+                          <td className="px-3 py-2 text-muted-foreground">{cardMeta?.vendor ?? "—"}</td>
                           <td className="px-3 py-2 text-muted-foreground">
                             {competitorFeatures.slice(0, 2).map((item) => item.name).join(" / ") || "—"}
                           </td>
@@ -514,155 +763,6 @@ export function KnowledgePanel({
                   </tbody>
                 </table>
               </div>
-            </div>
-          </section>
-
-          <section className="space-y-3">
-            <h4 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-              <Boxes className="h-4 w-4 text-primary" />
-              按竞品展开
-            </h4>
-            <div className="space-y-4">
-              {competitorIds.map((competitorId) => {
-                const competitorFeatures = featureGroups.get(competitorId) ?? [];
-                const competitorPricings = pricingGroups.get(competitorId) ?? [];
-                const competitorPersonas = personaGroups.get(competitorId) ?? [];
-                const competitorFeedback = feedbackGroups.get(competitorId) ?? [];
-                const sourceRole = roleByCompetitor[competitorId];
-                const isExpanded = expandedCompetitors.has(competitorId);
-                const detailCounts = [
-                  competitorFeatures.length > 0 ? `${competitorFeatures.length} 功能` : null,
-                  competitorPricings.length > 0 ? `${competitorPricings.length} 定价` : null,
-                  competitorPersonas.length > 0 ? `${competitorPersonas.length} 画像` : null,
-                  competitorFeedback.length > 0 ? `${competitorFeedback.length} 反馈` : null,
-                ].filter((value): value is string => value !== null);
-                return (
-                  <article className="overflow-hidden rounded-lg border border-border bg-background/40" key={`card-${competitorId}`}>
-                    <div className="flex flex-wrap items-center justify-between gap-2 p-4">
-                      <button
-                        aria-expanded={isExpanded}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                        onClick={() => toggleCompetitor(competitorId)}
-                        type="button"
-                      >
-                        <ChevronDown
-                          className={cn(
-                            "h-4 w-4 shrink-0 text-foreground-subtle transition-transform",
-                            isExpanded && "rotate-180",
-                          )}
-                        />
-                        <h4 className="truncate text-sm font-semibold text-foreground">{competitorId}</h4>
-                        {sourceRole ? (
-                          <Badge variant={isLandscape ? "secondary" : "outline"}>
-                            {candidateRoleLabel(sourceRole)}
-                          </Badge>
-                        ) : null}
-                        <span className="ml-1 truncate text-xs text-muted-foreground">
-                          {detailCounts.length > 0 ? detailCounts.join(" · ") : "暂无结构化数据"}
-                        </span>
-                      </button>
-                      <div className="flex items-center gap-2">
-                        {onFocusCompetitor ? (
-                          <Button
-                            onClick={() => onFocusCompetitor(competitorId)}
-                            size="sm"
-                            type="button"
-                            variant="outline"
-                          >
-                            聚焦分析
-                          </Button>
-                        ) : null}
-                        {onAddWatchlist ? (
-                          <Button
-                            onClick={() => onAddWatchlist(competitorId, sourceRole)}
-                            size="sm"
-                            type="button"
-                            variant="ghost"
-                          >
-                            加入追踪
-                          </Button>
-                        ) : null}
-                      </div>
-                    </div>
-                    {isExpanded ? (
-                    <div className="grid gap-3 border-t border-border/60 p-4 xl:grid-cols-2">
-                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-                          <Boxes className="h-3.5 w-3.5 text-primary" />
-                          功能树
-                        </p>
-                        {competitorFeatures.length > 0 ? (
-                          <FeatureTree
-                            competitorId={competitorId}
-                            features={competitorFeatures}
-                            onEvidenceClick={onEvidenceClick}
-                          />
-                        ) : (
-                          <EmptyBlock text={featureEmpty} />
-                        )}
-                      </section>
-                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-                          <Tags className="h-3.5 w-3.5 text-primary" />
-                          定价模型
-                        </p>
-                        {competitorPricings.length > 0 ? (
-                          <div className="space-y-2">
-                            {competitorPricings.map((pricing) => (
-                              <PricingBlock
-                                key={pricing.id}
-                                onEvidenceClick={onEvidenceClick}
-                                pricing={pricing}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <EmptyBlock text={pricingEmptyText(knowledge ?? null)} />
-                        )}
-                      </section>
-                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-                          <UserRound className="h-3.5 w-3.5 text-primary" />
-                          用户画像
-                        </p>
-                        {competitorPersonas.length > 0 ? (
-                          <div className="space-y-2">
-                            {competitorPersonas.map((persona) => (
-                              <PersonaBlock
-                                key={persona.id}
-                                onEvidenceClick={onEvidenceClick}
-                                persona={persona}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <EmptyBlock text={personaEmpty} />
-                        )}
-                      </section>
-                      <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-                        <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-                          <MessageSquareQuote className="h-3.5 w-3.5 text-primary" />
-                          用户反馈
-                        </p>
-                        {competitorFeedback.length > 0 ? (
-                          <div className="space-y-2">
-                            {competitorFeedback.map((feedback) => (
-                              <FeedbackBlock
-                                feedback={feedback}
-                                key={feedback.id}
-                                onEvidenceClick={onEvidenceClick}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <EmptyBlock text={feedbackEmpty} />
-                        )}
-                      </section>
-                    </div>
-                    ) : null}
-                  </article>
-                );
-              })}
             </div>
           </section>
         </>

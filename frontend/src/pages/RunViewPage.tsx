@@ -27,7 +27,6 @@ import { CompetitorDiffCard } from "@/components/comparison/CompetitorDiffCard";
 import { RunTraceDag } from "@/components/dag/RunTraceDag";
 import { EvidenceDrawer } from "@/components/EvidenceDrawer";
 import { KnowledgePanel } from "@/components/knowledge/KnowledgePanel";
-import { RoleLayerMap } from "@/components/knowledge/RoleLayerMap";
 import { ReportArticle } from "@/components/report/ReportArticle";
 import { RunBreadcrumb } from "@/components/RunBreadcrumb";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -41,7 +40,7 @@ import { formatDateTime, formatDuration, formatRunTitle } from "@/lib/format";
 import { SHOW_DEBUG_PANELS } from "@/lib/debugFlags";
 import { runPhaseRoute } from "@/lib/runRoute";
 import { track } from "@/lib/analytics";
-import { groupCompetitorRoles, roleByCompetitor } from "@/lib/competitorRoles";
+import { competitorMetaFromPlanTree } from "@/lib/competitorRoles";
 import { cn } from "@/lib/utils";
 
 type RunViewTab = "knowledge" | "report" | "trace";
@@ -94,17 +93,10 @@ export function RunViewPage(): JSX.Element {
       ? comparisons
       : comparisons.filter((c) => activeDimensions.has(c.dimension));
   const activeRunRoute = detailQuery.data ? runPhaseRoute(detailQuery.data) : null;
-  const roleGroups = useMemo(
-    () => groupCompetitorRoles(detailQuery.data?.plan_tree ?? null),
+  const competitorMetaMap = useMemo(
+    () => competitorMetaFromPlanTree(detailQuery.data?.plan_tree ?? null),
     [detailQuery.data?.plan_tree],
   );
-  const competitorRoleMap = useMemo(
-    () => roleByCompetitor(detailQuery.data?.plan_tree ?? null),
-    [detailQuery.data?.plan_tree],
-  );
-  const analysisArchetype = detailQuery.data?.intake_draft?.analysis_archetype ?? "comparison";
-  const isLandscapeRun = analysisArchetype === "landscape";
-
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) return;
     setActiveEvidenceIds(evidenceIds);
@@ -146,7 +138,7 @@ export function RunViewPage(): JSX.Element {
       await createWatchlistMutation.mutateAsync({
         competitor_id: competitorId,
         added_from_run_id: runId,
-        source_role: sourceRole ?? competitorRoleMap[competitorId] ?? null,
+        source_role: sourceRole ?? competitorMetaMap[competitorId]?.role ?? null,
       });
       pushToast({
         title: `已加入追踪：${competitorId}`,
@@ -321,17 +313,6 @@ export function RunViewPage(): JSX.Element {
               )}
               {isReportReady ? (
                 <>
-                  {isLandscapeRun ? (
-                    <RoleLayerMap
-                      groups={roleGroups}
-                      showActions
-                      onFocusCompetitor={(competitorId) => navigateToFocusedRun([competitorId])}
-                      onFocusRole={(_, competitors) => navigateToFocusedRun(competitors)}
-                      onAddWatchlist={(competitorId, sourceRole) =>
-                        void handleAddWatchlist(competitorId, sourceRole)
-                      }
-                    />
-                  ) : null}
                   <KnowledgePanel
                     errorMessage={knowledgeQuery.error?.message ?? null}
                     isLoading={knowledgeQuery.isLoading}
@@ -341,7 +322,7 @@ export function RunViewPage(): JSX.Element {
                     onAddWatchlist={(competitorId, sourceRole) =>
                       void handleAddWatchlist(competitorId, sourceRole)
                     }
-                    roleByCompetitor={competitorRoleMap}
+                    competitorMeta={competitorMetaMap}
                   />
                 </>
               ) : null}

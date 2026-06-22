@@ -1915,15 +1915,30 @@ def build_discovery_extract_user_prompt(
         f"- response_language: {response_language}\n\n"
         "Rules:\n"
         "- Return ONLY a JSON object with this schema:\n"
-        '  {"candidates":[{"name":"Product","is_competitor":true,'
+        '  {"candidates":[{"name":"Specific product/model name","is_competitor":true,'
         '"candidate_role":"direct_competitor",'
+        '"segment":"Sub-track this product belongs to, e.g. AI眼镜 / AI录音笔 / 陪伴玩具",'
+        '"vendor":"Parent company or brand behind the product, e.g. 华为 / Meta",'
+        '"introduction":"One concise factual sentence: what this product is and who it is for",'
         '"relevance_reason":"Why it competes in this market",'
         '"evidence_quote":"Exact short quote copied from search_results",'
         '"official_url":"Best-known official homepage/product URL for this candidate (the vendor\'s OWN domain), even if not in search_results; null only if genuinely unknown",'
         '"source_domain":"Optional domain of official_url or null"}]}\n'
+        "- GRANULARITY: each candidate MUST be a specific comparable PRODUCT or model "
+        "(e.g. '华为 AI 眼镜', 'Meta Ray-Ban', 'Rabbit R1'), NEVER a bare parent company "
+        "(e.g. '华为', 'Meta', '苹果'). A company spanning many categories is not comparable on "
+        "features/pricing/feedback. If a company sells in this market, name its specific product and "
+        "put the company in `vendor`. Two products from different companies in the same sub-track are "
+        "two separate candidates (e.g. 华为 AI 眼镜 and 小米 AI 眼镜), not '华为' and '小米'.\n"
+        "- segment: group comparable products by sub-track. Under a broad market like 'AI硬件', use "
+        "concrete sub-tracks (AI眼镜 / AI录音笔 / 家庭AI中枢 / AI PC ...). For a single explicit "
+        "target_category, segment may equal that category. Keep segment labels consistent so products "
+        "in the same track share the exact same segment string.\n"
+        "- introduction: one short, factual, non-marketing sentence describing the product so a reader "
+        "unfamiliar with it understands what it is; ground it in search_results where possible.\n"
         "- candidate_role must be one of: direct_competitor, adjacent_competitor, substitute, upstream_supplier, trend_reference.\n"
         "- Assign direct_competitor ONLY when the candidate competes on the same end-user job/product category.\n"
-        "- For broad_market scope, do not narrow target_category to one segment; identify segment players separately in relevance_reason.\n"
+        "- For broad_market scope, do not narrow target_category to one segment; identify segment players separately via the `segment` field.\n"
         "- If evidence only matches excluded_categories, set is_competitor=false.\n"
         "- When self_product is provided, prioritize direct_competitor and adjacent_competitor candidates that solve the same user job or product category.\n"
         "- Mark heterogeneous entities (chip vendors, infrastructure providers, media/research reports, ecosystems) as upstream_supplier/trend_reference/substitute; do not label them direct competitors.\n"

@@ -99,6 +99,9 @@ def test_reconcile_plan_tree_preserves_candidate_role_in_sources_and_description
         "source_domain": None,
         "candidate_role": "direct_competitor",
         "relevance_reason": "AI 眼镜核心竞争样本。",
+        "segment": None,
+        "introduction": None,
+        "vendor": None,
     }
 
 

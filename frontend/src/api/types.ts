@@ -116,6 +116,9 @@ export interface PlanTree {
       source_domain: string | null;
       candidate_role?: string | null;
       relevance_reason?: string | null;
+      segment?: string | null;
+      introduction?: string | null;
+      vendor?: string | null;
     }
   >;
 }

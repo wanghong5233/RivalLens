@@ -501,6 +501,9 @@ def _filter_discovery_candidates(
         )
         llm_official_url = getattr(candidate, "official_url", None)
         llm_source_domain = getattr(candidate, "source_domain", None)
+        segment = _clean_optional_string(getattr(candidate, "segment", None))
+        introduction = _clean_optional_string(getattr(candidate, "introduction", None))
+        vendor = _clean_optional_string(getattr(candidate, "vendor", None))
         alias_key = _normalize_alias_key(name)
         admission_status, admission_reason = _infer_admission_status(
             candidate_role=candidate_role,
@@ -568,6 +571,12 @@ def _filter_discovery_candidates(
             "relevance_reason": relevance_reason,
             "evidence_quote_preview": evidence_quote[:_DISCOVERY_EVIDENCE_PREVIEW_LIMIT],
         }
+        if segment is not None:
+            row["segment"] = segment
+        if introduction is not None:
+            row["introduction"] = introduction
+        if vendor is not None:
+            row["vendor"] = vendor
         if official_url is not None:
             row["official_url"] = official_url
             row["source_domain"] = source_domain or _source_domain(official_url)
@@ -836,6 +845,9 @@ async def discovery_node(state: AgentState) -> AgentState:
                         "admission_status": item.get("admission_status"),
                         "admission_reason": item.get("admission_reason"),
                         "relevance_reason": item.get("relevance_reason"),
+                        "segment": item.get("segment"),
+                        "introduction": item.get("introduction"),
+                        "vendor": item.get("vendor"),
                     }
                     for item in relevance
                     if isinstance(item, dict)
@@ -865,6 +877,9 @@ async def discovery_node(state: AgentState) -> AgentState:
             "official_url_confidence": item.get("official_url_confidence"),
             "candidate_role": item.get("candidate_role"),
             "relevance_reason": item.get("relevance_reason"),
+            "segment": item.get("segment"),
+            "introduction": item.get("introduction"),
+            "vendor": item.get("vendor"),
         }
         for item in relevance
         if isinstance(item, dict)

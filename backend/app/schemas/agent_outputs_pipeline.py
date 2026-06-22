@@ -341,6 +341,12 @@ class DiscoveryCompetitorCandidate(BaseModel):
     evidence_quote: str = ""
     official_url: str | None = None
     source_domain: str | None = None
+    # Product-level profile fields. `segment` is the sub-track the product belongs
+    # to (e.g. "AI眼镜"), enabling 赛道→产品 grouping; `introduction` is a one-line
+    # "what is this" blurb; `vendor` is the parent company/brand behind the product.
+    segment: str | None = None
+    introduction: str | None = None
+    vendor: str | None = None
 
     @field_validator("name", "relevance_reason", "evidence_quote", mode="before")
     @classmethod
@@ -349,7 +355,7 @@ class DiscoveryCompetitorCandidate(BaseModel):
             return ""
         return str(value).strip()
 
-    @field_validator("official_url", "source_domain", mode="before")
+    @field_validator("official_url", "source_domain", "segment", "introduction", "vendor", mode="before")
     @classmethod
     def _normalize_optional_text(cls, value: object) -> str | None:
         if value is None:
@@ -406,6 +412,9 @@ class DiscoveryExtractOutput(BaseModel):
                     "evidence_quote": item.get("evidence_quote", ""),
                     "official_url": item.get("official_url"),
                     "source_domain": item.get("source_domain"),
+                    "segment": item.get("segment") or item.get("track") or item.get("sub_category"),
+                    "introduction": item.get("introduction") or item.get("description") or item.get("summary"),
+                    "vendor": item.get("vendor") or item.get("company") or item.get("brand"),
                 }
                 candidates.append(candidate)
                 continue
@@ -420,6 +429,9 @@ class DiscoveryExtractOutput(BaseModel):
                         "evidence_quote": "",
                         "official_url": None,
                         "source_domain": None,
+                        "segment": None,
+                        "introduction": None,
+                        "vendor": None,
                     }
                 )
         return cls.model_validate({"competitors": names, "candidates": candidates})

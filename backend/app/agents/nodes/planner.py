@@ -572,6 +572,9 @@ def reconcile_plan_tree_after_discovery(
             source_domain_raw = source_payload.get("source_domain")
             candidate_role_raw = source_payload.get("candidate_role")
             relevance_reason_raw = source_payload.get("relevance_reason")
+            segment_raw = source_payload.get("segment")
+            introduction_raw = source_payload.get("introduction")
+            vendor_raw = source_payload.get("vendor")
             official_url = (
                 official_url_raw.strip()
                 if isinstance(official_url_raw, str) and official_url_raw.strip()
@@ -592,13 +595,38 @@ def reconcile_plan_tree_after_discovery(
                 if isinstance(relevance_reason_raw, str) and relevance_reason_raw.strip()
                 else None
             )
-            if official_url is None and candidate_role is None and relevance_reason is None:
+            segment = (
+                segment_raw.strip()
+                if isinstance(segment_raw, str) and segment_raw.strip()
+                else None
+            )
+            introduction = (
+                introduction_raw.strip()
+                if isinstance(introduction_raw, str) and introduction_raw.strip()
+                else None
+            )
+            vendor = (
+                vendor_raw.strip()
+                if isinstance(vendor_raw, str) and vendor_raw.strip()
+                else None
+            )
+            if (
+                official_url is None
+                and candidate_role is None
+                and relevance_reason is None
+                and segment is None
+                and introduction is None
+                and vendor is None
+            ):
                 continue
             merged_competitor_sources[competitor_id] = {
                 "official_url": official_url,
                 "source_domain": source_domain,
                 "candidate_role": candidate_role,
                 "relevance_reason": relevance_reason,
+                "segment": segment,
+                "introduction": introduction,
+                "vendor": vendor,
             }
 
     if not new_research_tasks:
