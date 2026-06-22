@@ -86,6 +86,7 @@ def _insert_run_with_optional_knowledge(*, with_knowledge: bool) -> str:
                             [
                                 {
                                     "id": "persona_eng_manager",
+                                    "competitor_id": "Cursor",
                                     "name": "Engineering manager",
                                     "role": "engineering_manager",
                                     "pain_points": ["Review load"],
@@ -168,6 +169,7 @@ def test_get_run_knowledge_returns_empty_payload_when_no_knowledge_exists(
             "run_id": run_id,
             "analysis_archetype": "comparison",
             "schema_version": "schema_v0.2",
+            "competitors": [],
             "features": [],
             "pricings": [],
             "personas": [],

@@ -392,10 +392,19 @@ export type KnowledgeCoverageStatus =
   | "not_requested"
   | string;
 
+export interface KnowledgeCompetitor {
+  competitor_id: string;
+  role: string | null;
+  segment: string | null;
+  vendor: string | null;
+  introduction: string | null;
+}
+
 export interface RunKnowledgeResponse {
   run_id: string;
   analysis_archetype: "comparison" | "landscape" | string;
   schema_version: string;
+  competitors: KnowledgeCompetitor[];
   features: KnowledgeFeature[];
   pricings: KnowledgePricing[];
   personas: KnowledgePersona[];

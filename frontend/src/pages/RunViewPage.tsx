@@ -8,7 +8,7 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
@@ -40,7 +40,6 @@ import { formatDateTime, formatDuration, formatRunTitle } from "@/lib/format";
 import { SHOW_DEBUG_PANELS } from "@/lib/debugFlags";
 import { runPhaseRoute } from "@/lib/runRoute";
 import { track } from "@/lib/analytics";
-import { competitorMetaFromPlanTree } from "@/lib/competitorRoles";
 import { cn } from "@/lib/utils";
 
 type RunViewTab = "knowledge" | "report" | "trace";
@@ -93,10 +92,6 @@ export function RunViewPage(): JSX.Element {
       ? comparisons
       : comparisons.filter((c) => activeDimensions.has(c.dimension));
   const activeRunRoute = detailQuery.data ? runPhaseRoute(detailQuery.data) : null;
-  const competitorMetaMap = useMemo(
-    () => competitorMetaFromPlanTree(detailQuery.data?.plan_tree ?? null),
-    [detailQuery.data?.plan_tree],
-  );
   function openEvidenceDrawer(evidenceIds: string[]): void {
     if (evidenceIds.length === 0) return;
     setActiveEvidenceIds(evidenceIds);
@@ -138,7 +133,7 @@ export function RunViewPage(): JSX.Element {
       await createWatchlistMutation.mutateAsync({
         competitor_id: competitorId,
         added_from_run_id: runId,
-        source_role: sourceRole ?? competitorMetaMap[competitorId]?.role ?? null,
+        source_role: sourceRole ?? null,
       });
       pushToast({
         title: `已加入追踪：${competitorId}`,
@@ -322,7 +317,6 @@ export function RunViewPage(): JSX.Element {
                     onAddWatchlist={(competitorId, sourceRole) =>
                       void handleAddWatchlist(competitorId, sourceRole)
                     }
-                    competitorMeta={competitorMetaMap}
                   />
                 </>
               ) : null}

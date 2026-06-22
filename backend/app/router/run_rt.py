@@ -19,6 +19,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import case, delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import yaml
 
@@ -523,10 +524,19 @@ class KnowledgeFeedbackResponse(BaseModel):
     evidence_ids: list[str]
 
 
+class KnowledgeCompetitorResponse(BaseModel):
+    competitor_id: str
+    role: str | None = None
+    segment: str | None = None
+    vendor: str | None = None
+    introduction: str | None = None
+
+
 class RunKnowledgeResponse(BaseModel):
     run_id: str
     analysis_archetype: str
     schema_version: str
+    competitors: list[KnowledgeCompetitorResponse]
     features: list[KnowledgeFeatureResponse]
     pricings: list[KnowledgePricingResponse]
     personas: list[KnowledgePersonaResponse]
@@ -3274,6 +3284,71 @@ async def get_run_conclusions(run_id: str) -> RunConclusionsResponse:
     )
 
 
+_COMPETITOR_PROFILE_FIELDS: tuple[str, ...] = ("role", "segment", "vendor", "introduction")
+
+
+def _clean_profile_value(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _build_competitor_profiles(
+    *,
+    plan_tree: object,
+    discovery_sources: dict[str, object],
+) -> list[KnowledgeCompetitorResponse]:
+    """Resolve the canonical competitor profile for a run.
+
+    Competitor profiles originate in discovery and are mirrored into
+    `plan_tree.competitor_sources` only when the planning path persists it; that
+    mirror is missing for some runs. We treat the plan_tree mirror as primary and
+    fall back to the discovery step payload so the frontend has a single source.
+    """
+    plan_sources: dict[str, object] = {}
+    if isinstance(plan_tree, dict):
+        raw = plan_tree.get("competitor_sources")
+        if isinstance(raw, dict):
+            plan_sources = raw
+
+    competitor_ids = list(dict.fromkeys([*discovery_sources.keys(), *plan_sources.keys()]))
+    profiles: list[KnowledgeCompetitorResponse] = []
+    for competitor_id in competitor_ids:
+        merged: dict[str, str | None] = {field: None for field in _COMPETITOR_PROFILE_FIELDS}
+        for source in (discovery_sources.get(competitor_id), plan_sources.get(competitor_id)):
+            if not isinstance(source, dict):
+                continue
+            role = _clean_profile_value(source.get("candidate_role"))
+            if role is not None:
+                merged["role"] = role
+            for field in ("segment", "vendor", "introduction"):
+                value = _clean_profile_value(source.get(field))
+                if value is not None:
+                    merged[field] = value
+        profiles.append(
+            KnowledgeCompetitorResponse(competitor_id=competitor_id, **merged)
+        )
+    return profiles
+
+
+async def _latest_discovery_sources(
+    *, session: AsyncSession, run_id: str
+) -> dict[str, object]:
+    step_rows = (
+        await session.execute(
+            select(Step)
+            .where(Step.run_id == run_id, Step.agent_name == "discovery")
+            .order_by(Step.created_at.desc())
+        )
+    ).scalars().all()
+    for step in step_rows:
+        sources = step.payload.get("discovered_competitor_sources")
+        if isinstance(sources, dict) and sources:
+            return sources
+    return {}
+
+
 @router.get("/api/runs/{run_id}/knowledge", response_model=RunKnowledgeResponse)
 async def get_run_knowledge(run_id: str) -> RunKnowledgeResponse:
     session_factory = get_session_factory()
@@ -3286,6 +3361,11 @@ async def get_run_knowledge(run_id: str) -> RunKnowledgeResponse:
                 message=f"run_id={run_id} does not exist",
             )
         knowledge = await load_knowledge_for_run(session=session, run_id=run_id)
+        discovery_sources = await _latest_discovery_sources(session=session, run_id=run_id)
+        competitors = _build_competitor_profiles(
+            plan_tree=run.plan_tree,
+            discovery_sources=discovery_sources,
+        )
         intake_draft = run.intake_draft if isinstance(run.intake_draft, dict) else {}
         analysis_archetype_raw = intake_draft.get("analysis_archetype")
         analysis_archetype = (
@@ -3298,6 +3378,7 @@ async def get_run_knowledge(run_id: str) -> RunKnowledgeResponse:
         run_id=run_id,
         analysis_archetype=analysis_archetype,
         schema_version=knowledge["schema_version"],
+        competitors=competitors,
         features=[KnowledgeFeatureResponse.model_validate(item) for item in knowledge["features"]],
         pricings=[KnowledgePricingResponse.model_validate(item) for item in knowledge["pricings"]],
         personas=[KnowledgePersonaResponse.model_validate(item) for item in knowledge["personas"]],

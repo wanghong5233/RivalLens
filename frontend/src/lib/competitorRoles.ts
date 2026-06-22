@@ -1,4 +1,4 @@
-import type { PlanTree } from "@/api/types";
+import type { KnowledgeCompetitor, PlanTree } from "@/api/types";
 
 const ROLE_ORDER = [
   "direct_competitor",
@@ -69,20 +69,24 @@ function cleanText(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export function competitorMetaFromPlanTree(
-  planTree: PlanTree | null | undefined,
+/**
+ * Single source of truth for competitor profiles: the `/knowledge` endpoint
+ * already resolves role/segment/vendor/introduction server-side (plan_tree
+ * mirror with discovery-step fallback), so the UI just maps it by competitor_id.
+ */
+export function competitorMetaFromKnowledge(
+  competitors: KnowledgeCompetitor[] | null | undefined,
 ): Record<string, CompetitorMeta> {
-  const sources = planTree?.competitor_sources;
-  if (!sources) {
+  if (!competitors) {
     return {};
   }
   const mapping: Record<string, CompetitorMeta> = {};
-  for (const [competitorId, payload] of Object.entries(sources)) {
-    mapping[competitorId] = {
-      role: normalizeCandidateRole(payload?.candidate_role ?? null),
-      segment: cleanText(payload?.segment),
-      introduction: cleanText(payload?.introduction),
-      vendor: cleanText(payload?.vendor),
+  for (const competitor of competitors) {
+    mapping[competitor.competitor_id] = {
+      role: normalizeCandidateRole(competitor.role),
+      segment: cleanText(competitor.segment),
+      introduction: cleanText(competitor.introduction),
+      vendor: cleanText(competitor.vendor),
     };
   }
   return mapping;

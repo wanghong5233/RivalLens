@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   candidateRoleLabel,
+  competitorMetaFromKnowledge,
   isCoreCandidateRole,
   UNGROUPED_SEGMENT_LABEL,
   type CompetitorMeta,
@@ -34,7 +35,6 @@ export interface KnowledgePanelProps {
   errorMessage?: string | null;
   onEvidenceClick: (evidenceIds: string[]) => void;
   compact?: boolean;
-  competitorMeta?: Record<string, CompetitorMeta>;
   onFocusCompetitor?: (competitorId: string) => void;
   onAddWatchlist?: (competitorId: string, sourceRole?: string) => void;
 }
@@ -48,6 +48,14 @@ const MATURITY_LABELS: Record<NonNullable<KnowledgeFeature["maturity"]>, string>
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
+}
+
+function normalizeLabel(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+function isProductContainerFeature(feature: KnowledgeFeature, competitorId: string): boolean {
+  return normalizeLabel(feature.name) === normalizeLabel(competitorId);
 }
 
 function getCompetitorIds(knowledge: RunKnowledgeResponse | null): string[] {
@@ -251,15 +259,15 @@ function FeatureTree({
     byParent.set(parentKey, items);
   }
   const roots = byParent.get("root") ?? [];
+  const displayRoots =
+    roots.length === 1 && isProductContainerFeature(roots[0], competitorId)
+      ? byParent.get(roots[0].id) ?? roots
+      : roots;
 
   return (
-    <section className="rounded-lg border border-border bg-background/50 p-4">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold text-foreground">{competitorId}</h4>
-        <Badge variant="secondary">{features.length} 项功能</Badge>
-      </div>
+    <section className="rounded-lg border border-white/[0.06] bg-background/40 p-3">
       <div className="space-y-2">
-        {roots.map((feature) => (
+        {displayRoots.map((feature) => (
           <FeatureNode
             childrenByParent={byParent}
             feature={feature}
@@ -287,7 +295,7 @@ function FeatureNode({
   const children = childrenByParent.get(feature.id) ?? [];
   const maturity = feature.maturity ? MATURITY_LABELS[feature.maturity] : null;
   return (
-    <div className={cn("rounded-md border border-white/[0.06] bg-surface/70 p-3", level > 0 && "ml-4")}>
+    <div className={cn("rounded-lg border border-white/[0.06] bg-surface/55 p-3", level > 0 && "ml-4")}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -433,6 +441,32 @@ interface CompetitorCardEmptyTexts {
   feedback: string;
 }
 
+function StatPill({ count, label }: { count: number; label: string }): JSX.Element {
+  const hasData = count > 0;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px]",
+        hasData
+          ? "border-primary/25 bg-primary/[0.08] text-foreground"
+          : "border-white/[0.06] bg-surface/60 text-foreground-subtle",
+      )}
+    >
+      <span className="font-semibold">{count}</span>
+      {label}
+    </span>
+  );
+}
+
+function ProductMetaItem({ label, value }: { label: string; value: string | null }): JSX.Element {
+  return (
+    <div className="rounded-md border border-white/[0.06] bg-background/40 px-3 py-2">
+      <p className="text-[11px] uppercase tracking-wide text-foreground-subtle">{label}</p>
+      <p className="mt-1 truncate text-xs font-medium text-foreground">{value ?? "—"}</p>
+    </div>
+  );
+}
+
 function CompetitorCard({
   competitorId,
   meta,
@@ -464,49 +498,48 @@ function CompetitorCard({
 }): JSX.Element {
   const role = meta?.role;
   const vendor = meta?.vendor ?? null;
+  const segment = meta?.segment ?? null;
   const introduction = meta?.introduction ?? null;
-  const detailCounts = [
-    features.length > 0 ? `${features.length} 功能` : null,
-    pricings.length > 0 ? `${pricings.length} 定价` : null,
-    personas.length > 0 ? `${personas.length} 画像` : null,
-    feedback.length > 0 ? `${feedback.length} 反馈` : null,
-  ].filter((value): value is string => value !== null);
+  const roleLabel = role ? candidateRoleLabel(role) : null;
   return (
-    <article className="overflow-hidden rounded-lg border border-border bg-background/40">
-      <div className="flex flex-wrap items-start justify-between gap-2 p-4">
+    <article className="overflow-hidden rounded-xl border border-border bg-gradient-to-br from-surface/90 to-background/70 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3 p-4">
         <button
           aria-expanded={isExpanded}
-          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          className="flex min-w-0 flex-1 items-start gap-3 text-left"
           onClick={() => onToggle(competitorId)}
           type="button"
         >
           <ChevronDown
             className={cn(
-              "mt-0.5 h-4 w-4 shrink-0 text-foreground-subtle transition-transform",
+              "mt-1 h-4 w-4 shrink-0 text-foreground-subtle transition-transform",
               isExpanded && "rotate-180",
             )}
           />
-          <div className="min-w-0 flex-1 space-y-1">
+          <div className="min-w-0 flex-1 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <h4 className="truncate text-sm font-semibold text-foreground">{competitorId}</h4>
+              <h4 className="truncate text-base font-semibold text-foreground">{competitorId}</h4>
               {vendor ? (
                 <span className="inline-flex items-center gap-1 text-xs text-foreground-subtle">
                   <Building2 className="h-3 w-3" />
                   {vendor}
                 </span>
               ) : null}
-              {role ? (
+              {roleLabel ? (
                 <Badge variant={isLandscape ? "secondary" : "outline"} title="该产品在本赛道中的角色">
-                  {candidateRoleLabel(role)}
+                  {roleLabel}
                 </Badge>
               ) : null}
-              <span className="truncate text-xs text-muted-foreground">
-                {detailCounts.length > 0 ? detailCounts.join(" · ") : "暂无结构化数据"}
-              </span>
             </div>
             {introduction ? (
               <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">{introduction}</p>
             ) : null}
+            <div className="flex flex-wrap gap-1.5">
+              <StatPill count={features.length} label="功能" />
+              <StatPill count={pricings.length} label="定价" />
+              <StatPill count={personas.length} label="画像" />
+              <StatPill count={feedback.length} label="反馈" />
+            </div>
           </div>
         </button>
         <div className="flex items-center gap-2">
@@ -520,7 +553,7 @@ function CompetitorCard({
               onClick={() => onAddWatchlist(competitorId, role)}
               size="sm"
               type="button"
-              variant="ghost"
+              variant="secondary"
             >
               加入追踪
             </Button>
@@ -528,63 +561,75 @@ function CompetitorCard({
         </div>
       </div>
       {isExpanded ? (
-        <div className="grid gap-3 border-t border-border/60 p-4 xl:grid-cols-2">
-          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-              <Boxes className="h-3.5 w-3.5 text-primary" />
-              功能树
-            </p>
-            {features.length > 0 ? (
-              <FeatureTree competitorId={competitorId} features={features} onEvidenceClick={onEvidenceClick} />
-            ) : (
-              <EmptyBlock text={emptyTexts.feature} />
-            )}
+        <div className="space-y-3 border-t border-border/60 p-4">
+          <section className="rounded-lg border border-white/[0.08] bg-surface/55 p-3">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <ProductMetaItem label="厂商 / 品牌" value={vendor} />
+              <ProductMetaItem label="所属赛道" value={segment} />
+              <ProductMetaItem label="竞争角色" value={roleLabel} />
+            </div>
+            {introduction ? (
+              <p className="mt-3 text-xs leading-5 text-muted-foreground">{introduction}</p>
+            ) : null}
           </section>
-          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-              <Tags className="h-3.5 w-3.5 text-primary" />
-              定价模型
-            </p>
-            {pricings.length > 0 ? (
-              <div className="space-y-2">
-                {pricings.map((pricing) => (
-                  <PricingBlock key={pricing.id} onEvidenceClick={onEvidenceClick} pricing={pricing} />
-                ))}
-              </div>
-            ) : (
-              <EmptyBlock text={emptyTexts.pricing} />
-            )}
-          </section>
-          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-              <UserRound className="h-3.5 w-3.5 text-primary" />
-              用户画像
-            </p>
-            {personas.length > 0 ? (
-              <div className="space-y-2">
-                {personas.map((persona) => (
-                  <PersonaBlock key={persona.id} onEvidenceClick={onEvidenceClick} persona={persona} />
-                ))}
-              </div>
-            ) : (
-              <EmptyBlock text={emptyTexts.persona} />
-            )}
-          </section>
-          <section className="space-y-2 rounded-md border border-white/[0.08] bg-surface/60 p-3">
-            <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
-              <MessageSquareQuote className="h-3.5 w-3.5 text-primary" />
-              用户反馈
-            </p>
-            {feedback.length > 0 ? (
-              <div className="space-y-2">
-                {feedback.map((item) => (
-                  <FeedbackBlock feedback={item} key={item.id} onEvidenceClick={onEvidenceClick} />
-                ))}
-              </div>
-            ) : (
-              <EmptyBlock text={emptyTexts.feedback} />
-            )}
-          </section>
+          <div className="grid gap-3 xl:grid-cols-2">
+            <section className="space-y-2 rounded-lg border border-white/[0.08] bg-surface/55 p-3">
+              <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                <Boxes className="h-3.5 w-3.5 text-primary" />
+                功能树
+              </p>
+              {features.length > 0 ? (
+                <FeatureTree competitorId={competitorId} features={features} onEvidenceClick={onEvidenceClick} />
+              ) : (
+                <EmptyBlock text={emptyTexts.feature} />
+              )}
+            </section>
+            <section className="space-y-2 rounded-lg border border-white/[0.08] bg-surface/55 p-3">
+              <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                <Tags className="h-3.5 w-3.5 text-primary" />
+                定价模型
+              </p>
+              {pricings.length > 0 ? (
+                <div className="space-y-2">
+                  {pricings.map((pricing) => (
+                    <PricingBlock key={pricing.id} onEvidenceClick={onEvidenceClick} pricing={pricing} />
+                  ))}
+                </div>
+              ) : (
+                <EmptyBlock text={emptyTexts.pricing} />
+              )}
+            </section>
+            <section className="space-y-2 rounded-lg border border-white/[0.08] bg-surface/55 p-3">
+              <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                <UserRound className="h-3.5 w-3.5 text-primary" />
+                用户画像
+              </p>
+              {personas.length > 0 ? (
+                <div className="space-y-2">
+                  {personas.map((persona) => (
+                    <PersonaBlock key={persona.id} onEvidenceClick={onEvidenceClick} persona={persona} />
+                  ))}
+                </div>
+              ) : (
+                <EmptyBlock text={emptyTexts.persona} />
+              )}
+            </section>
+            <section className="space-y-2 rounded-lg border border-white/[0.08] bg-surface/55 p-3">
+              <p className="inline-flex items-center gap-1 text-xs font-medium text-foreground">
+                <MessageSquareQuote className="h-3.5 w-3.5 text-primary" />
+                用户反馈
+              </p>
+              {feedback.length > 0 ? (
+                <div className="space-y-2">
+                  {feedback.map((item) => (
+                    <FeedbackBlock feedback={item} key={item.id} onEvidenceClick={onEvidenceClick} />
+                  ))}
+                </div>
+              ) : (
+                <EmptyBlock text={emptyTexts.feedback} />
+              )}
+            </section>
+          </div>
         </div>
       ) : null}
     </article>
@@ -597,7 +642,6 @@ export function KnowledgePanel({
   errorMessage = null,
   onEvidenceClick,
   compact = false,
-  competitorMeta = {},
   onFocusCompetitor,
   onAddWatchlist,
 }: KnowledgePanelProps): JSX.Element {
@@ -605,6 +649,10 @@ export function KnowledgePanel({
   const pricingGroups = useMemo(() => groupPricings(knowledge?.pricings ?? []), [knowledge?.pricings]);
   const feedbackGroups = useMemo(() => groupFeedback(knowledge?.feedback ?? []), [knowledge?.feedback]);
   const personaGroups = useMemo(() => groupPersonas(knowledge?.personas ?? []), [knowledge?.personas]);
+  const competitorMeta = useMemo(
+    () => competitorMetaFromKnowledge(knowledge?.competitors),
+    [knowledge?.competitors],
+  );
   const competitorIds = useMemo(() => getCompetitorIds(knowledge), [knowledge]);
   const { groups: segmentGroups, grouped: isSegmented } = useMemo(
     () => groupCompetitorsBySegment(competitorIds, competitorMeta),
