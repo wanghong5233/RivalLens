@@ -126,5 +126,5 @@ def test_planner_output_allows_two_analyze_for_landscape() -> None:
 
 def test_route_after_qa_rejected_goes_replanner() -> None:
     assert _route_after_qa({"qa_outcome": "rejected"}) == "replanner"
-    assert _route_after_qa({"qa_outcome": "approved"}) == "finalize"
+    assert _route_after_qa({"qa_outcome": "approved"}) == "deepen"
     assert _route_after_qa({"qa_outcome": "force_degraded"}) == "supervisor"

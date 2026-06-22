@@ -60,6 +60,52 @@ function toLanguageLabel(language: string | null): string {
   return `${language.toUpperCase()} 原文`;
 }
 
+function metadataBoolean(
+  metadata: Record<string, unknown> | null,
+  key: string,
+): boolean {
+  const value = metadata?.[key];
+  return value === true;
+}
+
+function metadataString(
+  metadata: Record<string, unknown> | null,
+  key: string,
+): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function evidenceFloorReasonLabel(
+  metadata: Record<string, unknown> | null,
+): string | null {
+  const reason = metadataString(metadata, "evidence_floor_reason");
+  if (reason === "source_blocklist") {
+    return "来源受限";
+  }
+  if (reason === "low_semantic") {
+    return "语义质量不足";
+  }
+  if (reason === "competitor_grounding_miss") {
+    return "竞品归属不充分";
+  }
+  if (reason === "adjacent_below_target_floor") {
+    return "目标品类证据不足";
+  }
+  return reason;
+}
+
+function isSummaryFragment(text: string): boolean {
+  const compact = text.trim();
+  if (!compact) {
+    return true;
+  }
+  if (compact.endsWith("...") || compact.endsWith("…")) {
+    return true;
+  }
+  return compact.length < 220;
+}
+
 export function EvidenceDrawer({
   open,
   onOpenChange,
@@ -115,6 +161,9 @@ export function EvidenceDrawer({
             const sourceIcon = SOURCE_TYPE_ICON[item.source_type] ?? "📌";
             const sourceAuthority = getSourceAuthority(item.metadata);
             const originalText = item.quote.trim().length > 0 ? item.quote : item.sanitized_text;
+            const isEvidenceFloor = metadataBoolean(item.metadata, "evidence_floor");
+            const floorReason = evidenceFloorReasonLabel(item.metadata);
+            const summaryFragment = !isEvidenceFloor && isSummaryFragment(originalText);
             const translatedExcerpt =
               typeof item.translated_excerpt === "string" && item.translated_excerpt.trim().length > 0
                 ? item.translated_excerpt
@@ -138,7 +187,12 @@ export function EvidenceDrawer({
                   <Badge variant={item.desensitized ? "success" : "warning"}>
                     {item.desensitized ? "已脱敏" : "未脱敏"}
                   </Badge>
+                  {isEvidenceFloor ? <Badge variant="warning">兜底证据</Badge> : null}
+                  {summaryFragment ? <Badge variant="secondary">摘要片段</Badge> : null}
                 </div>
+                {isEvidenceFloor && floorReason ? (
+                  <p className="text-xs text-amber-200">兜底原因：{floorReason}</p>
+                ) : null}
                 <div className="space-y-3">
                   <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">证据原文</p>

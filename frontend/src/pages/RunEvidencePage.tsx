@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { CircleDollarSign, FileText, Globe, MessageSquareText, Sparkles } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useRunDetail, useRunEvidence } from "@/api/hooks";
@@ -53,6 +53,56 @@ function toLanguageLabel(language: string | null): string {
   return `${language.toUpperCase()} 原文`;
 }
 
+function metadataBoolean(
+  metadata: Record<string, unknown> | null,
+  key: string,
+): boolean {
+  const value = metadata?.[key];
+  return value === true;
+}
+
+function metadataString(
+  metadata: Record<string, unknown> | null,
+  key: string,
+): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function isEvidenceFloorRow(item: EvidenceListItemResponse): boolean {
+  return metadataBoolean(item.metadata, "evidence_floor");
+}
+
+function evidenceFloorReasonLabel(
+  metadata: Record<string, unknown> | null,
+): string | null {
+  const reason = metadataString(metadata, "evidence_floor_reason");
+  if (reason === "source_blocklist") {
+    return "来源受限";
+  }
+  if (reason === "low_semantic") {
+    return "语义质量不足";
+  }
+  if (reason === "competitor_grounding_miss") {
+    return "竞品归属不充分";
+  }
+  if (reason === "adjacent_below_target_floor") {
+    return "目标品类证据不足";
+  }
+  return reason;
+}
+
+function isSummaryFragment(text: string): boolean {
+  const compact = text.trim();
+  if (!compact) {
+    return true;
+  }
+  if (compact.endsWith("...") || compact.endsWith("…")) {
+    return true;
+  }
+  return compact.length < 220;
+}
+
 function toSourceMeta(sourceType: string): SourceMeta {
   const normalized = sourceType.toLowerCase();
   if (normalized.includes("pricing")) {
@@ -79,6 +129,8 @@ export function RunEvidencePage(): JSX.Element {
   const sourceType = searchParams.get("source_type")?.trim() ?? "";
   const sourceAuthority = searchParams.get("source_authority")?.trim() ?? "";
   const highlightedEvidenceId = searchParams.get("evidence_id")?.trim() ?? "";
+  const [showOnlyQualifiedEvidence, setShowOnlyQualifiedEvidence] =
+    useState<boolean>(true);
 
   const detailQuery = useRunDetail(runId);
   const allEvidenceQuery = useRunEvidence(runId, {}, { enabled: Boolean(runId) });
@@ -108,12 +160,26 @@ export function RunEvidencePage(): JSX.Element {
   }, [allEvidenceQuery.data]);
 
   const visibleEvidence = useMemo(() => {
-    const items = filteredEvidenceQuery.data ?? [];
-    if (!sourceAuthority) {
-      return items;
+    let items = filteredEvidenceQuery.data ?? [];
+    if (sourceAuthority) {
+      items = items.filter((item) => getSourceAuthority(item.metadata) === sourceAuthority);
     }
-    return items.filter((item) => getSourceAuthority(item.metadata) === sourceAuthority);
-  }, [filteredEvidenceQuery.data, sourceAuthority]);
+    if (showOnlyQualifiedEvidence) {
+      items = items.filter((item) => !isEvidenceFloorRow(item));
+    }
+    return items;
+  }, [filteredEvidenceQuery.data, showOnlyQualifiedEvidence, sourceAuthority]);
+
+  const hiddenFloorCount = useMemo(() => {
+    if (!showOnlyQualifiedEvidence) {
+      return 0;
+    }
+    let items = filteredEvidenceQuery.data ?? [];
+    if (sourceAuthority) {
+      items = items.filter((item) => getSourceAuthority(item.metadata) === sourceAuthority);
+    }
+    return items.filter((item) => isEvidenceFloorRow(item)).length;
+  }, [filteredEvidenceQuery.data, showOnlyQualifiedEvidence, sourceAuthority]);
 
   const hasHighlightedEvidence = useMemo(() => {
     if (!highlightedEvidenceId) {
@@ -176,6 +242,7 @@ export function RunEvidencePage(): JSX.Element {
 
   function clearFilters(): void {
     setSearchParams(new URLSearchParams(), { replace: true });
+    setShowOnlyQualifiedEvidence(true);
   }
 
   return (
@@ -234,7 +301,7 @@ export function RunEvidencePage(): JSX.Element {
         <CardHeader className="pb-3">
           <CardTitle className="text-base">筛选</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-4">
+        <CardContent className="grid gap-3 sm:grid-cols-5">
           <label className="space-y-1 text-sm">
             <span className="text-muted-foreground">competitor</span>
             <NativeSelect
@@ -296,12 +363,30 @@ export function RunEvidencePage(): JSX.Element {
           </label>
 
           <div className="flex items-end">
+            <Button
+              onClick={() => setShowOnlyQualifiedEvidence((value) => !value)}
+              size="sm"
+              variant={showOnlyQualifiedEvidence ? "default" : "outline"}
+            >
+              {showOnlyQualifiedEvidence ? "仅看达标证据" : "显示全部证据"}
+            </Button>
+          </div>
+
+          <div className="flex items-end">
             <Button onClick={clearFilters} size="sm" variant="outline">
               清空筛选
             </Button>
           </div>
         </CardContent>
       </Card>
+
+      {hiddenFloorCount > 0 ? (
+        <Card className="border-amber-500/30 bg-amber-500/5">
+          <CardContent className="pt-4 text-xs text-amber-200">
+            当前已默认隐藏 {hiddenFloorCount} 条兜底证据（未达标）。如需排查可切换“显示全部证据”。
+          </CardContent>
+        </Card>
+      ) : null}
 
       {allEvidenceQuery.isLoading || filteredEvidenceQuery.isLoading ? (
         <div className="space-y-3">
@@ -353,6 +438,9 @@ export function RunEvidencePage(): JSX.Element {
                 const isHighlighted = item.evidence_id === highlightedEvidenceId;
                 const itemSourceAuthority = getSourceAuthority(item.metadata);
                 const originalText = item.quote.trim().length > 0 ? item.quote : item.sanitized_text;
+                const isEvidenceFloor = isEvidenceFloorRow(item);
+                const floorReason = evidenceFloorReasonLabel(item.metadata);
+                const summaryFragment = !isEvidenceFloor && isSummaryFragment(originalText);
                 const translatedExcerpt =
                   typeof item.translated_excerpt === "string" && item.translated_excerpt.trim().length > 0
                     ? item.translated_excerpt
@@ -382,7 +470,12 @@ export function RunEvidencePage(): JSX.Element {
                       <Badge variant={item.desensitized ? "success" : "warning"}>
                         {item.desensitized ? "已脱敏" : "未脱敏"}
                       </Badge>
+                      {isEvidenceFloor ? <Badge variant="warning">兜底证据</Badge> : null}
+                      {summaryFragment ? <Badge variant="secondary">摘要片段</Badge> : null}
                     </div>
+                    {isEvidenceFloor && floorReason ? (
+                      <p className="text-xs text-amber-200">兜底原因：{floorReason}</p>
+                    ) : null}
                     {item.source_title ? <p className="text-sm font-medium text-foreground">{item.source_title}</p> : null}
                     <div className="space-y-2">
                       <div className="space-y-1">

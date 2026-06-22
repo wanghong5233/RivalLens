@@ -17,7 +17,7 @@ from agents.nodes.qa import qa_node
 from agents.nodes.replanner import replanner_node
 from agents.nodes.researcher import researcher_node
 from agents.nodes.supervisor import supervisor_node
-from agents.nodes.writer import writer_node
+from agents.nodes.writer import deepen_node, writer_node
 from agents.state import AgentState
 
 
@@ -65,10 +65,10 @@ def _route_after_supervisor(
     return "researcher"
 
 
-def _route_after_qa(state: AgentState) -> Literal["replanner", "supervisor", "finalize"]:
+def _route_after_qa(state: AgentState) -> Literal["replanner", "supervisor", "deepen"]:
     qa_outcome = state.get("qa_outcome")
     if qa_outcome == "approved":
-        return "finalize"
+        return "deepen"
     if qa_outcome == "rejected":
         return "replanner"
     return "supervisor"
@@ -115,6 +115,7 @@ def build_graph_uncompiled() -> StateGraph:
     graph.add_node("researcher", researcher_node)
     graph.add_node("analyst", analyst_node)
     graph.add_node("writer", writer_node)
+    graph.add_node("deepen", deepen_node)
     graph.add_node("qa", qa_node)
     graph.add_node("replanner", replanner_node)
     graph.add_node("intake_generate", intake_generate_node)
@@ -171,9 +172,10 @@ def build_graph_uncompiled() -> StateGraph:
         {
             "replanner": "replanner",
             "supervisor": "supervisor",
-            "finalize": END,
+            "deepen": "deepen",
         },
     )
+    graph.add_edge("deepen", END)
     return graph
 
 

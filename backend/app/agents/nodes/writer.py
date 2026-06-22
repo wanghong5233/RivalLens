@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Awaitable, Callable
 import re
 from datetime import datetime, timezone
 from typing import Literal
@@ -50,6 +51,7 @@ from service.llm import (
 )
 from service.knowledge import EMPTY_RUN_KNOWLEDGE, load_knowledge_for_run
 from service.llm.harness import complete_structured
+from service.llm.exceptions import LLMError
 from service.llm.records import build_llm_call_record
 from service.llm.response import LLMResponse
 from utils.log_node import log_node
@@ -601,6 +603,8 @@ def _build_evidence_briefs(evidence_rows: list[EvidenceRecord]) -> list[dict[str
     briefs: list[dict[str, object]] = []
     for row in evidence_rows:
         span = row.span if isinstance(row.span, dict) else {}
+        if span.get("evidence_floor") is True:
+            continue
         dimension_raw = span.get("dimension")
         competitor_id_raw = span.get("competitor_id")
         authority_raw = span.get("source_authority")
@@ -1838,6 +1842,7 @@ async def _deepen_report_sections(
     analyst_summary: str,
     insight_briefs: list[dict[str, object]],
     landscape_facts: dict[str, object] | None,
+    persist_response: Callable[[str, LLMResponse], Awaitable[None]] | None = None,
 ) -> tuple[dict[str, object], list[LLMResponse], list[str]]:
     """Second pass: rewrite each LLM-owned narrative section on its own.
 
@@ -1903,6 +1908,8 @@ async def _deepen_report_sections(
             landscape_facts=landscape_facts,
         )
         deepen_responses.append(llm_response)
+        if persist_response is not None:
+            await persist_response(section_id, llm_response)
         deepened_body = deepened.content_markdown.strip() if deepened is not None else ""
         if deepened is not None and len(deepened_body) >= max(min_chars, len(draft.strip())):
             merged = dict(section)
@@ -2571,27 +2578,7 @@ async def writer_node(state: AgentState) -> AgentState:
             evidence_briefs=evidence_briefs,
             risk_flags=risk_flags,
         )
-    section_deepen_responses: list[LLMResponse] = []
     deepened_section_ids: list[str] = []
-    if writer_mode == "llm" and settings.WRITER_SECTION_DEEPENING_ENABLED:
-        report_content, section_deepen_responses, deepened_section_ids = (
-            await _deepen_report_sections(
-                report_content=report_content,
-                analysis_archetype=intake_draft.analysis_archetype,
-                response_language=intake_draft.response_language,
-                report_depth=report_depth,
-                user_query=str(state.get("user_query", "")),
-                evidence_briefs=evidence_briefs,
-                analyst_summary=analyst_summary,
-                insight_briefs=insight_briefs,
-                landscape_facts=landscape_facts,
-            )
-        )
-        log.info(
-            "writer.section_deepen",
-            deepened_sections=deepened_section_ids,
-            deepen_attempts=len(section_deepen_responses),
-        )
     report_content = _apply_structured_writer_sections(
         report_content=report_content,
         target_sections=target_sections,
@@ -2695,13 +2682,6 @@ async def writer_node(state: AgentState) -> AgentState:
                 error=llm_call_error,
             )
         )
-        for deepen_response in section_deepen_responses:
-            session.add(
-                build_llm_call_record(
-                    step_id=step_id,
-                    response=deepen_response,
-                )
-            )
         # One report per run: a QA-reject retry re-runs the writer, and without
         # this the old draft lingered as a second `reports` row (the "methodology
         # 重复入库" / duplicated-section artifact). The API reads latest-by-created_at
@@ -2751,3 +2731,235 @@ async def writer_node(state: AgentState) -> AgentState:
         "report_degraded_required_sections": degraded_required_sections,
         "status": "running",
     }
+
+
+async def _load_latest_report_for_run(
+    *,
+    session: AsyncSession,
+    run_id: str,
+) -> Report | None:
+    return (
+        await session.execute(
+            select(Report).where(Report.run_id == run_id).order_by(Report.created_at.desc()).limit(1)
+        )
+    ).scalars().first()
+
+
+@log_node("deepen")
+async def deepen_node(state: AgentState) -> AgentState:
+    run_id = state.get("run_id")
+    if run_id is None:
+        raise RuntimeError("AgentState.run_id is required for deepen node.")
+
+    session_factory = get_session_factory()
+    step_id = make_id("step_")
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_START,
+        step_id=step_id,
+        payload={
+            "agent_name": "deepen",
+        },
+    )
+
+    if not settings.WRITER_SECTION_DEEPENING_ENABLED:
+        async with session_factory() as session:
+            session.add(
+                Step(
+                    step_id=step_id,
+                    run_id=run_id,
+                    agent_name="deepen",
+                    status="completed",
+                    retry_count=0,
+                    payload={
+                        "deepen_enabled": False,
+                        "skipped_reason": "writer_section_deepening_disabled",
+                        "deepened_sections": [],
+                        "deepen_attempts": 0,
+                    },
+                    finished_at=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+        await emit_run_event(
+            run_id=run_id,
+            event_type=RunEventType.STEP_FINISH,
+            step_id=step_id,
+            payload={
+                "agent_name": "deepen",
+                "status": "completed",
+                "deepen_attempts": 0,
+            },
+        )
+        return {"status": "running"}
+
+    intake_draft = coerce_intake_draft_or_default(state)
+    report_depth = _report_depth_from_state(state)
+    evidence_rows, analyst_output, knowledge_payload = await _load_writer_inputs(
+        session_factory=session_factory,
+        run_id=run_id,
+    )
+    evidence_briefs = _build_evidence_briefs(evidence_rows)
+    allowed_evidence_ids = {item["evidence_id"] for item in evidence_briefs}
+    insight_briefs = _build_insight_briefs(
+        analyst_output=analyst_output,
+        allowed_evidence_ids=allowed_evidence_ids,
+    )
+    analyst_summary = analyst_output.summary
+
+    discovered_competitor_sources_raw = state.get("discovered_competitor_sources")
+    discovered_competitor_sources = (
+        discovered_competitor_sources_raw
+        if isinstance(discovered_competitor_sources_raw, dict)
+        else None
+    )
+    state_competitors = [
+        item for item in state.get("competitors", []) if isinstance(item, str) and item.strip()
+    ]
+    landscape_facts: dict[str, object] | None = None
+    if intake_draft.analysis_archetype == "landscape":
+        landscape_facts = _landscape_structure_facts(
+            ordered_competitors=_ordered_competitors_for_report(
+                state_competitors=state_competitors,
+                evidence_briefs=evidence_briefs,
+                knowledge_payload=knowledge_payload,
+            ),
+            discovered_competitor_sources=discovered_competitor_sources,
+            knowledge_payload=knowledge_payload,
+            evidence_briefs=evidence_briefs,
+            allowed_evidence_ids=allowed_evidence_ids,
+            target_category=intake_draft.target_category,
+            category_aliases=list(intake_draft.category_aliases),
+            excluded_categories=list(intake_draft.excluded_categories),
+            market_segments=list(intake_draft.market_segments),
+            scope_policy=intake_draft.scope_policy,
+        )
+
+    async with session_factory() as session:
+        report = await _load_latest_report_for_run(session=session, run_id=run_id)
+        if report is None:
+            raise RuntimeError(f"No report found for run_id={run_id} before deepen.")
+        report_content_raw = report.content_json
+        if not isinstance(report_content_raw, dict):
+            raise RuntimeError("Report content_json must be an object before deepen.")
+        report_id = report.report_id
+        report_content = report_content_raw
+        session.add(
+            Step(
+                step_id=step_id,
+                run_id=run_id,
+                agent_name="deepen",
+                status="running",
+                retry_count=0,
+                payload={
+                    "deepen_enabled": True,
+                    "source_report_id": report_id,
+                    "report_depth": report_depth,
+                    "analysis_archetype": intake_draft.analysis_archetype,
+                    "deepened_sections": [],
+                    "deepen_attempts": 0,
+                    "skipped_reason": None,
+                    "error": None,
+                },
+            )
+        )
+        await session.commit()
+
+    async def _persist_section_response(_: str, response: LLMResponse) -> None:
+        async with session_factory() as callback_session:
+            callback_session.add(
+                build_llm_call_record(
+                    step_id=step_id,
+                    response=response,
+                )
+            )
+            await callback_session.commit()
+
+    deepened_section_ids: list[str] = []
+    deepen_attempts = 0
+    skipped_reason: str | None = None
+    deepen_error: str | None = None
+    updated_report_content = report_content
+    updated_markdown: str | None = None
+    try:
+        if not evidence_briefs:
+            skipped_reason = "no_qualified_evidence"
+        else:
+            (
+                updated_report_content,
+                section_deepen_responses,
+                deepened_section_ids,
+            ) = await _deepen_report_sections(
+                report_content=report_content,
+                analysis_archetype=intake_draft.analysis_archetype,
+                response_language=intake_draft.response_language,
+                report_depth=report_depth,
+                user_query=str(state.get("user_query", "")),
+                evidence_briefs=evidence_briefs,
+                analyst_summary=analyst_summary,
+                insight_briefs=insight_briefs,
+                landscape_facts=landscape_facts,
+                persist_response=_persist_section_response,
+            )
+            deepen_attempts = len(section_deepen_responses)
+            if deepened_section_ids:
+                updated_markdown = _render_report_markdown(
+                    updated_report_content,
+                    allowed_evidence_ids=allowed_evidence_ids,
+                    response_language=intake_draft.response_language,
+                    evidence_briefs=evidence_briefs,
+                )
+            else:
+                skipped_reason = "no_section_upgraded"
+            log.info(
+                "writer.section_deepen",
+                deepened_sections=deepened_section_ids,
+                deepen_attempts=deepen_attempts,
+            )
+    except (LLMError, ValueError, TypeError) as exc:
+        skipped_reason = "deepen_failed_best_effort"
+        deepen_error = str(exc)[:500]
+        log.warning(
+            "writer.section_deepen.best_effort_skip",
+            run_id=run_id,
+            reason=skipped_reason,
+            error=deepen_error,
+        )
+
+    async with session_factory() as session:
+        if updated_markdown is not None:
+            report_row = await session.get(Report, report_id)
+            if report_row is None:
+                raise RuntimeError(f"report_id={report_id} not found while updating deepened content.")
+            report_row.content_json = updated_report_content
+            report_row.content_markdown = updated_markdown
+        step_row = await session.get(Step, step_id)
+        if step_row is None:
+            raise RuntimeError(f"deepen step_id={step_id} missing during finalization.")
+        payload_raw = step_row.payload
+        payload = payload_raw if isinstance(payload_raw, dict) else {}
+        step_row.payload = {
+            **payload,
+            "deepened_sections": deepened_section_ids,
+            "deepen_attempts": deepen_attempts,
+            "skipped_reason": skipped_reason,
+            "error": deepen_error,
+            "updated_report": updated_markdown is not None,
+        }
+        step_row.status = "completed"
+        step_row.finished_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    await emit_run_event(
+        run_id=run_id,
+        event_type=RunEventType.STEP_FINISH,
+        step_id=step_id,
+        payload={
+            "agent_name": "deepen",
+            "status": "completed",
+            "deepened_sections": deepened_section_ids,
+            "deepen_attempts": deepen_attempts,
+            "updated_report": updated_markdown is not None,
+        },
+    )
+    return {"status": "running"}
