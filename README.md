@@ -12,6 +12,8 @@
 
 在线体验：**<https://rival-lens.vercel.app>**（无需登录）
 
+演示录屏：**<https://vai39ofzgbz.feishu.cn/file/Lldzb2H6zosbP4xLiv8ceE7Fn0f?from=from_copylink>**
+
 体验路径：首页输入分析需求 → Agent 多轮澄清 → 确认任务计划 → Live 页实时观察执行 → 查看报告 / 竞品知识 / 证据溯源 / 追踪面板。
 
 ## 目录
@@ -43,20 +45,40 @@
 ## Architecture
 
 ```mermaid
-flowchart LR
-    User([用户]) --> FE[React 控制台]
-    FE -->|REST + SSE| API[FastAPI]
-    API --> Graph[LangGraph]
-    Graph --> Sup{{Supervisor}}
-    Sup --> Exec[Discovery / Researcher xK / Analyst / Writer]
-    Exec --> QA{{QA Reviewer}}
-    QA -->|打回| Sup
-    Exec --> Collector[Bocha / Serper / Tavily / Jina]
-    API --> PG[(PostgreSQL)]
-    API --> Watch[Watchlist / Diff Monitor]
-    Watch --> PG
-    PG -.-> Curator[/Skill Curator 异步/]
-    Curator -.-> Skills[(Skill Library)]
+flowchart TB
+    User([用户 · 一句话竞品分析需求])
+
+    subgraph HITL["① 需求澄清 + 计划确认 · HITL"]
+        direction LR
+        Intake[Intake Agent<br/>多轮澄清] --> Planner[Planner Agent<br/>生成任务树 PlanTree]
+    end
+
+    subgraph Loop["② 执行编排 · LangGraph 多 Agent 协作"]
+        Sup{{Supervisor<br/>运行时 LLM 工具委派}}
+        Discovery[Discovery<br/>竞品发现]
+        Researcher[Researcher ×K<br/>ReAct 并行调研]
+        Analyst[Analyst<br/>跨竞品结论矩阵]
+        Writer[Writer<br/>逐章节报告写作]
+        QA{{QA Reviewer<br/>规则 + 语义双层}}
+
+        Sup --> Discovery & Researcher & Analyst & Writer
+        Writer --> QA
+        QA -->|reject_to 精准打回| Sup
+    end
+
+    Collector[/采集通道<br/>Bocha · Serper · Tavily · Jina Reader/]
+    PG[(PostgreSQL<br/>evidence · conclusions · knowledge · watchlist)]
+    Watch[Watchlist<br/>定时刷新 + 变更监控]
+    Curator[/Skill Curator<br/>异步沉淀技能/]
+    Report([商业报告 · 竞品知识 · 全链路溯源])
+
+    User --> Intake
+    Planner -->|用户确认| Sup
+    Researcher <-->|robots / 限速 / 脱敏| Collector
+    Loop --> PG
+    Sup -->|Finalize| Report
+    PG --> Watch
+    PG -.-> Curator -.->|人工审核生效| Sup
 ```
 
 | Agent | 职责 |

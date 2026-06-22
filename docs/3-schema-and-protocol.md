@@ -52,6 +52,7 @@ class Competitor(BaseModel):
 
 - `category` 是产品类别（开放字符串契约），例如 `ai_coding_tool` / `knowledge_base` / `crm`。
 - `positioning` 必须来自 evidence 或分析推断，并在结论中绑定证据。
+- 竞品按"赛道（segment）→ 产品实例 → 三件套"建模：同一赛道（如"AI 眼镜"）下并列多个**产品实例**（如华为 / Rokid / 小米的眼镜产品），而非公司。发现阶段的产品级字段——`segment`（子赛道）、`vendor`（厂商/品牌）、`introduction`（一句话简介）、`candidate_role`（角色）——由 `DiscoveryCompetitorCandidate` 承载（`backend/app/schemas/agent_outputs_pipeline.py`），抽取后进入竞品 profile 与 watchlist 追踪视图，前端据 `segment` 做赛道分组。
 
 ### 2.2 Feature
 
@@ -87,11 +88,12 @@ class Pricing(BaseModel):
 ```python
 class Persona(BaseModel):
     id: str
+    competitor_id: str                  # persona 绑定到具体竞品（产品实例），随三件套一起抽取
     name: str
     role: str
-    pain_points: list[str]
-    jobs_to_be_done: list[str]
-    evidence_ids: list[str] = []
+    pain_points: list[str] = []
+    jobs_to_be_done: list[str] = []
+    evidence_ids: list[str]             # 至少 1 条
 ```
 
 第一版默认 Persona（来自 `docs/0-qna-signals.md` 信号"产品经理 / 创业者"）：
@@ -167,7 +169,7 @@ class RunIntakeDraft(BaseModel):
     competitors_discovery_mode: bool = False       # 是否让 Agent 自行发现竞品
     domain_hint: str | None = None
     focus_dimensions: list[FocusDimension] = []    # 由 Planner 派生，不进入 is_complete 判定
-    report_depth: Literal["quick", "deep"] = "quick"
+    report_depth: Literal["debug", "quick", "deep"] = "quick"   # debug 为内部低成本档，分析档位见 docs/2.7-analysis-tiers.md
     reference_urls: list[str] = []
 
     @computed_field
