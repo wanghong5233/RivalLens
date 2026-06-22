@@ -1917,7 +1917,7 @@ def build_discovery_extract_user_prompt(
         "- Return ONLY a JSON object with this schema:\n"
         '  {"candidates":[{"name":"Specific product/model name","is_competitor":true,'
         '"candidate_role":"direct_competitor",'
-        '"segment":"Sub-track this product belongs to, e.g. AI眼镜 / AI录音笔 / 陪伴玩具",'
+        '"segment":"Sub-track this product belongs to, e.g. AI录音笔 / AI PC / 家庭AI中枢 / AI眼镜 / 陪伴玩具",'
         '"vendor":"Parent company or brand behind the product, e.g. 华为 / Meta",'
         '"introduction":"One concise factual sentence: what this product is and who it is for",'
         '"relevance_reason":"Why it competes in this market",'
@@ -1931,9 +1931,12 @@ def build_discovery_extract_user_prompt(
         "put the company in `vendor`. Two products from different companies in the same sub-track are "
         "two separate candidates (e.g. 华为 AI 眼镜 and 小米 AI 眼镜), not '华为' and '小米'.\n"
         "- segment: group comparable products by sub-track. Under a broad market like 'AI硬件', use "
-        "concrete sub-tracks (AI眼镜 / AI录音笔 / 家庭AI中枢 / AI PC ...). For a single explicit "
+        "concrete sub-tracks (AI录音笔 / AI PC / 家庭AI中枢 / AI眼镜 / 陪伴玩具 ...). For a single explicit "
         "target_category, segment may equal that category. Keep segment labels consistent so products "
         "in the same track share the exact same segment string.\n"
+        "- For broad_market scope, prefer segment diversity over many products from one hot sub-track. "
+        "Do not let AI glasses or any other single segment dominate the candidate list unless search_results "
+        "contain no grounded candidates from other segments.\n"
         "- introduction: one short, factual, non-marketing sentence describing the product so a reader "
         "unfamiliar with it understands what it is; ground it in search_results where possible.\n"
         "- candidate_role must be one of: direct_competitor, adjacent_competitor, substitute, upstream_supplier, trend_reference.\n"

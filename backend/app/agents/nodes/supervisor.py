@@ -168,19 +168,54 @@ def _discovery_search_queries(
 ) -> list[str]:
     query_basis = domain_context.strip() if isinstance(domain_context, str) and domain_context.strip() else user_query
     scope_prefix = f"{market_scope} " if market_scope else ""
+    combined_context = f"{user_query} {query_basis}".casefold()
+    lowered_basis = query_basis.casefold()
+    is_broad_market_query = any(
+        term in combined_context
+        for term in ("全景", "趋势", "市场", "赛道", "行业", "landscape", "market", "trend")
+    )
+    is_broad_ai_hardware = (
+        ("ai硬件" in combined_context or "ai hardware" in combined_context)
+        and "眼镜" not in combined_context
+        and "glasses" not in combined_context
+    )
     if response_language == "zh":
-        candidates = [
-            f"{scope_prefix}{query_basis} 竞品 替代 产品",
-            f"{scope_prefix}{query_basis} 对比 评测 厂商",
-            f"{scope_prefix}{query_basis} 市场 解决方案",
-        ]
+        if is_broad_market_query:
+            candidates = [
+                f"{scope_prefix}{query_basis} 细分赛道 产品类型 应用场景 代表产品",
+                f"{scope_prefix}{query_basis} 主流产品 新品 发布 厂商",
+                f"{scope_prefix}{query_basis} 市场格局 代表产品 厂商 终端设备",
+                f"{scope_prefix}{query_basis} 趋势 报告 产品类型 应用场景",
+            ]
+            if is_broad_ai_hardware:
+                candidates.append(
+                    f"{scope_prefix}{query_basis} AI眼镜 AI录音笔 AI玩具 AI PC 机器人 家庭AI终端 可穿戴"
+                )
+        else:
+            candidates = [
+                f"{scope_prefix}{query_basis} 竞品 替代 产品",
+                f"{scope_prefix}{query_basis} 对比 评测 厂商",
+                f"{scope_prefix}{query_basis} 市场 解决方案",
+            ]
     else:
-        candidates = [
-            f"{scope_prefix}{query_basis} competitors alternatives",
-            f"{scope_prefix}{query_basis} comparison reviews vendors",
-            f"{scope_prefix}{query_basis} market solutions",
-        ]
-    return _stable_unique([item.strip() for item in candidates if item.strip()])[:3]
+        if is_broad_market_query:
+            candidates = [
+                f"{scope_prefix}{query_basis} product segments product types use cases representative products",
+                f"{scope_prefix}{query_basis} mainstream products new launches vendors",
+                f"{scope_prefix}{query_basis} market landscape representative products vendors edge devices",
+                f"{scope_prefix}{query_basis} trends report product types applications",
+            ]
+            if is_broad_ai_hardware:
+                candidates.append(
+                    f"{scope_prefix}{query_basis} smart glasses AI recorder AI toys AI PC robots home AI terminal wearable"
+                )
+        else:
+            candidates = [
+                f"{scope_prefix}{query_basis} competitors alternatives",
+                f"{scope_prefix}{query_basis} comparison reviews vendors",
+                f"{scope_prefix}{query_basis} market solutions",
+            ]
+    return _stable_unique([item.strip() for item in candidates if item.strip()])[:5]
 
 
 def _normalize_focus_dimensions(raw: object, *, max_dimensions: int) -> list[str]:

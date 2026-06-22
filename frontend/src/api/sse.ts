@@ -65,6 +65,8 @@ export interface ToolEventPayload {
 export interface ToolFinishEventPayload extends ToolEventPayload {
   success: boolean;
   snippet_count: number;
+  snippet_preview: string | null;
+  source_type_distribution: Record<string, number>;
   latency_ms: number;
   error: string | null;
 }
@@ -318,15 +320,32 @@ function coerceToolFinishPayload(value: unknown): ToolFinishEventPayload | null 
   const record = value as Record<string, unknown>;
   const successRaw = record.success;
   const snippetCountRaw = record.snippet_count;
+  const snippetPreviewRaw = record.snippet_preview;
+  const sourceTypeDistributionRaw = record.source_type_distribution;
   const latencyRaw = record.latency_ms;
   const errorRaw = record.error;
   return {
     ...base,
     success: successRaw === true,
     snippet_count: typeof snippetCountRaw === "number" ? snippetCountRaw : 0,
+    snippet_preview: typeof snippetPreviewRaw === "string" ? snippetPreviewRaw : null,
+    source_type_distribution: coerceSourceTypeDistribution(sourceTypeDistributionRaw),
     latency_ms: typeof latencyRaw === "number" ? latencyRaw : 0,
     error: typeof errorRaw === "string" ? errorRaw : null,
   };
+}
+
+function coerceSourceTypeDistribution(value: unknown): Record<string, number> {
+  if (value === null || typeof value !== "object") {
+    return {};
+  }
+  const output: Record<string, number> = {};
+  for (const [key, count] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof count === "number") {
+      output[key] = count;
+    }
+  }
+  return output;
 }
 
 function coerceEvidenceCollectedPayload(value: unknown): EvidenceCollectedPayload | null {

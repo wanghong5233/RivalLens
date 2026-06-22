@@ -901,6 +901,7 @@ async def discovery_node(state: AgentState) -> AgentState:
             discovered_competitor_sources=discovered_competitor_sources,
             focus_dimensions=focus_dimensions,
             analysis_archetype=analysis_archetype,
+            scope_policy=scope_policy,
             max_competitors=tier_profile.max_competitors,
             max_dimensions=tier_profile.max_dimensions,
             landscape_core_deepdive_n=tier_profile.landscape_core_deepdive_n,

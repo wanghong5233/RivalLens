@@ -305,6 +305,13 @@ def _research_competitors_from_tasks(tasks: list[PlanTask]) -> list[str]:
     return competitors
 
 
+def _is_placeholder_research_competitor(value: str | None) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().casefold()
+    return normalized.startswith("representative_competitor")
+
+
 def _assert_research_competitor_subset(
     *,
     actual_competitors: Sequence[str],
@@ -369,6 +376,65 @@ def _discovered_competitor_role(
     return role if role else None
 
 
+def _discovered_competitor_segment(
+    *,
+    competitor: str,
+    discovered_competitor_sources: dict[str, dict[str, str | None]] | None,
+) -> str | None:
+    if not isinstance(discovered_competitor_sources, dict):
+        return None
+    source_payload = discovered_competitor_sources.get(competitor)
+    if not isinstance(source_payload, dict):
+        return None
+    segment_raw = source_payload.get("segment")
+    if not isinstance(segment_raw, str):
+        return None
+    segment = segment_raw.strip()
+    return segment if segment else None
+
+
+def _competitor_segment_key(
+    *,
+    competitor: str,
+    discovered_competitor_sources: dict[str, dict[str, str | None]] | None,
+) -> str:
+    segment = _discovered_competitor_segment(
+        competitor=competitor,
+        discovered_competitor_sources=discovered_competitor_sources,
+    )
+    return segment.casefold() if segment is not None else f"unknown:{competitor.casefold()}"
+
+
+def _diversify_competitors_by_segment(
+    *,
+    competitors: list[str],
+    discovered_competitor_sources: dict[str, dict[str, str | None]] | None,
+) -> list[str]:
+    buckets: dict[str, list[str]] = {}
+    segment_order: list[str] = []
+    for competitor in competitors:
+        segment_key = _competitor_segment_key(
+            competitor=competitor,
+            discovered_competitor_sources=discovered_competitor_sources,
+        )
+        if segment_key not in buckets:
+            buckets[segment_key] = []
+            segment_order.append(segment_key)
+        buckets[segment_key].append(competitor)
+    diversified: list[str] = []
+    while len(diversified) < len(competitors):
+        advanced = False
+        for segment_key in segment_order:
+            bucket = buckets[segment_key]
+            if not bucket:
+                continue
+            diversified.append(bucket.pop(0))
+            advanced = True
+        if not advanced:
+            break
+    return diversified
+
+
 def _landscape_core_research_focus_dimensions(
     *,
     base_focus: list[str],
@@ -410,6 +476,7 @@ def _select_discovered_competitors_for_research(
     discovered_competitors: list[str],
     discovered_competitor_sources: dict[str, dict[str, str | None]] | None,
     analysis_archetype: str,
+    scope_policy: str | None,
     max_competitors: int,
     landscape_core_deepdive_n: int,
 ) -> tuple[list[str], set[str]]:
@@ -428,6 +495,17 @@ def _select_discovered_competitors_for_research(
             core.append(competitor)
             continue
         non_core.append(competitor)
+    if scope_policy == "broad_market":
+        # Broad landscape reports should sample across sub-tracks first, then
+        # naturally fill remaining slots. Explicit single-category runs skip this.
+        core = _diversify_competitors_by_segment(
+            competitors=core,
+            discovered_competitor_sources=discovered_competitor_sources,
+        )
+        non_core = _diversify_competitors_by_segment(
+            competitors=non_core,
+            discovered_competitor_sources=discovered_competitor_sources,
+        )
     deepdive_cap = max(0, min(max_competitors, landscape_core_deepdive_n))
     deepdive_core = core[:deepdive_cap]
     if not deepdive_core and deepdive_cap > 0:
@@ -458,6 +536,7 @@ def reconcile_plan_tree_after_discovery(
     discovered_competitor_sources: dict[str, dict[str, str | None]] | None = None,
     focus_dimensions: list[str] | None = None,
     analysis_archetype: str = "comparison",
+    scope_policy: str | None = None,
     max_competitors: int = MAX_RESEARCH_COMPETITORS,
     max_dimensions: int = MAX_FOCUS_DIMENSIONS,
     landscape_core_deepdive_n: int = 3,
@@ -468,6 +547,19 @@ def reconcile_plan_tree_after_discovery(
         raise ValueError("plan_tree is required to reconcile after discovery.")
     if not discovered_competitors:
         return plan
+    if analysis_archetype == "landscape":
+        plan = plan.model_copy(
+            update={
+                "tasks": [
+                    task
+                    for task in plan.tasks
+                    if not (
+                        task.stage == "research"
+                        and _is_placeholder_research_competitor(task.competitor_id)
+                    )
+                ]
+            }
+        )
 
     existing_research = {
         task.competitor_id
@@ -517,6 +609,7 @@ def reconcile_plan_tree_after_discovery(
         discovered_competitors=discovered_competitors,
         discovered_competitor_sources=discovered_competitor_sources,
         analysis_archetype=analysis_archetype,
+        scope_policy=scope_policy,
         max_competitors=max_competitors,
         landscape_core_deepdive_n=landscape_core_deepdive_n,
     )

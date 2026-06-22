@@ -35,10 +35,15 @@ export interface ToolActivityEntry {
   error: string | null;
 }
 
+export interface LiveEvidenceFeedEntry extends EvidenceCollectedPayload {
+  status: "candidate" | "persisted";
+  snippetCount?: number;
+}
+
 export interface LiveRunProgressState {
   planTaskStatus: Record<string, PlanTaskRuntimeStatus>;
   toolActivity: ToolActivityEntry[];
-  evidenceFeed: EvidenceCollectedPayload[];
+  evidenceFeed: LiveEvidenceFeedEntry[];
   pendingFollowUps: FollowUpReceivedPayload[];
   finishPayload: RunFinishPayload | null;
   lastActivityAt: number;
@@ -283,6 +288,7 @@ export function recordToolFinish(runId: string, payload: ToolFinishEventPayload)
     const robotsSkipped = isRobotsBlockedError(payload.error);
     const status: ToolRuntimeStatus = payload.success ? "done" : robotsSkipped ? "skipped" : "error";
     const error = robotsSkipped ? "站点 robots.txt 禁止抓取，已合规跳过" : payload.error;
+    const candidateEvidence = buildCandidateEvidenceEntry(key, payload);
     const existingIndex = next.toolActivity.findIndex((entry) => entry.key === key);
     if (existingIndex === -1) {
       const synthesized: ToolActivityEntry = {
@@ -298,6 +304,7 @@ export function recordToolFinish(runId: string, payload: ToolFinishEventPayload)
         error,
       };
       next.toolActivity = [synthesized, ...next.toolActivity].slice(0, MAX_TOOL_ENTRIES);
+      next.evidenceFeed = upsertCandidateEvidence(next.evidenceFeed, candidateEvidence);
       return next;
     }
     const entries = [...next.toolActivity];
@@ -309,6 +316,7 @@ export function recordToolFinish(runId: string, payload: ToolFinishEventPayload)
       error,
     };
     next.toolActivity = entries;
+    next.evidenceFeed = upsertCandidateEvidence(next.evidenceFeed, candidateEvidence);
     return next;
   });
 }
@@ -321,13 +329,68 @@ function isRobotsBlockedError(error: string | null): boolean {
   return lowered.includes("blocked_by_robots") || lowered.includes("robots denied");
 }
 
+function stringFromArgs(args: Record<string, unknown> | undefined, key: string): string | null {
+  const value = args?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function firstSourceType(distribution: Record<string, number>): string | null {
+  const [first] = Object.entries(distribution)
+    .filter(([, count]) => count > 0)
+    .sort((left, right) => right[1] - left[1]);
+  return first?.[0] ?? null;
+}
+
+function buildCandidateEvidenceEntry(
+  key: string,
+  payload: ToolFinishEventPayload,
+): LiveEvidenceFeedEntry | null {
+  if (!payload.success || payload.snippet_count <= 0) {
+    return null;
+  }
+  const sourceUrl = stringFromArgs(payload.args_summary, "url");
+  const query = stringFromArgs(payload.args_summary, "query");
+  return {
+    evidence_id: `candidate:${key}`,
+    competitor_id: payload.competitor_id,
+    dimension: payload.dimension,
+    source_type: firstSourceType(payload.source_type_distribution) ?? payload.tool,
+    source_title: payload.snippet_preview ?? query ?? sourceUrl ?? "候选证据片段正在筛选",
+    source_url: sourceUrl,
+    desensitized: false,
+    status: "candidate",
+    snippetCount: payload.snippet_count,
+  };
+}
+
+function upsertCandidateEvidence(
+  entries: LiveEvidenceFeedEntry[],
+  candidate: LiveEvidenceFeedEntry | null,
+): LiveEvidenceFeedEntry[] {
+  if (candidate === null) {
+    return entries;
+  }
+  const without = entries.filter((entry) => entry.evidence_id !== candidate.evidence_id);
+  return [candidate, ...without].slice(0, MAX_EVIDENCE_ENTRIES);
+}
+
 export function recordEvidenceCollected(runId: string, payload: EvidenceCollectedPayload): void {
   update(runId, (prev) => {
     const next = touchActivity(prev);
     if (next.evidenceFeed.some((entry) => entry.evidence_id === payload.evidence_id)) {
       return next;
     }
-    next.evidenceFeed = [payload, ...next.evidenceFeed].slice(0, MAX_EVIDENCE_ENTRIES);
+    const persisted: LiveEvidenceFeedEntry = {
+      ...payload,
+      status: "persisted",
+    };
+    const withoutStaleCandidates = next.evidenceFeed.filter((entry) => {
+      if (entry.evidence_id === payload.evidence_id) {
+        return false;
+      }
+      return !(entry.status === "candidate" && payload.source_url !== null && entry.source_url === payload.source_url);
+    });
+    next.evidenceFeed = [persisted, ...withoutStaleCandidates].slice(0, MAX_EVIDENCE_ENTRIES);
     return next;
   });
 }

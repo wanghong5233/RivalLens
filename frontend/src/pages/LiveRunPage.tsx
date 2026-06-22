@@ -56,7 +56,7 @@ import {
   recordToolStart,
   useLiveRunProgress,
 } from "@/stores/liveRunProgress";
-import type { ToolActivityEntry } from "@/stores/liveRunProgress";
+import type { LiveEvidenceFeedEntry, ToolActivityEntry } from "@/stores/liveRunProgress";
 
 type PlanTaskRuntimeStatus = "queued" | "running" | "completed";
 type ToolRuntimeStatus = "running" | "done" | "error" | "skipped";
@@ -779,7 +779,7 @@ function StuckHintAlert({ idleMs, runId }: StuckHintAlertProps): JSX.Element {
 }
 
 interface EvidenceFeedCardProps {
-  entries: EvidenceCollectedPayload[];
+  entries: LiveEvidenceFeedEntry[];
   onOpen: (evidenceId: string) => void;
 }
 
@@ -805,14 +805,31 @@ function EvidenceFeedCard({ entries, onOpen }: EvidenceFeedCardProps): JSX.Eleme
               <li key={entry.evidence_id}>
                 <button
                   type="button"
-                  onClick={() => onOpen(entry.evidence_id)}
-                  className="w-full rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-left text-sm transition-colors hover:border-primary/30 hover:bg-primary/[0.04]"
+                  aria-disabled={entry.status === "candidate"}
+                  onClick={() => {
+                    if (entry.status === "persisted") {
+                      onOpen(entry.evidence_id);
+                    }
+                  }}
+                  className={cn(
+                    "w-full rounded-lg border px-3 py-2 text-left text-sm transition-colors",
+                    entry.status === "persisted"
+                      ? "border-white/[0.06] bg-white/[0.02] hover:border-primary/30 hover:bg-primary/[0.04]"
+                      : "cursor-default border-success/20 bg-success/[0.04]",
+                  )}
                 >
                   <div className="flex flex-wrap items-center gap-1.5 text-xs text-foreground-muted">
                     <span className="font-mono text-foreground">{entry.evidence_id}</span>
                     {entry.competitor_id ? <span>· {entry.competitor_id}</span> : null}
                     {entry.dimension ? <span>· {entry.dimension}</span> : null}
                     {entry.source_type ? <span>· {entry.source_type}</span> : null}
+                    {entry.status === "candidate" ? (
+                      <span className="rounded-full bg-success/10 px-1.5 py-0.5 text-success">
+                        候选 {entry.snippetCount ?? 0}
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-primary">已落库</span>
+                    )}
                   </div>
                   <div className="mt-1 line-clamp-1 text-foreground">
                     {entry.source_title ?? entry.source_url ?? "未提供来源标题"}
