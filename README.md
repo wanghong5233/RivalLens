@@ -44,44 +44,9 @@
 
 ### Multi-Agent Orchestration
 
-7 个核心闭环 Agent + 1 个异步 Skill Curator。Intake / Planner 是人机协作（HITL）暂停点，Supervisor 是执行期唯一调度中枢，QA 的 rejection 经 Replanner 回到 Supervisor 增量重派。
+7 个核心闭环 Agent + 1 个异步 Skill Curator。Intake / Planner 为人机协作（HITL）暂停点，Supervisor 是执行期唯一调度中枢，按需触发 Discovery 发现竞品、Send fan-out 并行 Researcher 采集证据、Analyst 跨竞品分析、Writer 分章节写作；QA 规则 + 语义双层审查不达标时，经 Replanner 回到 Supervisor 增量重派；run 结束后 Skill Curator 异步沉淀可复用技能。
 
-```mermaid
-flowchart TB
-    User([用户一句话需求])
-    Intake[Intake · 需求澄清 HITL]
-    Planner[Planner · 计划确认 HITL]
-    Supervisor{{Supervisor · 运行时调度中枢}}
-    Discovery[Discovery · 竞品发现]
-    Replanner[Replanner · 计划修订]
-    Researcher[Researcher ×K · 并行采集证据]
-    Analyst[Analyst · 跨竞品分析]
-    Writer[Writer · 分章节写作]
-    QA{{QA · 规则 + 语义双层审查}}
-    Report([商业报告 · 证据溯源 · Trace DAG])
-
-    User --> Intake --> Planner --> Supervisor
-    Supervisor -->|competitors 为空| Discovery --> Replanner --> Supervisor
-    Supervisor -->|Send fan-out ×K| Researcher --> Supervisor
-    Supervisor --> Analyst --> Supervisor
-    Supervisor --> Writer --> QA
-    QA -->|approved| Report
-    QA -->|rejected| Replanner
-```
-
-| Agent | 职责 |
-|---|---|
-| Intake | 多轮澄清，补齐角色 / 意图 / 竞品范围（HITL） |
-| Planner | 生成任务树 PlanTree，等用户确认（HITL） |
-| Supervisor | 执行期 LLM 工具委派，唯一调度中枢 |
-| Discovery / Replanner | 竞品自动发现 / 执行期计划修订 |
-| Researcher ×K | ReAct 子图并行采集、全文抓取、证据结构化 |
-| Analyst | 跨竞品结论矩阵（每条 ≥1 证据） |
-| Writer | 生成全景报告 / 对比报告，按章节深化正文 |
-| QA Reviewer | 规则审查 + 语义审查 + 多目标 rejection 路由 |
-| Skill Curator | run 后异步沉淀技能候选，人工审核生效 |
-
-设计推导见 [`docs/2.5-agent-architecture.md`](./docs/2.5-agent-architecture.md)。
+设计推导与各 Agent 职责见 [`docs/2.5-agent-architecture.md`](./docs/2.5-agent-architecture.md)。
 
 ## Quick Start
 
@@ -119,7 +84,6 @@ npm run dev                          # http://localhost:5173
 - 多 Agent 架构：[`docs/2.5-agent-architecture.md`](./docs/2.5-agent-architecture.md)
 - 采集通道与合规：[`docs/2.6-collector-channels.md`](./docs/2.6-collector-channels.md)
 - Schema 与协议：[`docs/3-schema-and-protocol.md`](./docs/3-schema-and-protocol.md)
-- 测试用例：[`docs/7-test-cases.md`](./docs/7-test-cases.md)
 - 合规声明：[`docs/6-compliance-statement.md`](./docs/6-compliance-statement.md)
 
 ## Contributing
