@@ -95,6 +95,9 @@ ehthumbs.db
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
+# ==== Local demo / media (not committed) ====
+*.mp4
+
 # ==== AI tool caches ====
 # IDE config (.cursor/, .claude/, .codex/, .trae/, .agents/) is committed
 # as shared team rules/hooks/skills. Only cache subdirectories below.
