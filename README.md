@@ -44,42 +44,7 @@
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    User([用户 · 一句话竞品分析需求])
-
-    subgraph HITL["① 需求澄清 + 计划确认 · HITL"]
-        direction LR
-        Intake[Intake Agent<br/>多轮澄清] --> Planner[Planner Agent<br/>生成任务树 PlanTree]
-    end
-
-    subgraph Loop["② 执行编排 · LangGraph 多 Agent 协作"]
-        Sup{{Supervisor<br/>运行时 LLM 工具委派}}
-        Discovery[Discovery<br/>竞品发现]
-        Researcher[Researcher ×K<br/>ReAct 并行调研]
-        Analyst[Analyst<br/>跨竞品结论矩阵]
-        Writer[Writer<br/>逐章节报告写作]
-        QA{{QA Reviewer<br/>规则 + 语义双层}}
-
-        Sup --> Discovery & Researcher & Analyst & Writer
-        Writer --> QA
-        QA -->|reject_to 精准打回| Sup
-    end
-
-    Collector[/采集通道<br/>Bocha · Serper · Tavily · Jina Reader/]
-    PG[(PostgreSQL<br/>evidence · conclusions · knowledge · watchlist)]
-    Watch[Watchlist<br/>定时刷新 + 变更监控]
-    Curator[/Skill Curator<br/>异步沉淀技能/]
-    Report([商业报告 · 竞品知识 · 全链路溯源])
-
-    User --> Intake
-    Planner -->|用户确认| Sup
-    Researcher <-->|robots / 限速 / 脱敏| Collector
-    Loop --> PG
-    Sup -->|Finalize| Report
-    PG --> Watch
-    PG -.-> Curator -.->|人工审核生效| Sup
-```
+![RivalLens system architecture](./docs/assets/system-architecture.svg)
 
 | Agent | 职责 |
 |---|---|
